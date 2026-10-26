@@ -1,0 +1,148 @@
+import { Theme } from "../theme.slint";
+import { App, Devices } from "../state.slint";
+import { DeviceRow } from "../components/device_row.slint";
+import { IconButton } from "../components/icon_button.slint";
+import { PillButton } from "../components/pill_button.slint";
+import { Spinner } from "../components/spinner.slint";
+import { TapArea } from "../components/tap_area.slint";
+
+// Picker for the Spotify Connect devices playback can be moved to.
+//
+// It sits over the player, so a tap outside the panel closes it and any swipe
+// stops at the scrim instead of paging the screens underneath.
+export component DevicePicker inherits Rectangle {
+    width: 1080px;
+    height: 1080px;
+    background: transparent;
+    visible: Devices.open;
+
+    private property <length> row-pitch: 86px;
+    private property <length> row-height: 78px;
+    // Five rows; a longer list scrolls.
+    private property <length> list-height: 424px;
+    private property <length> content-height: Devices.devices.length * root.row-pitch;
+
+    // Dim everything behind the panel so the round player recedes.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000a8;
+        opacity: Devices.open ? 1 : 0;
+        animate opacity { duration: 220ms; }
+    }
+
+    // Tapping the scrim closes the picker.
+    TapArea {
+        tapped => { App.close-devices(); }
+    }
+
+    panel := Rectangle {
+        x: 200px;
+        y: Devices.open ? 250px : 274px;
+        width: 680px;
+        height: 600px;
+        border-radius: 44px;
+        background: #14141af7;
+        border-width: 1px;
+        border-color: Theme.hairline;
+
+        animate y { duration: 240ms; easing: ease-out; }
+
+        // Swallow taps on the panel's own background: only the scrim closes it.
+        TouchArea { }
+
+        Text {
+            x: 38px;
+            y: 30px;
+            width: 480px;
+            height: 40px;
+            text: "Devices";
+            color: Theme.ink;
+            font-size: 30px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+
+        Text {
+            x: 38px;
+            y: 72px;
+            width: 500px;
+            height: 26px;
+            text: "Playback moves to the device you pick";
+            color: Theme.ink-faint;
+            font-size: 16px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        IconButton {
+            x: parent.width - 66px;
+            y: 22px;
+            size: 44px;
+            icon: "close";
+            icon-size: 18px;
+            clicked => { App.close-devices(); }
+        }
+
+        list := Flickable {
+            x: 28px;
+            y: 126px;
+            width: parent.width - 56px;
+            height: root.list-height;
+            content-width: self.width;
+            content-height: max(root.list-height, root.content-height);
+            interactive: root.content-height > root.list-height;
+
+            for device[i] in Devices.devices : DeviceRow {
+                y: i * root.row-pitch;
+                width: list.width;
+                height: root.row-height;
+                name: device.name;
+                icon: device.kind;
+                detail: device.detail;
+                active: device.active;
+                selectable: device.selectable;
+                clicked => { App.select-device(device.id); }
+            }
+        }
+
+        if Devices.loading && Devices.devices.length == 0 : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+
+            Spinner {
+                x: (parent.width - self.width) / 2;
+                y: 250px;
+                size: 46px;
+            }
+        }
+
+        if !Devices.loading && Devices.devices.length == 0 : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+
+            Text {
+                x: 40px;
+                y: 190px;
+                width: parent.width - 80px;
+                height: 150px;
+                text: Devices.empty;
+                color: Theme.ink-dim;
+                font-size: 19px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+
+            PillButton {
+                x: (parent.width - self.width) / 2;
+                y: 370px;
+                label: "Refresh";
+                primary: false;
+                clicked => { App.refresh-devices(); }
+            }
+        }
+    }
+}

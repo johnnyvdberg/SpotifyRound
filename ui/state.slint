@@ -1,0 +1,149 @@
+// Shared application state.
+//
+// All values are written from Rust; the UI only reads them and emits commands
+// through the `App` callbacks.
+
+export struct PlaylistItem {
+    title: string,
+    subtitle: string,
+    cover: image,
+    uri: string,
+}
+
+export struct QueueItem {
+    title: string,
+    subtitle: string,
+    cover: image,
+    duration: string,
+    current: bool,
+    uri: string,
+}
+
+// One Spotify Connect device playback can be moved to.
+export struct DeviceItem {
+    name: string,
+    // Icon kind: "speaker", "computer", "phone", "tv" or "car".
+    kind: string,
+    // Human name of the kind, e.g. "Speaker".
+    detail: string,
+    active: bool,
+    // False for a device Spotify lists but gives no way to transfer to, such as
+    // a Chromecast: it is shown greyed out instead of being hidden.
+    selectable: bool,
+    id: string,
+}
+
+export global Player {
+    in-out property <bool> has-track: false;
+    in-out property <bool> playing: false;
+    in-out property <bool> controls: false;
+    in-out property <string> title: "";
+    in-out property <string> subtitle: "";
+    in-out property <image> cover;
+    in-out property <bool> has-cover: false;
+    // Animated from Rust (animato tween): 0 = hidden, 1 = fully revealed.
+    in-out property <float> reveal: 1;
+    // Animated from Rust (animato ping-pong tween) for the queue indicator.
+    // Only written while the queue is on screen.
+    in-out property <float> pulse: 0;
+    // The progress ring is rendered on the GPU (`src/ring.rs`). The frames are
+    // kept as images so the renderer caches them once, and `ring-frame` names
+    // the one to show.
+    in-out property <[image]> ring-frames: [];
+    in-out property <image> ring-frame;
+    in-out property <bool> shuffle: false;
+    // Whether Spotify allows skipping in each direction from here.
+    in-out property <bool> can-previous: true;
+    in-out property <bool> can-next: true;
+    // 0 = off, 1 = repeat all, 2 = repeat one
+    in-out property <int> repeat: 0;
+    // The Spotify Connect device playback is running on.
+    in-out property <string> device: "";
+    in-out property <string> device-kind: "speaker";
+    in-out property <bool> has-device: false;
+}
+
+export global Devices {
+    // Every device that is open right now, the active one included.
+    in-out property <[DeviceItem]> devices: [];
+    in-out property <bool> open: false;
+    in-out property <bool> loading: false;
+    in-out property <string> empty: "";
+}
+
+export global Library {
+    in-out property <[PlaylistItem]> playlists: [];
+    in-out property <string> playlists-subtitle: "";
+    in-out property <bool> playlists-loading: false;
+    in-out property <string> playlists-empty: "";
+    in-out property <string> current-playlist: "";
+
+    in-out property <[QueueItem]> queue: [];
+    in-out property <string> queue-subtitle: "";
+    in-out property <bool> queue-loading: false;
+    in-out property <string> queue-empty: "";
+    // Bumped whenever the queue is replaced, so the list can jump back to the
+    // item that is playing.
+    in-out property <int> queue-revision: 0;
+}
+
+export global Idle {
+    // Set from Rust: the visualizer is showing (the overlay fades with it).
+    in-out property <bool> active: false;
+    // 0..1 cross-fade, eased from Rust so it always completes. The overlay stays
+    // in the scene at zero opacity: hiding and showing it again leaves stale
+    // pixels behind on some compositors.
+    in-out property <float> fade: 0;
+    // Which visualisation is showing, and the size to draw its frame at. Scenes
+    // are picked at random from the renderers that are available.
+    in-out property <int> scene: 0;
+    in-out property <length> frame-size: 920px;
+    // One frame of the selected visualisation, shown by `frame`.
+    in-out property <image> frame;
+    // The render targets every scene rotates through, flattened scene by scene.
+    // They are kept as images here so the renderer caches them once, instead of
+    // seeing a new image every frame.
+    in-out property <[image]> frames;
+
+    // A tap anywhere on the visuals returns to the player.
+    callback dismiss();
+}
+
+export global App {
+    // Screens sit side by side: 0 = queue, 1 = now playing, 2 = playlists.
+    in-out property <int> screen: 1;
+
+    // 0 = needs authorization, 1 = waiting for the browser, 2 = connected,
+    // 3 = missing client id, 4 = authorization failed
+    in-out property <int> auth: 0;
+    in-out property <bool> ready: false;
+    in-out property <string> auth-url: "";
+    in-out property <image> qr;
+    in-out property <bool> qr-ready: false;
+    in-out property <string> config-path: "";
+    in-out property <string> auth-detail: "";
+
+    in-out property <string> status: "";
+    in-out property <bool> status-visible: false;
+
+    callback navigate(int);
+    callback next();
+    callback previous();
+    callback toggle-play();
+    callback seek(float);
+    callback scrub(float);
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    callback play-playlist(string);
+    callback play-queue-item(string);
+    callback refresh-playlists();
+    callback refresh-queue();
+    callback begin-auth();
+    // Swipe down on the player: show the idle visualizer.
+    callback show-visualizer();
+    // The device pill on the player opens the picker of castable devices.
+    callback open-devices();
+    callback close-devices();
+    callback select-device(string);
+    callback refresh-devices();
+}

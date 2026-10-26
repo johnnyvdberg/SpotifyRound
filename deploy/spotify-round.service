@@ -1,0 +1,15 @@
+[Unit]
+Description=Spotify Round now-playing display
+After=network-online.target graphical-session.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SLINT_FULLSCREEN=1
+Environment=SPOTIFY_ROUND_LOG=info
+ExecStart=%h/.cargo/bin/spotify-round
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

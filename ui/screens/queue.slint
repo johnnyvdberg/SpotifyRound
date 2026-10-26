@@ -1,0 +1,149 @@
+import { Theme } from "../theme.slint";
+import { App, Library, Player } from "../state.slint";
+import { ListFade } from "../components/list_fade.slint";
+import { PillButton } from "../components/pill_button.slint";
+import { QueueRow } from "../components/queue_row.slint";
+import { Spinner } from "../components/spinner.slint";
+import { SwipeArea } from "../components/swipe_area.slint";
+
+export component Queue inherits Rectangle {
+    width: 1080px;
+    height: 1080px;
+    background: transparent;
+
+    // The fade lines sit inside the viewport and its bottom edge falls past the
+    // bezel, so no row that is still visible is ever cut by the clip.
+    private property <length> list-y: 210px;
+    private property <length> list-height: 880px;
+    private property <length> pad-top: 0px;
+    private property <length> pad-bottom: 270px;
+    private property <length> fade-top: 130px;
+    private property <length> fade-bottom: 740px;
+    private property <length> fade: 130px;
+    private property <length> row-pitch: 112px;
+    private property <length> row-height: 104px;
+    private property <length> content-height: root.pad-top + Library.queue.length * root.row-pitch + root.pad-bottom;
+
+    // Jump back to the playing item whenever the queue is replaced — opening the
+    // screen, a new track, or a different playlist.
+    private property <int> revision: Library.queue-revision;
+    changed revision => { list.content-y = 0px; }
+
+    SwipeArea {
+        width: 100%;
+        height: 100%;
+        swipe-left => { App.navigate(App.screen + 1); }
+        swipe-right => { App.navigate(App.screen - 1); }
+        scrub(value) => { App.scrub(value); }
+        seek(value) => { App.seek(value); }
+    }
+
+    Text {
+        x: 280px;
+        y: 116px;
+        width: 520px;
+        height: 46px;
+        text: "Up next";
+        color: Theme.ink;
+        font-size: 36px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    Text {
+        x: 280px;
+        y: 164px;
+        width: 520px;
+        height: 26px;
+        text: Library.queue-subtitle;
+        color: Theme.ink-faint;
+        font-size: 17px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    list := Flickable {
+        x: 260px;
+        y: root.list-y;
+        width: 560px;
+        height: root.list-height;
+        content-width: self.width;
+        content-height: max(root.list-height, root.content-height);
+        interactive: root.content-height > root.list-height;
+
+        for item[i] in Library.queue : QueueRow {
+            y: root.pad-top + i * root.row-pitch;
+            width: 560px;
+            height: root.row-height;
+            // Rows dissolve before they reach the edges of the viewport.
+            opacity: ListFade.row-opacity(
+                list.content-y,
+                root.pad-top + i * root.row-pitch,
+                root.row-height,
+                root.fade-top,
+                root.fade-bottom,
+                root.fade,
+                root.list-height,
+                max(root.list-height, root.content-height),
+            );
+            title: item.title;
+            subtitle: item.subtitle;
+            cover: item.cover;
+            duration: item.duration;
+            current: item.current;
+            pulse: Player.pulse;
+            clicked => { App.play-queue-item(item.uri); }
+        }
+    }
+
+    if Library.queue-loading && Library.queue.length == 0 : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+
+        Spinner {
+            x: (parent.width - self.width) / 2;
+            y: 500px;
+            size: 54px;
+        }
+        Text {
+            x: 300px;
+            y: 576px;
+            width: 480px;
+            height: 32px;
+            text: "Loading the queue";
+            color: Theme.ink-dim;
+            font-size: 21px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    if !Library.queue-loading && Library.queue.length == 0 : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+
+        Text {
+            x: 240px;
+            y: 470px;
+            width: 600px;
+            height: 100px;
+            text: Library.queue-empty;
+            color: Theme.ink-dim;
+            font-size: 22px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+        PillButton {
+            x: (parent.width - self.width) / 2;
+            y: 600px;
+            label: "Refresh";
+            primary: false;
+            clicked => { App.refresh-queue(); }
+        }
+    }
+}

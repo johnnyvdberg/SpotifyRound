@@ -1,0 +1,61 @@
+import { Theme } from "../theme.slint";
+import { Idle } from "../state.slint";
+import { TapArea } from "../components/tap_area.slint";
+
+// The idle visualizer.
+//
+// A scene chosen at random from the renderers that came up: the Earth turning in
+// the middle of the circle, or a procedural dive seen through the porthole of a
+// diving bell. Rust draws the frames; this screen only picks the size and
+// cross-fades them over the player.
+
+export component IdleScreen inherits Rectangle {
+    width: 1080px;
+    height: 1080px;
+
+    // The fade lives in the colours instead of an `opacity`, so the renderer
+    // never has to composite the overlay into a cached layer.
+    background: Theme.bg.with-alpha(Idle.fade);
+
+    // Air glow behind the planet, so it sits in space rather than on a page.
+    // The dive brings its own casing and fills the panel.
+    Rectangle {
+        width: 1060px;
+        height: 1060px;
+        x: 10px;
+        y: 10px;
+        border-radius: 530px;
+        background: @radial-gradient(circle, #4b86d814 0%, #244a7d10 52%, transparent 76%);
+        visible: Idle.scene == 0;
+    }
+
+    // The scene frame, transparent where the globe's atmosphere fades out.
+    Image {
+        width: Idle.frame-size;
+        height: Idle.frame-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        source: Idle.frame;
+        opacity: Idle.fade;
+    }
+
+    // A slow breath at the rim, echoing the ring the player wears.
+    Rectangle {
+        width: 1040px;
+        height: 1040px;
+        x: 20px;
+        y: 20px;
+        border-radius: 520px;
+        border-width: 3px;
+        border-color: Theme.accent.with-alpha(0.10 + 0.10 * Idle.fade);
+        background: transparent;
+        visible: Idle.scene == 0;
+    }
+
+    // Any tap leaves the visualizer and returns to the player. A drag does not:
+    // the swipe that opened it ends here, and it must not close it again.
+    TapArea {
+        enabled: Idle.fade > 0.05;
+        tapped => { Idle.dismiss(); }
+    }
+}

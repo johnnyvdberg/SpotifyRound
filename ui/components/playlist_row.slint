@@ -1,0 +1,81 @@
+// One row in the playlist browser.
+
+import { Theme } from "../theme.slint";
+import { TapArea } from "./tap_area.slint";
+
+export component PlaylistRow inherits Rectangle {
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    in property <image> cover;
+    in property <bool> current: false;
+    callback clicked();
+
+    height: 120px;
+    border-radius: 26px;
+    background: root.current ? Theme.accent.transparentize(0.88)
+        : touch.pressed ? Theme.surface-strong
+        : touch.has-hover ? Theme.surface
+        : Theme.ink.transparentize(0.97);
+    border-width: root.current ? 1px : 0px;
+    border-color: Theme.accent.transparentize(0.45);
+
+    animate background { duration: 220ms; }
+    animate border-color { duration: 320ms; }
+
+    Rectangle {
+        x: 16px;
+        y: 16px;
+        width: 88px;
+        height: 88px;
+        border-radius: 12px;
+        background: Theme.surface;
+    }
+
+    Image {
+        x: 16px;
+        y: 16px;
+        width: 88px;
+        height: 88px;
+        source: root.cover;
+    }
+
+    Text {
+        x: 126px;
+        y: 28px;
+        width: parent.width - 176px;
+        height: 34px;
+        text: root.title;
+        color: Theme.ink;
+        font-size: 26px;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Text {
+        x: 126px;
+        y: 64px;
+        width: parent.width - 176px;
+        height: 28px;
+        text: root.subtitle;
+        color: Theme.ink-dim;
+        font-size: 18px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Rectangle {
+        visible: root.current;
+        x: parent.width - 44px;
+        y: (parent.height - self.height) / 2;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.accent;
+    }
+
+    touch := TapArea {
+        mouse-cursor: pointer;
+        tapped => { root.clicked(); }
+    }
+}

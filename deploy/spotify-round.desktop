@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Spotify Round
+Comment=Round Spotify now-playing display
+Exec=spotify-round
+Terminal=false
+X-GNOME-Autostart-enabled=true

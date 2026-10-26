@@ -1,0 +1,19 @@
+[Unit]
+Description=Spotify Round kiosk (cage)
+After=network-online.target systemd-user-sessions.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=video render input
+Environment=SLINT_FULLSCREEN=1
+Environment=SPOTIFY_ROUND_LOG=info
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/cage -- /home/pi/spotify-round/target/release/spotify-round
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

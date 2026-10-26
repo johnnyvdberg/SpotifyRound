@@ -1,0 +1,97 @@
+// One row in the playback queue.
+
+import { Theme } from "../theme.slint";
+import { TapArea } from "./tap_area.slint";
+
+export component QueueRow inherits Rectangle {
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    in property <image> cover;
+    in property <string> duration: "";
+    in property <bool> current: false;
+    // 0..1 pulse driven from Rust for the currently playing row.
+    in property <float> pulse: 0;
+    callback clicked();
+
+    height: 104px;
+    border-radius: 24px;
+    background: root.current ? Theme.accent.transparentize(0.9)
+        : touch.pressed ? Theme.surface-strong
+        : touch.has-hover ? Theme.surface
+        : Theme.ink.transparentize(0.975);
+
+    animate background { duration: 240ms; }
+
+    Rectangle {
+        visible: root.current;
+        x: 9px;
+        y: 9px;
+        width: 86px;
+        height: 86px;
+        border-radius: 13px;
+        border-width: 2px;
+        border-color: Theme.accent;
+        background: transparent;
+        opacity: 0.35 + 0.65 * clamp(root.pulse, 0, 1);
+    }
+
+    Rectangle {
+        x: 14px;
+        y: 14px;
+        width: 76px;
+        height: 76px;
+        border-radius: 10px;
+        background: Theme.surface;
+    }
+
+    Image {
+        x: 14px;
+        y: 14px;
+        width: 76px;
+        height: 76px;
+        source: root.cover;
+    }
+
+    Text {
+        x: 108px;
+        y: 20px;
+        width: parent.width - 220px;
+        height: 32px;
+        text: root.title;
+        color: root.current ? Theme.accent : Theme.ink;
+        font-size: 24px;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+        animate color { duration: 260ms; }
+    }
+
+    Text {
+        x: 108px;
+        y: 54px;
+        width: parent.width - 220px;
+        height: 28px;
+        text: root.subtitle;
+        color: Theme.ink-dim;
+        font-size: 18px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Text {
+        x: parent.width - 118px;
+        y: 0;
+        width: 88px;
+        height: parent.height;
+        text: root.duration;
+        color: Theme.ink-faint;
+        font-size: 17px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+
+    touch := TapArea {
+        mouse-cursor: pointer;
+        tapped => { root.clicked(); }
+    }
+}

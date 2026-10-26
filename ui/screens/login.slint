@@ -1,0 +1,228 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { IconGlyph } from "../components/icons.slint";
+import { PillButton } from "../components/pill_button.slint";
+import { Spinner } from "../components/spinner.slint";
+
+export component Login inherits Rectangle {
+    width: 1080px;
+    height: 1080px;
+    background: transparent;
+
+    // ---- aura --------------------------------------------------------
+    Rectangle {
+        width: 640px;
+        height: 640px;
+        border-radius: 320px;
+        x: (parent.width - self.width) / 2;
+        y: 40px;
+        background: @radial-gradient(circle, Theme.glow 0%, transparent 68%);
+        opacity: 0.85;
+    }
+
+    // ---- brand badge -------------------------------------------------
+    Rectangle {
+        width: 112px;
+        height: 112px;
+        x: (parent.width - self.width) / 2;
+        y: 100px;
+        border-radius: 56px;
+        background: Theme.accent;
+
+        IconGlyph {
+            kind: "spotify";
+            size: 78px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            tint: Theme.accent-ink;
+        }
+    }
+
+    Text {
+        x: 190px;
+        y: 236px;
+        width: 700px;
+        height: 52px;
+        text: "Spotify Round";
+        color: Theme.ink;
+        font-size: 40px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    Text {
+        x: 190px;
+        y: 292px;
+        width: 700px;
+        height: 32px;
+        text: App.auth == 3 ? "Spotify client ID missing"
+            : App.auth == 4 ? "Authorization failed"
+            : App.auth == 1 ? "Waiting for approval"
+            : "Connect your Spotify account";
+        color: Theme.ink-dim;
+        font-size: 20px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    // ---- QR code -----------------------------------------------------
+    if App.auth == 0 || App.auth == 1 : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 344px;
+        width: 360px;
+        height: 360px;
+        border-radius: 30px;
+        background: #ffffff;
+
+        Image {
+            visible: App.qr-ready;
+            x: 20px;
+            y: 20px;
+            width: 320px;
+            height: 320px;
+            source: App.qr;
+            image-fit: fill;
+        }
+
+        if !App.qr-ready : Spinner {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            size: 46px;
+        }
+    }
+
+    // ---- configuration help -----------------------------------------
+    if App.auth == 3 : Rectangle {
+        x: 190px;
+        y: 344px;
+        width: 700px;
+        height: 360px;
+        background: transparent;
+
+        Text {
+            x: 0;
+            y: 16px;
+            width: parent.width;
+            height: 92px;
+            text: "Create an app at developer.spotify.com/dashboard, then add your client ID to the file below and restart.";
+            color: Theme.ink-dim;
+            font-size: 21px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            x: 30px;
+            y: 152px;
+            width: parent.width - 60px;
+            height: 104px;
+            border-radius: 22px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.hairline;
+
+            Text {
+                x: 24px;
+                y: 12px;
+                width: parent.width - 48px;
+                height: parent.height - 24px;
+                text: App.config-path;
+                color: Theme.ink;
+                font-family: "monospace";
+                font-size: 16px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // ---- failure help ------------------------------------------------
+    if App.auth == 4 : Rectangle {
+        x: 190px;
+        y: 344px;
+        width: 700px;
+        height: 360px;
+        background: transparent;
+
+        Text {
+            x: 0;
+            y: 60px;
+            width: parent.width;
+            height: 160px;
+            text: App.auth-detail;
+            color: Theme.ink-dim;
+            font-size: 20px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+
+    // ---- status line -------------------------------------------------
+    Rectangle {
+        x: (parent.width - 700px) / 2;
+        y: 716px;
+        width: 700px;
+        height: 34px;
+        background: transparent;
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+
+            if App.auth == 1 : Spinner {
+                size: 26px;
+            }
+
+            Text {
+                text: App.auth == 1 ? "Approve in Spotify, then paste the address back"
+                    : App.auth == 4 ? "Check the log for details"
+                    : App.auth == 3 ? "Waiting for configuration"
+                    : "Scan the code or open the page on your phone";
+                color: Theme.ink-dim;
+                font-size: 18px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+
+    Text {
+        visible: App.auth == 0 || App.auth == 1;
+        x: 190px;
+        y: 752px;
+        width: 700px;
+        height: 46px;
+        text: App.auth-url;
+        color: Theme.ink-faint;
+        font-size: 14px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    // ---- action ------------------------------------------------------
+    if App.auth != 3 : PillButton {
+        x: (parent.width - self.width) / 2;
+        y: 892px;
+        width: 360px;
+        label: App.auth == 1 ? "Waiting…" : (App.auth == 4 ? "Try again" : "Authorize");
+        enabled: App.auth != 1;
+        clicked => { App.begin-auth(); }
+    }
+
+    Text {
+        visible: App.auth == 3;
+        x: 240px;
+        y: 892px;
+        width: 600px;
+        height: 46px;
+        text: "Restart the app after editing the file";
+        color: Theme.ink-faint;
+        font-size: 18px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

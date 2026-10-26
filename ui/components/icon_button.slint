@@ -1,0 +1,50 @@
+// A round, tactile icon button.
+
+import { Theme } from "../theme.slint";
+import { IconGlyph } from "icons.slint";
+
+export component IconButton inherits Rectangle {
+    in property <string> icon: "play";
+    in property <length> size: 76px;
+    in property <length> icon-size: 30px;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <bool> primary: false;
+    in property <length> thickness: 2px;
+    callback clicked();
+
+    width: size;
+    height: size;
+    border-radius: size / 2;
+    background: root.primary
+        ? (root.enabled ? Theme.accent : Theme.ink.transparentize(0.88))
+        : root.enabled
+            ? (touch.pressed ? Theme.ink.transparentize(0.84)
+               : touch.has-hover ? Theme.ink.transparentize(0.92)
+               : Theme.ink.transparentize(0.95))
+            : transparent;
+    border-width: !primary && active ? 1px : 0px;
+    border-color: Theme.accent.transparentize(0.35);
+    opacity: enabled ? 1 : 0.3;
+
+    animate background { duration: 160ms; }
+    animate border-color { duration: 260ms; }
+    animate opacity { duration: 160ms; }
+
+    IconGlyph {
+        width: icon-size;
+        height: icon-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        kind: root.icon;
+        thickness: root.thickness;
+        tint: root.primary ? Theme.accent-ink : (root.active ? Theme.accent : Theme.ink);
+        animate tint { duration: 260ms; }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}

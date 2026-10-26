@@ -1,0 +1,74 @@
+// Album artwork with an ambilight halo and a soft reveal animation when the
+// track changes. The artwork itself is square with softened corners; the mask
+// is baked into the image by the artwork pipeline.
+
+import { Theme } from "../theme.slint";
+import { IconGlyph } from "icons.slint";
+
+export component AlbumArt inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-art: false;
+    // 0..1, eased from Rust with an overshooting curve while the track changes.
+    in property <float> reveal: 1;
+    in property <bool> playing: false;
+    in property <length> size: 440px;
+
+    // Matches the corner radius the pipeline bakes into the pixels.
+    out property <length> corner: root.size * 0.07;
+
+    width: size;
+    height: size;
+    background: transparent;
+
+    halo := Rectangle {
+        width: parent.width * 1.3;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, Theme.glow 0%, transparent 66%);
+        opacity: root.playing ? 1 : 0.55;
+        animate opacity { duration: 900ms; }
+        animate background { duration: 900ms; }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: root.corner;
+        background: Theme.surface;
+        visible: !root.has-art;
+
+        IconGlyph {
+            kind: "note";
+            size: parent.width * 0.2;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            tint: Theme.ink-faint;
+        }
+    }
+
+    Image {
+        source: root.source;
+        visible: root.has-art;
+        width: parent.width * (0.96 + 0.04 * clamp(root.reveal, 0, 1));
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: clamp(root.reveal, 0, 1);
+    }
+
+    // A hairline keeps the artwork separated from the halo.
+    Rectangle {
+        visible: root.has-art;
+        width: parent.width + 2px;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: root.corner + 1px;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        background: transparent;
+    }
+}
+

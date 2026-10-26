@@ -1,0 +1,33 @@
+// Transient status pill used for errors and confirmations.
+
+import { Theme } from "../theme.slint";
+
+export component StatusToast inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> shown: false;
+
+    width: 640px;
+    height: 78px;
+    border-radius: 39px;
+    background: #17171df5;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    opacity: shown ? 1 : 0;
+    y: shown ? 150px : 116px;
+
+    animate opacity { duration: 260ms; }
+    animate y { duration: 260ms; easing: ease-out; }
+
+    Text {
+        x: 34px;
+        y: 0;
+        width: parent.width - 68px;
+        height: parent.height;
+        text: root.text;
+        color: Theme.ink;
+        font-size: 19px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}

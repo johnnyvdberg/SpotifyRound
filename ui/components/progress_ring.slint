@@ -1,0 +1,24 @@
+// Playback progress drawn around the rim of the round display.
+//
+// The ring itself is rendered on the GPU in `src/ring.rs` — track, played
+// sector and head dot in one fragment shader — and handed over as a texture, so
+// Slint only composites it. The band is also the seek control: dragging along it
+// scrubs (see `swipe_area.slint`).
+
+import { Player } from "../state.slint";
+
+export component ProgressRing inherits Rectangle {
+    width: 1080px;
+    height: 1080px;
+    background: transparent;
+
+    Image {
+        width: 100%;
+        height: 100%;
+        source: Player.ring-frame;
+        // Fade in with the first track and out when playback stops. The frame
+        // keeps its last contents while the opacity animates out.
+        opacity: Player.has-track ? 1 : 0;
+        animate opacity { duration: 400ms; }
+    }
+}

@@ -1,0 +1,88 @@
+import { Theme } from "theme.slint";
+import { App, Idle } from "state.slint";
+import { ProgressRing } from "components/progress_ring.slint";
+import { StatusToast } from "components/status_toast.slint";
+import { IdleScreen } from "screens/idle.slint";
+import { Login } from "screens/login.slint";
+import { NowPlaying } from "screens/now_playing.slint";
+import { Playlists } from "screens/playlists.slint";
+import { Queue } from "screens/queue.slint";
+import { DevicePicker } from "screens/devices.slint";
+
+// Re-export the shared API so the Rust side can address the globals and structs.
+export { Theme } from "theme.slint";
+export { App, Devices, DeviceItem, Idle, Library, Player, PlaylistItem, QueueItem } from "state.slint";
+
+export component AppWindow inherits Window {
+    title: "Spotify Round";
+    width: 1080px;
+    height: 1080px;
+    background: Theme.bg;
+
+    // The visualizer covers the screen with an opaque frame once it has faded in,
+    // so everything under it is hidden rather than drawn: skip the work.
+    // Ambient light that follows the artwork palette.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @radial-gradient(circle 780px at 540px 430px, Theme.glow 0%, Theme.glow-soft 44%, transparent 74%);
+        opacity: App.auth == 2 ? 1 : 0.6;
+        visible: Idle.fade < 1;
+        animate opacity { duration: 900ms; }
+    }
+
+    // Vignette keeps attention in the centre of the circle.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @radial-gradient(circle 700px at 540px 540px, transparent 52%, #000000a8 100%);
+        visible: Idle.fade < 1;
+    }
+
+    if App.auth == 2 : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        opacity: App.ready ? 1 : 0;
+        animate opacity { duration: 700ms; }
+
+        // Swiping left reveals the next screen, so the main screen sits in the
+        // middle: queue | now playing | playlists.
+        Queue {
+            x: (0 - App.screen) * 1080px;
+            visible: Idle.fade < 1;
+            animate x { duration: 460ms; easing: ease-in-out; }
+        }
+        NowPlaying {
+            x: (1 - App.screen) * 1080px;
+            visible: Idle.fade < 1;
+            animate x { duration: 460ms; easing: ease-in-out; }
+        }
+        Playlists {
+            x: (2 - App.screen) * 1080px;
+            visible: Idle.fade < 1;
+            animate x { duration: 460ms; easing: ease-in-out; }
+        }
+
+        // Outside the pager: the progress ring stays fixed to the rim while the
+        // screens slide behind it.
+        ProgressRing {
+            visible: Idle.fade < 1;
+        }
+
+        // The idle visualizer fades in over everything once playback stops.
+        IdleScreen { }
+
+        // The device picker is the topmost layer, so it also covers the
+        // visualizer if that faded in while it was open.
+        DevicePicker { }
+    }
+
+    if App.auth != 2 : Login { }
+
+    StatusToast {
+        x: (parent.width - self.width) / 2;
+        text: App.status;
+        shown: App.status-visible;
+    }
+}

@@ -1,0 +1,22 @@
+// A touch target that only reports taps.
+//
+// Slint turns every press/release pair on a `TouchArea` into a click, no matter
+// how far the finger travelled in between. The list rows are large and the pages
+// slide under the finger while swiping, so a swipe — or a scroll — would also
+// select whatever row it ended on. A press that travels more than a few pixels is
+// treated as a gesture instead.
+
+export component TapArea inherits TouchArea {
+    callback tapped();
+
+    // Movement smaller than this is still a tap; a finger always wobbles.
+    private property <length> slop: 14px;
+
+    clicked => {
+        let dx = Math.abs(self.mouse-x - self.pressed-x);
+        let dy = Math.abs(self.mouse-y - self.pressed-y);
+        if (dx <= self.slop && dy <= self.slop) {
+            self.tapped();
+        }
+    }
+}

@@ -1,0 +1,88 @@
+// Gestures for the round display.
+//
+// A horizontal swipe pages between the queue, now playing and playlists, and a
+// downward swipe asks for the idle visualizer. A drag that starts on the ring
+// band scrubs instead, so the rim doubles as a seek control without stealing
+// taps from the content above.
+
+import { Player } from "../state.slint";
+
+export component SwipeArea inherits TouchArea {
+    callback swipe-left();
+    callback swipe-right();
+    callback swipe-down();
+    /// A press that did not move: the touch-down position, in the area's own
+    /// coordinates. Screens use it to treat their own layout as tappable.
+    callback tap(length, length);
+    // Live preview of the position under the finger; no request is sent.
+    callback scrub(float);
+    // Committed position, sent when the finger lifts.
+    callback seek(float);
+
+    // Ring geometry, matching `src/ring.rs`.
+    private property <float> ring-radius: 520;
+    private property <float> ring-band: 46;
+    // Movement below this is a tap rather than a gesture.
+    private property <length> tap-slop: 14px;
+
+    private property <length> start-x: 0;
+    private property <length> start-y: 0;
+    private property <bool> tracking: false;
+    private property <bool> scrubbing: false;
+
+    function distance-from-centre() -> float {
+        let dx = (self.mouse-x - 540px) / 1px;
+        let dy = (self.mouse-y - 540px) / 1px;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // The ring starts at the top and runs clockwise; Math.atan2 is in degrees.
+    function progress-at(x: length, y: length) -> float {
+        let angle = Math.atan2((y - 540px) / 1px, (x - 540px) / 1px) / 1deg + 90;
+        return Math.mod(angle, 360) / 360;
+    }
+
+    pointer-event(event) => {
+        if (event.kind == PointerEventKind.down) {
+            if (event.button != PointerEventButton.left) { return; }
+            root.start-x = self.mouse-x;
+            root.start-y = self.mouse-y;
+            let on-ring = Player.has-track && Player.controls
+                && Math.abs(root.distance-from-centre() - root.ring-radius) < root.ring-band;
+            root.scrubbing = on-ring;
+            root.tracking = !on-ring;
+            if (on-ring) {
+                root.scrub(root.progress-at(self.mouse-x, self.mouse-y));
+            }
+        } else if (event.kind == PointerEventKind.move) {
+            if (root.scrubbing) {
+                root.scrub(root.progress-at(self.mouse-x, self.mouse-y));
+            }
+        } else if (event.kind == PointerEventKind.up) {
+            if (root.scrubbing) {
+                root.scrubbing = false;
+                root.seek(root.progress-at(self.mouse-x, self.mouse-y));
+            } else if (root.tracking) {
+                root.tracking = false;
+                let dx = self.mouse-x - root.start-x;
+                let dy = self.mouse-y - root.start-y;
+                if (dy > 110px && dy > Math.abs(dx) * 1.6) {
+                    root.swipe-down();
+                } else if (dx < -110px) {
+                    root.swipe-left();
+                } else if (dx > 110px) {
+                    root.swipe-right();
+                } else if (Math.abs(dx) <= root.tap-slop && Math.abs(dy) <= root.tap-slop) {
+                    root.tap(self.mouse-x, self.mouse-y);
+                }
+            }
+        } else if (event.kind == PointerEventKind.cancel) {
+            root.tracking = false;
+            if (root.scrubbing) {
+                root.scrubbing = false;
+                // -1 drops the preview without seeking.
+                root.scrub(-1);
+            }
+        }
+    }
+}

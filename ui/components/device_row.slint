@@ -1,0 +1,91 @@
+// One Spotify Connect device in the picker.
+
+import { Theme } from "../theme.slint";
+import { IconGlyph } from "icons.slint";
+import { TapArea } from "tap_area.slint";
+
+export component DeviceRow inherits Rectangle {
+    in property <string> name: "";
+    // Icon kind, e.g. "speaker".
+    in property <string> icon: "speaker";
+    // Human name of the kind, e.g. "Speaker".
+    in property <string> detail: "";
+    in property <bool> active: false;
+    // False when Spotify offers no way to transfer to the device; the row is
+    // then shown dimmed and does nothing.
+    in property <bool> selectable: true;
+    callback clicked();
+
+    height: 78px;
+    border-radius: 22px;
+    background: touch.pressed ? Theme.ink.transparentize(0.88)
+        : root.active ? Theme.accent.transparentize(0.9)
+        : Theme.surface;
+    border-width: root.active ? 1px : 0px;
+    border-color: Theme.accent.transparentize(0.4);
+    opacity: root.selectable || root.active ? 1 : 0.55;
+
+    animate background { duration: 160ms; }
+    animate opacity { duration: 200ms; }
+
+    Rectangle {
+        x: 16px;
+        y: (parent.height - self.height) / 2;
+        width: 46px;
+        height: 46px;
+        border-radius: 23px;
+        background: root.active ? Theme.accent.transparentize(0.82) : Theme.ink.transparentize(0.94);
+
+        IconGlyph {
+            width: 24px;
+            height: 24px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            kind: root.icon;
+            tint: root.active ? Theme.accent : Theme.ink-dim;
+            animate tint { duration: 260ms; }
+        }
+    }
+
+    Text {
+        x: 78px;
+        y: 14px;
+        width: parent.width - 78px - 74px;
+        height: 28px;
+        text: root.name;
+        color: root.active ? Theme.accent : Theme.ink;
+        font-size: 21px;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+        animate color { duration: 260ms; }
+    }
+
+    Text {
+        x: 78px;
+        y: 42px;
+        width: parent.width - 78px - 74px;
+        height: 20px;
+        text: root.detail;
+        color: Theme.ink-faint;
+        font-size: 15px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    // A dot marks the device that is playing right now.
+    if root.active : Rectangle {
+        x: parent.width - 40px;
+        y: (parent.height - self.height) / 2;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.accent;
+    }
+
+    touch := TapArea {
+        enabled: root.selectable;
+        mouse-cursor: root.selectable ? pointer : default;
+        tapped => { root.clicked(); }
+    }
+}

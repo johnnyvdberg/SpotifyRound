@@ -1,0 +1,189 @@
+import { Theme } from "../theme.slint";
+import { App, Player } from "../state.slint";
+import { AlbumArt } from "../components/album_art.slint";
+import { IconButton } from "../components/icon_button.slint";
+import { IconGlyph } from "../components/icons.slint";
+import { SwipeArea } from "../components/swipe_area.slint";
+
+// The middle page: swipe left for playlists, right for the queue, down for the
+// idle visualizer. Progress and seeking live on the fixed rim drawn in
+// main.slint.
+export component NowPlaying inherits Rectangle {
+    width: 1080px;
+    height: 1080px;
+    background: transparent;
+
+    SwipeArea {
+        width: 100%;
+        height: 100%;
+        swipe-left => { App.navigate(App.screen + 1); }
+        swipe-right => { App.navigate(App.screen - 1); }
+        swipe-down => { App.show-visualizer(); }
+        scrub(value) => { App.scrub(value); }
+        seek(value) => { App.seek(value); }
+        tap(x, y) => {
+            // The artwork is the play/pause target. It is part of the gesture
+            // area so that a downward swipe starting on it still works.
+            if (x >= art.x && x <= art.x + art.width
+                && y >= art.y && y <= art.y + art.height) {
+                App.toggle-play();
+            }
+        }
+    }
+
+    // ---- artwork -----------------------------------------------------
+    art := AlbumArt {
+        x: (parent.width - self.width) / 2;
+        y: 150px;
+        size: 440px;
+        source: Player.cover;
+        has-art: Player.has-cover;
+        reveal: Player.reveal;
+        playing: Player.playing;
+    }
+
+    // ---- track metadata ----------------------------------------------
+    Text {
+        x: 190px;
+        y: 630px;
+        width: 700px;
+        height: 52px;
+        text: Player.title;
+        color: Theme.ink;
+        font-size: 38px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Text {
+        x: 190px;
+        y: 684px;
+        width: 700px;
+        height: 34px;
+        text: Player.subtitle;
+        color: Theme.ink-dim;
+        font-size: 23px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    // ---- output device -----------------------------------------------
+    // Where the music is playing; a tap picks another castable device.
+    device := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 736px;
+        width: 460px;
+        height: 46px;
+        border-radius: 23px;
+        background: device-touch.pressed ? Theme.ink.transparentize(0.88) : Theme.surface;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        visible: Player.has-device;
+
+        animate background { duration: 160ms; }
+
+        IconGlyph {
+            x: 18px;
+            y: (parent.height - self.height) / 2;
+            width: 22px;
+            height: 22px;
+            kind: Player.device-kind;
+            tint: Theme.ink-dim;
+        }
+
+        Text {
+            x: 50px;
+            y: 0;
+            width: parent.width - 50px - 42px;
+            height: parent.height;
+            text: Player.device;
+            color: Theme.ink;
+            font-size: 18px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        IconGlyph {
+            x: parent.width - 32px;
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            kind: "chevron";
+            tint: Theme.ink-faint;
+        }
+
+        device-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { App.open-devices(); }
+        }
+    }
+
+    // ---- transport ---------------------------------------------------
+    Rectangle {
+        width: 210px;
+        height: 210px;
+        x: 540px - self.width / 2;
+        y: 890px - self.height / 2;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, Theme.glow 0%, transparent 66%);
+        opacity: Player.controls ? 1 : 0;
+        animate opacity { duration: 400ms; }
+    }
+
+    IconButton {
+        x: 262px;
+        y: 852px;
+        size: 76px;
+        icon: "shuffle";
+        icon-size: 28px;
+        active: Player.shuffle;
+        enabled: Player.controls;
+        clicked => { App.toggle-shuffle(); }
+    }
+
+    IconButton {
+        x: 362px;
+        y: 852px;
+        size: 76px;
+        icon: "previous";
+        icon-size: 30px;
+        enabled: Player.controls && Player.can-previous;
+        clicked => { App.previous(); }
+    }
+
+    IconButton {
+        x: 478px;
+        y: 828px;
+        size: 124px;
+        icon: Player.playing ? "pause" : "play";
+        icon-size: 46px;
+        primary: true;
+        enabled: Player.controls;
+        clicked => { App.toggle-play(); }
+    }
+
+    IconButton {
+        x: 642px;
+        y: 852px;
+        size: 76px;
+        icon: "next";
+        icon-size: 30px;
+        enabled: Player.controls && Player.can-next;
+        clicked => { App.next(); }
+    }
+
+    IconButton {
+        x: 742px;
+        y: 852px;
+        size: 76px;
+        icon: Player.repeat == 2 ? "repeat-one" : "repeat";
+        icon-size: 28px;
+        active: Player.repeat > 0;
+        enabled: Player.controls;
+        clicked => { App.cycle-repeat(); }
+    }
+}

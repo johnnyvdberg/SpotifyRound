@@ -1,0 +1,78 @@
+[package]
+name = "spotify-round"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "A round Spotify now-playing display for the Raspberry Pi"
+license = "MIT"
+build = "build.rs"
+
+[[bin]]
+name = "spotify-round"
+path = "src/main.rs"
+
+[features]
+# Render straight through DRM/KMS with the GPU, for a Pi running without a
+# compositor (`cargo build --release --features kms`).
+kms = ["slint/backend-linuxkms"]
+
+[dependencies]
+animato = "1.7.3"
+anyhow = "1.0.104"
+base64 = "0.23.1"
+bytemuck = "1.24"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+directories = "6.0.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "tiff"] }
+pollster = "0.3"
+qrcode = { version = "0.14.1", default-features = false }
+rand = "0.9"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "gzip", "form"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+# The UI and the idle globe both render through wgpu on Vulkan: one device, one
+# stack, and the globe's texture is handed to Slint without a copy.
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "compat-1-2",
+    "accessibility",
+    "renderer-femtovg-wgpu",
+    "unstable-wgpu-30",
+] }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.8"
+
+[build-dependencies]
+slint-build = "1.18"
+
+# Keep the application crate easy to debug, but never run the renderer
+# unoptimized: Slint, femtovg and wgpu are several times slower at `opt-level =
+# 0`, which makes a 60 Hz scene miss its frame budget even on a fast GPU.
+[profile.dev]
+opt-level = 1
+# Line tables only: enough to step through, much faster to build and load.
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[dev-dependencies]
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "renderer-software",
+] }
+
+

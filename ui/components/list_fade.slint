@@ -1,0 +1,35 @@
+// Shared helper for the fading ends of the scrolling lists.
+//
+// The list viewports are deliberately larger than the band where content should
+// be seen: their clip edges sit outside it, and rows are faded out before they
+// reach them. That way no row is ever cut in half at a visible edge — it
+// dissolves into the background instead.
+
+export global ListFade {
+    /// Opacity for a row of a `Flickable`.
+    ///
+    /// `offset` is the Flickable's `content-y` (negative once scrolled) and
+    /// `top` the row's position in content coordinates. `fade-top`/`fade-bottom`
+    /// are the viewport positions where rows are fully hidden, and `fade` how
+    /// long the ramp is.
+    public pure function row-opacity(
+        offset: length,
+        top: length,
+        row-height: length,
+        fade-top: length,
+        fade-bottom: length,
+        fade: length,
+        viewport-height: length,
+        content-height: length,
+    ) -> float {
+        let row-top = top + offset;
+        let row-bottom = row-top + row-height;
+        // Only fade towards an end that still has content behind it.
+        let scrolled = -offset;
+        let room-above = clamp(scrolled / fade, 0, 1);
+        let room-below = clamp((content-height - viewport-height - scrolled) / fade, 0, 1);
+        let head = clamp((row-bottom - fade-top) / fade, 0, 1);
+        let tail = clamp((fade-bottom - row-top) / fade, 0, 1);
+        return (1 - room-above * (1 - head)) * (1 - room-below * (1 - tail));
+    }
+}
