@@ -1,19 +1,46 @@
+# Raspberry Pi OS Lite: runs the display full screen in the cage kiosk
+# compositor on its own console, tty7, with nothing else on the screen.
+#
+# Install as a system unit in /etc/systemd/system/, together with
+# deploy/cage.pam as /etc/pam.d/cage. Replace `pi` and the path below with
+# your own user name and checkout: current Raspberry Pi OS has no default
+# `pi` user.
+#
+# PAMName gives the service a real login session, which is what lets cage
+# take over the display and the touch input, and what creates the user's
+# XDG_RUNTIME_DIR.
 [Unit]
 Description=Spotify Round kiosk (cage)
-After=network-online.target systemd-user-sessions.service
+After=network-online.target systemd-user-sessions.service plymouth-quit-wait.service
 Wants=network-online.target
+After=dbus.socket systemd-logind.service
+Wants=dbus.socket systemd-logind.service
+# The console belongs to the kiosk, not to a login prompt.
+Conflicts=getty@tty7.service
+After=getty@tty7.service
+ConditionPathExists=/dev/tty0
 
 [Service]
 Type=simple
 User=pi
-Group=pi
-SupplementaryGroups=video render input
-Environment=SLINT_FULLSCREEN=1
 Environment=SPOTIFY_ROUND_LOG=info
-Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Bring tty7 to the front, or the screen keeps showing the boot console. The
+# `+` runs this one step as root; tty1 stays reachable with Ctrl+Alt+F1.
+ExecStartPre=+/usr/bin/chvt 7
 ExecStart=/usr/bin/cage -- /home/pi/spotify-round/target/release/spotify-round
-Restart=on-failure
+Restart=always
 RestartSec=3
 
+PAMName=cage
+UtmpIdentifier=tty7
+UtmpMode=user
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target

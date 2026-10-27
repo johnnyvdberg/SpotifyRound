@@ -113,44 +113,83 @@ pub fn spawn(
     let spawned = std::thread::Builder::new()
         .name("visualizer".into())
         .spawn(move || {
-            let mut renderers: Vec<Option<Box<dyn Visual>>> = Vec::with_capacity(Scene::ALL.len());
-            let mut mask = 0u64;
-            for candidate in Scene::ALL {
-                match candidate.build(&gpu) {
-                    Ok(renderer) => {
-                        mask |= 1 << candidate.index();
-                        renderers.push(Some(renderer));
+            // Scenes are built on a thread of their own and handed over as each
+            // is ready, so the first can show while the rest still compile their
+            // shaders: on the Pi that takes a while.
+            let (finished, built) = std::sync::mpsc::channel();
+            let builder = gpu.clone();
+            let started = std::thread::Builder::new()
+                .name("visualizer build".into())
+                .spawn(move || {
+                    for candidate in Scene::ALL {
+                        let begun = Instant::now();
+                        let renderer = candidate.build(&builder);
+                        let seconds = begun.elapsed().as_secs_f32();
+                        match &renderer {
+                            Ok(_) => tracing::info!(scene = ?candidate, seconds, "visualisation built"),
+                            Err(err) => tracing::warn!(scene = ?candidate, %err, seconds, "this visualisation is unavailable"),
+                        }
+                        if finished.send((candidate, renderer.ok())).is_err() {
+                            return;
+                        }
                     }
-                    Err(err) => {
-                        tracing::warn!(scene = ?candidate, %err, "this visualisation is unavailable");
-                        renderers.push(None);
+                });
+            if let Err(err) = started {
+                tracing::warn!(%err, "cannot start building the visualisations");
+                return;
+            }
+            let mut renderers: Vec<Option<Box<dyn Visual>>> =
+                (0..Scene::ALL.len()).map(|_| None).collect();
+            let mut mask = 0u64;
+            let mut building = true;
+            let mut slots = 0;
+            // Take in whatever finished building since last time, and show the UI
+            // its render targets. Returns false once the window has gone.
+            let take_built = |renderers: &mut Vec<Option<Box<dyn Visual>>>,
+                                  mask: &mut u64,
+                                  building: &mut bool,
+                                  slots: &mut usize| {
+                let mut fresh = false;
+                loop {
+                    match built.try_recv() {
+                        Ok((candidate, renderer)) => {
+                            if let Some(renderer) = renderer {
+                                *mask |= 1 << candidate.index();
+                                renderers[candidate.index()] = Some(renderer);
+                                fresh = true;
+                            }
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            if *building && *mask == 0 {
+                                tracing::warn!("no idle visualisation could be created");
+                            }
+                            *building = false;
+                            break;
+                        }
                     }
                 }
-            }
-            available.store(mask, Ordering::SeqCst);
-            if mask == 0 {
-                tracing::warn!("no idle visualisation could be created");
-                return;
-            }
-
-            // Every scene owns a fixed block of slots in one flat image model, so
-            // adding a scene needs no extra Slint property.
-            let textures = renderers
-                .iter()
-                .flat_map(|renderer| match renderer {
-                    Some(renderer) => (0..SLOTS)
-                        .map(|frame| Some(renderer.texture(frame)))
-                        .collect::<Vec<_>>(),
-                    None => vec![None; SLOTS],
-                })
-                .collect::<Vec<_>>();
-            let slots = textures.len();
-            if ui
-                .upgrade_in_event_loop(move |ui| ui.set_idle_frames(textures))
-                .is_err()
-            {
-                return;
-            }
+                if !fresh {
+                    return true;
+                }
+                // Every scene owns a fixed block of slots in one flat image model,
+                // so adding a scene needs no extra Slint property.
+                let textures = renderers
+                    .iter()
+                    .flat_map(|renderer| match renderer {
+                        Some(renderer) => (0..SLOTS)
+                            .map(|frame| Some(renderer.texture(frame)))
+                            .collect::<Vec<_>>(),
+                        None => vec![None; SLOTS],
+                    })
+                    .collect::<Vec<_>>();
+                *slots = textures.len();
+                let shown = ui
+                    .upgrade_in_event_loop(move |ui| ui.set_idle_frames(textures))
+                    .is_ok();
+                available.store(*mask, Ordering::SeqCst);
+                shown
+            };
 
             let budget = Duration::from_secs(1) / FPS as u32;
             let mut clocks = [0.0f64; Scene::ALL.len()];
@@ -166,6 +205,19 @@ pub fn spawn(
             let mut reported = Instant::now();
 
             loop {
+                if !take_built(&mut renderers, &mut mask, &mut building, &mut slots) {
+                    return;
+                }
+                if mask == 0 {
+                    if !building {
+                        return;
+                    }
+                    // Nothing to draw yet.
+                    std::thread::sleep(Duration::from_millis(100));
+                    last = Instant::now();
+                    deadline = last;
+                    continue;
+                }
                 if !running.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(60));
                     last = Instant::now();

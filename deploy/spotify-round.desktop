@@ -2,6 +2,7 @@
 Type=Application
 Name=Spotify Round
 Comment=Round Spotify now-playing display
-Exec=spotify-round
+# An absolute path: autostart does not expand `~`. Adjust to your checkout.
+Exec=/home/pi/spotify-round/target/release/spotify-round
 Terminal=false
 X-GNOME-Autostart-enabled=true

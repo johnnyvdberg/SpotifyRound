@@ -1,0 +1,6 @@
+# PAM stack for cage-kiosk.service: install as /etc/pam.d/cage.
+# pam_systemd registers the kiosk as a logind session on its seat.
+auth     required pam_unix.so nullok
+account  required pam_unix.so
+session  required pam_unix.so
+session  required pam_systemd.so

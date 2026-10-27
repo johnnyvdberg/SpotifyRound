@@ -1,3 +1,6 @@
+# Desktop only: starts the display inside your graphical login session.
+# The `.desktop` autostart entry does the same; use one or the other.
+# On Raspberry Pi OS Lite use cage-kiosk.service instead.
 [Unit]
 Description=Spotify Round now-playing display
 After=network-online.target graphical-session.target
@@ -5,9 +8,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=SLINT_FULLSCREEN=1
 Environment=SPOTIFY_ROUND_LOG=info
-ExecStart=%h/.cargo/bin/spotify-round
+# The binary `cargo build --release` leaves in the cloned repository.
+ExecStart=%h/spotify-round/target/release/spotify-round
 Restart=on-failure
 RestartSec=3
 

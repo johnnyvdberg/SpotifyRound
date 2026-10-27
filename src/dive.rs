@@ -221,13 +221,22 @@ impl Bell {
                 let shown = [biome + BIOMES - 1, biome, biome + 1]
                     .iter()
                     .fold(0u32, |mask, id| mask | 1 << (id % BIOMES));
-                pipeline(
+                // The driver compiles each variant here: slow on the Pi, so say
+                // how slow.
+                let begun = std::time::Instant::now();
+                let made = pipeline(
                     "Dive sea pipeline",
                     &sea_layout,
                     "fs_scene",
                     wgpu::TextureFormat::Rgba16Float,
                     &[("BIOMES_SHOWN", f64::from(shown))],
-                )
+                );
+                tracing::info!(
+                    biome,
+                    seconds = begun.elapsed().as_secs_f32(),
+                    "dive sea pipeline compiled"
+                );
+                made
             })
             .collect();
         let composite_pipeline = pipeline(

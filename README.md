@@ -242,8 +242,23 @@ each frame.
 
 ### Raspberry Pi OS with the desktop
 
-Copy `deploy/spotify-round.desktop` to `~/.config/autostart/` and log in automatically. Hide the
-mouse pointer if you only use touch:
+Start the display when you log in, with either of these (not both, or it starts twice):
+
+- **Autostart entry:** copy `deploy/spotify-round.desktop` to `~/.config/autostart/` and set its
+  `Exec` to the binary in your checkout. Autostart does not expand `~`, so the path must be absolute.
+- **systemd user unit:** this one restarts the display if it ever exits.
+
+  ```bash
+  mkdir -p ~/.config/systemd/user
+  cp deploy/spotify-round.service ~/.config/systemd/user/
+  systemctl --user daemon-reload
+  systemctl --user enable --now spotify-round.service
+  ```
+
+  It expects the checkout at `~/spotify-round`; edit `ExecStart` if yours is elsewhere.
+
+Set the Pi to log in to the desktop automatically (`sudo raspi-config` → System Options → Boot /
+Auto Login). Hide the mouse pointer if you only use touch:
 
 ```bash
 sudo apt install unclutter
@@ -251,28 +266,26 @@ sudo apt install unclutter
 
 ### Raspberry Pi OS Lite + cage
 
+[cage](https://github.com/cage-kiosk/cage) is a Wayland compositor that shows one application full
+screen and nothing else. `deploy/cage-kiosk.service` is a **system** unit that runs the display in it
+on its own console, tty7, which it brings to the screen at start (Ctrl+Alt+F1 still reaches the
+login console), with a login session of its own so cage can take over the screen and the
+touch input:
+
 ```bash
 sudo apt install cage
+sudo cp deploy/cage-kiosk.service /etc/systemd/system/
+sudo cp deploy/cage.pam /etc/pam.d/cage
+sudo systemctl daemon-reload
+sudo systemctl set-default graphical.target
+sudo systemctl enable --now cage-kiosk.service
 ```
 
-`deploy/spotify-round.service` is a systemd **user** unit:
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/spotify-round.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now spotify-round.service
-loginctl enable-linger "$USER"
-```
-
-On Lite, wrap the binary in a Wayland kiosk compositor by changing `ExecStart` to:
-
-```ini
-ExecStart=/usr/bin/cage -- /home/pi/spotify-round/target/release/spotify-round
-```
-
-and run the unit as a **system** service for the `pi` user with access to `video` and `render`
-groups (see `deploy/cage-kiosk.service`).
+Edit the unit first: it runs as `pi` from `/home/pi/spotify-round`. Current Raspberry Pi OS has no
+default `pi` user, so put in the user you created and the path to your checkout. That user needs
+to be in the `video`, `render` and `input` groups, as the first user on Raspberry Pi OS is:
+`groups` shows them, and `sudo usermod -aG video,render,input <user>` adds any that are missing. The
+display logs to the journal: `journalctl -u cage-kiosk -f`.
 
 ### Without any compositor (DRM/KMS)
 
@@ -601,7 +614,7 @@ Handy environment variables:
 | Variable | Effect |
 | --- | --- |
 | `SLINT_BACKEND` | Override the backend, e.g. `winit-software` or `linuxkms-femtovg` |
-| `SLINT_FULLSCREEN` | `1` to start full screen (the systemd unit sets it) |
+| `SLINT_FULLSCREEN` | `1` to start full screen (the app already does, unless run with `--windowed`) |
 | `SLINT_SCALE_FACTOR` | Render the 1080 px design at another physical size |
 | `SPOTIFY_ROUND_LOG` | `tracing` filter, e.g. `spotify_round=debug` |
 
