@@ -196,9 +196,14 @@ pub fn spawn(
             let mut active = usize::MAX;
             let mut travelled = travel.load(Ordering::Relaxed);
             let mut drawn = 0u32;
-            // Time spent recording and submitting frames since the last report.
+            // Time spent recording and submitting frames since the last report,
+            // and the time the GPU took to finish them.
             let mut busy = Duration::ZERO;
+            let mut gpu_busy = Duration::ZERO;
             let mut reported = Instant::now();
+            // Frames handed to the UI, and how many of them it has taken.
+            let mut sent = 0u64;
+            let taken = Arc::new(AtomicU64::new(0));
 
             loop {
                 if !take_built(&mut renderers, &mut mask, &mut building, &mut slots) {
@@ -252,6 +257,11 @@ pub fn spawn(
                     renderer.travel((swiped - travelled).clamp(-7, 7) as i32);
                     travelled = swiped;
                 }
+                // A frame the UI never shows still costs the GPU, and takes it
+                // from the frames the UI is drawing: wait until the last one has
+                // been taken.
+                wait_for(|| taken.load(Ordering::Acquire) >= sent, TAKE_TIMEOUT);
+
                 let current = sequences[active];
                 let begun = Instant::now();
                 if let Err(err) = renderer.render(&gpu, clocks[active], seed, current) {
@@ -259,38 +269,93 @@ pub fn spawn(
                     std::thread::sleep(Duration::from_secs(1));
                     continue;
                 }
+                let submitted = Instant::now();
+                busy += submitted - begun;
+                // One frame in flight: submitting faster than the GPU finishes
+                // only queues work up ahead of the UI's frames, until every frame
+                // on screen is late.
+                gpu_busy += finish(&gpu);
+
                 let slot = active * SLOTS + current;
+                let handed = taken.clone();
+                sent += 1;
                 if ui
-                    .upgrade_in_event_loop(move |ui| ui.show_idle_frame(slot))
+                    .upgrade_in_event_loop(move |ui| {
+                        ui.show_idle_frame(slot);
+                        handed.fetch_add(1, Ordering::Release);
+                    })
                     .is_err()
                 {
                     return;
                 }
                 sequences[active] = (current + 1) % SLOTS;
                 drawn += 1;
-                busy += begun.elapsed();
                 if reported.elapsed() >= Duration::from_secs(1) {
                     let ms = busy.as_secs_f32() * 1e3 / drawn as f32;
-                    tracing::debug!(fps = drawn, ms, slots, "visualizer");
+                    let gpu_ms = gpu_busy.as_secs_f32() * 1e3 / drawn as f32;
+                    tracing::debug!(fps = drawn, ms, gpu_ms, slots, "visualizer");
                     let frames = drawn as i32;
                     if ui
-                        .upgrade_in_event_loop(move |ui| ui.set_scene_stats(frames, ms))
+                        .upgrade_in_event_loop(move |ui| ui.set_scene_stats(frames, ms, gpu_ms))
                         .is_err()
                     {
                         return;
                     }
                     drawn = 0;
                     busy = Duration::ZERO;
+                    gpu_busy = Duration::ZERO;
                     reported = Instant::now();
                 }
 
                 deadline += budget;
+                // A frame that ran long is not made up for by rushing the next
+                // ones out back to back.
+                let now = Instant::now();
+                if deadline < now {
+                    deadline = now;
+                }
                 pace(deadline);
             }
         });
 
     if let Err(err) = spawned {
         tracing::warn!(%err, "cannot start the visualizer thread");
+    }
+}
+
+/// How long to wait for the UI to take a frame before drawing the next anyway,
+/// so a window that stops drawing cannot stall the scene for good.
+const TAKE_TIMEOUT: Duration = Duration::from_millis(100);
+/// How long to wait for the GPU to finish a frame before giving up on it.
+const GPU_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Wait until everything submitted so far has finished on the GPU, and say how
+/// long that took. That includes any of the UI's work queued ahead of the
+/// scene's, which is what decides when the frame can be on screen.
+///
+/// The device is polled rather than waited on, so the UI thread's own
+/// submissions are never held up behind this thread.
+fn finish(gpu: &Graphics) -> Duration {
+    let submitted = Instant::now();
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    gpu.queue
+        .on_submitted_work_done(move || flag.store(true, Ordering::Release));
+    wait_for(
+        || {
+            let _ = gpu.device.poll(wgpu::PollType::Poll);
+            done.load(Ordering::Acquire)
+        },
+        GPU_TIMEOUT,
+    );
+    submitted.elapsed()
+}
+
+/// Check `ready` until it holds or `timeout` has passed, sleeping in between.
+fn wait_for(mut ready: impl FnMut() -> bool, timeout: Duration) {
+    let until = Instant::now() + timeout;
+    while !ready() && Instant::now() < until {
+        std::thread::sleep(Duration::from_micros(250));
     }
 }
 

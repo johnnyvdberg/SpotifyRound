@@ -1,7 +1,6 @@
 import { Pointer, Theme } from "theme.slint";
-import { App, Idle, Stats } from "state.slint";
+import { App, Idle, Player, Stats } from "state.slint";
 import { FpsCounter } from "components/fps_counter.slint";
-import { ProgressRing } from "components/progress_ring.slint";
 import { StatusToast } from "components/status_toast.slint";
 import { IdleScreen } from "screens/idle.slint";
 import { Login } from "screens/login.slint";
@@ -43,21 +42,14 @@ export component AppWindow inherits Window {
 
     // The visualizer covers the screen with an opaque frame once it has faded in,
     // so everything under it is hidden rather than drawn: skip the work.
-    // Ambient light that follows the artwork palette.
-    Rectangle {
+    // The backdrop: ambient light that follows the artwork palette, a vignette
+    // that keeps attention in the centre of the circle, and the progress ring
+    // on the rim, drawn opaque in one GPU pass (`src/ring.rs`). The ring sits
+    // under the screens, which keep their content well inside it.
+    Image {
         width: 100%;
         height: 100%;
-        background: @radial-gradient(circle 780px at 540px 430px, Theme.glow 0%, Theme.glow-soft 44%, transparent 74%);
-        opacity: App.auth == 2 ? 1 : 0.6;
-        visible: Idle.fade < 1;
-        animate opacity { duration: 900ms; }
-    }
-
-    // Vignette keeps attention in the centre of the circle.
-    Rectangle {
-        width: 100%;
-        height: 100%;
-        background: @radial-gradient(circle 700px at 540px 540px, transparent 52%, #000000a8 100%);
+        source: Player.ring-frame;
         visible: Idle.fade < 1;
     }
 
@@ -84,12 +76,6 @@ export component AppWindow inherits Window {
             x: (2 - App.screen) * 1080px;
             visible: Idle.fade < 1;
             animate x { duration: 460ms; easing: ease-in-out; }
-        }
-
-        // Outside the pager: the progress ring stays fixed to the rim while the
-        // screens slide behind it.
-        ProgressRing {
-            visible: Idle.fade < 1;
         }
 
         // The idle visualizer fades in over everything once playback stops.

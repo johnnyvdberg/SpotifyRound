@@ -76,6 +76,12 @@ const PAUSED_IDLE: Duration = Duration::from_secs(30);
 const STOPPED_IDLE: Duration = Duration::from_secs(3);
 /// How long the visualizer takes to fade in or out, in seconds.
 const IDLE_FADE: f32 = 0.5;
+/// How long the progress ring takes to fade in or out, in seconds.
+const RING_FADE: f32 = 0.4;
+/// How long the ambient glow takes to change strength, in seconds, and how
+/// strong it is behind the login screens.
+const GLOW_FADE: f32 = 0.9;
+const GLOW_DIM: f32 = 0.6;
 
 /// How many earlier items `previous` can walk back through.
 const HISTORY_DEPTH: usize = 16;
@@ -895,7 +901,7 @@ impl Shared {
                 let Some(ui) = this.ui.upgrade() else {
                     return;
                 };
-                this.paint_ring(&ui, ratio, true);
+                this.paint_ring(&ui, ratio, true, 0.0);
             });
         }
         {
@@ -2183,15 +2189,21 @@ impl Shared {
                     model.scrub.is_some(),
                 )
             };
-            self.paint_ring(&ui, progress, scrubbing);
+            self.paint_ring(&ui, progress, scrubbing, dt);
         }
     }
 
     /// Draws the rim on the GPU, but only when what it shows has changed: a
     /// paused track repeats the same input and costs nothing. Runs on the UI
     /// thread, from the tick or from a scrub drag.
-    fn paint_ring(&self, ui: &AppWindow, progress: f32, scrubbing: bool) {
+    ///
+    /// The same pass paints the player's backdrop under the ring, so it runs
+    /// whether a track is loaded or not. `dt` advances the fades: the ring in
+    /// with the first track and out when playback stops, the glow up once
+    /// connected.
+    fn paint_ring(&self, ui: &AppWindow, progress: f32, scrubbing: bool, dt: f32) {
         let accent = self.lock_motion().accent();
+        let connected = ui.global::<crate::ui::App>().get_auth() == AUTH_READY;
 
         let mut model = self.lock();
         let has_track = model.placeholder.is_some()
@@ -2200,16 +2212,27 @@ impl Shared {
                 .as_ref()
                 .and_then(|playback| playback.item.as_ref())
                 .is_some();
-        if !has_track {
-            // Leave the last frame on screen: the Image fades it out.
-            model.ring_input = None;
-            return;
-        }
+        let previous = model.ring_input;
+        let glow_target = if connected { 1.0 } else { GLOW_DIM };
         let input = ring::Input {
-            progress,
+            // A ring fading out keeps the arc it had.
+            progress: if has_track {
+                progress
+            } else {
+                previous.map_or(0.0, |previous| previous.progress)
+            },
             scrubbing,
             accent,
-            has_track: true,
+            ring: approach(
+                previous.map_or(0.0, |previous| previous.ring),
+                if has_track { 1.0 } else { 0.0 },
+                dt / RING_FADE,
+            ),
+            glow: approach(
+                previous.map_or(glow_target, |previous| previous.glow),
+                glow_target,
+                dt / GLOW_FADE,
+            ),
         }
         .on_pixels();
         if model.ring_input.as_ref() == Some(&input) {
@@ -2348,6 +2371,15 @@ fn device_item(device: &Device) -> DeviceItem {
 /// Spotify documents `is_restricted` as "no Web API commands will be accepted by
 /// this device" — a Chromecast that is casting counts as restricted — so the
 /// controls are greyer out instead of failing on every press.
+/// `from` moved toward `to` by at most `step`.
+fn approach(from: f32, to: f32, step: f32) -> f32 {
+    if from < to {
+        (from + step).min(to)
+    } else {
+        (from - step).max(to)
+    }
+}
+
 fn controls_available(state: &PlaybackState) -> bool {
     state.item.is_some()
         && state

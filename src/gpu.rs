@@ -19,9 +19,15 @@ pub struct Graphics {
 ///
 /// Vulkan first, because that is what the Pi 5 runs; the other backends are only a
 /// convenience so the display still works on a machine without a Vulkan driver.
+/// `WGPU_BACKEND` picks one instead (`gl`, `vulkan`, …), to compare the Pi's
+/// Vulkan driver against its OpenGL ES one.
 pub fn install() -> Result<Graphics> {
     let mut last = "no GPU adapter available".to_owned();
-    for backends in [wgpu::Backends::VULKAN, wgpu::Backends::all()] {
+    let order = match wgpu::Backends::from_env() {
+        Some(chosen) => vec![chosen],
+        None => vec![wgpu::Backends::VULKAN, wgpu::Backends::all()],
+    };
+    for backends in order {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle_from_env()
