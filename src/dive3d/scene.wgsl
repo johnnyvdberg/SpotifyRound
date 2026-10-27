@@ -279,10 +279,13 @@ fn light_at(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return light;
 }
 
-fn fogged(colour: vec3<f32>, p: vec3<f32>) -> vec3<f32> {
+// The water seen towards `p`, and how much of whatever is at `p` it hides.
+// Worked out per vertex for the seabed and the models: it changes slowly
+// across a triangle, and the Pi's GPU is short of arithmetic per pixel.
+fn fog_at(p: vec3<f32>) -> vec4<f32> {
     let v = p - g.camera.xyz;
     let d = length(v);
-    return mix(colour, water_at(v / d), fog_of(d));
+    return vec4<f32>(water_at(v / d), fog_of(d));
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +364,8 @@ struct Ground {
     @builtin(position) position: vec4<f32>,
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    // `fog_at` the vertex.
+    @location(2) fog: vec4<f32>,
 };
 
 @vertex
@@ -370,6 +375,7 @@ fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> 
     out.world = world;
     out.normal = normal;
     out.position = project(world);
+    out.fog = fog_at(world);
     return out;
 }
 
@@ -440,7 +446,7 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
         // Lava lies on the level; on a slope it would only smear.
         colour += vec3<f32>(1.0, 0.36, 0.07) * (veins * 0.9 + fine * 0.5 + pools * 1.4) * flicker * cave * (1.0 - steep);
     }
-    return vec4<f32>(fogged(colour, p) * SEA_SCALE, 1.0);
+    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +489,8 @@ struct Lit {
     // The seabed's height under the vertex, for bedding grounded models in
     // its sand: once per vertex rather than once per pixel.
     @location(10) floor_y: f32,
+    // `fog_at` the vertex.
+    @location(11) fog: vec4<f32>,
 };
 
 // Bend a model where it lives: plants sway, fish sweep their tails sideways
@@ -539,6 +547,7 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.local_normal = v.normal;
     out.surface = i.surface;
     out.fade = i.extra.z;
+    out.fog = fog_at(world);
     out.floor_y = 0.0;
     if (i.extra.y > 0.5) {
         out.floor_y = ground(world.x, world.z);
@@ -658,13 +667,13 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
         default: {}
     }
-    var shaded = fogged(colour, p);
+    var shaded = mix(colour, in.fog.rgb, in.fog.a);
     if (FADING) {
         if (coverage <= 0.01) {
             discard;
         }
         if (FOG_FADE) {
-            shaded = mix(water_at(normalize(p - g.camera.xyz)), shaded, coverage);
+            shaded = mix(in.fog.rgb, shaded, coverage);
         }
     }
     // Alpha is coverage only when it is spread over the samples; otherwise the

@@ -37,7 +37,7 @@ use crate::porthole::SIZE;
 /// glass, about 1015 pixels across. Every pixel of the sea is shaded by
 /// shaders the Pi's GPU finds heavy, so it is drawn a little soft: at 640 the
 /// dive could not keep 60 fps.
-const SEA: u32 = 480;
+const SEA: u32 = 448;
 /// Samples per pixel. Multisampling quarters the pixels each of the Pi GPU's
 /// tiles holds, and the tiles' fixed costs outweighed the smoother edges, which
 /// the upscale softens anyway; models fading in or out fade into the water

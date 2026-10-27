@@ -568,12 +568,13 @@ than stopping at a line. Fourteen procedural surfaces — rock, planking, veined
 marble, fish scales, whale skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt —
 are projected along three axes, carried by the swimmers as they bend and fixed in the world on the
 seabed, the ruins and the wrecks; the seabed takes rock on its slopes.
-It renders at 480 × 480 without multisampling and with a reversed depth buffer, into a texture Slint
+It renders at 448 × 448 without multisampling and with a reversed depth buffer, into a texture Slint
 scales up to the glass; over it Slint lays the porthole from `porthole.rs`: a brass bezel with an
 engraved degree scale and twelve hex bolts, running out to the edge of the panel so its own bezel
 frames the window, a manometer reading the depth, a log turning once per leg and a cartouche with
 the Nautilus' *N*, all drawn once when the scene is built, and two needles that are Slint elements
-of their own. On the Pi 5 a frame of the sea costs about 13 ms of GPU time (11–15 ms by leg); at
+of their own. On the Pi 5 a frame of the sea costs about 11 ms (9–13 ms by leg, with the fog worked
+out per vertex); at
 640 × 640 with 4× multisampling, and the porthole as a full-resolution pass every frame that also
 bent the glass and engraved the water, it cost 32 ms. On a desktop GPU it costs well under 3 ms,
 with the scene built in about 0.4 ms of CPU. `cargo test --release
