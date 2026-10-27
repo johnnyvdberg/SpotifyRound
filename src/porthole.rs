@@ -1,61 +1,49 @@
 //! The Nautilus' salon window, around the 3D dive's sea.
 //!
 //! The brass bezel, the riveted casing and the gauge faces never change, so
-//! they are drawn once when the window is built. Each frame a full-resolution
-//! composite bends the sea at the edge of the glass, gives it an engraved
-//! finish, lays the bezel over it and turns the gauge needles: the manometer
-//! reads the boat's depth and the log turns once per leg of the voyage.
+//! they are drawn once, into a texture Slint lays over the sea. The gauge
+//! needles, the only moving part, are two small Slint elements turned to the
+//! angles [`dials`] gives (`ui/screens/idle.slint`).
 //!
-//! The shaders are in `porthole.wgsl`, a small file of their own.
+//! This used to be a full-resolution composite every frame that also bent the
+//! sea at the edge of the glass and gave it an engraved finish: on the Pi's
+//! GPU, which is short of arithmetic, that pass alone cost about a third of
+//! the frame.
+//!
+//! The shader is in `porthole.wgsl`, a small file of its own.
 
 use slint::wgpu_30::wgpu;
 
 use crate::gpu::Graphics;
-use crate::visuals::SLOTS;
 use crate::voyage::Position;
 
-/// Size of the rendered frame. The porthole fills the round panel edge to edge.
+/// Size of the window's frame. The porthole fills the round panel edge to edge.
 pub const SIZE: u32 = 1080;
+/// Half the side of the square the sea covers, as a fraction of [`SIZE`]: a
+/// little wider than the glass. Mirrors `VIEW` in `porthole.wgsl`.
+pub const VIEW: f32 = 0.470;
+/// The log turns once per leg of the voyage; this mirrors `voyage::LEG`.
+const LEG: f64 = 3.4;
+/// The manometer's scale: the depth at its far end, logarithmic in between,
+/// and the arc it sweeps. Mirrors the depth gauge's face in `porthole.wgsl`.
+const DEEPEST: f64 = 45.0;
+const SWEEP: f64 = 4.7 * 0.92;
 
 /// Per-frame parameters, laid out as 16-byte aligned vectors.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    /// x, y: frame size in pixels; z: seconds of run time; w: world seed in 0..1.
+    /// x, y: frame size in pixels.
     frame: [f32; 4],
-    /// x: edge of the sea texture in pixels; y: world units travelled; z: height
-    /// above the seabed; w: depth below the surface.
-    scene: [f32; 4],
 }
 
-/// One frame of the window: a texture Slint samples directly.
-struct Frame {
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
-}
-
-/// The window: the bezel and gauges, drawn once, and the composite that lays
-/// them over the sea.
+/// The window: the bezel and the gauge faces, drawn once.
 pub(crate) struct Porthole {
-    pipeline: wgpu::RenderPipeline,
-    uniforms: wgpu::Buffer,
-    group: wgpu::BindGroup,
-    frames: Vec<Frame>,
-    sea: u32,
+    overlay: wgpu::Texture,
 }
 
 impl Porthole {
-    /// `sea` is the texture the sea is drawn into, `size` pixels square and
-    /// covering the glass with a little to spare; `bend` is how far the glass
-    /// bends the view at its edge.
-    /// `scale` is what the sea's colours were multiplied by when stored.
-    pub(crate) fn new(
-        gpu: &Graphics,
-        sea: &wgpu::TextureView,
-        size: u32,
-        bend: f32,
-        scale: f32,
-    ) -> Self {
+    pub(crate) fn new(gpu: &Graphics) -> Self {
         let device = &gpu.device;
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Porthole uniforms"),
@@ -63,222 +51,142 @@ impl Porthole {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let uniform_entry = wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
-        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let bezel_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Porthole bezel bind group"),
-            entries: &[uniform_entry],
-        });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Porthole bind group"),
-            entries: &[
-                uniform_entry,
-                texture_entry(1),
-                texture_entry(2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let bezel = render_target(
-            device,
-            "Porthole bezel",
-            SIZE,
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
-        let bezel_view = bezel.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Porthole sea sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let bezel_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Porthole bezel bind group"),
-            layout: &bezel_layout,
-            entries: &[wgpu::BindGroupEntry {
+            entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                resource: uniforms.as_entire_binding(),
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             }],
         });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Porthole bind group"),
             layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(sea),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&bezel_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            }],
         });
+        let overlay = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Porthole overlay"),
+            size: wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            // Slint samples it; COPY_SRC is only for the design previews.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = overlay.create_view(&wgpu::TextureViewDescriptor::default());
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Porthole shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        let pipeline =
-            |label, layout: &wgpu::BindGroupLayout, entry_point, constants: &[(&str, f64)]| {
-                let pipeline_layout =
-                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some(label),
-                        bind_group_layouts: &[Some(layout)],
-                        immediate_size: 0,
-                    });
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some("vs_main"),
-                        buffers: &[],
-                        compilation_options: Default::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some(entry_point),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: wgpu::TextureFormat::Rgba8Unorm,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants,
-                            ..Default::default()
-                        },
-                    }),
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            };
-        let bezel_pipeline = pipeline("Porthole bezel pipeline", &bezel_layout, "fs_overlay", &[]);
-        let composite = pipeline(
-            "Porthole composite pipeline",
-            &layout,
-            "fs_composite",
-            &[
-                ("GLASS_BEND", f64::from(bend)),
-                ("SEA_SCALE", f64::from(scale)),
-            ],
-        );
-        let start = Position {
-            x: 0.0,
-            altitude: 0.3,
-            depth: 1.0,
-        };
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Porthole pipeline layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Porthole overlay pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_overlay"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         gpu.queue.write_buffer(
             &uniforms,
             0,
-            bytemuck::bytes_of(&uniforms_for(0.0, 0.0, start, size)),
+            bytemuck::bytes_of(&Uniforms {
+                frame: [SIZE as f32, SIZE as f32, 0.0, 0.0],
+            }),
         );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Porthole bezel encoder"),
+            label: Some("Porthole overlay encoder"),
         });
-        full_screen(
-            &mut encoder,
-            "Porthole bezel pass",
-            &bezel_view,
-            &bezel_pipeline,
-            &bezel_group,
-        );
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Porthole overlay pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
         gpu.submit(encoder.finish());
-        // The frames write the same uniforms: let the bezel have its own first.
-        if gpu.wait(std::time::Duration::from_secs(30)).is_none() {
-            tracing::warn!("the porthole's bezel took too long to draw");
-        }
-
-        let frames = (0..SLOTS)
-            .map(|_| {
-                let texture = render_target(
-                    device,
-                    "Porthole frame",
-                    SIZE,
-                    wgpu::TextureFormat::Rgba8Unorm,
-                );
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                Frame { texture, view }
-            })
-            .collect();
-        Self {
-            pipeline: composite,
-            uniforms,
-            group,
-            frames,
-            sea: size,
-        }
+        Self { overlay }
     }
 
-    /// Lay the window over the sea into `frame`, with the gauges at `at`.
-    pub(crate) fn draw(
-        &self,
-        gpu: &Graphics,
-        encoder: &mut wgpu::CommandEncoder,
-        seconds: f64,
-        seed: f32,
-        at: Position,
-        frame: usize,
-    ) {
-        gpu.queue.write_buffer(
-            &self.uniforms,
-            0,
-            bytemuck::bytes_of(&uniforms_for(seconds, seed, at, self.sea)),
-        );
-        full_screen(
-            encoder,
-            "Porthole composite pass",
-            &self.frames[frame].view,
-            &self.pipeline,
-            &self.group,
-        );
-    }
-
-    pub(crate) fn texture(&self, frame: usize) -> wgpu::Texture {
-        self.frames[frame].texture.clone()
+    /// The bezel, the casing and the gauge faces, in straight alpha as Slint
+    /// takes a wgpu texture, transparent over the glass.
+    pub(crate) fn overlay(&self) -> wgpu::Texture {
+        self.overlay.clone()
     }
 }
 
-/// Read a frame texture back as RGBA pixels, for the design previews and tests.
+/// The needles at `at`, in radians clockwise from straight up: the manometer,
+/// on a logarithmic scale so it moves as much for a few fathoms in the
+/// shallows as for a long climb out of the abyss, and the log, which turns
+/// once per leg of the voyage.
+pub(crate) fn dials(at: Position) -> [f32; 2] {
+    let reading = (1.0 + at.depth.max(0.0)).ln() / (1.0 + DEEPEST).ln();
+    let depth = (reading - 0.5) * SWEEP;
+    let log = (at.x / LEG).rem_euclid(1.0) * std::f64::consts::TAU;
+    [depth as f32, log as f32]
+}
+
+/// Read a texture back as RGBA pixels, for the design previews and tests.
 #[cfg(test)]
 pub(crate) fn read_texture(gpu: &Graphics, texture: &wgpu::Texture) -> Vec<u8> {
-    let padded_row = (SIZE * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+    let (width, height) = (texture.width(), texture.height());
+    let padded_row = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
         * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Preview readback"),
-        size: (padded_row as u64) * (SIZE as u64),
+        size: (padded_row as u64) * (height as u64),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -299,12 +207,12 @@ pub(crate) fn read_texture(gpu: &Graphics, texture: &wgpu::Texture) -> Vec<u8> {
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(padded_row),
-                rows_per_image: Some(SIZE),
+                rows_per_image: Some(height),
             },
         },
         wgpu::Extent3d {
-            width: SIZE,
-            height: SIZE,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
     );
@@ -312,82 +220,58 @@ pub(crate) fn read_texture(gpu: &Graphics, texture: &wgpu::Texture) -> Vec<u8> {
     let slice = buffer.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-    let mut pixels = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
     {
         let data = slice.get_mapped_range().expect("a mapped frame");
-        for row in 0..SIZE as usize {
+        for row in 0..height as usize {
             let start = row * padded_row as usize;
-            pixels.extend_from_slice(&data[start..start + (SIZE * 4) as usize]);
+            pixels.extend_from_slice(&data[start..start + (width * 4) as usize]);
         }
     }
     buffer.unmap();
     pixels
 }
 
-fn uniforms_for(seconds: f64, seed: f32, at: Position, sea: u32) -> Uniforms {
-    // The shader's clock only drives animation, so it can wrap; where the
-    // Nautilus is comes from the voyage.
-    let seconds = seconds.rem_euclid(6_000.0);
-    Uniforms {
-        frame: [SIZE as f32, SIZE as f32, seconds as f32, seed],
-        scene: [sea as f32, at.x as f32, at.altitude as f32, at.depth as f32],
+/// The window as Slint shows it, for the design previews and tests: the sea,
+/// `sea` pixels square, scaled up to cover `VIEW` either side of the centre,
+/// and the overlay laid over it. The needles are left out.
+#[cfg(test)]
+pub(crate) fn composite(sea: &[u8], sea_size: u32, overlay: &[u8]) -> Vec<u8> {
+    let side = 2.0 * VIEW * SIZE as f32;
+    let origin = (SIZE as f32 - side) / 2.0;
+    let texel = |x: i32, y: i32, c: usize| {
+        let x = x.clamp(0, sea_size as i32 - 1) as usize;
+        let y = y.clamp(0, sea_size as i32 - 1) as usize;
+        f32::from(sea[(y * sea_size as usize + x) * 4 + c])
+    };
+    let mut pixels = vec![0u8; (SIZE * SIZE * 4) as usize];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let i = ((y * SIZE + x) * 4) as usize;
+            let u = (x as f32 + 0.5 - origin) / side * sea_size as f32 - 0.5;
+            let v = (y as f32 + 0.5 - origin) / side * sea_size as f32 - 0.5;
+            let inside = (-0.5..sea_size as f32 - 0.5).contains(&u)
+                && (-0.5..sea_size as f32 - 0.5).contains(&v);
+            let alpha = f32::from(overlay[i + 3]) / 255.0;
+            for c in 0..3 {
+                let under = if inside {
+                    let (x0, y0) = (u.floor() as i32, v.floor() as i32);
+                    let (fx, fy) = (u - u.floor(), v - v.floor());
+                    let top = texel(x0, y0, c) * (1.0 - fx) + texel(x0 + 1, y0, c) * fx;
+                    let bottom =
+                        texel(x0, y0 + 1, c) * (1.0 - fx) + texel(x0 + 1, y0 + 1, c) * fx;
+                    top * (1.0 - fy) + bottom * fy
+                } else {
+                    0.0
+                };
+                let over = f32::from(overlay[i + c]);
+                pixels[i + c] = (over * alpha + under * (1.0 - alpha)).round() as u8;
+            }
+            pixels[i + 3] = 255;
+        }
     }
+    pixels
 }
 
-fn render_target(
-    device: &wgpu::Device,
-    label: &str,
-    size: u32,
-    format: wgpu::TextureFormat,
-) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        // Slint or the composite samples it; COPY_SRC is only for the design previews.
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    })
-}
-
-/// Draw one full-screen triangle into `target`.
-fn full_screen(
-    encoder: &mut wgpu::CommandEncoder,
-    label: &str,
-    target: &wgpu::TextureView,
-    pipeline: &wgpu::RenderPipeline,
-    group: &wgpu::BindGroup,
-) {
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some(label),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                // Every pixel is written, so there is nothing to load or clear.
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    });
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, group, &[]);
-    pass.draw(0..3, 0..1);
-}
-
-/// The bezel and the composite, one entry point each.
+/// The bezel, the casing and the gauge faces.
 const SHADER: &str = include_str!("porthole.wgsl");

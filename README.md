@@ -350,10 +350,10 @@ src/
 ├── motion.rs          Animato: accent tween, reveal, pulse
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
 ├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
-├── porthole.rs        the Nautilus' window: bezel, gauges and the composite over the sea
-├── porthole.wgsl      its shaders: brass bezel, gauge faces, engraving, bending glass, needles
+├── porthole.rs        the Nautilus' window: a bezel overlay drawn once, and the needles' angles
+├── porthole.wgsl      its shader: brass bezel, riveted casing, gauge faces
 ├── dive3d/            idle scene: the Nautilus' voyage, rasterised in 3D
-│   ├── mod.rs         renderer: passes, pipelines, lighting; lays the porthole over the sea
+│   ├── mod.rs         renderer: passes, pipelines, lighting; the sea Slint shows under the porthole
 │   ├── helm.rs        how the boat moves: surge, cruise height, pitch, roll, turns about, all on springs
 │   ├── heightmap.rs   the random seabed of each visit: rolling ground, ridges and canyons
 │   ├── terrain.rs     the seabed in tiles, built as they come into view and dropped behind
@@ -563,18 +563,20 @@ on its axis, so the whole sea goes past the window. In the cave it swings the wi
 up the tunnel. Every motion is on a critically damped spring, so neither a swipe nor the shelf ever
 jolts the view, and in a fast passage the rush of bubbles streaking past the glass covers the quicker
 motion; the manometer reads the boat's real depth. Things fade in and out as their
-sea comes and goes, by coverage through the multisampling, and the ice fades at its edges rather
+sea comes and goes, into the water behind them, and the ice fades at its edges rather
 than stopping at a line. Fourteen procedural surfaces — rock, planking, veined
 marble, fish scales, whale skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt —
 are projected along three axes, carried by the swimmers as they bend and fixed in the world on the
 seabed, the ruins and the wrecks; the seabed takes rock on its slopes.
-It renders at 640 × 640 with 4× multisampling and a reversed depth buffer, then goes through the
-porthole in `porthole.rs`: a brass bezel with an engraved degree scale and twelve hex bolts, running
-out to the edge of the panel so its own bezel frames the window, a manometer reading the depth, a log turning once per leg and a cartouche with
-the Nautilus' *N*, all drawn once when the scene is built; each frame a full-resolution pass bends
-the view at the edge of the glass, gives the water an engraved hatching in the shadows, after the
-plates of the first illustrated edition, lays the bezel over it and turns the needles. On a desktop
-GPU a frame costs about 3 ms, with the scene built in about 0.4 ms of CPU. `cargo test --release
+It renders at 480 × 480 without multisampling and with a reversed depth buffer, into a texture Slint
+scales up to the glass; over it Slint lays the porthole from `porthole.rs`: a brass bezel with an
+engraved degree scale and twelve hex bolts, running out to the edge of the panel so its own bezel
+frames the window, a manometer reading the depth, a log turning once per leg and a cartouche with
+the Nautilus' *N*, all drawn once when the scene is built, and two needles that are Slint elements
+of their own. On the Pi 5 a frame of the sea costs about 13 ms of GPU time (11–15 ms by leg); at
+640 × 640 with 4× multisampling, and the porthole as a full-resolution pass every frame that also
+bent the glass and engraved the water, it cost 32 ms. On a desktop GPU it costs well under 3 ms,
+with the scene built in about 0.4 ms of CPU. `cargo test --release
 dive3d::tests::frame_time -- --ignored --nocapture` times it and `DIVE3D_PREVIEW_DIR=<dir> cargo
 test --release dive3d::tests::previews -- --ignored` writes a frame from each leg.
 

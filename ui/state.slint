@@ -104,6 +104,11 @@ export global Idle {
     // They are kept as images here so the renderer caches them once, instead of
     // seeing a new image every frame.
     in-out property <[image]> frames;
+    // The Nautilus' window frame, laid over its sea, and where the needles of
+    // its two gauges point: the manometer and the log.
+    in-out property <image> overlay;
+    in-out property <angle> depth-needle: 0deg;
+    in-out property <angle> log-needle: 0deg;
 
     // A tap anywhere on the visuals returns to the player.
     callback dismiss();

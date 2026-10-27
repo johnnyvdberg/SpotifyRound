@@ -40,6 +40,49 @@ component IdleGestures inherits TouchArea {
     }
 }
 
+// A blued-steel gauge needle on its brass cap, pivoting at (`cx`, `cy`), turned
+// `turn` clockwise from straight up. It reaches 43px out and a quarter of that
+// back, as the gauge faces in `src/porthole.wgsl` are drawn for.
+component Needle inherits Rectangle {
+    in property <length> cx;
+    in property <length> cy;
+    in property <angle> turn;
+    in property <color> tip;
+
+    width: 4px;
+    height: 54px;
+    x: cx - self.width / 2;
+    y: cy - 43px;
+    background: transparent;
+
+    // Only an inner element can be turned.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 2px;
+        background: #0f121c;
+        transform-rotation: root.turn;
+        transform-origin: { x: self.width / 2, y: 43px };
+
+        Rectangle {
+            y: 0;
+            width: parent.width;
+            height: 11px;
+            border-radius: 2px;
+            background: root.tip;
+        }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 43px - self.height / 2;
+            width: 12px;
+            height: 12px;
+            border-radius: 6px;
+            background: #996b2e;
+        }
+    }
+}
+
 // The idle visualizer.
 //
 // A scene chosen at random from the renderers that came up: the Earth turning
@@ -67,6 +110,36 @@ export component IdleScreen inherits Rectangle {
         source: Idle.frame;
         opacity: Idle.fade;
         visible: Idle.fade > 0;
+    }
+
+    // The Nautilus' window over its sea: the bezel and the gauge faces, drawn
+    // once, and the needles, which follow the dive (`src/porthole.rs`). The
+    // gauges sit 0.442 of the panel out from the centre, on the window's lower
+    // left and right.
+    Image {
+        width: 1080px;
+        height: 1080px;
+        source: Idle.overlay;
+        opacity: Idle.fade;
+        visible: Idle.scene == 1 && Idle.fade > 0;
+    }
+
+    Needle {
+        cx: 540px + 477.36px * cos(-2.235rad);
+        cy: 540px - 477.36px * sin(-2.235rad);
+        turn: Idle.depth-needle;
+        tip: #99190f;
+        opacity: Idle.fade;
+        visible: Idle.scene == 1 && Idle.fade > 0;
+    }
+
+    Needle {
+        cx: 540px + 477.36px * cos(-0.907rad);
+        cy: 540px - 477.36px * sin(-0.907rad);
+        turn: Idle.log-needle;
+        tip: #0f121c;
+        opacity: Idle.fade;
+        visible: Idle.scene == 1 && Idle.fade > 0;
     }
 
     // A slow breath at the rim, echoing the ring the player wears; the

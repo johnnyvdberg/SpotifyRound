@@ -24,18 +24,26 @@ use slint::wgpu_30::wgpu;
 use crate::gpu::Graphics;
 use crate::porthole::Porthole;
 use crate::visuals::Visual;
-use crate::voyage::{Biome, Voyage};
+use crate::voyage::{Biome, Position, Voyage};
 use helm::{Helm, Pose};
 use mesh::{Library, Lod, Vertex};
 use terrain::Terrain;
 use world::{Frame, Instance, Seabed, Sprite, World};
 
-pub use crate::porthole::SIZE;
+#[cfg(test)]
+use crate::porthole::SIZE;
 
-/// Edge of the square the sea is rendered into. Geometry is cheap here, so it
-/// is drawn a little sharper than the procedural sea.
-const SEA: u32 = 640;
-const SAMPLES: u32 = 4;
+/// Edge of the square the sea is rendered into; Slint scales it up to the
+/// glass, about 1015 pixels across. Every pixel of the sea is shaded by
+/// shaders the Pi's GPU finds heavy, so it is drawn a little soft: at 640 the
+/// dive could not keep 60 fps.
+const SEA: u32 = 480;
+/// Samples per pixel. Multisampling quarters the pixels each of the Pi GPU's
+/// tiles holds, and the tiles' fixed costs outweighed the smoother edges, which
+/// the upscale softens anyway; models fading in or out fade into the water
+/// instead of by coverage.
+const SAMPLES: u32 = 1;
+const MULTISAMPLED: bool = SAMPLES > 1;
 /// A coarser level of detail is drawn only where its surface strays from the
 /// full model's by less than `LOD_ERROR`, in pixels of the sea, which is
 /// drawn at `SEA` and no finer, so no difference smaller can be drawn; and, unless
@@ -49,16 +57,13 @@ const LOD_EDGE: f32 = 1.0;
 /// `scene.wgsl`.
 const MASK_VERTICES: u32 = 6 * 64;
 const NEAR: f32 = 0.05;
-/// How far the glass bends the view at its edge.
-const BEND: f32 = 0.008;
 const MAX_INSTANCES: usize = 24_576;
 const MAX_SPRITES: usize = 8_192;
 const MAX_TUNNEL_VERTICES: usize = 16_384;
 const MAX_TUNNEL_INDICES: usize = 98_304;
-/// The sea, at half its brightness (`SEA_SCALE` in `scene.wgsl`): ten bits a
-/// channel are finer than the panel's eight, and half the size of half
-/// floats, so the GPU's tiles hold twice the pixels.
-const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgb10a2Unorm;
+/// The sea, as Slint shows it: eight bits a channel, at full brightness, with
+/// the open water dithered against banding.
+const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Per-frame parameters, in the layout of `Globals` in `scene.wgsl`.
@@ -118,8 +123,12 @@ pub(crate) struct Nautilus {
     sprite_buffer: wgpu::Buffer,
     colour: wgpu::TextureView,
     depth: wgpu::TextureView,
-    resolved: wgpu::TextureView,
+    /// The finished sea, one per slot of [`crate::visuals::SLOTS`]: what Slint
+    /// shows, under the porthole's overlay.
+    seas: Vec<(wgpu::Texture, wgpu::TextureView)>,
     porthole: Porthole,
+    /// Where the boat was in the last frame drawn, for the gauges.
+    position: Position,
     relief: wgpu::Texture,
     voyage: Voyage,
     helm: Helm,
@@ -203,13 +212,14 @@ impl Nautilus {
         Self::with_colour(gpu, COLOUR)
     }
 
-    /// The scene with its sea stored as `colour`: half floats, or anything
-    /// that holds 0 to 1, at half brightness.
+    /// The scene with its sea stored as `colour`. Ten-bit colour is kept at
+    /// half brightness, so its highlights do not clip; only the benchmarks use
+    /// anything but [`COLOUR`], which Slint can show.
     fn with_colour(gpu: &Graphics, colour: wgpu::TextureFormat) -> Result<Self> {
-        let scale = if colour == wgpu::TextureFormat::Rgba16Float {
-            1.0
-        } else {
+        let scale = if colour == wgpu::TextureFormat::Rgb10a2Unorm {
             0.5
+        } else {
+            1.0
         };
         let device = &gpu.device;
         let library = Library::build();
@@ -459,12 +469,29 @@ impl Nautilus {
             SAMPLES,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
-        let resolved = target(
-            "Dive3d sea",
-            colour,
-            1,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        );
+        let seas = (0..crate::visuals::SLOTS)
+            .map(|_| {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Dive3d sea"),
+                    size: wgpu::Extent3d {
+                        width: SEA,
+                        height: SEA,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: colour,
+                    // Slint samples it; COPY_SRC is only for the design previews.
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (texture, view)
+            })
+            .collect::<Vec<_>>();
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Dive3d shader"),
@@ -565,7 +592,7 @@ impl Nautilus {
                 multisample: wgpu::MultisampleState {
                     count: SAMPLES,
                     // Fading models out by coverage, so they melt away smoothly.
-                    alpha_to_coverage_enabled: coverage,
+                    alpha_to_coverage_enabled: coverage && MULTISAMPLED,
                     ..Default::default()
                 },
                 multiview_mask: None,
@@ -616,7 +643,11 @@ impl Nautilus {
                         true,
                         nearer,
                         coverage,
-                        &[("FADING", fading), ("MATERIAL", f64::from(material))],
+                        &[
+                            ("FADING", fading),
+                            ("MATERIAL", f64::from(material)),
+                            ("FOG_FADE", if MULTISAMPLED { 0.0 } else { 1.0 }),
+                        ],
                         cull,
                     )
                 })
@@ -686,7 +717,7 @@ impl Nautilus {
             None,
         );
 
-        let porthole = Porthole::new(gpu, &resolved, SEA, BEND, scale);
+        let porthole = Porthole::new(gpu);
         tracing::info!(
             models = library.lods.len(),
             vertices = library.vertices.len(),
@@ -719,8 +750,13 @@ impl Nautilus {
             sprite_buffer,
             colour: colour_target,
             depth,
-            resolved,
+            seas,
             porthole,
+            position: Position {
+                x: 0.0,
+                altitude: 0.0,
+                depth: 0.0,
+            },
             relief,
             voyage: Voyage::default(),
             helm: Helm::default(),
@@ -797,6 +833,7 @@ impl Nautilus {
             altitude: voyage.altitude,
             depth: pose.depth,
         };
+        self.position = at;
         let mut uniforms = globals(&world, &self.frame);
         if self.skips(part::LIGHTS) {
             uniforms.counts[0] = 0.0;
@@ -930,13 +967,21 @@ impl Nautilus {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Dive3d sea pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.colour,
+                    view: if MULTISAMPLED {
+                        &self.colour
+                    } else {
+                        &self.seas[frame].1
+                    },
                     depth_slice: None,
-                    resolve_target: Some(&self.resolved),
+                    resolve_target: MULTISAMPLED.then_some(&self.seas[frame].1),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         // Only the resolved image is needed afterwards.
-                        store: wgpu::StoreOp::Discard,
+                        store: if MULTISAMPLED {
+                            wgpu::StoreOp::Discard
+                        } else {
+                            wgpu::StoreOp::Store
+                        },
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1026,14 +1071,20 @@ impl Nautilus {
                 pass.draw(0..6, 0..sprites.len() as u32);
             }
         }
-        self.porthole
-            .draw(gpu, &mut encoder, seconds, seed, at, frame);
         gpu.submit(encoder.finish());
         Ok(())
     }
 
     #[cfg(test)]
     fn read_back(&mut self, gpu: &Graphics, seconds: f64, seed: u64) -> Vec<u8> {
+        let (sea, overlay, _) = self.layers(gpu, seconds, seed);
+        crate::porthole::composite(&sea, SEA, &overlay)
+    }
+
+    /// The frame at `seconds` as Slint gets it: the sea, `SEA` pixels square,
+    /// the window's overlay, and the needles' angles.
+    #[cfg(test)]
+    fn layers(&mut self, gpu: &Graphics, seconds: f64, seed: u64) -> (Vec<u8>, Vec<u8>, [f32; 2]) {
         // Sail the last twenty seconds first, so the helm has settled as it
         // would have on screen.
         self.draw(gpu, seconds - 20.0, seed, 0)
@@ -1046,7 +1097,9 @@ impl Nautilus {
             self.helm.steer(&self.seabed, voyage, at);
         }
         self.draw(gpu, seconds, seed, 0).expect("a 3D dive frame");
-        crate::porthole::read_texture(gpu, &self.porthole.texture(0))
+        let sea = crate::porthole::read_texture(gpu, &self.seas[0].0);
+        let overlay = crate::porthole::read_texture(gpu, &self.porthole.overlay());
+        (sea, overlay, crate::porthole::dials(self.position))
     }
 }
 
@@ -1056,7 +1109,15 @@ impl Visual for Nautilus {
     }
 
     fn texture(&self, frame: usize) -> wgpu::Texture {
-        self.porthole.texture(frame)
+        self.seas[frame].0.clone()
+    }
+
+    fn overlay(&self) -> Option<wgpu::Texture> {
+        Some(self.porthole.overlay())
+    }
+
+    fn dials(&self) -> Option<[f32; 2]> {
+        Some(crate::porthole::dials(self.position))
     }
 
     fn travel(&mut self, legs: i32) {
@@ -1217,6 +1278,16 @@ pub fn render_once(seconds: f64, seed: u64) -> Result<Vec<u8>> {
     Ok(scene.read_back(&gpu, seconds, seed))
 }
 
+/// The layers of a single frame, as Slint gets them, for the design previews:
+/// the sea and its edge in pixels, the window's overlay, and the needles.
+#[cfg(test)]
+pub fn render_layers(seconds: f64, seed: u64) -> Result<(Vec<u8>, u32, Vec<u8>, [f32; 2])> {
+    let gpu = crate::gpu::headless()?;
+    let mut scene = Nautilus::new(&gpu)?;
+    let (sea, overlay, dials) = scene.layers(&gpu, seconds, seed);
+    Ok((sea, SEA, overlay, dials))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1288,7 +1359,7 @@ mod tests {
             ("no glass models", part::GLASS),
             ("no sprites", part::SPRITES),
             ("no point lights", part::LIGHTS),
-            ("porthole only", part::SEA),
+            ("no sea", part::SEA),
             ("quarter pixels", part::QUARTER),
             ("plain textures", part::PLAIN_TEXTURES),
             ("trilinear only", part::ANISOTROPY),

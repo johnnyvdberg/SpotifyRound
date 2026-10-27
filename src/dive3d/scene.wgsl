@@ -69,6 +69,11 @@ override FADING: bool = true;
 // keep more than two of its threads at once, and every pixel pays for it.
 override MATERIAL: i32 = -1;
 
+// Whether models fade into the water behind them rather than by coverage:
+// without multisampling there is no coverage to fade by. Most fade where the
+// water is all there is behind them, far off or as their biome passes.
+override FOG_FADE: bool = false;
+
 // What every colour is multiplied by as it is stored: the sea is kept in ten
 // bits a channel, which hold no more than 1, so it is stored at half its
 // brightness, to keep the highlights up to 2 that the porthole's grade and
@@ -343,7 +348,9 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
             + pow(max(sin(slant * 1.73 + 2.1), 0.0), 12.0) * 0.4;
         c += vec3<f32>(0.13, 0.39, 0.37) * ray * exp(-down * 1.6) * 0.85 * g.sun.w;
     }
-    return vec4<f32>(c * SEA_SCALE, 1.0);
+    // Dithered: eight bits a channel band in the slow gradients of dark water.
+    let noise = fract(52.9829189 * fract(dot(in.position.xy, vec2<f32>(0.06711056, 0.00583715))));
+    return vec4<f32>(c * SEA_SCALE + (noise - 0.5) / 255.0, 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -651,12 +658,18 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
         default: {}
     }
+    var shaded = fogged(colour, p);
     if (FADING) {
         if (coverage <= 0.01) {
             discard;
         }
+        if (FOG_FADE) {
+            shaded = mix(water_at(normalize(p - g.camera.xyz)), shaded, coverage);
+        }
     }
-    return vec4<f32>(fogged(colour, p) * SEA_SCALE, coverage);
+    // Alpha is coverage only when it is spread over the samples; otherwise the
+    // sea is opaque, and Slint, which shows it, blends by its alpha.
+    return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FOG_FADE));
 }
 
 // Translucent models — jellyfish bells and tentacles — add light, brightest at

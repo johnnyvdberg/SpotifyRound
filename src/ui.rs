@@ -145,6 +145,13 @@ pub trait WindowExt: Sized {
     fn set_idle_frames(&self, textures: Vec<Option<slint::wgpu_30::wgpu::Texture>>);
     /// Show one of the frames installed by `set_idle_frames`.
     fn show_idle_frame(&self, index: usize);
+    /// The fixed image laid over the Nautilus' frames: its window.
+    fn set_idle_overlay(&self, texture: wgpu::Texture);
+    /// Hand the overlay as pixels. Only the design previews need this.
+    #[cfg(test)]
+    fn set_idle_overlay_image(&self, overlay: slint::Image);
+    /// Turn the window's gauge needles, in radians clockwise from straight up.
+    fn set_idle_dials(&self, dials: [f32; 2]);
     /// The visualizer's frames in the last second, the mean time its thread
     /// spent on each and the mean time each took on the GPU, in ms.
     fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32);
@@ -303,6 +310,24 @@ impl WindowExt for AppWindow {
         if let Some(frame) = idle.get_frames().row_data(index) {
             idle.set_frame(frame);
         }
+    }
+
+    fn set_idle_overlay(&self, texture: wgpu::Texture) {
+        match slint::Image::try_from(texture) {
+            Ok(image) => self.global::<Idle>().set_overlay(image),
+            Err(err) => tracing::warn!(%err, "cannot wrap the window overlay"),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_idle_overlay_image(&self, overlay: slint::Image) {
+        self.global::<Idle>().set_overlay(overlay);
+    }
+
+    fn set_idle_dials(&self, dials: [f32; 2]) {
+        let idle = self.global::<Idle>();
+        idle.set_depth_needle(dials[0].to_degrees());
+        idle.set_log_needle(dials[1].to_degrees());
     }
 
     fn set_pulse(&self, value: f32) {
@@ -735,16 +760,20 @@ mod preview {
         save(&window, &soft, "10-idle-fade");
 
         // ---- the Nautilus ----
-        let pixels = crate::dive3d::render_once(70.0, 7_321).unwrap();
-        window.set_idle_scene(1, crate::dive3d::SIZE as f32);
+        let (sea, edge, overlay, dials) = crate::dive3d::render_layers(70.0, 7_321).unwrap();
+        window.set_idle_scene(1, crate::visuals::Scene::Nautilus.size());
         window.set_idle(true, 1.0);
         window.set_idle_frame(slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::clone_from_slice(&sea, edge, edge),
+        ));
+        window.set_idle_overlay_image(slint::Image::from_rgba8(
             slint::SharedPixelBuffer::clone_from_slice(
-                &pixels,
-                crate::dive3d::SIZE,
-                crate::dive3d::SIZE,
+                &overlay,
+                crate::porthole::SIZE,
+                crate::porthole::SIZE,
             ),
         ));
+        window.set_idle_dials(dials);
         save(&window, &soft, "12-nautilus");
     }
 }

@@ -1,29 +1,18 @@
 // The Nautilus' salon window, around a sea drawn by the 3D dive.
 //
-// Two passes share this file:
-//
-// - `fs_overlay` draws the brass bezel, the riveted casing and the gauge faces.
-//   None of it moves, so it is drawn once when the scene is built.
-// - `fs_composite` runs at the panel's full resolution: it bends the sea at the
-//   edge of the glass, gives it an engraved finish, lays the bezel over it and
-//   draws the gauge needles, which are the only moving part of the frame.
+// `fs_overlay` draws the brass bezel, the riveted casing and the gauge faces.
+// None of it moves, so it is drawn once, into a texture Slint lays over the
+// sea; the needles are Slint elements of their own.
 //
 // Positions are in units of the frame's height, with the window's centre at
 // the origin.
 
 struct Uniforms {
-    // x, y: output frame size in pixels; z: seconds of run time; w: world seed in 0..1.
+    // x, y: frame size in pixels.
     frame: vec4<f32>,
-    // x: edge of the square the sea is rendered into, in pixels; y: how far the
-    // Nautilus has come, in world units; z: its height above the seabed; w: its
-    // depth below the surface.
-    scene: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Uniforms;
-@group(0) @binding(1) var sea: texture_2d<f32>;
-@group(0) @binding(2) var bezel: texture_2d<f32>;
-@group(0) @binding(3) var sea_sampler: sampler;
 
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
@@ -31,11 +20,9 @@ const PI: f32 = 3.141592653;
 // very edge of the circle and the glass fills everything inside it.
 const GLASS: f32 = 0.464;
 const PORT: f32 = 0.500;
-// Half the side of the square the sea texture covers, a little wider than the
-// glass so the upscale never samples past the edge.
+// Half the side of the square the sea covers, a little wider than the glass so
+// the upscale never samples past the edge. Mirrors `porthole::VIEW`.
 const VIEW: f32 = 0.470;
-// The log turns once per leg of the voyage; this mirrors `voyage::LEG`.
-const LEG: f32 = 3.4;
 
 // Gauges set into the bezel: the manometer on the left reads depth, the log on
 // the right turns once per leg of the voyage.
@@ -43,13 +30,6 @@ const GAUGE_R: f32 = 0.050;
 const GAUGE_RING: f32 = 0.442;
 const DEPTH_GAUGE: f32 = -2.235;
 const LOG_GAUGE: f32 = -0.907;
-
-// How much the thick glass bends the view at its edge. The 3D dive renders a
-// plain perspective view and sets this so the composite bends it here.
-override GLASS_BEND: f32 = 0.0;
-// What the sea's colours were scaled by when they were stored, to fit them
-// in a format that holds no more than 1 (see `SEA_SCALE` in the 3D dive).
-override SEA_SCALE: f32 = 1.0;
 
 fn rot(a: f32) -> mat2x2<f32> {
     let c = cos(a);
@@ -286,72 +266,6 @@ fn fs_overlay(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
     out = vec4<f32>(log_face.rgb + out.rgb * (1.0 - log_face.a), log_face.a + out.a * (1.0 - log_face.a));
     let plate = cartouche(p);
     out = vec4<f32>(plate.rgb + out.rgb * (1.0 - plate.a), plate.a + out.a * (1.0 - plate.a));
-    return out;
-}
-
-// A blued-steel needle with a counterweight, pointing at `angle` (0 = up,
-// clockwise), plus its shadow on the dial.
-fn needle(col_in: vec3<f32>, p: vec2<f32>, centre: vec2<f32>, angle: f32, tip: vec3<f32>) -> vec3<f32> {
-    var col = col_in;
-    let l = p - centre;
-    if (dot(l, l) > GAUGE_R * GAUGE_R) {
-        return col;
-    }
-    let dir = vec2<f32>(sin(angle), cos(angle));
-    let shadow_l = l - vec2<f32>(0.0025, -0.0025);
-    let reach = GAUGE_R * 0.80;
-    let ds = segment(shadow_l, -dir * reach * 0.25, dir * reach) - 0.0016;
-    col *= 1.0 - 0.35 * fill(ds, 0.002);
-    let along = clamp(dot(l, dir) / reach, -0.25, 1.0);
-    let width = mix(0.0022, 0.0006, max(along, 0.0));
-    let d = segment(l, -dir * reach * 0.25, dir * reach) - width;
-    let steel = mix(vec3<f32>(0.06, 0.07, 0.11), tip, soft(0.70, 0.78, along));
-    col = mix(col, steel, fill(d, 0.0007));
-    let cap = length(l) - 0.0055;
-    col = mix(col, vec3<f32>(0.60, 0.42, 0.18) * (0.7 + 0.5 * soft(0.004, -0.004, l.x - l.y)), fill(cap, 0.0007));
-    return col;
-}
-
-@fragment
-fn fs_composite(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
-    let t = params.frame.z;
-    let seed = params.frame.w;
-    let p = vec2<f32>(
-        (in.x - params.frame.x * 0.5) / params.frame.y,
-        (params.frame.y * 0.5 - in.y) / params.frame.y,
-    );
-    let rp = length(p);
-
-    let over = textureLoad(bezel, vec2<i32>(in.xy), 0);
-    var col = vec3<f32>(0.0);
-    if (rp < GLASS + 0.002 && over.a < 0.999) {
-        var q = p;
-        if (GLASS_BEND > 0.0) {
-            q += normalize(p + vec2<f32>(0.0001)) * soft(0.62, 1.0, rp / GLASS) * GLASS_BEND;
-        }
-        let uv = vec2<f32>(q.x, -q.y) / (2.0 * VIEW) + 0.5;
-        col = textureSampleLevel(sea, sea_sampler, uv, 0.0).rgb / SEA_SCALE;
-
-        // An engraver's finish, after the plates of the 1871 edition: fine
-        // hatching that only shows in the shadows, and a warm, inky grade.
-        let lum = dot(col, vec3<f32>(0.30, 0.55, 0.15));
-        let hatch_a = 0.5 + 0.5 * sin((in.x + in.y) * 1.25);
-        let hatch_b = 0.5 + 0.5 * sin((in.x - in.y) * 1.25);
-        let dark = soft(0.16, 0.02, lum);
-        let lines = hatch_a * soft(0.0, 1.0, dark) + hatch_b * soft(0.5, 1.0, dark);
-        col *= 1.0 - 0.22 * lines * dark;
-        col = mix(col, col * vec3<f32>(1.08, 1.0, 0.88), soft(0.10, 0.50, lum));
-    }
-    col = col * (1.0 - over.a) + over.rgb;
-
-    // The manometer reads on a logarithmic scale, so it moves as much for the
-    // Nautilus rising a few fathoms in the shallows as for a long climb out of
-    // the abyss.
-    let reading = log(1.0 + params.scene.w) / log(46.0);
-    col = needle(col, p, gauge_centre(DEPTH_GAUGE), (reading - 0.5) * 4.7 * 0.92, vec3<f32>(0.60, 0.10, 0.06));
-    col = needle(col, p, gauge_centre(LOG_GAUGE), params.scene.y / LEG * TAU, vec3<f32>(0.06, 0.07, 0.11));
-
-    // Dither away the banding in the dark water.
-    col += (hash21(in.xy + fract(t) * 91.0) - 0.5) / 255.0;
-    return vec4<f32>(col, 1.0);
+    // Straight alpha, which is how Slint takes a wgpu texture.
+    return vec4<f32>(out.rgb / max(out.a, 0.0001), out.a);
 }

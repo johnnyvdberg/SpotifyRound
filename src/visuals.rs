@@ -46,7 +46,8 @@ impl Scene {
     pub fn size(self) -> f32 {
         match self {
             Scene::Globe => crate::globe::SIZE as f32,
-            Scene::Nautilus => crate::dive3d::SIZE as f32,
+            // The sea covers the glass; the window frame is an overlay.
+            Scene::Nautilus => 2.0 * crate::porthole::VIEW * crate::porthole::SIZE as f32,
         }
     }
 
@@ -107,6 +108,16 @@ impl Scene {
 pub(crate) trait Visual: Send {
     fn render(&mut self, gpu: &Graphics, seconds: f64, seed: u64, frame: usize) -> Result<()>;
     fn texture(&self, frame: usize) -> wgpu::Texture;
+    /// A fixed image Slint lays over every frame, if the scene has one: the
+    /// Nautilus' window frame.
+    fn overlay(&self) -> Option<wgpu::Texture> {
+        None
+    }
+    /// The angles of the overlay's gauge needles for the frame last drawn, in
+    /// radians clockwise from straight up.
+    fn dials(&self) -> Option<[f32; 2]> {
+        None
+    }
     /// A swipe on the visualizer: move `legs` stretches on (or back) through the
     /// scene's journey. Scenes without one ignore it.
     fn travel(&mut self, _legs: i32) {}
@@ -200,8 +211,17 @@ pub fn spawn(
                     })
                     .collect::<Vec<_>>();
                 *slots = textures.len();
+                let overlay = renderers
+                    .iter()
+                    .flatten()
+                    .find_map(|renderer| renderer.overlay());
                 let shown = ui
-                    .upgrade_in_event_loop(move |ui| ui.set_idle_frames(textures))
+                    .upgrade_in_event_loop(move |ui| {
+                        ui.set_idle_frames(textures);
+                        if let Some(overlay) = overlay {
+                            ui.set_idle_overlay(overlay);
+                        }
+                    })
                     .is_ok();
                 available.store(*mask, Ordering::SeqCst);
                 shown
@@ -286,8 +306,14 @@ pub fn spawn(
                 // Shown right after the UI thread submits it: both run there,
                 // in order.
                 let slot = active * SLOTS + current;
+                let dials = renderer.dials();
                 if ui
-                    .upgrade_in_event_loop(move |ui| ui.show_idle_frame(slot))
+                    .upgrade_in_event_loop(move |ui| {
+                        ui.show_idle_frame(slot);
+                        if let Some(dials) = dials {
+                            ui.set_idle_dials(dials);
+                        }
+                    })
                     .is_err()
                 {
                     return;
