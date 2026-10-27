@@ -52,20 +52,13 @@ export component IdleScreen inherits Rectangle {
     height: 1080px;
 
     // The fade lives in the colours instead of an `opacity`, so the renderer
-    // never has to composite the overlay into a cached layer.
-    background: Theme.bg.with-alpha(Idle.fade);
+    // never has to composite the overlay into a cached layer. Once faded in,
+    // the scene's opaque frame covers the window and this would be one more
+    // full-screen layer for nothing: a transparent brush is not drawn at all.
+    background: Idle.fade < 1 ? Theme.bg.with-alpha(Idle.fade) : transparent;
 
-    // Air glow behind the planet, so it sits in space rather than on a page.
-    Rectangle {
-        width: 1080px;
-        height: 1080px;
-        border-radius: 540px;
-        background: @radial-gradient(circle, #4b86d814 0%, #244a7d10 52%, transparent 76%);
-        // Not while the player shows: a full-screen gradient drawn every frame.
-        visible: Idle.scene == 0 && Idle.fade > 0;
-    }
-
-    // The scene frame, transparent where the globe's atmosphere fades out.
+    // The scene frame, opaque: the globe paints the space and the air glow
+    // behind the planet itself (`src/globe.rs`).
     Image {
         width: Idle.frame-size;
         height: Idle.frame-size;

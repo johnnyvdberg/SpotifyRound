@@ -233,8 +233,10 @@ spotify-round --fps        # start with the frame-rate readout showing
 
 Press **F** on a keyboard to show or hide the frame-rate readout: a pill at the top of the circle,
 where the round glass still has room for it, with the frames the window presented in the last
-second and, while the visualizer runs, its own frame rate and the milliseconds its thread spent on
-each frame.
+second and, while the visualizer runs, its own frame rate, the milliseconds its thread spent on
+each frame and the milliseconds the GPU took to finish it (`gpu`). Above 16 ms the GPU cannot keep
+60 fps. The window only counts frames from the first time the readout is shown, because counting
+costs the Pi a render pass a frame.
 
 ### Controls
 
@@ -360,7 +362,7 @@ src/
 │   ├── world.rs       what is in the water each frame: features, swimmers, lights, sprites
 │   └── scene.wgsl     water, seabed, models, glass and sprites
 ├── voyage.rs          the voyage itself: distance travelled, swipes, and the dive profile behind the depth gauge
-├── ring.rs            the progress rim: one wgpu fragment shader for track, arc and head dot
+├── ring.rs            the player's backdrop: glow, vignette and progress rim in one wgpu fragment shader
 ├── gpu.rs             the single wgpu/Vulkan device, handed to Slint before the window exists
 ├── artwork.rs         download → decode → rounded mask → accent colour → cache
 ├── browser.rs         xdg-open / start / open
@@ -406,6 +408,25 @@ that feature pulls in libseat and libinput, so `libseat-dev`, `libinput-dev` and
 be installed for the build. Playback position is interpolated from a monotonic clock and a poll only
 re-anchors it when it disagrees by more than a second, which keeps the rim moving forwards at a
 constant rate instead of twitching as the answers arrive.
+
+**Feeding a tile-based GPU.** The Pi 5's VideoCore VII (V3D) draws in small on-chip tiles, and
+everything that goes to or from memory is what limits it: every render pass loads and stores the
+whole framebuffer unless told otherwise, and every full-screen layer is a million pixels of
+blending through femtovg's general-purpose shader. So:
+
+- `vendor/femtovg` is femtovg with render passes that clear instead of loading the last frame and
+  never load or store the stencil (see its `PATCHED.md`), used through `[patch.crates-io]`.
+- No rendering notifier is installed unless the frame-rate readout asks for one: while one is set,
+  Slint submits the window clear in a pass of its own.
+- What can be drawn together is: the player's glow, vignette and rim are one opaque texture from
+  `ring.rs`, and the globe paints the space behind itself, so each screen is one full-screen layer
+  for femtovg.
+- The visualizer keeps one frame in flight and draws the next only once the window has taken the
+  last. A scene thread that submits on its own clock queues work ahead of the window's frames
+  faster than the GPU finishes it, until every frame on screen is late.
+
+`WGPU_BACKEND=gl` runs everything on the Pi's OpenGL ES driver instead of Vulkan, to compare the
+two.
 
 **Optimistic UI.** Commands apply their result before Spotify confirms it, so the display never lags
 behind a press. Play/pause, shuffle, repeat, seek, skips and playlist starts update the model
@@ -623,9 +644,11 @@ resolves on your network). The page is only reachable while a login is running.
 **Blurry text on the Pi** — install `fonts-inter` and make sure the compositor is not scaling the
 output away from 1:1.
 
-**The animation stutters** — check the log for `graphics context ready`. A `NativeOpenGL` renderer
-means the GPU is drawing; a warning about the graphics API means Slint fell back to the software
-renderer (usually a missing `/dev/dri` device or a VNC session).
+**The animation stutters** — check the `-v` log for the `graphics` line. `backend=Vulkan` with a
+`V3D` adapter means the GPU is drawing; anything else means wgpu fell back to another backend
+(usually a missing `/dev/dri` device or a VNC session). Then press **F**: the readout's `gpu` figure
+is how long the GPU took for the visualizer's last frames, which tells a scene that is too heavy
+from a screen that is waiting on something else.
 
 ---
 

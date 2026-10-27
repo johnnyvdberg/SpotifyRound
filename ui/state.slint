@@ -46,7 +46,7 @@ export global Player {
     // Animated from Rust (animato ping-pong tween) for the queue indicator.
     // Only written while the queue is on screen.
     in-out property <float> pulse: 0;
-    // The progress ring is rendered on the GPU (`src/ring.rs`). The frames are
+    // The backdrop and progress ring are rendered on the GPU (`src/ring.rs`). The frames are
     // kept as images so the renderer caches them once, and `ring-frame` names
     // the one to show.
     in-out property <[image]> ring-frames: [];
@@ -122,6 +122,9 @@ export global Stats {
     // its thread spent building and submitting each, in milliseconds.
     in-out property <int> scene: 0;
     in-out property <float> scene-ms: 0;
+    // How long each of those frames took on the GPU, from its submission until
+    // it was done, in milliseconds.
+    in-out property <float> scene-gpu-ms: 0;
 }
 
 export global App {

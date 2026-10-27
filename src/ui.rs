@@ -25,13 +25,36 @@ pub fn create_window(fullscreen: bool, show_fps: bool) -> Result<AppWindow> {
     // Full screen is the kiosk, and a kiosk is driven by touch: no pointer.
     window.global::<Pointer>().set_hidden(fullscreen);
     window.global::<Stats>().set_shown(show_fps);
-    watch_rendering(&window);
+    watch_rendering_if_asked(&window);
     Ok(window)
 }
 
-/// Say in the log which graphics API draws the frames, so `-v` shows whether the
-/// display really runs on the GPU, and count the frames presented for the
-/// frame-rate readout.
+thread_local! {
+    static WATCHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Start counting frames once the readout is first shown, or from the start
+/// when measuring at full speed.
+///
+/// Not before: while a rendering notifier is installed, Slint submits the
+/// window clear in a render pass of its own, ahead of the frame proper, and on
+/// the Pi's tile-based GPU every pass moves the whole framebuffer through
+/// memory. A notifier cannot be removed again, so once the readout has been
+/// shown the count goes on.
+pub fn watch_rendering_if_asked(window: &AppWindow) {
+    if WATCHING.get() {
+        return;
+    }
+    let full_speed = std::env::var_os("SPOTIFY_ROUND_FULL_SPEED").is_some();
+    if !full_speed && !window.global::<Stats>().get_shown() {
+        return;
+    }
+    WATCHING.set(true);
+    watch_rendering(window);
+}
+
+/// Say in the log which graphics API draws the frames and count the frames
+/// presented for the frame-rate readout.
 ///
 /// With `SPOTIFY_ROUND_FULL_SPEED` set, every frame asks for the next at once,
 /// whether anything changed or not, and the rate is logged each second: how
@@ -122,8 +145,9 @@ pub trait WindowExt: Sized {
     fn set_idle_frames(&self, textures: Vec<Option<slint::wgpu_30::wgpu::Texture>>);
     /// Show one of the frames installed by `set_idle_frames`.
     fn show_idle_frame(&self, index: usize);
-    /// The visualizer's frames in the last second, and their mean cost in ms.
-    fn set_scene_stats(&self, frames: i32, ms: f32);
+    /// The visualizer's frames in the last second, the mean time its thread
+    /// spent on each and the mean time each took on the GPU, in ms.
+    fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32);
     fn tick(&self, frame: &Frame);
     /// Name, icon kind and presence of the Spotify Connect device playback is
     /// running on.
@@ -265,11 +289,12 @@ impl WindowExt for AppWindow {
         idle.set_frames(slint::ModelRc::new(VecModel::from(frames)));
     }
 
-    fn set_scene_stats(&self, frames: i32, ms: f32) {
+    fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32) {
         let stats = self.global::<Stats>();
         if stats.get_shown() {
             stats.set_scene(frames);
             stats.set_scene_ms(ms);
+            stats.set_scene_gpu_ms(gpu_ms);
         }
     }
 
@@ -313,6 +338,8 @@ impl WindowExt for AppWindow {
 
     /// Push one animation frame produced by [`crate::motion::Motion`].
     fn tick(&self, frame: &Frame) {
+        // The F key shows the readout from the Slint side; start counting then.
+        watch_rendering_if_asked(self);
         let theme = self.global::<Theme>();
         theme.set_accent(frame.accent.color());
         theme.set_glow(frame.accent.with_alpha(0x55));
@@ -442,11 +469,24 @@ mod preview {
 
     /// One frame of the GPU-drawn progress ring, rendered headlessly.
     fn ring(progress: f32, scrubbing: bool, accent: crate::artwork::Rgb) -> slint::Image {
+        backdrop(progress, scrubbing, accent, 1.0, 1.0)
+    }
+
+    /// The player's backdrop, with the ring showing as much as `ring` and the
+    /// glow as strong as `glow`.
+    fn backdrop(
+        progress: f32,
+        scrubbing: bool,
+        accent: crate::artwork::Rgb,
+        ring: f32,
+        glow: f32,
+    ) -> slint::Image {
         let pixels = crate::ring::render_once(&crate::ring::Input {
             progress,
             scrubbing,
             accent,
-            has_track: true,
+            ring,
+            glow,
         })
         .unwrap();
         slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
@@ -556,6 +596,7 @@ mod preview {
         save(&window, &soft, "fps");
         stats.set_scene(60);
         stats.set_scene_ms(2.84);
+        stats.set_scene_gpu_ms(9.6);
         window.global::<Idle>().set_active(true);
         save(&window, &soft, "fps-idle");
         window.global::<Idle>().set_active(false);
@@ -643,6 +684,7 @@ mod preview {
         let url = "https://accounts.spotify.com/authorize?client_id=example&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8888%2Fcallback&code_challenge=abc&state=xyz";
         window.set_auth_state(0, "");
         window.set_auth_url(url, Some(&crate::artwork::Artwork::qr(url).unwrap()));
+        window.set_ring_frame_image(backdrop(0.0, false, art.accent(), 0.0, 0.6));
         save(&window, &soft, "04-login");
 
         // ---- nothing playing ----
@@ -651,15 +693,18 @@ mod preview {
         window.set_track_text("Nothing playing", "Open Spotify and start playback", false);
         window.set_cover(None);
         window.set_playback(false, false, false, 0);
+        window.set_ring_frame_image(backdrop(0.0, false, art.accent(), 0.0, 1.0));
         save(&window, &soft, "05-nothing-playing");
 
         // ---- missing configuration ----
         window.set_config_path("/home/pi/.config/spotify-round/config.toml");
         window.set_auth_state(3, "");
+        window.set_ring_frame_image(backdrop(0.0, false, art.accent(), 0.0, 0.6));
         save(&window, &soft, "06-setup");
 
         // ---- a playlist that is still starting ----
         window.set_auth_state(2, "");
+        window.set_ring_frame_image(ring(0.0, false, art.accent()));
         let art = cover(198);
         window.set_cover(Some(&art));
         window.set_track_text("Chill Vibes", "Starting playlist", true);

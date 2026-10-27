@@ -1,4 +1,5 @@
-//! The progress ring around the rim, drawn on the GPU.
+//! The backdrop of the player: the window colour, the ambient glow, the
+//! vignette and the progress ring around the rim, drawn on the GPU.
 //!
 //! Slint's `Path` re-parses and re-tessellates its commands whenever they change,
 //! and a stroke of this size is re-tessellated even when it does not. Both cost
@@ -6,6 +7,12 @@
 //! draws the track, the played sector and the head dot into a texture on the
 //! shared wgpu device instead; Slint only composites that texture, so a frame is
 //! one uniform write and one full-screen draw call.
+//!
+//! The same pass paints what lies under the ring, opaque. On the Pi's
+//! tile-based GPU every full-screen layer Slint blends costs a pass over a
+//! million pixels through femtovg's general-purpose shader; drawn as Slint
+//! gradients, the glow and the vignette were two such layers and the ring, a
+//! mostly transparent texture, a third. Here they are one.
 
 #[cfg(test)]
 use anyhow::Result;
@@ -34,6 +41,8 @@ const HEAD_SCRUB: f32 = 13.0;
 /// (`Theme.ink.transparentize(0.9)`).
 const INK: [f32; 4] = [0.9608, 0.9608, 0.9725, 1.0];
 const TRACK_ALPHA: f32 = 0.1;
+/// `Theme.bg` (#07070a) as sRGB: the window colour under everything.
+const BG: [f32; 4] = [0.0275, 0.0275, 0.0392, 1.0];
 
 /// Everything the ring shows for one frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,18 +53,25 @@ pub struct Input {
     pub scrubbing: bool,
     /// Accent colour, following the artwork.
     pub accent: Rgb,
-    /// A track is loaded. Without one the ring is hidden, so no frame is drawn.
-    pub has_track: bool,
+    /// How much of the ring shows, 0..1: it fades in with the first track and
+    /// out when playback stops.
+    pub ring: f32,
+    /// Strength of the ambient glow, 0..1: full once connected, dimmer behind
+    /// the login screens.
+    pub glow: f32,
 }
 
 impl Input {
-    /// The same, with the progress rounded to half a pixel along the rim:
-    /// the head moves less than that between most ticks, and every change
-    /// has the whole window drawn again.
+    /// The same, with the progress rounded to half a pixel along the rim and
+    /// the fades to steps the panel can show: the head moves less than that
+    /// between most ticks, and every change has the whole window drawn again.
     pub fn on_pixels(self) -> Self {
         let steps = RADIUS * std::f32::consts::TAU * 2.0;
+        let levels = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() / 255.0;
         Self {
             progress: (self.progress * steps).round() / steps,
+            ring: levels(self.ring),
+            glow: levels(self.glow),
             ..self
         }
     }
@@ -66,11 +82,12 @@ impl Input {
 struct Uniforms {
     /// Centre x, centre y, radius, thickness.
     geometry: [f32; 4],
-    /// Progress, head radius, whether to draw anything, unused.
+    /// Progress, head radius, how much of the ring shows, glow strength.
     state: [f32; 4],
     track: [f32; 4],
     accent: [f32; 4],
     ink: [f32; 4],
+    background: [f32; 4],
 }
 
 struct Frame {
@@ -126,8 +143,8 @@ impl Ring {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
-                    // The shader writes premultiplied alpha into a cleared
-                    // target; there is nothing to blend against.
+                    // The shader paints every pixel, opaque; there is nothing
+                    // to blend against.
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -203,8 +220,8 @@ impl Ring {
             state: [
                 input.progress.clamp(0.0, 1.0),
                 if input.scrubbing { HEAD_SCRUB } else { HEAD },
-                if input.has_track { 1.0 } else { 0.0 },
-                0.0,
+                input.ring.clamp(0.0, 1.0),
+                input.glow.clamp(0.0, 1.0),
             ],
             track: [INK[0], INK[1], INK[2], TRACK_ALPHA],
             accent: [
@@ -214,6 +231,7 @@ impl Ring {
                 1.0,
             ],
             ink: INK,
+            background: BG,
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
@@ -315,10 +333,11 @@ pub fn render_once(input: &Input) -> Result<Vec<u8>> {
 const SHADER: &str = r#"
 struct Uniforms {
     geometry: vec4<f32>, // centre x, centre y, radius, thickness
-    state: vec4<f32>,    // progress, head radius, drawing, unused
+    state: vec4<f32>,    // progress, head radius, ring shown, glow strength
     track: vec4<f32>,
     accent: vec4<f32>,
     ink: vec4<f32>,
+    background: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Uniforms;
@@ -341,19 +360,59 @@ fn vs_main(@builtin(vertex_index) index: u32) -> Varying {
     return out;
 }
 
+// The ambient glow, as `ui/main.slint` drew it: `circle 780px at 540px 430px`,
+// the accent at `Theme.glow`'s alpha in the middle, at `Theme.glow-soft`'s by
+// 44% and gone by 74%.
+const GLOW_CENTRE: vec2<f32> = vec2<f32>(540.0, 430.0);
+const GLOW_RADIUS: f32 = 780.0;
+const GLOW_INNER: f32 = 0.3333; // 0x55
+const GLOW_OUTER: f32 = 0.1098; // 0x1c
+// The vignette: clear out to 52% of 700px from the centre, then darkening to
+// black at 0xa8 by the edge of that circle.
+const VIGNETTE_RADIUS: f32 = 700.0;
+const VIGNETTE_START: f32 = 0.52;
+const VIGNETTE_ALPHA: f32 = 0.6588;
+
+fn hash(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+}
+
 @fragment
 fn fs_main(in: Varying) -> @location(0) vec4<f32> {
-    if (params.state.z < 0.5) {
-        return vec4<f32>(0.0);
-    }
+    let p = in.position.xy;
+    var colour = params.background.rgb;
 
+    let g = length(p - GLOW_CENTRE) / GLOW_RADIUS;
+    let glow = select(
+        mix(GLOW_OUTER, 0.0, clamp((g - 0.44) / 0.30, 0.0, 1.0)),
+        mix(GLOW_INNER, GLOW_OUTER, g / 0.44),
+        g < 0.44,
+    ) * params.state.w;
+    colour = params.accent.rgb * glow + colour * (1.0 - glow);
+
+    let v = clamp((length(p - params.geometry.xy) / VIGNETTE_RADIUS - VIGNETTE_START)
+        / (1.0 - VIGNETTE_START), 0.0, 1.0);
+    colour *= 1.0 - v * VIGNETTE_ALPHA;
+    // Dither away the banding in the slow gradients.
+    colour += (hash(p) - 0.5) / 255.0;
+
+    // Laid over the backdrop the way Slint composited the ring when it was a
+    // texture of its own: Slint takes a wgpu texture for straight alpha, so the
+    // premultiplied ring was weighted by its alpha once more. That is how the
+    // faint track has always looked on the panel.
+    let rim = ring(p);
+    let weight = rim.a * params.state.z;
+    return vec4<f32>(rim.rgb * weight + colour * (1.0 - weight), 1.0);
+}
+
+// The track, the played arc and the head dot, premultiplied.
+fn ring(p: vec2<f32>) -> vec4<f32> {
     let centre = params.geometry.xy;
     let radius = params.geometry.z;
     let half = params.geometry.w * 0.5;
     let progress = clamp(params.state.x, 0.0, 1.0);
     let head_radius = params.state.y;
 
-    let p = in.position.xy;
     let d = length(p - centre);
     // The head dot reaches `head_radius` past the band on both sides.
     if (abs(d - radius) > max(half, head_radius) + 1.0) {
@@ -400,53 +459,69 @@ mod tests {
         [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
     }
 
+    fn input(progress: f32, ring: f32) -> Input {
+        Input {
+            progress,
+            scrubbing: false,
+            accent: Rgb::new(30, 215, 96),
+            ring,
+            glow: 1.0,
+        }
+    }
+
     #[test]
     #[ignore = "needs a working GPU adapter"]
     fn draws_the_track_the_arc_and_the_head() {
-        let pixels = render_once(&Input {
-            progress: 0.5,
-            scrubbing: false,
-            accent: Rgb::new(30, 215, 96),
-            has_track: true,
-        })
-        .unwrap();
+        let pixels = render_once(&input(0.5, 1.0)).unwrap();
 
         // The played half reaches from the top clockwise to the bottom.
         // The band's centre line, from the edge of the frame.
         let band = (CENTER - RADIUS) as u32;
         let top = pixel(&pixels, 540, band);
-        assert!(top[3] > 200, "the arc is not opaque: {top:?}");
         assert!(
             top[1] > 150 && top[1] > top[0],
             "the arc does not use the accent: {top:?}"
         );
-        // The unplayed half is the faint track.
+        // The unplayed half is the faint track, just lighter than beside it.
         let left = pixel(&pixels, band, 540);
+        let beside = pixel(&pixels, band + 20, 540);
         assert!(
-            left[3] > 0 && left[3] < 60,
-            "the track is missing or too strong: {left:?}"
+            left[0] > beside[0] && left[0] < 30,
+            "the track is missing or too strong: {left:?} beside {beside:?}"
         );
         // The head dot sits at the end of the arc.
         let head = pixel(&pixels, 540, SIZE - band);
-        assert!(head[3] > 200, "the head dot is missing: {head:?}");
-        // Nothing is drawn inside the circle or outside the band.
-        assert_eq!(pixel(&pixels, 540, 540)[3], 0);
-        assert_eq!(pixel(&pixels, 8, 8)[3], 0);
+        assert!(head[0] > 200, "the head dot is missing: {head:?}");
+        // Every pixel is opaque: Slint draws nothing under this frame.
+        assert!(pixels.chunks(4).all(|pixel| pixel[3] == 255));
     }
 
     #[test]
     #[ignore = "needs a working GPU adapter"]
-    fn without_a_track_the_frame_is_clear() {
-        let pixels = render_once(&Input {
-            progress: 0.4,
-            scrubbing: false,
-            accent: Rgb::new(30, 215, 96),
-            has_track: false,
-        })
-        .unwrap();
+    fn lays_the_glow_and_the_vignette_under_the_ring() {
+        let pixels = render_once(&input(0.4, 1.0)).unwrap();
+        // The glow tints the middle with the accent.
+        let middle = pixel(&pixels, 540, 430);
         assert!(
-            pixels.chunks(4).all(|pixel| pixel[3] == 0),
-            "a hidden ring must be fully transparent"
+            middle[1] > middle[0] + 20,
+            "the glow should take the accent: {middle:?}"
         );
+        // The vignette leaves the corners close to black.
+        let corner = pixel(&pixels, 8, 8);
+        assert!(corner[..3].iter().all(|&c| c < 8), "corner {corner:?}");
+    }
+
+    #[test]
+    #[ignore = "needs a working GPU adapter"]
+    fn a_hidden_ring_leaves_only_the_backdrop() {
+        let band = (CENTER - RADIUS) as u32;
+        let hidden = render_once(&input(0.4, 0.0)).unwrap();
+        let shown = render_once(&input(0.4, 1.0)).unwrap();
+        let top = pixel(&hidden, 540, band);
+        let below = pixel(&hidden, 540, band + 20);
+        for c in 0..3 {
+            assert!(top[c].abs_diff(below[c]) <= 3, "{top:?} against {below:?}");
+        }
+        assert_ne!(pixel(&shown, 540, band), top, "the ring should show");
     }
 }

@@ -844,6 +844,8 @@ const CLOUD_HEIGHT: f32 = {cloud_height};
 const SCALE_HEIGHT: f32 = {scale_height};
 const AIR: vec3<f32> = vec3<f32>({air_r}, {air_g}, {air_b});
 const SUNLIGHT: vec3<f32> = vec3<f32>({sun_r}, {sun_g}, {sun_b});
+// `Theme.bg` (#07070a), the window colour behind the planet.
+const BACKGROUND: vec3<f32> = vec3<f32>(0.0275, 0.0275, 0.0392);
 // Light from the sky itself, which keeps shadowed ground and the twilight
 // side from going black.
 const SKYLIGHT: vec3<f32> = vec3<f32>(0.035, 0.060, 0.110);
@@ -880,8 +882,8 @@ struct Varying {{
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> Varying {{
-    // A full-screen triangle; the fragment shader discards everything outside the
-    // planet and its halo.
+    // A full-screen triangle; outside the planet and its halo the fragment
+    // shader paints only the space behind it.
     var corners = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(3.0, -1.0),
@@ -914,8 +916,35 @@ fn limb(p: vec2<f32>, r: f32) -> vec4<f32> {{
     return vec4<f32>(out, min(max(max(out.r, out.g), out.b), 1.0));
 }}
 
+// What lies behind the planet: the window colour and the faint air glow
+// `ui/screens/idle.slint` drew as a Slint gradient, `circle` (half the
+// frame's diagonal) from #4b86d8 at 0x14 through #244a7d at 0x10 by 52% to
+// nothing by 76%, inside the round panel. Painted here, the frame is opaque
+// and Slint has one layer to draw instead of three.
+fn space(position: vec2<f32>) -> vec3<f32> {{
+    let centre = params.frame.xy;
+    let d = length(position - centre);
+    let t = d / length(centre);
+    let inner = vec4<f32>(vec3<f32>(0.2941, 0.5255, 0.8471) * 0.0784, 0.0784);
+    let middle = vec4<f32>(vec3<f32>(0.1412, 0.2902, 0.4902) * 0.0627, 0.0627);
+    var air = select(
+        mix(middle, vec4<f32>(0.0), clamp((t - 0.52) / 0.24, 0.0, 1.0)),
+        mix(inner, middle, t / 0.52),
+        t < 0.52,
+    );
+    air *= step(d, centre.x);
+    return air.rgb + BACKGROUND * (1.0 - air.a);
+}}
+
 @fragment
 fn fs_main(in: Varying) -> @location(0) vec4<f32> {{
+    // Laid over space the way Slint composited the frame when it was
+    // transparent: Slint takes a wgpu texture for straight alpha.
+    let globe = shade(in);
+    return vec4<f32>(globe.rgb * globe.a + space(in.position.xy) * (1.0 - globe.a), 1.0);
+}}
+
+fn shade(in: Varying) -> vec4<f32> {{
     // Screen position in planet radii, y up.
     let p = vec2<f32>(
         (in.position.x - params.frame.x) / params.frame.z,
@@ -924,7 +953,7 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {{
     let distance = length(p);
     let atmosphere = params.frame.w / params.frame.z;
     if (distance > atmosphere) {{
-        discard;
+        return vec4<f32>(0.0);
     }}
     // Anti-aliasing at the limb: a pixel either side of the edge.
     let edge = (distance - 1.0) * params.frame.z;
@@ -1065,38 +1094,37 @@ impl Visual for Globe {
 mod tests {
     use super::*;
 
-    /// Guards the halo geometry: the frame is only opaque inside the planet and
-    /// only has a faint ring just outside it. A units mix-up once painted the
-    /// whole square instead, which Slint then drew as a visible box.
+    /// Guards the halo geometry: the planet is round and only has a faint ring
+    /// just outside it, over plain space. A units mix-up once painted the whole
+    /// square instead, which showed as a visible box.
     #[test]
     #[ignore = "needs a working GPU adapter"]
     fn the_frame_is_round() {
         let pixels = render_once(0.0).expect("a GPU adapter and an Earth frame");
         let half = SIZE / 2;
-        let alpha = |x: u32, y: u32| pixels[((y * SIZE + x) * 4 + 3) as usize];
+        let at = |x: u32, y: u32| {
+            let i = ((y * SIZE + x) * 4) as usize;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+        let brightness = |x: u32, y: u32| at(x, y)[..3].iter().map(|&c| c as u32).sum::<u32>();
 
-        assert_eq!(alpha(0, 0), 0, "the corner should be transparent");
-        assert_eq!(
-            alpha(SIZE - 1, SIZE - 1),
-            0,
-            "the corner should be transparent"
-        );
-        assert_eq!(alpha(half, half), 255, "the middle should be opaque");
+        // Opaque everywhere, so Slint draws nothing under it.
+        assert!(pixels.chunks(4).all(|pixel| pixel[3] == 255));
+        // Outside the round panel there is only the window colour.
+        assert_eq!(at(0, 0), [7, 7, 10, 255], "the corner should be plain space");
+        assert_eq!(at(SIZE - 1, SIZE - 1), at(0, 0));
 
         // The sun starts on the left, so the halo is only on that side.
         let limb = (half as f32 * PLANET) as u32;
-        assert_eq!(alpha(half - limb + 4, half), 255, "inside the limb");
-        let halo = alpha(half - limb - 3, half);
-        assert!(
-            halo > 0 && halo < 255,
-            "the halo should be translucent, got {halo}"
-        );
+        let space = brightness(0, 0);
+        let halo = brightness(half - limb - 3, half);
+        assert!(halo > space + 6, "the halo should show, got {halo} over {space}");
         // Whatever the planet size, the glow has faded out by the frame edge: it
         // must never be cut off by the square.
         assert!(
-            alpha(2, half) <= 2,
-            "the glow should fade out before the frame edge, got {}",
-            alpha(2, half)
+            brightness(2, half) <= space + 9,
+            "the glow should fade out before the frame edge, got {} over {space}",
+            brightness(2, half)
         );
     }
 
