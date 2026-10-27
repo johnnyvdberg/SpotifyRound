@@ -279,7 +279,7 @@ impl Model {
 
     /// Whether the idle visualizer belongs on screen right now.
     fn wants_visualizer(&self, now: Instant) -> bool {
-        if self.idle.manual {
+        if self.idle.manual || Scene::forced().is_some() {
             return true;
         }
         if self.idle.dismissed {
