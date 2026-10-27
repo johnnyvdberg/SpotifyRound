@@ -57,10 +57,30 @@ impl Scene {
         }
     }
 
+    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe` or `nautilus`), which
+    /// then shows from the start and stays: a fixed load for measuring one
+    /// scene, together with `SPOTIFY_ROUND_FULL_SPEED`.
+    pub fn forced() -> Option<Self> {
+        static FORCED: std::sync::OnceLock<Option<Scene>> = std::sync::OnceLock::new();
+        *FORCED.get_or_init(|| {
+            match std::env::var("SPOTIFY_ROUND_SCENE").ok()?.to_ascii_lowercase().as_str() {
+                "globe" => Some(Scene::Globe),
+                "nautilus" => Some(Scene::Nautilus),
+                other => {
+                    tracing::warn!(scene = other, "SPOTIFY_ROUND_SCENE names no scene");
+                    None
+                }
+            }
+        })
+    }
+
     /// Pick at random from the scenes whose renderer came up. `available` is the
     /// bit mask published by [`spawn`]; an empty mask falls back to the first
     /// scene so a very early request still has something to show.
     pub fn random(available: u64) -> Self {
+        if let Some(scene) = Self::forced() {
+            return scene;
+        }
         let mask = if Self::ALL.len() >= 64 {
             available
         } else {
