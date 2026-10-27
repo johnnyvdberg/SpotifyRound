@@ -110,6 +110,24 @@ cargo build --release
 
 `fonts-inter` gives the intended typography; without it Slint falls back to the system sans-serif.
 
+### Building on a Mac or another arm64 machine
+
+Building on the Pi takes a while. With Docker, `deploy/build-for-pi.sh` builds the same binary in an
+arm64 Debian 13 container, which matches Raspberry Pi OS, and leaves it in `target/pi/`; on a Mac
+with Apple silicon the container runs natively, so it is quick, and rebuilds are incremental. Copy it
+over the one the kiosk runs, and restart it:
+
+```bash
+deploy/build-for-pi.sh
+scp target/pi/spotify-round <user>@<pi>:spotify-round/target/release/spotify-round.new
+ssh -t <user>@<pi> 'cd spotify-round/target/release && mv spotify-round.new spotify-round \
+    && sudo systemctl restart cage-kiosk'
+```
+
+`--tests` also builds the test binary, `target/pi/spotify-round-tests`, to run the benchmarks on the
+Pi without a Rust toolchain there, for example `./spotify-round-tests dive3d::tests::frame_cost
+--ignored --nocapture`. Arguments after `--` go to cargo: `deploy/build-for-pi.sh -- --features kms`.
+
 Debug builds are usable too: `Cargo.toml` keeps the app at `opt-level = 1` with line tables but
 optimizes every dependency (`opt-level = 2`). Unoptimized Slint/femtovg/wgpu cannot repaint a
 1080 × 1080 scene at 60 Hz — the UI stutters at ~14 fps even on a fast desktop GPU — while the
@@ -336,6 +354,7 @@ src/
 │   ├── mod.rs         renderer: passes, pipelines, lighting; lays the porthole over the sea
 │   ├── helm.rs        how the boat moves: surge, cruise height, pitch, roll, turns about, all on springs
 │   ├── heightmap.rs   the random seabed of each visit: rolling ground, ridges and canyons
+│   ├── terrain.rs     the seabed in tiles, built as they come into view and dropped behind
 │   ├── textures.rs    fourteen procedural surfaces: rock, planks, marble, scales, skin, copper…
 │   ├── mesh.rs        every model, generated at start-up from lathes, lofts and extrusions
 │   ├── world.rs       what is in the water each frame: features, swimmers, lights, sprites
@@ -474,10 +493,20 @@ Each frame `world.rs` visits the cells of the world in view and places what live
 always in the same place — and the swimmers in their processions; a diver is a dozen capsules posed
 for its stride, a school a few hundred instances of one fish. The vertex shader bends them: fish sweep
 their tails sideways, whales and dolphins beat their flukes, kelp and fans sway, tentacles writhe and
-bells pulse. The seabed is a grid lifted in the vertex shader by the same heightmap `world.rs` places
-things with, so everything stands on it, and anything on the seabed takes on its sand where it meets
-it; the grid is three nested rings centred on the boat, fine close by and coarse in the distance, so
-the seabed is detailed wherever the boat looks. The boat sails a meandering corridor kept clear of
+bells pulse. The seabed is built by `terrain.rs` from the same heightmap `world.rs` places things
+with, so everything stands on it, and anything on the seabed takes on its sand where it meets it. It
+comes in tiles, built on the CPU the first time each comes into view and forgotten once the boat has
+left it behind, at three levels of detail nested around the boat: fine for at least five units,
+coarser out to the horizon, skirted where two levels meet so no crack shows. Only the tiles in view
+are drawn, nearest first. Whatever lies outside the round window is not drawn at all: models and
+tiles are culled against the window's circle, the corners of the square the sea is rendered into are
+masked off before anything is drawn, and closed models — rocks, columns, hulls, every animal — leave
+out the back faces no one can see. Every model is also built coarser, from the same recipe with half
+the segments, and `mesh.rs` measures how far each coarser level strays from the full one, in shape,
+colour and shading; a distant fish or pebble is drawn coarser only where that difference is under half
+a pixel of the sea, so the switch cannot be seen. The sea is stored at half its brightness in ten bits
+a channel, finer than the panel's eight and half the memory of floating point, which keeps the GPU's
+tiles large. The boat sails a meandering corridor kept clear of
 wrecks, temples and great rocks; schools and whales keep to lanes on either side of it, and divers
 walk paths that bend round the rocks, trees and columns in their way. Rocks, kelp and fish are placed
 in the cells of the whole view, whichever way it faces, and fade by coverage at the edge of their

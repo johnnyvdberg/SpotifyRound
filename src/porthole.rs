@@ -48,7 +48,14 @@ impl Porthole {
     /// `sea` is the texture the sea is drawn into, `size` pixels square and
     /// covering the glass with a little to spare; `bend` is how far the glass
     /// bends the view at its edge.
-    pub(crate) fn new(gpu: &Graphics, sea: &wgpu::TextureView, size: u32, bend: f32) -> Self {
+    /// `scale` is what the sea's colours were multiplied by when stored.
+    pub(crate) fn new(
+        gpu: &Graphics,
+        sea: &wgpu::TextureView,
+        size: u32,
+        bend: f32,
+        scale: f32,
+    ) -> Self {
         let device = &gpu.device;
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Porthole uniforms"),
@@ -183,7 +190,10 @@ impl Porthole {
             "Porthole composite pipeline",
             &layout,
             "fs_composite",
-            &[("GLASS_BEND", f64::from(bend))],
+            &[
+                ("GLASS_BEND", f64::from(bend)),
+                ("SEA_SCALE", f64::from(scale)),
+            ],
         );
         let start = Position {
             x: 0.0,

@@ -47,6 +47,9 @@ const LOG_GAUGE: f32 = -0.907;
 // How much the thick glass bends the view at its edge. The 3D dive renders a
 // plain perspective view and sets this so the composite bends it here.
 override GLASS_BEND: f32 = 0.0;
+// What the sea's colours were scaled by when they were stored, to fit them
+// in a format that holds no more than 1 (see `SEA_SCALE` in the 3D dive).
+override SEA_SCALE: f32 = 1.0;
 
 fn rot(a: f32) -> mat2x2<f32> {
     let c = cos(a);
@@ -327,7 +330,7 @@ fn fs_composite(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
             q += normalize(p + vec2<f32>(0.0001)) * soft(0.62, 1.0, rp / GLASS) * GLASS_BEND;
         }
         let uv = vec2<f32>(q.x, -q.y) / (2.0 * VIEW) + 0.5;
-        col = textureSampleLevel(sea, sea_sampler, uv, 0.0).rgb;
+        col = textureSampleLevel(sea, sea_sampler, uv, 0.0).rgb / SEA_SCALE;
 
         // An engraver's finish, after the plates of the 1871 edition: fine
         // hatching that only shows in the shadows, and a warm, inky grade.

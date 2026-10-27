@@ -304,8 +304,10 @@ impl World<'_> {
         -ICE
     }
 
-    /// Whether a sphere of `radius` at `p` can be seen through the window.
-    fn visible(&self, p: [f32; 3], radius: f32) -> bool {
+    /// Whether a sphere of `radius` at `p` can be seen through the window,
+    /// which is round: the corners of the square the sea is drawn into are
+    /// behind the brass.
+    pub fn visible(&self, p: [f32; 3], radius: f32) -> bool {
         let d = [
             p[0] - self.pose.pos[0],
             p[1] - self.pose.pos[1],
@@ -317,8 +319,11 @@ impl World<'_> {
         if z + radius < 0.08 {
             return false;
         }
-        let reach = VIEW * z.max(0.0) * 1.08 + radius;
-        dot(right).abs() < reach && dot(up).abs() < reach
+        // A sphere touches the cone of view up to a little past its radius,
+        // as the cone's side slants.
+        let reach = VIEW * z.max(0.0) * 1.08 + radius * 1.1;
+        let (x, y) = (dot(right), dot(up));
+        x * x + y * y < reach * reach
     }
 }
 
@@ -2455,7 +2460,9 @@ mod tests {
             (FOREST, Model::Cone),
             (WRECKS, Model::Hull),
             (ATLANTIS, Model::Shaft),
-            (CAVE, Model::Hex),
+            // The stalactites: the basalt columns stand low by the walls,
+            // outside the round window from up the tunnel.
+            (CAVE, Model::Cone),
             (ARCTIC, Model::Keel),
         ];
         for (leg, model) in landmarks {

@@ -2210,7 +2210,8 @@ impl Shared {
             scrubbing,
             accent,
             has_track: true,
-        };
+        }
+        .on_pixels();
         if model.ring_input.as_ref() == Some(&input) {
             return;
         }

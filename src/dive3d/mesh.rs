@@ -7,8 +7,27 @@
 //! planks of a hull, and two animation coordinates the vertex shader bends by:
 //! `aux.x` runs along a body from tail (-1) to head (+1), or along an arm from
 //! root (0) to tip (1); `aux.y` runs up a plant from root (0) to tip (1).
+//!
+//! Each model is also built coarser, at up to [`LODS`] levels of detail, from
+//! the same recipe with half the segments at each step: [`Lod`] records how
+//! far each strays from the full model, so the renderer only draws it where
+//! the difference is too small to see.
 
+use std::cell::Cell;
 use std::f32::consts::{PI, TAU};
+
+/// Levels of detail per model, the full one first.
+pub const LODS: usize = 3;
+
+thread_local! {
+    /// How many times coarser than its full detail a model is being built.
+    static COARSER: Cell<u32> = const { Cell::new(0) };
+}
+
+/// `n` segments, halved for each step coarser, but never fewer than `least`.
+fn fewer(n: usize, least: usize) -> usize {
+    (n >> COARSER.get()).max(least.min(n))
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -35,6 +54,49 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// The nearest point of triangle `t` to `p`, as barycentric weights of its
+/// corners.
+fn closest_on_triangle(p: [f32; 3], t: [[f32; 3]; 3]) -> [f32; 3] {
+    let [a, b, c] = t;
+    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return [1.0, 0.0, 0.0];
+    }
+    let bp = sub(p, b);
+    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return [0.0, 1.0, 0.0];
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let v = d1 / (d1 - d3);
+        return [1.0 - v, v, 0.0];
+    }
+    let cp = sub(p, c);
+    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return [0.0, 0.0, 1.0];
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let w = d2 / (d2 - d6);
+        return [1.0 - w, 0.0, w];
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return [0.0, 1.0 - w, w];
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let (v, w) = (vb * denom, vc * denom);
+    [1.0 - v - w, v, w]
 }
 
 fn normalize(v: [f32; 3]) -> [f32; 3] {
@@ -152,6 +214,7 @@ fn lathe(
     colour: impl Fn(f32, f32) -> [f32; 3],
     aux: impl Fn(f32) -> [f32; 2],
 ) -> Mesh {
+    let segments = fewer(segments, 5);
     let mut m = Mesh::default();
     let mut rings = Vec::with_capacity(profile.len());
     for &(r, y) in profile {
@@ -184,6 +247,7 @@ fn loft(
     section: impl Fn(f32) -> (f32, f32, f32, f32),
     colour: impl Fn(f32, f32) -> [f32; 3],
 ) -> Mesh {
+    let (stations, ring) = (fewer(stations, 4), fewer(ring, 4));
     let mut m = Mesh::default();
     let span = x1 - x0;
     let along = |x: f32| [((x - x0) / span) * 2.0 - 1.0, 0.0];
@@ -329,7 +393,7 @@ fn sphere_with(
     displace: impl Fn([f32; 3]) -> f32,
     colour: impl Fn([f32; 3]) -> [f32; 3],
 ) -> Mesh {
-    let corners = icosphere(subdivisions);
+    let corners = icosphere(subdivisions.saturating_sub(COARSER.get()));
     let mut m = Mesh::default();
     let mut index = std::collections::HashMap::new();
     for p in corners {
@@ -668,7 +732,7 @@ impl Model {
 fn kelp() -> Mesh {
     // A stipe with blades on alternate sides, twisting as it climbs.
     let mut m = Mesh::default();
-    let segments = 28;
+    let segments = fewer(28, 7);
     let mut previous: Option<(u32, u32)> = None;
     for i in 0..=segments {
         let y = i as f32 / segments as f32;
@@ -1090,75 +1154,204 @@ fn keel() -> Mesh {
 pub struct Library {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
-    /// (first index, index count, base vertex) per model.
-    pub ranges: Vec<(u32, u32, i32)>,
+    /// Per model, its levels of detail, the full one first; as many as
+    /// building it coarser makes a difference to.
+    pub lods: Vec<Vec<Lod>>,
+    /// Per model, whether it is sealed: its back faces are never seen.
+    pub sealed: Vec<bool>,
+}
+
+/// One level of detail of a model, in the library's buffers.
+#[derive(Clone, Copy, Debug)]
+pub struct Lod {
+    pub first: u32,
+    pub count: u32,
+    pub base: i32,
+    /// How far its surface strays from the full model's, either way, in the
+    /// model's own units.
+    pub error: f32,
+    /// How far its colours and normals stray from the full model's: see
+    /// `Mesh::distance`.
+    pub stray: f32,
+    /// The longest edge of what it changed: how fine the colours and normals
+    /// it carries there are.
+    pub edge: f32,
 }
 
 impl Library {
     pub fn build() -> Self {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
-        let mut ranges = Vec::new();
+        let mut lods = Vec::new();
+        let mut sealed = Vec::new();
         for model in Model::ALL {
-            let mesh = model.build();
-            ranges.push((
-                indices.len() as u32,
-                mesh.indices.len() as u32,
-                vertices.len() as i32,
-            ));
-            vertices.extend(mesh.vertices);
-            indices.extend(mesh.indices);
+            let mut levels: Vec<Mesh> = Vec::new();
+            for step in 0..LODS as u32 {
+                COARSER.set(step);
+                let mesh = model.build();
+                COARSER.set(0);
+                if levels
+                    .last()
+                    .is_some_and(|l| l.vertices.len() == mesh.vertices.len())
+                {
+                    break;
+                }
+                levels.push(mesh);
+            }
+            // Wound either way when built; the sealed ones are turned to face
+            // out, the way back faces are culled. A model is sealed only if
+            // every one of its levels is.
+            let closed: Vec<_> = levels.iter().map(Mesh::closed).collect();
+            for (mesh, closed) in levels.iter_mut().zip(&closed) {
+                if *closed == Some(false) {
+                    for t in mesh.indices.as_chunks_mut::<3>().0 {
+                        t.swap(1, 2);
+                    }
+                }
+            }
+            sealed.push(closed.iter().all(Option::is_some));
+            let mut list = Vec::new();
+            for mesh in &levels {
+                list.push(Lod {
+                    first: indices.len() as u32,
+                    count: mesh.indices.len() as u32,
+                    base: vertices.len() as i32,
+                    error: levels[0].distance(mesh).0.max(mesh.distance(&levels[0]).0),
+                    stray: levels[0].distance(mesh).1,
+                    edge: mesh.longest_new_edge(&levels[0]),
+                });
+                vertices.extend_from_slice(&mesh.vertices);
+                indices.extend_from_slice(&mesh.indices);
+            }
+            lods.push(list);
         }
         Self {
             vertices,
             indices,
-            ranges,
+            lods,
+            sealed,
         }
     }
 }
 
-/// The seabed: three square rings of detail centred on the boat — fine near
-/// it, coarse far off — so it reaches the horizon whichever way the boat
-/// turns. Each vertex is (x, z) from the ring's centre and the ring's spacing;
-/// the vertex shader snaps each ring to twice its spacing and lifts it into
-/// the terrain. A coarser ring leaves a hole for the finer one inside it, a
-/// little smaller than that ring so the two overlap rather than crack apart.
-pub fn terrain_grid() -> (Vec<[f32; 3]>, Vec<u32>) {
-    let levels = [(0.08f32, 112i32), (0.32, 112), (1.28, 64)];
-    let mut points = Vec::new();
-    let mut indices = Vec::new();
-    let mut inner = 0.0f32;
-    for (spacing, n) in levels {
-        let base = points.len() as u32;
-        for j in 0..=n {
-            for i in 0..=n {
-                points.push([
-                    (i - n / 2) as f32 * spacing,
-                    (j - n / 2) as f32 * spacing,
-                    spacing,
-                ]);
-            }
+impl Mesh {
+    /// How far any of this mesh's vertices lies from `other`'s surface; and
+    /// how far `other`'s colour and normal there stray from the vertex's own,
+    /// the larger of the two, the normal's by the sine of the angle between.
+    fn distance(&self, other: &Mesh) -> (f32, f32) {
+        let triangles: Vec<[u32; 3]> = other.indices.as_chunks::<3>().0.to_vec();
+        let corner = |t: &[u32; 3]| t.map(|i| other.vertices[i as usize].pos);
+        let (mut far, mut stray) = (0.0f32, 0.0f32);
+        for v in &self.vertices {
+            let nearest: Vec<(f32, [u32; 3], [f32; 3])> = triangles
+                .iter()
+                .map(|t| {
+                    let c = corner(t);
+                    let w = closest_on_triangle(v.pos, c);
+                    let q = [0, 1, 2].map(|k| c[0][k] * w[0] + c[1][k] * w[1] + c[2][k] * w[2]);
+                    let d = sub(v.pos, q);
+                    (dot(d, d).sqrt(), *t, w)
+                })
+                .collect();
+            let best = nearest.iter().map(|n| n.0).fold(f32::MAX, f32::min);
+            far = far.max(best);
+            let blend = |t: [u32; 3], w: [f32; 3], f: fn(&Vertex) -> [f32; 3]| {
+                let [a, b, c] = t.map(|i| f(&other.vertices[i as usize]));
+                [0, 1, 2].map(|k| a[k] * w[0] + b[k] * w[1] + c[k] * w[2])
+            };
+            // Where creases meet at the nearest point, the side facing the
+            // way this vertex does.
+            let (t, w) = nearest
+                .iter()
+                .filter(|n| n.0 <= best + 1e-4)
+                .map(|n| (n.1, n.2))
+                .max_by(|a, b| {
+                    let facing = |(t, w): &([u32; 3], [f32; 3])| {
+                        dot(normalize(blend(*t, *w, |v| v.normal)), v.normal)
+                    };
+                    facing(a).total_cmp(&facing(b))
+                })
+                .expect("a triangle");
+            let colour = blend(t, w, |v| v.colour);
+            let normal = normalize(blend(t, w, |v| v.normal));
+            // Colours relative to their brightness: countershading runs past 1.
+            let tint = (0..3)
+                .map(|k| (colour[k] - v.colour[k]).abs() / colour[k].max(v.colour[k]).max(0.1))
+                .fold(0.0, f32::max);
+            let n = cross(normal, v.normal);
+            stray = stray.max(tint).max(dot(n, n).sqrt());
         }
-        // The hole: what the finer ring covers, less room for the two rings
-        // snapping to different steps.
-        let hole = inner - 3.0 * spacing;
-        for j in 0..n {
-            for i in 0..n {
-                let cx = (i - n / 2) as f32 * spacing + spacing * 0.5;
-                let cz = (j - n / 2) as f32 * spacing + spacing * 0.5;
-                if cx.abs() + spacing * 0.5 < hole && cz.abs() + spacing * 0.5 < hole {
-                    continue;
-                }
-                let a = base + (j * (n + 1) + i) as u32;
-                let b = a + 1;
-                let c = a + (n + 1) as u32;
-                let d = c + 1;
-                indices.extend_from_slice(&[a, c, b, b, c, d]);
-            }
-        }
-        inner = n as f32 * spacing * 0.5;
+        (far, stray)
     }
-    (points, indices)
+
+    /// The longest edge of the triangles this mesh has and `full` has not:
+    /// how coarse the parts it changed are.
+    fn longest_new_edge(&self, full: &Mesh) -> f32 {
+        let key = |m: &Mesh, t: &[u32; 3]| {
+            let mut k = t.map(|i| m.vertices[i as usize].pos.map(|c| (c * 1e4).round() as i64));
+            k.sort();
+            k
+        };
+        let old: std::collections::HashSet<_> = full
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| key(full, t))
+            .collect();
+        let mut longest = 0.0f32;
+        for t in self.indices.as_chunks::<3>().0 {
+            if old.contains(&key(self, t)) {
+                continue;
+            }
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let d = sub(self.vertices[a as usize].pos, self.vertices[b as usize].pos);
+                longest = longest.max(dot(d, d).sqrt());
+            }
+        }
+        longest
+    }
+
+    /// Whether the mesh is closed, every edge shared by exactly two triangles
+    /// running it opposite ways, so that from outside its back faces are
+    /// always hidden behind its front ones; and if so, whether it is wound
+    /// counter-clockwise seen from outside. Fins, sails and fronds are open.
+    pub fn closed(&self) -> Option<bool> {
+        use std::collections::HashMap;
+        // Vertices at the same place are one, whatever their normals.
+        let mut welded = HashMap::new();
+        let ids: Vec<usize> = self
+            .vertices
+            .iter()
+            .map(|v| {
+                let key = v.pos.map(|c| (c * 1e4).round() as i64);
+                let next = welded.len();
+                *welded.entry(key).or_insert(next)
+            })
+            .collect();
+        let mut edges: HashMap<(usize, usize), u32> = HashMap::new();
+        let mut volume = 0.0f64;
+        for t in self.indices.as_chunks::<3>().0 {
+            let [a, b, c] = [0, 1, 2].map(|k| ids[t[k] as usize]);
+            // Slivers where two corners meet, as at a sphere's poles, cover
+            // nothing.
+            if a == b || b == c || c == a {
+                continue;
+            }
+            for edge in [(a, b), (b, c), (c, a)] {
+                *edges.entry(edge).or_default() += 1;
+            }
+            let [p, q, r] = [0, 1, 2].map(|k| self.vertices[t[k] as usize].pos.map(f64::from));
+            volume += p[0] * (q[1] * r[2] - q[2] * r[1])
+                + p[1] * (q[2] * r[0] - q[0] * r[2])
+                + p[2] * (q[0] * r[1] - q[1] * r[0]);
+        }
+        let closed = !edges.is_empty()
+            && edges
+                .iter()
+                .all(|(&(a, b), &n)| n == 1 && edges.get(&(b, a)) == Some(&1));
+        closed.then_some(volume > 0.0)
+    }
 }
 
 #[cfg(test)]
@@ -1166,16 +1359,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn closed_shapes_are_sealed_and_sheets_are_not() {
+        let library = Library::build();
+        let sealed = |m: Model| library.sealed[Model::ALL.iter().position(|&n| n == m).unwrap()];
+        let names: Vec<String> = Model::ALL
+            .iter()
+            .filter(|&&m| sealed(m))
+            .map(|m| format!("{m:?}"))
+            .collect();
+        println!("sealed: {}", names.join(" "));
+        assert!(sealed(Model::Box), "a box is closed");
+        assert!(!sealed(Model::Plane), "a plane has two sides");
+    }
+
+    #[test]
     fn every_model_builds_with_sane_normals() {
         let library = Library::build();
-        assert_eq!(library.ranges.len(), Model::ALL.len());
-        for (model, (first, count, base)) in Model::ALL.iter().zip(&library.ranges) {
-            assert!(*count > 0 && count % 3 == 0, "{model:?} has no triangles");
-            for &i in &library.indices[*first as usize..(*first + *count) as usize] {
-                let v = library.vertices[(*base as u32 + i) as usize];
-                let n = v.normal;
-                let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-                assert!(length.is_finite(), "{model:?} has a broken normal");
+        assert_eq!(library.lods.len(), Model::ALL.len());
+        for (model, lods) in Model::ALL.iter().zip(&library.lods) {
+            println!(
+                "{model:?}: {}",
+                lods.iter()
+                    .map(|l| format!(
+                        "{} tris, error {:.3}, stray {:.3}, edge {:.3}",
+                        l.count / 3,
+                        l.error,
+                        l.stray,
+                        l.edge
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+            assert!(lods[0].error == 0.0, "{model:?}'s full detail is itself");
+            for lod in lods {
+                let (first, count, base) = (lod.first, lod.count, lod.base);
+                assert!(count > 0 && count % 3 == 0, "{model:?} has no triangles");
+                for &i in &library.indices[first as usize..(first + count) as usize] {
+                    let v = library.vertices[(base as u32 + i) as usize];
+                    let n = v.normal;
+                    let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    assert!(length.is_finite(), "{model:?} has a broken normal");
+                }
             }
         }
     }
