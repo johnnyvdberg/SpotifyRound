@@ -15,11 +15,13 @@ path = "src/main.rs"
 # Render straight through DRM/KMS with the GPU, for a Pi running without a
 # compositor (`cargo build --release --features kms`).
 kms = ["slint/backend-linuxkms"]
-# The renderer Slint draws the window with, on the shared wgpu device: femtovg,
-# or Skia (`--no-default-features --features skia`).
-default = ["femtovg"]
-femtovg = ["slint/renderer-femtovg-wgpu"]
+# The renderer Slint draws the window with, on the shared wgpu device. Skia
+# compiles a small shader for each kind of draw; femtovg runs one large shader
+# for all of them, which costs the Pi's GPU several times as much per pixel
+# (`--no-default-features --features femtovg`, to compare).
+default = ["skia"]
 skia = ["slint/renderer-skia"]
+femtovg = ["slint/renderer-femtovg-wgpu"]
 
 [dependencies]
 animato = "1.7.3"
@@ -81,12 +83,4 @@ slint = { version = "1.18", default-features = false, features = [
     "compat-1-2",
     "renderer-software",
 ] }
-# The renderer Slint draws with, used directly by the `gpu_cost` benchmark.
-femtovg = { version = "0.27", default-features = false, features = ["wgpu"] }
-
-# femtovg with render passes suited to a tile-based GPU such as the Pi's V3D:
-# the window clear happens in the pass instead of loading the old frame, and the
-# stencil is never loaded or stored. See `vendor/femtovg/PATCHED.md`.
-[patch.crates-io]
-femtovg = { path = "vendor/femtovg" }
 

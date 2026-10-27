@@ -1,6 +1,6 @@
 //! One wgpu device for the whole display.
 //!
-//! Slint renders the UI through wgpu (femtovg on Vulkan), and the idle globe draws
+//! Slint renders the UI through wgpu (Skia on Vulkan), and the idle globe draws
 //! into a texture on the same device, so a frame never leaves the GPU: no readback
 //! and no re-upload. Slint has to be told about the device before any window
 //! exists, which is why this sits in its own module rather than inside `globe`.

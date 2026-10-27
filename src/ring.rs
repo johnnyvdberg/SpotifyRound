@@ -8,11 +8,11 @@
 //! shared wgpu device instead; Slint only composites that texture, so a frame is
 //! one uniform write and one full-screen draw call.
 //!
-//! The same pass paints what lies under the ring, opaque. On the Pi's
-//! tile-based GPU every full-screen layer Slint blends costs a pass over a
-//! million pixels through femtovg's general-purpose shader; drawn as Slint
-//! gradients, the glow and the vignette were two such layers and the ring, a
-//! mostly transparent texture, a third. Here they are one.
+//! The same pass paints what lies under the ring, opaque. On the Pi's GPU,
+//! which is short of arithmetic, every full-screen layer Slint blends is a
+//! million pixels of shading; drawn as Slint gradients, the glow and the
+//! vignette were two such layers and the ring, a mostly transparent texture, a
+//! third. Here they are one.
 
 #[cfg(test)]
 use anyhow::Result;

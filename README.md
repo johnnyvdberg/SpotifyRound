@@ -129,7 +129,7 @@ Pi without a Rust toolchain there, for example `./spotify-round-tests dive3d::te
 --ignored --nocapture`. Arguments after `--` go to cargo: `deploy/build-for-pi.sh -- --features kms`.
 
 Debug builds are usable too: `Cargo.toml` keeps the app at `opt-level = 1` with line tables but
-optimizes every dependency (`opt-level = 2`). Unoptimized Slint/femtovg/wgpu cannot repaint a
+optimizes every dependency (`opt-level = 2`). Unoptimized Slint/Skia/wgpu cannot repaint a
 1080 × 1080 scene at 60 Hz — the UI stutters at ~14 fps even on a fast desktop GPU — while the
 optimized dependencies reach the frame budget.
 
@@ -394,7 +394,7 @@ is not redrawn at all.
 
 **Hardware acceleration.** Before any window exists, `src/gpu.rs` opens a wgpu device (Vulkan first)
 and hands it to Slint with `BackendSelector::require_wgpu_30(WGPUConfiguration::Manual { .. })`, so
-femtovg composites the whole UI through Vulkan (`-v` logs the adapter and the graphics API in use).
+Skia composites the whole UI through Vulkan (`-v` logs the adapter and the graphics API in use).
 That API sits behind Slint's `unstable-wgpu-30` flag, so the feature and `slint::wgpu_30` names move
 with wgpu releases; the idle scenes and the progress rim render on the same device and their frames are
 handed over as textures, so nothing round-trips through the CPU. On a Pi without a compositor build
@@ -409,24 +409,37 @@ be installed for the build. Playback position is interpolated from a monotonic c
 re-anchors it when it disagrees by more than a second, which keeps the rim moving forwards at a
 constant rate instead of twitching as the answers arrive.
 
-**Feeding a tile-based GPU.** The Pi 5's VideoCore VII (V3D) draws in small on-chip tiles, and
-everything that goes to or from memory is what limits it: every render pass loads and stores the
-whole framebuffer unless told otherwise, and every full-screen layer is a million pixels of
-blending through femtovg's general-purpose shader. So:
+**What the Pi's GPU can afford.** The Pi 5's VideoCore VII (V3D) is short of arithmetic: about
+46 billion shader operations a second, so a full-screen pass at 1080 × 1080 costs roughly
+`instructions per pixel × 0.025 ms`, and a shader too large for its registers runs at half the
+thread count and pays more besides. Passes, blending and buffer uploads are cheap by comparison.
+`cargo test gpu_cost -- --ignored --nocapture` (or `spotify-round-tests gpu_cost …` on the Pi)
+measures them on the GPU at hand, and `V3D_DEBUG=shaderdb` makes Mesa print each shader's
+instruction and thread count. So:
 
-- `vendor/femtovg` is femtovg with render passes that clear instead of loading the last frame and
-  never load or store the stencil (see its `PATCHED.md`), used through `[patch.crates-io]`.
-- No rendering notifier is installed unless the frame-rate readout asks for one: while one is set,
-  Slint submits the window clear in a pass of its own.
+- Slint draws the window with **Skia**, which compiles a small shader for each kind of draw.
+  femtovg, Slint's other GPU renderer, runs one 1090-instruction shader for every paint type: a
+  full-screen femtovg layer cost about 5 ms on the Pi against 0.4 ms for a trivial shader, and the
+  player alone 25 ms of the 16.7 ms a frame has. `--no-default-features --features femtovg`
+  switches back, to compare.
 - What can be drawn together is: the player's glow, vignette and rim are one opaque texture from
   `ring.rs`, and the globe paints the space behind itself, so each screen is one full-screen layer
-  for femtovg.
-- The visualizer keeps one frame in flight and draws the next only once the window has taken the
-  last. A scene thread that submits on its own clock queues work ahead of the window's frames
-  faster than the GPU finishes it, until every frame on screen is late.
+  for Slint.
+- Shaders are specialised where they branch on something fixed for a draw: the dive's model
+  shader gets a pipeline per material, and the globe works out once what never changes for a
+  pixel (where it lies on the maps, the air towards the viewer) instead of every frame.
+- No rendering notifier is installed unless the frame-rate readout asks for one: while one is set,
+  Slint submits the window clear in a pass of its own.
+- Every submission is made on the UI thread (`Graphics::submit`). wgpu drains the queue before it
+  reconfigures the window's surface and fails if another thread submits meanwhile, which Slint
+  does on the UI thread whenever the swapchain goes out of date.
+- The visualizer keeps two frames in flight, no more. A scene thread that submits on its own clock
+  queues work ahead of the window's frames faster than the GPU finishes it, until every frame on
+  screen is late.
 
-`WGPU_BACKEND=gl` runs everything on the Pi's OpenGL ES driver instead of Vulkan, to compare the
-two.
+`SPOTIFY_ROUND_SCENE=globe` (or `nautilus`) shows that scene from the start, for measuring one with
+`SPOTIFY_ROUND_FULL_SPEED`, and `WGPU_BACKEND=gl` runs everything on the Pi's OpenGL ES driver
+instead of Vulkan.
 
 **Optimistic UI.** Commands apply their result before Spotify confirms it, so the display never lags
 behind a press. Play/pause, shuffle, repeat, seek, skips and playlist starts update the model
