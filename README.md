@@ -10,8 +10,9 @@ for motion.
   <img src="docs/02-playlists.png" width="210" alt="Playlists">
   <img src="docs/03-queue.png" width="210" alt="Queue">
   <img src="docs/05-idle.png" width="210" alt="Idle visualizer">
-  <img src="docs/07-diving-bell.png" width="210" alt="Diving bell: submarine and dolphins">
-  <img src="docs/08-diving-bell-life.png" width="210" alt="Diving bell: whale and wreck">
+  <img src="docs/07-diving-bell.png" width="210" alt="Diving bell: a school among the columns of Atlantis">
+  <img src="docs/08-diving-bell-life.png" width="210" alt="Diving bell: a right whale over the kelp shallows">
+  <img src="docs/09-dive3d.png" width="210" alt="The 3D dive: the colonnades of Atlantis">
 </p>
 
 The display is a **remote control and a visualiser**, not a speaker: it drives whichever Spotify
@@ -40,11 +41,13 @@ Spotify **Premium** account.
   transitions between the pages.
 - **Idle visualisers**: when nothing is playing — or a track has been paused for half a minute — one
   of the procedural scenes takes over the screen, chosen at random on every visit. The **Earth** is a
-  rotating Blue Marble with Black Marble city lights, drifting clouds, sun glint and a sunlit
-  atmosphere. The **diving bell** is a first-person porthole onto a moving submarine cruise: seabed,
-  kelp, vents and wrecks stream past as new terrain is generated, while two shoals of fish, pulsing
-  jellyfish, a right whale, a pod of dolphins and a reference-style submarine pass under slanting
-  sunbeams. Swipe down on the player to summon the visualiser, tap anywhere on it to fade back.
+  rotating Blue Marble with Black Marble city lights, drifting clouds and their shadows, sun glint, sunset colour along the terminator and a scattering
+  atmosphere. The **diving bell** is the Nautilus' salon window on a Jules Verne voyage, drawn either procedurally or as a 3D scene: the boat
+  travels from sunlit kelp shallows through the submarine forest, where helmeted divers walk the
+  seabed, past the galleons of Vigo Bay, the volcano-lit ruins of Atlantis and a lava cave down to
+  the abyss and its giant squid, then up under the polar ice, while brass gauges in the bezel follow
+  the dive. Swipe down on the player to summon the visualiser, swipe left or right on the dive to
+  travel on to the next stretch of sea or back, and tap anywhere to fade back.
 - **Touch first**: swipes are the only navigation — right for the queue, left for playlists, with the
   player in the middle — and dragging along the rim of the screen scrubs. Everything is laid out
   inside the circle so nothing hides in the corners of the round panel.
@@ -138,6 +141,9 @@ redirect_port = 8888
 
 # Playback polling interval. Spotify's rate limit is generous at one second.
 poll_ms = 1000
+
+# Show the frame-rate readout from the start (the F key toggles it).
+# show_fps = false
 ```
 
 `SPOTIFY_ROUND_CLIENT_ID` and `SPOTIFY_ROUND_CONFIG_DIR` override the file and the directory, which
@@ -206,7 +212,13 @@ ssh -L 8888:127.0.0.1:8888 pi@spotify-round.local 'spotify-round auth --no-brows
 spotify-round              # full screen, Spotify
 spotify-round --windowed   # a 1080×1080 window, for development
 spotify-round --mock --windowed   # demo library, no account needed
+spotify-round --fps        # start with the frame-rate readout showing
 ```
+
+Press **F** on a keyboard to show or hide the frame-rate readout: a pill at the top of the circle,
+where the round glass still has room for it, with the frames the window presented in the last
+second and, while the visualizer runs, its own frame rate and the milliseconds its thread spent on
+each frame.
 
 ### Controls
 
@@ -220,6 +232,7 @@ spotify-round --mock --windowed   # demo library, no account needed
 | Swipe left | playlists |
 | Swipe right | queue |
 | Swipe down | idle visualiser — it picks Earth or the diving bell at random (a tap returns to the player) |
+| Swipe left / right on the diving bell | travel on to the next stretch of sea / back to the last |
 | Tap a playlist | start it and return to now playing |
 | Tap a queue entry | restart the playlist from that item |
 
@@ -304,9 +317,18 @@ src/
 ├── ui.rs              every Slint property write + offscreen preview renderer
 ├── motion.rs          Animato: accent tween, reveal, pulse
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
-├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud, relief and water maps
-├── dive.rs            idle scene: the diving bell renderer; the procedural world lives in dive.wgsl
-├── dive.wgsl          the diving-bell fragment shader: water, terrain, whale, submarine, dolphins and wreck
+├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
+├── dive.rs            idle scene: the Nautilus window renderer (sea pass, bezel, composite)
+├── dive.wgsl          the voyage shader: seven biomes, divers, squid, ruins, wrecks, bezel and gauges
+├── dive3d/            idle scene: the same voyage rasterised in 3D
+│   ├── mod.rs         renderer: passes, pipelines, lighting; borrows the porthole from dive.rs
+│   ├── helm.rs        how the boat moves: surge, cruise height, pitch, roll, turns about, all on springs
+│   ├── heightmap.rs   the random seabed of each visit: rolling ground, ridges and canyons
+│   ├── textures.rs    fourteen procedural surfaces: rock, planks, marble, scales, skin, copper…
+│   ├── mesh.rs        every model, generated at start-up from lathes, lofts and extrusions
+│   ├── world.rs       what is in the water each frame: features, swimmers, lights, sprites
+│   └── scene.wgsl     water, seabed, models, glass and sprites
+├── voyage.rs          the voyage itself: distance travelled, swipes, and the dive profile behind the depth gauge
 ├── ring.rs            the progress rim: one wgpu fragment shader for track, arc and head dot
 ├── gpu.rs             the single wgpu/Vulkan device, handed to Slint before the window exists
 ├── artwork.rs         download → decode → rounded mask → accent colour → cache
@@ -324,7 +346,7 @@ ui/
 ├── state.slint        Player / Devices / Library / App / Idle globals
 ├── components/        icons, buttons, artwork, rim ring, rows, toast…
 └── screens/           now playing, device picker, playlists, queue, login, idle
-assets/earth/          Blue Marble day, night and clouds (8K), relief and water maps (2K)
+assets/earth/          Blue Marble day, night and clouds (4K), relief and water maps (2K)
 ```
 
 **Threading.** Slint runs on the main thread. A Tokio runtime polls `/me/player` once a second and
@@ -389,64 +411,159 @@ re-uploaded, so a frame never leaves the GPU. Frames are drawn at 60 fps and onl
 visible; at rest the thread sleeps and the display draws no power at all. `-vv` logs the achieved rate.
 
 **Earth.** The planet is drawn in `globe.rs` with one fragment shader that projects the sphere, samples
-the maps and lights it.
+the maps and lights it through a model of the atmosphere, in linear light.
 
-- **Day side** — NASA Blue Marble; **night side** — Black Marble city lights, warm and blown out a
-  little.
+- **Day side** — NASA Blue Marble; **night side** — Black Marble city lights, warm amber where they
+  are faint and whiter where they are dense, dimmed by cloud.
 - **Sun** — one light that travels once round the planet every half hour, so the terminator sweeps
   across the disc: full daylight, then a few minutes of the night side with its city lights, then
-  daylight again. Sunlight scatters through the air well past the terminator, so the ground fades out
-  over a wide, warm band rather than stopping at a line, and a faint earthshine keeps the dark
-  hemisphere from turning into a black hole.
+  daylight again. The planet turns on its axis, tilted 23.4°.
+- **Air** — Rayleigh scattering, strongest in the blue. Sunlight crossing a long path of air near the
+  terminator is reddened, so the ground and, a little longer, the cloud tops glow with sunset colour
+  there; the air in front of the ground dims it and adds a blue haze that thickens toward the limb;
+  and outside the limb the air glows where the sun reaches it, thinning out exponentially with
+  height and lingering past the terminator, where the high air is still lit. On the night side only
+  a faint green line of airglow remains.
 - **Relief** — the normal map tilts the lighting, so mountain belts and trenches catch the light.
-- **Water** — the specular map adds the sun glint on the oceans, broken up by the cloud sheet.
-- **Clouds** — a sheet that is part of the surface, so it turns with it instead of drifting over it.
-  It is lit by the same sun, stays faintly visible at night, and hides the city lights underneath.
-- **Air** — a blue halo outside the limb that only appears where the sun reaches the atmosphere, plus
-  a haze just inside the lit limb. The planet is drawn at 95 % of the frame, and the glow fades out
-  just inside the square edge so it is never cut off, however large the planet gets.
+- **Water** — the sea darkens and catches the sun in a soft glint spread by the waves, with a Fresnel
+  sheen of sky toward the limb, broken up by the cloud sheet.
+- **Clouds** — a sheet that turns a little faster than the ground, so the weather visibly moves over
+  the continents. It casts shadows away from the sun, longer as the sun sinks, and hides the city
+  lights underneath.
 
-The maps go up at their native size — nothing is resampled on the CPU — and the GPU builds a mip chain for
-each of them, with a little extra level of detail bias when sampling: that is what keeps the city lights
-from sparkling as the map is minified, and sampling is anisotropic where the driver offers it. 8K day and
-night plus the 8K cloud sheet and the 2K relief and water maps come to roughly 420 MB of GPU memory and
-170 MB of working set; the whole display, globe at 60 fps included, costs about a third of a core, which
-suits a Pi 5 with 4 GB that runs nothing else. On a smaller board or a driver whose largest texture is
-4096, the maps are shrunk to fit and a warning is logged. `SIZE`, `FPS`, `REVOLUTION`, `SUN_PERIOD`,
-`PLANET`, `ATMOSPHERE`, `TERMINATOR`, `TWILIGHT`, `DUSK` and `NIGHTSHINE` are the knobs.
+The maps are 4096 × 2048 (2048 × 1024 for relief and water), which on the 850-pixel disc is still about
+one and a half texels per pixel at the centre. Each is stored in the smallest format that holds it: the
+day map as sRGB, so the GPU linearises it when sampling and builds a gamma-correct mip chain; the city
+lights and the clouds as one channel each; the relief's two slopes together with the water mask. The GPU
+builds every mip chain, with a little extra level of detail bias when sampling, which keeps the city
+lights from sparkling as the map is minified; sampling is anisotropic where the driver offers it. All of
+it comes to about 80 MB of GPU memory, against 420 MB for the 8K maps this replaced, and decodes in a
+quarter of the time; per frame the GPU does less work than before, despite the atmosphere. `SIZE`,
+`FPS`, `REVOLUTION`, `SUN_PERIOD`, `PLANET`, `ATMOSPHERE`, `AIR`, `SCALE_HEIGHT`, `SUNLIGHT`,
+`CLOUD_DRIFT` and `OBLIQUITY` are the knobs.
 
 Earth textures: NASA **Blue Marble** (day) and **Black Marble** (night lights), as distributed by
 [solarsystemscope.com](https://www.solarsystemscope.com/textures/) under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). They live in `assets/earth/`.
 
-**The diving bell.** `dive.rs` drives one procedural fragment shader, `dive.wgsl`: no textures, one
-uniform buffer, and a fresh world seed on every visit, so the seabed, wreck, whale, jellyfish and
-shoals are never quite the same twice.
+**The diving bell.** The scene is the view from the Nautilus' salon window, after *Twenty
+Thousand Leagues Under the Seas*. `dive.rs` drives one procedural shader, `dive.wgsl`: no textures,
+one uniform buffer, and a fresh world seed on every visit, so the voyage joins its circuit somewhere
+new and the seabed, wrecks and life are never quite the same twice. `voyage.rs` steers the boat.
 
-- **Porthole** — a brass rim with eighteen rivets, brushed metal, a glass tint, grime, an edge
-  reflection and a soft lamp glow on the casing. The glass bends the view slightly at its edge, and
-  the whole bell sways.
-- **Moving world** — the camera travels forward through a procedural seabed. The water and the far
-  ridge drift at different rates from the floor, kelp, boulders, vents and wrecks, and every feature is
-  generated from a world-space cell, so new terrain keeps arriving for as long as the dive runs.
-- **Water** — a depth gradient under a moving surface, caustic light, slanting volumetric sunbeams and
-  two noise layers of murk.
-- **Seabed** — two parallax ridges, boulders, a kelp forest that sways out of step, a hydrothermal vent
-  with a glowing plume, fan corals and galleon wrecks with masts, rigging, a torn sail and lanterns
-  still burning.
-- **Shoals** — two species in different sizes and directions. The fish are drawn along the school's
-  velocity, with a swimming bend, tail beat, dorsal and pectoral fins, a pale belly and an eye, so a
-  shoal always points where it is going.
-- **Jellyfish** — translucent pulsing bells with a scalloped rim, radial canals, gonads, trailing oral
-  arms and a fan of fine tentacles. Each one has its own pulse and tint.
-- **The right whale** — a huge head with the pale callosities of a North Atlantic right whale, a curved
-  mouth, a white flank patch, broad pectoral flippers and forked flukes, crossing every minute or so.
-- **The submarine** — a sleek dark hull with a pointed bow, five round windows lit from inside, a cyan
-  light strip, glass domes, a swept dorsal fin, marker lights, a bow plane and a turning propeller. A
-  pod of four dolphins rides the water beneath it.
+- **The voyage** — the Nautilus travels on through seven legs of about a minute each, cross-fading
+  from one to the next: sunlit kelp shallows, the submarine forest of Crespo, the galleons of Vigo
+  Bay, the ruins of Atlantis, a lava cave, the abyss, and the underside of the polar ice before the
+  shallows again. A swipe to the left carries it on to the next leg in a few seconds' surge, a swipe
+  to the right back to the last, and swipes made on the way add up. The water darkens, the sunbeams
+  and caustics fade and the searchlight takes over as it dives.
+- **Diving** — every leg has its own depth of sea, and the Nautilus follows a slow dive profile
+  within it, rising and sinking through its cruising band over a minute or two, answering the
+  planes at a believable rate and never closer than a fathom or two to the seabed, the cave's vault
+  or the ice. The seabed falls away or comes up to meet it, the surface comes and goes, marine snow
+  streams past the glass the other way, and the manometer follows on a logarithmic scale, so a few
+  fathoms' climb in the shallows moves it as clearly as the long climb out of the abyss. Every feature comes from a
+  world-space cell, and the far mountains, the temples, the drifting jellyfish, the seabed and the
+  rocks right against the glass all scroll at different rates.
+- **Depth** — the window is a true perspective view, level, with the horizon through its centre.
+  The seabed recedes to that horizon, and every rock, column, wreck and animal has a distance from the
+  glass that sets its size, its height above the horizon, how fast the voyage sweeps it past, how much
+  water hazes it and how much of the searchlight reaches it; nearer things hide farther ones, and the
+  seabed hides whatever stands behind a rise. Rocks, plants and ruins are bedded in drifts of the
+  floor's own sand. The surface of the shallows is the rippling silver ceiling seen from below.
+- **Swimming** — every animal moves through the water at its own speed, so its pace across the
+  window follows from that speed, the Nautilus' and its distance, and its tail beats in step with its
+  speed. Fish and sharks sweep their tails sideways, so in profile the tail narrows and widens; whales
+  and dolphins beat their flukes up and down, with a wave running down the body. Divers' strides
+  match the ground they cover.
+- **The window** — a brass bezel with two beads, an engraved degree scale and twelve hex bolts, set
+  in a riveted iron wall. A manometer on the left reads the depth, the log on the right turns once per
+  leg, and a cartouche carries the Nautilus' *N*. The glass bends the view slightly at its edge and
+  the boat rolls gently on its course; the water gets a fine engraved hatching in the shadows, after
+  the plates of the first illustrated edition.
+- **Shallows** — kelp swaying out of step, sea fans, a right whale near the surface with its arched
+  head, bowed mouth and pale callosities, a pod of dolphins overtaking the boat and schools of fish at
+  four distances, under a moving surface and slanting sunbeams. Schools are patchy, as they are at
+  sea: most are a handful of fish and now and then one is a great cloud; each species keeps to its
+  own band of water, from big fish high in open water down to fry by the seabed; a school is densest
+  in its core and at its leading edge, thins to a few stragglers, bends as it turns, and a wave of
+  turning sweeps through it.
+- **The forest of Crespo** — tall red and olive algae that branch like trees, a giant clam holding its
+  pearl, and a party of divers in Rouquayrol-Denayrouze suits and copper helmets walking the
+  seabed, the leader lighting the way with a Ruhmkorff lamp, the others carrying air guns, their
+  bubbles rising.
+- **Vigo Bay** — galleon wrecks with masts, rigging and torn sails, chests spilling glittering gold,
+  sharks against the current and jellyfish.
+- **Atlantis** — fluted Doric columns, many broken off, with fallen drums, temple fronts in the middle
+  distance and paved streets, all under the red light of a volcano with lava on its flank and ash in
+  the water. The divers come here too.
+- **The lava cave** — a basalt vault overhead, hung with stalactites dripping molten rock; clustered
+  hexagonal basalt columns; a floor of crusted basalt with lava glowing through its veins and pooling
+  in the hollows; pillow lava molten in its cracks; steaming vents and a red, smoky haze.
+- **The abyss** — darkness broken by the searchlight, bioluminescent plankton, jellyfish, anglerfish
+  lit by their own lures, black smokers, and the giant squid: mottled red, one huge eye, eight arms
+  and two clubbed tentacles trailing as it jets past.
+- **Under the ice** — the Nautilus runs close beneath the pack, as it did at the South Pole: floes of
+  differing thickness glowing with the daylight through them, long open leads, keels of broken
+  ice hanging down, penguins flying past with trails of bubbles, a pod of narwhals with their spiral
+  tusks, swarms of krill, glass sponges and starfish on the seabed.
 
-Only the porthole is opaque glass; the rest of the round panel is the bell's casing. The scene is
-rendered at 1080 × 1080 so the porthole meets the physical rim.
+**Frame budget.** A frame is drawn in two passes to keep it inside a 60 fps budget on the Pi 5. The sea goes into a
+576 × 576 half-float texture that covers only the glass, since nothing under water is sharp, and
+every creature and feature checks a bounding box before it evaluates a single shape. A cheap
+1080 × 1080 pass then scales the sea up, adds the engraving and dither, lays the bezel over it and
+draws the gauge needles. The bezel never changes, so it is drawn once when the scene is built. Only
+three biomes can ever be in view, the current leg's and its neighbours', so the sea pipeline is
+built seven times with a pipeline-overridable constant naming them; the driver drops every other
+biome's code, and the smaller shader keeps more pixels in flight.
+`cargo test --release frame_time -- --ignored --nocapture` times the scene on whatever GPU is present,
+and `DIVE_PREVIEW_DIR=<dir> cargo test --release previews -- --ignored` writes a frame from each leg.
+
+**The 3D dive.** The same voyage — the same seven biomes, swipes and dive profile — drawn as a real
+3D scene in `dive3d/`, and offered beside the procedural one when the visualizer picks a scene. Every
+model is generated when the scene is built, from a handful of generators: surfaces of revolution for
+columns, trunks, cones and bells; lofted bodies for the fish, shark, whale, dolphins, narwhals, penguins,
+the squid's mantle and the galleons' hulls; extrusions for fins, flukes, sails, stars and slabs of ice.
+Each frame `world.rs` visits the cells of the world in view and places what lives there — the same rock
+always in the same place — and the swimmers in their processions; a diver is a dozen capsules posed
+for its stride, a school a few hundred instances of one fish. The vertex shader bends them: fish sweep
+their tails sideways, whales and dolphins beat their flukes, kelp and fans sway, tentacles writhe and
+bells pulse. The seabed is a grid lifted in the vertex shader by the same heightmap `world.rs` places
+things with, so everything stands on it, and anything on the seabed takes on its sand where it meets
+it; the grid is three nested rings centred on the boat, fine close by and coarse in the distance, so
+the seabed is detailed wherever the boat looks. The boat sails a meandering corridor kept clear of
+wrecks, temples and great rocks; schools and whales keep to lanes on either side of it, and divers
+walk paths that bend round the rocks, trees and columns in their way. Rocks, kelp and fish are placed
+in the cells of the whole view, whichever way it faces, and fade by coverage at the edge of their
+range, so nothing appears or vanishes in the middle of the window. Light comes from the sun through the surface, the searchlight as a real spotlight, and up to eight
+point lights — lava pools, vents, the volcano, the divers' lamp, anglerfish lures — with the water
+hazing everything by its distance; the surface and the ice are great planes overhead. The lava cave is
+a real tunnel: a massif rises across the corridor and the boat enters it through a mouth in its cliff
+face, under a ragged arch of basalt veined with molten rock, hung with stalactites and lit from below
+by lava pools, and leaves by the far mouth; the mesh is rebuilt each frame for the stretch in view,
+from rings fixed in the world.
+The seabed is a random heightmap made afresh on every visit — rolling ground, folded ridges and the
+odd canyon, 64 units to a tile — shown more strongly in the rugged abyss than under the paved city;
+it shelves between the seas, so the boat drops over an edge into the abyss and climbs out to the ice.
+The sea's surface stays at the same height whatever the boat does. The helm in `helm.rs` sails the
+boat over it like a submarine: it surges a little in speed and keeps its height above the highest
+ground about and ahead, filtered over seconds, so it passes over a gully rather than ducking into
+it and climbs well before a ridge; it noses up into a climb and down into a dive, eases its heading
+from side to side and banks into each change, and every couple of minutes slows and turns right round
+on its axis, so the whole sea goes past the window. In the cave it swings the window round to look
+up the tunnel. Every motion is on a critically damped spring, so neither a swipe nor the shelf ever
+jolts the view, and in a fast passage the rush of bubbles streaking past the glass covers the quicker
+motion; the manometer reads the boat's real depth. Things fade in and out as their
+sea comes and goes, by coverage through the multisampling, and the ice fades at its edges rather
+than stopping at a line. Fourteen procedural surfaces — rock, planking, veined
+marble, fish scales, whale skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt —
+are projected along three axes, carried by the swimmers as they bend and fixed in the world on the
+seabed, the ruins and the wrecks; the seabed takes rock on its slopes.
+It renders at 640 × 640 with 4× multisampling and a reversed depth buffer, then goes through the very
+same porthole as the procedural dive: the bezel, the gauges, the engraving and the bending of the glass
+are the procedural dive's own passes. On a desktop GPU a frame costs about as much as the procedural
+dive's, with the scene built in about 0.4 ms of CPU. `DIVE3D_PREVIEW_DIR=<dir> cargo test --release
+dive3d::tests::previews -- --ignored` writes a frame from each leg.
 
 The Pi needs a Vulkan driver: `sudo apt install libvulkan1 mesa-vulkan-drivers`. If the adapter cannot be
 created the overlay is simply left empty and a warning is logged; nothing else in the display depends on

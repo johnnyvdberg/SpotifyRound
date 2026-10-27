@@ -4,6 +4,7 @@ mod browser;
 mod cli;
 mod config;
 mod dive;
+mod dive3d;
 mod format;
 mod globe;
 mod gpu;
@@ -12,6 +13,7 @@ mod ring;
 mod service;
 mod ui;
 mod visuals;
+mod voyage;
 
 use anyhow::{Context, Result};
 use clap::Parser;

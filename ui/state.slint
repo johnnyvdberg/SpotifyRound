@@ -107,6 +107,21 @@ export global Idle {
 
     // A tap anywhere on the visuals returns to the player.
     callback dismiss();
+    // A horizontal swipe on the visuals: +1 on to the next stretch of the
+    // scene's journey, -1 back to the last. Scenes without one ignore it.
+    callback travel(int);
+}
+
+// The frame-rate readout. `shown` starts from the configuration and the F key
+// flips it; the rates are written from Rust once a second while it shows.
+export global Stats {
+    in-out property <bool> shown: false;
+    // Frames the window presented in the last second.
+    in-out property <int> display: 0;
+    // Frames the idle visualizer drew in the last second, and the mean time
+    // its thread spent building and submitting each, in milliseconds.
+    in-out property <int> scene: 0;
+    in-out property <float> scene-ms: 0;
 }
 
 export global App {

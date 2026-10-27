@@ -26,6 +26,9 @@ redirect_port = 8888
 
 # How often the now-playing state is polled, in milliseconds.
 poll_ms = 1000
+
+# Show the frame-rate readout at the top of the screen (the F key toggles it).
+# show_fps = false
 "#;
 
 /// Everything the application needs to know about its environment.
@@ -39,6 +42,8 @@ pub struct Settings {
     pub poll_interval: Duration,
     pub mock: bool,
     pub fullscreen: bool,
+    /// Whether the frame-rate readout shows from the start.
+    pub show_fps: bool,
 }
 
 impl Settings {
@@ -86,6 +91,7 @@ impl Settings {
             ),
             mock: cli.mock,
             fullscreen: !cli.windowed,
+            show_fps: cli.fps || file.show_fps.unwrap_or(false),
         })
     }
 
@@ -150,6 +156,8 @@ struct FileConfig {
     login_host: Option<String>,
     #[serde(default)]
     poll_ms: Option<u64>,
+    #[serde(default)]
+    show_fps: Option<bool>,
 }
 
 fn default_config_dir() -> Option<PathBuf> {
@@ -194,6 +202,7 @@ mod tests {
             poll_interval: Duration::from_secs(1),
             mock: false,
             fullscreen: true,
+            show_fps: false,
         };
         assert_eq!(settings.redirect_uri(), "http://127.0.0.1:9999/callback");
     }
@@ -208,6 +217,7 @@ mod tests {
             poll_interval: Duration::from_secs(1),
             mock: false,
             fullscreen: true,
+            show_fps: false,
         };
         assert_eq!(settings.login_base(), "http://spotify-round.local:9999");
 

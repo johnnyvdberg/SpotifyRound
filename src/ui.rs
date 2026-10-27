@@ -19,21 +19,44 @@ use crate::motion::Frame;
 /// The graphics backend is already chosen by then: [`crate::gpu::install`] hands
 /// Slint a wgpu device on Vulkan before this runs, so femtovg draws the UI and the
 /// idle globe through the same GPU.
-pub fn create_window(fullscreen: bool) -> Result<AppWindow> {
+pub fn create_window(fullscreen: bool, show_fps: bool) -> Result<AppWindow> {
     let window = AppWindow::new().context("creating the Slint window")?;
     window.window().set_fullscreen(fullscreen);
-    report_renderer(&window);
+    window.global::<Stats>().set_shown(show_fps);
+    watch_rendering(&window);
     Ok(window)
 }
 
 /// Say in the log which graphics API draws the frames, so `-v` shows whether the
-/// display really runs on the GPU.
-fn report_renderer(window: &AppWindow) {
-    let result = window.window().set_rendering_notifier(|state, api| {
-        if matches!(state, slint::RenderingState::RenderingSetup) {
-            tracing::info!(renderer = ?api, "graphics context ready");
-        }
-    });
+/// display really runs on the GPU, and count the frames presented for the
+/// frame-rate readout.
+fn watch_rendering(window: &AppWindow) {
+    let weak = window.as_weak();
+    let mut frames = 0;
+    let mut since = std::time::Instant::now();
+    let result = window
+        .window()
+        .set_rendering_notifier(move |state, api| match state {
+            slint::RenderingState::RenderingSetup => {
+                tracing::info!(renderer = ?api, "graphics context ready");
+            }
+            slint::RenderingState::AfterRendering => {
+                frames += 1;
+                if since.elapsed() >= std::time::Duration::from_secs(1) {
+                    let rate = frames;
+                    (frames, since) = (0, std::time::Instant::now());
+                    // Written after the frame, so it is shown with the next one.
+                    // Hidden, it is left alone, so it wakes nothing.
+                    if let Some(window) = weak.upgrade() {
+                        let stats = window.global::<Stats>();
+                        if stats.get_shown() {
+                            stats.set_display(rate);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        });
     if let Err(err) = result {
         tracing::warn!(%err, "the renderer cannot report its graphics API");
     }
@@ -80,6 +103,8 @@ pub trait WindowExt: Sized {
     fn set_idle_frames(&self, textures: Vec<Option<slint::wgpu_30::wgpu::Texture>>);
     /// Show one of the frames installed by `set_idle_frames`.
     fn show_idle_frame(&self, index: usize);
+    /// The visualizer's frames in the last second, and their mean cost in ms.
+    fn set_scene_stats(&self, frames: i32, ms: f32);
     fn tick(&self, frame: &Frame);
     /// Name, icon kind and presence of the Spotify Connect device playback is
     /// running on.
@@ -219,6 +244,14 @@ impl WindowExt for AppWindow {
             .collect::<Vec<_>>();
         let idle = self.global::<Idle>();
         idle.set_frames(slint::ModelRc::new(VecModel::from(frames)));
+    }
+
+    fn set_scene_stats(&self, frames: i32, ms: f32) {
+        let stats = self.global::<Stats>();
+        if stats.get_shown() {
+            stats.set_scene(frames);
+            stats.set_scene_ms(ms);
+        }
     }
 
     fn show_idle_frame(&self, index: usize) {
@@ -496,6 +529,18 @@ mod preview {
         window.set_ring_frame_image(ring(0.34, false, art.accent()));
         window.set_current_playlist("spotify:playlist:demo-0");
         save(&window, &soft, "01-now-playing");
+
+        // ---- frame-rate readout ----
+        let stats = window.global::<Stats>();
+        stats.set_shown(true);
+        stats.set_display(60);
+        save(&window, &soft, "fps");
+        stats.set_scene(60);
+        stats.set_scene_ms(2.84);
+        window.global::<Idle>().set_active(true);
+        save(&window, &soft, "fps-idle");
+        window.global::<Idle>().set_active(false);
+        stats.set_shown(false);
 
         // ---- output devices ----
         let devices = [

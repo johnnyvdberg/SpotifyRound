@@ -1,6 +1,43 @@
 import { Theme } from "../theme.slint";
 import { Idle } from "../state.slint";
-import { TapArea } from "../components/tap_area.slint";
+
+// Taps and horizontal swipes on the visuals. Only a press that starts here
+// counts: the swipe that opened the visualizer started on the player, and must
+// not close it again or send it travelling when the finger lifts.
+component IdleGestures inherits TouchArea {
+    callback tapped();
+    // +1 for a swipe to the left, on to what lies ahead; -1 to the right, back.
+    callback swiped(int);
+
+    private property <length> start-x: 0;
+    private property <length> start-y: 0;
+    private property <bool> tracking: false;
+    // Movement below this is a tap; a finger always wobbles.
+    private property <length> slop: 14px;
+    // How far a finger must travel sideways to count as a swipe.
+    private property <length> reach: 110px;
+
+    pointer-event(event) => {
+        if (event.kind == PointerEventKind.down) {
+            if (event.button != PointerEventButton.left) { return; }
+            root.start-x = self.mouse-x;
+            root.start-y = self.mouse-y;
+            root.tracking = true;
+        } else if (event.kind == PointerEventKind.up) {
+            if (!root.tracking) { return; }
+            root.tracking = false;
+            let dx = self.mouse-x - root.start-x;
+            let dy = self.mouse-y - root.start-y;
+            if (Math.abs(dx) > root.reach && Math.abs(dx) > Math.abs(dy) * 1.2) {
+                root.swiped(dx < 0 ? 1 : -1);
+            } else if (Math.abs(dx) <= root.slop && Math.abs(dy) <= root.slop) {
+                root.tapped();
+            }
+        } else if (event.kind == PointerEventKind.cancel) {
+            root.tracking = false;
+        }
+    }
+}
 
 // The idle visualizer.
 //
@@ -52,10 +89,11 @@ export component IdleScreen inherits Rectangle {
         visible: Idle.scene == 0;
     }
 
-    // Any tap leaves the visualizer and returns to the player. A drag does not:
-    // the swipe that opened it ends here, and it must not close it again.
-    TapArea {
+    // Any tap leaves the visualizer and returns to the player; a swipe left or
+    // right carries the dive on to the next stretch of sea, or back.
+    IdleGestures {
         enabled: Idle.fade > 0.05;
         tapped => { Idle.dismiss(); }
+        swiped(legs) => { Idle.travel(legs); }
     }
 }

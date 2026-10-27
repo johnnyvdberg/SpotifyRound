@@ -2,7 +2,7 @@
 //! from domain data to the Slint view state.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -84,7 +84,7 @@ const PREVIOUS_RESTART_MS: u64 = 3_000;
 
 pub fn run(settings: Settings) -> Result<()> {
     let graphics = gpu::install()?;
-    let window = ui::create_window(settings.fullscreen)?;
+    let window = ui::create_window(settings.fullscreen, settings.show_fps)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -104,6 +104,7 @@ pub fn run(settings: Settings) -> Result<()> {
         shared.visualizer_active.clone(),
         shared.idle_scene.clone(),
         shared.idle_scenes.clone(),
+        shared.idle_travel.clone(),
     );
 
     runtime.block_on(shared.bootstrap());
@@ -145,6 +146,8 @@ struct Shared {
     idle_scene: Arc<AtomicUsize>,
     /// Bit mask of the scenes whose renderer came up.
     idle_scenes: Arc<AtomicU64>,
+    /// Swipes on the visualizer, +1 on and -1 back, summed.
+    idle_travel: Arc<AtomicI64>,
 
     initial_auth: i32,
     poll_started: AtomicBool,
@@ -834,6 +837,7 @@ impl Shared {
             visualizer_active: Arc::new(AtomicBool::new(false)),
             idle_scene: Arc::new(AtomicUsize::new(0)),
             idle_scenes: Arc::new(AtomicU64::new(0)),
+            idle_travel: Arc::new(AtomicI64::new(0)),
             initial_auth,
             poll_started: AtomicBool::new(false),
             auth_running: AtomicBool::new(false),
@@ -966,6 +970,12 @@ impl Shared {
             window
                 .global::<Idle>()
                 .on_dismiss(move || this.dismiss_visualizer());
+        }
+        {
+            let travel = self.idle_travel.clone();
+            window.global::<Idle>().on_travel(move |legs| {
+                travel.fetch_add(i64::from(legs), Ordering::Relaxed);
+            });
         }
 
         // Wrapped once, so the renderer caches one image per render target

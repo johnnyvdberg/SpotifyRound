@@ -1,15 +1,26 @@
 //! The rotating Earth on the idle screen, drawn on the GPU with Vulkan.
 //!
-//! wgpu renders the sphere as a fragment shader. The maps are uploaded at their
-//! native resolution — nothing is resampled on the CPU — and the GPU builds a mip
-//! chain for each, which is what stops the city lights shimmering as they are
-//! minified. Frames are drawn into a small ring of textures that Slint samples
-//! directly, on the same device it renders the UI with, so a frame never leaves the
-//! GPU: no readback and no upload.
+//! wgpu renders the sphere as a fragment shader, lit through a model of the
+//! atmosphere: sunlight is reddened by the air it crosses, so the terminator
+//! and the cloud tops along it glow like a sunset; the air in front of the ground
+//! adds a blue haze that thickens toward the limb, and the limb itself glows
+//! where the sun reaches it. The oceans catch the sun with a Fresnel glint,
+//! clouds cast shadows and drift slowly over the ground, and the planet turns on
+//! its tilted axis. Lighting is done in linear light and encoded once.
 //!
-//! Maps, all distributed by <https://www.solarsystemscope.com/textures/> (CC BY 4.0):
-//! day and night (NASA Blue Marble / Black Marble), a cloud sheet, a normal map for
-//! terrain relief and a specular map for sun glint on water.
+//! The maps are 4096 × 2048: on the 850-pixel disc that is still about one and
+//! a half texels per pixel at the centre, at a quarter of the memory of the 8K
+//! originals. Each is stored in the smallest format that holds it — the day map
+//! as sRGB, so the GPU linearises it and builds a gamma-correct mip chain; lights
+//! and clouds as one channel each; relief and the water mask together — and the
+//! GPU builds every mip chain, which is what stops the city lights shimmering as
+//! they are minified. Frames are drawn into a small ring of textures that Slint
+//! samples directly, on the same device it renders the UI with, so a frame never
+//! leaves the GPU.
+//!
+//! Maps, all distributed by <https://www.solarsystemscope.com/textures/> (CC BY 4.0),
+//! reduced from 8K: day and night (NASA Blue Marble / Black Marble), a cloud
+//! sheet, a normal map for terrain relief and a specular map for water.
 
 use anyhow::{Context, Result};
 
@@ -28,38 +39,39 @@ const SPECULAR: &[u8] = include_bytes!("../assets/earth/specular.tif");
 pub const SIZE: u32 = 920;
 /// Seconds for one revolution of the planet.
 const REVOLUTION: f32 = 192.0;
+/// How much faster than the ground the cloud sheet turns, so the weather
+/// visibly moves over the continents.
+const CLOUD_DRIFT: f32 = 0.035;
 /// How much brighter the city lights are than in the source map.
-const NIGHT_GAIN: f32 = 1.4;
-/// Faint fill on the night side, so a fully dark hemisphere is still a planet.
-const NIGHTSHINE: f32 = 0.04;
-/// Albedo of the cloud sheet: white, so it stays bright where the ground is dark.
-const CLOUD_ALBEDO: f32 = 0.9;
-/// How much brighter the cloud tops are than the ground once it is dark.
-const CLOUD_NIGHT: f32 = 0.05;
-/// How strongly the air glows along the terminator.
-const DUSK_GAIN: f32 = 0.16;
+const NIGHT_GAIN: f32 = 2.2;
+/// Albedo of the cloud sheet.
+const CLOUD_ALBEDO: f32 = 0.85;
+/// Height of the cloud deck in planet radii, which sets how far its shadows
+/// fall. Exaggerated about fourfold, so they read at this scale.
+const CLOUD_HEIGHT: f32 = 0.006;
 /// Frames the readback is allowed to be behind, so the GPU is never waited on.
 pub(crate) const SLOTS: usize = crate::visuals::SLOTS;
 /// Extra mip levels to skip when sampling the maps. A slightly softer planet,
 /// but it stops the city lights and the relief sparkling as the surface turns.
-const DETAIL_BIAS: f32 = 0.7;
+const DETAIL_BIAS: f32 = 0.45;
 /// Planet radius as a fraction of the frame's half-size, leaving room for the halo.
-const PLANET: f32 = 0.95;
+const PLANET: f32 = 0.93;
 /// Outer radius of the atmosphere, as a multiple of the planet's radius.
-const ATMOSPHERE: f32 = 1.17;
-/// Colour of the atmosphere.
-const HALO: [f32; 3] = [0.32, 0.58, 1.0];
-/// Colour of the light scattered along the terminator.
-const DUSK: [f32; 3] = [1.0, 0.62, 0.34];
+const ATMOSPHERE: f32 = 1.075;
+/// Scale height of the air in planet radii: about eight times Earth's, so the
+/// limb glow is a few pixels deep rather than one.
+const SCALE_HEIGHT: f32 = 0.011;
+/// Vertical optical depth of the air in red, green and blue: Rayleigh
+/// scattering, strongest in the blue.
+const AIR: [f32; 3] = [0.045, 0.100, 0.230];
+/// Brightness of the sunlight, in linear units of the day map.
+const SUNLIGHT: f32 = 1.25;
 /// How strongly the normal map tilts the lighting.
 const RELIEF: f32 = 0.55;
-/// Width of the terminator, in dot-product units. A wide one reads as an
-/// atmosphere rather than a switch.
-const TERMINATOR: f32 = 0.42;
-/// How far sunlight carries past the terminator, as a fraction of full daylight.
-const TWILIGHT_CARRY: f32 = 0.22;
-/// Width of the twilight band around the terminator, in dot-product units.
-const TWILIGHT: f32 = 0.55;
+/// Tilt of the planet's axis: 23.4° toward the right, and a little toward the
+/// viewer so the northern hemisphere is in view.
+const OBLIQUITY: f64 = 23.44;
+const NOD: f64 = 12.0;
 /// Direction of the sun at the start, in screen space: front-left and a little
 /// high. It circles from here, see `SUN_PERIOD`.
 const SUN: [f32; 3] = [-0.62, 0.22, 0.75];
@@ -93,6 +105,23 @@ impl Map {
         let mut out = Vec::with_capacity(texels.len() * 4);
         for texel in texels {
             out.extend_from_slice(&[texel[0], texel[1], texel[2], 255]);
+        }
+        out
+    }
+
+    /// The relief's two slopes with `water` alongside, for one texture that
+    /// answers both "which way does the ground face" and "is this sea".
+    fn pack_relief(&self, water: &Map) -> Vec<u8> {
+        let (texels, _) = self.pixels.as_chunks::<3>();
+        let mask = water.to_grey();
+        let mut out = Vec::with_capacity(texels.len() * 4);
+        for (i, texel) in texels.iter().enumerate() {
+            // The water map is the same size as the relief; were it not, the
+            // nearest row and column would do.
+            let x = (i as u32 % self.width) * water.width / self.width;
+            let y = (i as u32 / self.width) * water.height / self.height;
+            let sea = mask[(y * water.width + x) as usize];
+            out.extend_from_slice(&[texel[0], texel[1], sea, 255]);
         }
         out
     }
@@ -151,13 +180,16 @@ struct Frame {
 struct Uniforms {
     /// x, y: centre in pixels; z: planet radius in pixels; w: atmosphere radius in pixels.
     frame: [f32; 4],
-    /// x: surface rotation in turns. The clouds are part of the same surface, so
-    /// they turn with it.
+    /// x: surface rotation in turns; y: the cloud sheet's, a little ahead.
     spin: [f32; 4],
-    /// x, y, z: sun direction.
+    /// x, y, z: sun direction in the planet's frame, where y is the axis.
     sun: [f32; 4],
-    /// x, y, z: half vector between the sun and the viewer.
+    /// x, y, z: half vector between the sun and the viewer, in the planet's frame.
     gloss: [f32; 4],
+    /// x, y, z: sun direction on screen, for the limb.
+    sky: [f32; 4],
+    /// Rows of the rotation from screen space into the planet's frame.
+    to_planet: [[f32; 4]; 3],
 }
 
 /// Everything needed to draw one frame of the planet.
@@ -176,22 +208,15 @@ impl Globe {
         let queue = &gpu.queue;
         let limit = device.limits().max_texture_dimension_2d;
 
-        // Bound in shader order: day, night, clouds, relief, water.
-        let sources = [
-            ("day", DAY, true),
-            ("night", NIGHT, true),
-            ("clouds", CLOUDS, false),
-            ("relief", NORMAL, true),
-            ("water", SPECULAR, false),
-        ];
+        // Bound in shader order: day, night, clouds, relief with the water mask.
         let mips = MipChain::new(device);
-        let mut views = Vec::with_capacity(sources.len());
-        // One map at a time, so the 8K sheets never all sit in RAM at once.
-        for (name, bytes, colour) in sources {
+        let mut views = Vec::with_capacity(4);
+        // One map at a time, so the sheets never all sit in RAM at once.
+        for (name, bytes) in [("day", DAY), ("night", NIGHT), ("clouds", CLOUDS)] {
             let mut map = Map::decode(bytes)?;
             map.fit(limit);
-            let (format, texel_bytes, data) = if colour {
-                (wgpu::TextureFormat::Rgba8Unorm, 4, map.to_rgba())
+            let (format, texel_bytes, data) = if name == "day" {
+                (wgpu::TextureFormat::Rgba8UnormSrgb, 4, map.to_rgba())
             } else {
                 (wgpu::TextureFormat::R8Unorm, 1, map.to_grey())
             };
@@ -207,6 +232,19 @@ impl Globe {
                 texel_bytes,
             )?);
         }
+        let relief = Map::decode(NORMAL)?;
+        let water = Map::decode(SPECULAR)?;
+        views.push(upload(
+            device,
+            queue,
+            &mips,
+            "relief",
+            relief.width,
+            relief.height,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &relief.pack_relief(&water),
+            4,
+        )?);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Earth sampler"),
@@ -247,9 +285,8 @@ impl Globe {
                 texture(2),
                 texture(3),
                 texture(4),
-                texture(5),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 6,
+                    binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -283,10 +320,6 @@ impl Globe {
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&views[4]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
@@ -367,12 +400,18 @@ impl Globe {
     fn render(&self, gpu: &Graphics, seconds: f64, frame: usize) -> Result<()> {
         let half = self.size() as f32 / 2.0;
         let turns = (seconds / REVOLUTION as f64) as f32;
-        let sun = sun_at(seconds);
+        let clouds = (seconds / REVOLUTION as f64 * (1.0 + CLOUD_DRIFT as f64)) as f32;
+        let sky = sun_at(seconds);
+        let to_planet = tilt();
+        let sun = rotate(&to_planet, sky);
+        let view = rotate(&to_planet, [0.0, 0.0, 1.0]);
         let uniforms = Uniforms {
             frame: [half, half, half * PLANET, half * PLANET * ATMOSPHERE],
-            spin: [turns.rem_euclid(1.0), 0.0, 0.0, 0.0],
+            spin: [turns.rem_euclid(1.0), clouds.rem_euclid(1.0), 0.0, 0.0],
             sun: [sun[0], sun[1], sun[2], 0.0],
-            gloss: half_vector(sun),
+            gloss: half_vector(sun, view),
+            sky: [sky[0], sky[1], sky[2], 0.0],
+            to_planet: to_planet.map(|row| [row[0], row[1], row[2], 0.0]),
         };
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
@@ -503,14 +542,38 @@ fn sun_at(seconds: f64) -> [f32; 3] {
     ]
 }
 
-fn half_vector(sun: [f32; 3]) -> [f32; 4] {
-    let length = (sun[0] * sun[0] + sun[1] * sun[1] + (sun[2] + 1.0) * (sun[2] + 1.0)).sqrt();
-    [
-        sun[0] / length,
-        sun[1] / length,
-        (sun[2] + 1.0) / length,
-        0.0,
-    ]
+fn half_vector(sun: [f32; 3], view: [f32; 3]) -> [f32; 4] {
+    let h = [sun[0] + view[0], sun[1] + view[1], sun[2] + view[2]];
+    let length = (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt();
+    [h[0] / length, h[1] / length, h[2] / length, 0.0]
+}
+
+/// The rotation from screen space into the planet's frame, whose y axis is the
+/// axis of rotation: the transpose of tilting the axis by [`OBLIQUITY`] toward
+/// the right and [`NOD`] toward the viewer.
+fn tilt() -> [[f32; 3]; 3] {
+    let (st, ct) = OBLIQUITY.to_radians().sin_cos();
+    let (sk, ck) = NOD.to_radians().sin_cos();
+    // Planet to screen: nod about x, then lean about z.
+    let nod = [[1.0, 0.0, 0.0], [0.0, ck, -sk], [0.0, sk, ck]];
+    let lean = [[ct, st, 0.0], [-st, ct, 0.0], [0.0, 0.0, 1.0]];
+    let mut to_screen = [[0.0f64; 3]; 3];
+    for (r, row) in to_screen.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
+            *cell = (0..3).map(|k| lean[r][k] * nod[k][c]).sum();
+        }
+    }
+    let mut to_planet = [[0.0f32; 3]; 3];
+    for (r, row) in to_planet.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
+            *cell = to_screen[c][r] as f32;
+        }
+    }
+    to_planet
+}
+
+fn rotate(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [0, 1, 2].map(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2])
 }
 
 /// Upload a map at its native size and let the GPU build the mip chain.
@@ -571,7 +634,7 @@ fn upload(
 /// shimmer from the city lights when the map is minified.
 struct MipChain {
     layout: wgpu::BindGroupLayout,
-    pipelines: [(wgpu::TextureFormat, wgpu::RenderPipeline); 2],
+    pipelines: [(wgpu::TextureFormat, wgpu::RenderPipeline); 3],
     sampler: wgpu::Sampler,
 }
 
@@ -640,6 +703,10 @@ impl MipChain {
                 (
                     wgpu::TextureFormat::Rgba8Unorm,
                     make(wgpu::TextureFormat::Rgba8Unorm),
+                ),
+                (
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    make(wgpu::TextureFormat::Rgba8UnormSrgb),
                 ),
                 (
                     wgpu::TextureFormat::R8Unorm,
@@ -754,6 +821,8 @@ struct Uniforms {{
     spin: vec4<f32>,
     sun: vec4<f32>,
     gloss: vec4<f32>,
+    sky: vec4<f32>,
+    to_planet: array<vec4<f32>, 3>,
 }};
 
 @group(0) @binding(0) var<uniform> params: Uniforms;
@@ -761,28 +830,47 @@ struct Uniforms {{
 @group(0) @binding(2) var night_map: texture_2d<f32>;
 @group(0) @binding(3) var cloud_map: texture_2d<f32>;
 @group(0) @binding(4) var relief_map: texture_2d<f32>;
-@group(0) @binding(5) var water_map: texture_2d<f32>;
-@group(0) @binding(6) var map_sampler: sampler;
+@group(0) @binding(5) var map_sampler: sampler;
 
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
-const HALO: vec3<f32> = vec3<f32>({halo_r}, {halo_g}, {halo_b});
 const RELIEF: f32 = {relief};
-const TERMINATOR: f32 = {terminator};
 const NIGHT_GAIN: f32 = {night_gain};
-const NIGHTSHINE: f32 = {nightshine};
 const BIAS: f32 = {bias};
 const FRAME_EDGE: f32 = {frame_edge};
-const DUSK: vec3<f32> = vec3<f32>({dusk_r}, {dusk_g}, {dusk_b});
-const DUSK_GAIN: f32 = {dusk_gain};
 const CLOUD_ALBEDO: f32 = {cloud_albedo};
-const CLOUD_NIGHT: f32 = {cloud_night};
-const TWILIGHT: f32 = {twilight};
-const TWILIGHT_CARRY: f32 = {twilight_carry};
+const CLOUD_HEIGHT: f32 = {cloud_height};
+const SCALE_HEIGHT: f32 = {scale_height};
+const AIR: vec3<f32> = vec3<f32>({air_r}, {air_g}, {air_b});
+const SUNLIGHT: vec3<f32> = vec3<f32>({sun_r}, {sun_g}, {sun_b});
+// Light from the sky itself, which keeps shadowed ground and the twilight
+// side from going black.
+const SKYLIGHT: vec3<f32> = vec3<f32>(0.035, 0.060, 0.110);
 
 fn smoothstep01(edge0: f32, edge1: f32, x: f32) -> f32 {{
     let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
+}}
+
+// Air a ray crosses, in vertical thicknesses, leaving at `mu` (the cosine of
+// its angle from straight up). Close to 1 / mu, but finite at the horizon.
+fn airmass(mu: f32) -> f32 {{
+    let m = max(mu, -0.02);
+    return 1.0 / (m + 0.025 + 0.045 * exp(-m * 30.0));
+}}
+
+// Sunlight left after crossing the air down to a point where the sun stands at
+// `mu`: reddened, then cut off as the sun sets.
+fn sunlight(mu: f32) -> vec3<f32> {{
+    return SUNLIGHT * exp(-AIR * airmass(mu)) * smoothstep01(-0.035, 0.02, mu);
+}}
+
+// One frame of the planet in linear light, premultiplied, encoded to sRGB.
+fn encode(linear: vec3<f32>, alpha: f32) -> vec4<f32> {{
+    // A soft shoulder instead of a hard clip, for the sun glint.
+    let over = max(linear - vec3<f32>(0.8), vec3<f32>(0.0));
+    let shaped = min(linear, vec3<f32>(0.8)) + 0.2 * (vec3<f32>(1.0) - exp(-over * 5.0));
+    return vec4<f32>(pow(shaped, vec3<f32>(1.0 / 2.2)), alpha);
 }}
 
 struct Varying {{
@@ -803,6 +891,28 @@ fn vs_main(@builtin(vertex_index) index: u32) -> Varying {{
     return out;
 }}
 
+// The air seen edge-on past the limb, `r` planet radii from the centre: a
+// glow where the sun lights it, thinning out exponentially with height. On the
+// night side there is only the faint green line of the airglow.
+fn limb(p: vec2<f32>, r: f32) -> vec4<f32> {{
+    let h = max(r - 1.0, 0.0);
+    // A grazing ray crosses about sqrt(2 pi r / H) vertical thicknesses.
+    let depth = AIR * sqrt(TAU * r / SCALE_HEIGHT) * exp(-h / SCALE_HEIGHT);
+    let tangent = vec3<f32>(p / max(r, 0.0001), 0.0);
+    let mu = dot(tangent, params.sky.xyz);
+    // High air stays lit for a while after the ground below it has gone dark.
+    let lit = SUNLIGHT * exp(-AIR * airmass(mu + 0.08) * 0.6) * smoothstep01(-0.30, 0.05, mu);
+    var glow = lit * (vec3<f32>(1.0) - exp(-depth)) * 0.9;
+    let night = 1.0 - smoothstep01(-0.25, 0.05, mu);
+    let band = (h - SCALE_HEIGHT * 1.4) / (SCALE_HEIGHT * 0.35);
+    glow += vec3<f32>(0.10, 0.32, 0.12) * exp(-band * band) * night * 0.10;
+    // Faded out before the square frame can cut it off. After encoding, which
+    // would otherwise lift the faintest glow back into sight.
+    let guard = 1.0 - smoothstep01(FRAME_EDGE * 0.92, FRAME_EDGE, r);
+    let out = pow(glow, vec3<f32>(1.0 / 2.2)) * guard;
+    return vec4<f32>(out, min(max(max(out.r, out.g), out.b), 1.0));
+}}
+
 @fragment
 fn fs_main(in: Varying) -> @location(0) vec4<f32> {{
     // Screen position in planet radii, y up.
@@ -811,111 +921,121 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {{
         (params.frame.y - in.position.y) / params.frame.z,
     );
     let distance = length(p);
-    // Outer radius of the atmosphere, in the same units as `distance`.
     let atmosphere = params.frame.w / params.frame.z;
     if (distance > atmosphere) {{
         discard;
     }}
-    // If the planet is drawn big enough, the atmosphere would run past the square
-    // frame and be cut off at its edges: fade the glow out before that can happen.
-    // With a smaller planet this band sits beyond the atmosphere and does nothing.
-    let guard = 1.0 - smoothstep01(FRAME_EDGE * 0.90, FRAME_EDGE, distance);
-
-    // Outside the limb: the atmosphere, only where the sun reaches it.
+    // Anti-aliasing at the limb: a pixel either side of the edge.
     let edge = (distance - 1.0) * params.frame.z;
-    if (edge > 0.0) {{
-        let falloff = 1.0 - (distance - 1.0) / (atmosphere - 1.0);
-        let limb = normalize(vec3<f32>(p.x, p.y, 0.35));
-        let lit = smoothstep01(-0.25, 0.35, dot(limb, params.sun.xyz));
-        let alpha = falloff * falloff * 0.55 * smoothstep01(0.0, 1.5, edge) * lit * guard;
-        return vec4<f32>(HALO * alpha, alpha);
+    let coverage = smoothstep01(-0.75, 0.75, -edge);
+    if (coverage <= 0.0) {{
+        return limb(p, distance);
     }}
 
+    // The point on the sphere, on screen and then in the planet's own frame.
     let z = sqrt(max(1.0 - distance * distance, 0.0));
-    let normal = vec3<f32>(p.x, p.y, z);
-    let lat = asin(clamp(p.y, -1.0, 1.0));
-    let lon = atan2(p.x, z) + params.spin.x * TAU;
-    let u = 0.5 + lon / TAU;
-    let v = 0.5 - lat / PI;
+    let n_screen = vec3<f32>(p, z);
+    let n = vec3<f32>(
+        dot(params.to_planet[0].xyz, n_screen),
+        dot(params.to_planet[1].xyz, n_screen),
+        dot(params.to_planet[2].xyz, n_screen),
+    );
+    let lat = asin(clamp(n.y, -1.0, 1.0));
+    let lon0 = atan2(n.x, n.z);
+    let uv = vec2<f32>(0.5 + lon0 / TAU + params.spin.x, 0.5 - lat / PI);
 
-    // Tangent frame, used to tilt the normal with the relief map.
-    let sin_lon = sin(lon);
-    let cos_lon = cos(lon);
-    let sin_lat = sin(lat);
+    // Tangent frame, used to tilt the normal with the relief map and to cast
+    // the clouds' shadows.
+    let sin_lon = sin(lon0);
+    let cos_lon = cos(lon0);
     let cos_lat = cos(lat);
     let east = vec3<f32>(cos_lon, 0.0, -sin_lon);
-    let north = vec3<f32>(-sin_lat * sin_lon, cos_lat, -sin_lat * cos_lon);
-    let bump =
-        textureSampleBias(relief_map, map_sampler, vec2<f32>(u, v), BIAS + 0.4).rg
-        - vec2<f32>(0.5);
-    let tilted = normalize(normal + (east * bump.x + north * bump.y) * RELIEF);
+    let north = vec3<f32>(-n.y * sin_lon, cos_lat, -n.y * cos_lon);
+    let relief = textureSampleBias(relief_map, map_sampler, uv, BIAS + 0.4);
+    let bump = relief.rg - vec2<f32>(0.5);
+    let water = relief.b;
+    let tilted = normalize(n + (east * bump.x + north * bump.y) * RELIEF);
 
-    let direct = dot(tilted, params.sun.xyz);
-    let facing = dot(normal, params.sun.xyz);
-    let light = smoothstep01(-TERMINATOR, TERMINATOR, direct);
-    let darkness = 1.0 - smoothstep01(-TERMINATOR, TERMINATOR, facing);
+    let sun = params.sun.xyz;
+    let mu_sun = dot(n, sun);
+    let mu_view = z;
 
-    let surface = textureSampleBias(day_map, map_sampler, vec2<f32>(u, v), BIAS).rgb;
-    // Clouds are part of the surface, so they turn with it.
-    let cloud = textureSampleBias(cloud_map, map_sampler, vec2<f32>(u, v), BIAS).r;
-
-    // Sunlight diffuses through the air a long way past the terminator, so the
-    // ground fades out over a wide band instead of stopping at a line. The band
-    // reaches further into the night than into the day, and is warm: what a sunset
-    // on the limb looks like from orbit.
-    let twilight =
-        (1.0 - smoothstep01(0.0, TWILIGHT, abs(facing))) * smoothstep01(-0.45, 0.1, facing);
-    let daylight = max(light, TWILIGHT_CARRY * twilight);
-    let shade = NIGHTSHINE + (1.0 - NIGHTSHINE) * daylight;
-
-    // Ground first, then the cloud sheet over it, both under the same light.
-    let ground = surface * shade;
-    var colour = ground + (vec3<f32>(CLOUD_ALBEDO * shade) - ground) * cloud;
-
-    let glossy = pow(max(dot(tilted, params.gloss.xyz), 0.0), 130.0) * light;
-    if (glossy > 0.01) {{
-        let water = textureSampleBias(water_map, map_sampler, vec2<f32>(u, v), BIAS).r;
-        colour += vec3<f32>(water * glossy * (1.0 - cloud * 0.9) * 0.5 * shade);
+    // Clouds turn a little ahead of the ground; their shadows fall away from
+    // the sun, farther the lower it stands.
+    let cloud_uv = vec2<f32>(uv.x + params.spin.y - params.spin.x, uv.y);
+    let cloud = textureSampleBias(cloud_map, map_sampler, cloud_uv, BIAS).r;
+    let reach = CLOUD_HEIGHT / max(mu_sun, 0.12);
+    let shift = vec2<f32>(
+        dot(sun, east) * reach / (TAU * max(cos_lat, 0.05)),
+        -dot(sun, north) * reach / PI,
+    );
+    var shadow = 0.0;
+    if (mu_sun > -0.05) {{
+        shadow = textureSampleBias(cloud_map, map_sampler, cloud_uv + shift, BIAS + 1.0).r;
     }}
 
+    // The ground, lit by reddened sunlight and the sky.
+    let albedo = textureSampleBias(day_map, map_sampler, uv, BIAS).rgb * mix(1.0, 0.8, water);
+    let sun_ground = sunlight(mu_sun);
+    let direct = sun_ground * max(dot(tilted, sun) + 0.03, 0.0) * (1.0 - 0.6 * shadow);
+    let sky = SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun);
+    var colour = albedo * (direct + sky);
+
+    // A calm sea mirrors the sun: a tight glint and a broad sheen, both
+    // stronger at a grazing angle.
+    let fresnel = 0.02 + 0.98 * pow(1.0 - mu_view, 5.0);
+    let nh = max(dot(n, params.gloss.xyz), 0.0);
+    // From orbit the glint is a soft patch, spread by the waves, not a mirror's disc.
+    let glint = pow(nh, 260.0) * 0.9 + pow(nh, 45.0) * 0.06;
+    colour += sun_ground * glint * (0.25 + fresnel) * water * (1.0 - cloud);
+    colour += SKYLIGHT * 2.0 * fresnel * water * smoothstep01(-0.1, 0.3, mu_sun);
+
+    // The cloud tops and the air above the ground stand above most of the
+    // atmosphere, so they keep the light and its sunset colour a little longer
+    // than the ground does.
+    let sun_high = SUNLIGHT * exp(-AIR * airmass(mu_sun + 0.04) * 0.55);
+    let sun_cloud = sun_high * smoothstep01(-0.08, 0.04, mu_sun);
+    let cloud_lit = CLOUD_ALBEDO * (sun_cloud * (0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) + sky * 1.5);
+    colour = mix(colour, cloud_lit, cloud);
+
+    // The night side: city lights, warm where faint and whiter where dense,
+    // dimmed by cloud, and a faint bluish earthshine.
+    let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
     if (darkness > 0.002) {{
-        // The lights are the highest-frequency thing on the map, so they get the
-        // most bias: a pixel that flickers at night is far more noticeable than
-        // one that is a touch soft. Clouds sit above them and hide them.
-        let city = textureSampleBias(night_map, map_sampler, vec2<f32>(u, v), BIAS + 0.6).rgb;
-        colour +=
-            city * NIGHT_GAIN * darkness * vec3<f32>(1.0, 0.82, 0.52) * (1.0 - cloud * 0.85);
-        // The tops of the clouds still catch a little light of their own.
-        colour += vec3<f32>(CLOUD_NIGHT) * cloud * darkness;
+        let city = textureSampleBias(night_map, map_sampler, uv, BIAS + 0.6).r;
+        let glow = city * city * NIGHT_GAIN;
+        let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, city));
+        colour += tint * glow * darkness * (1.0 - cloud * 0.85);
+        colour += vec3<f32>(0.004, 0.006, 0.012) * (albedo + cloud) * darkness;
     }}
 
-    // The glow of the air along the terminator.
-    colour += DUSK * twilight * DUSK_GAIN;
+    // The air between the ground and the viewer: it dims what is behind it and
+    // adds its own blue, thickening toward the limb.
+    let path = airmass(mu_view);
+    let through = exp(-AIR * path);
+    let sun_air = sun_high * smoothstep01(-0.10, 0.08, mu_sun);
+    colour = colour * through + sun_air * (vec3<f32>(1.0) - through) * 0.45;
 
-    // Haze right at the limb, where the line of sight grazes the air.
-    colour += HALO * pow(1.0 - z, 7.0) * (light + DUSK_GAIN * twilight * 0.5) * 0.45;
-
-    let coverage = smoothstep01(-0.75, 0.75, -edge);
-    return vec4<f32>(colour * coverage, coverage);
+    let planet = encode(colour, 1.0);
+    if (coverage >= 1.0) {{
+        return planet;
+    }}
+    return mix(limb(p, distance), planet, coverage);
 }}
 "#,
-        halo_r = HALO[0],
-        halo_g = HALO[1],
-        halo_b = HALO[2],
         relief = RELIEF,
-        terminator = TERMINATOR,
         night_gain = NIGHT_GAIN,
-        nightshine = NIGHTSHINE,
         bias = DETAIL_BIAS,
         frame_edge = 1.0 / PLANET,
-        dusk_r = DUSK[0],
-        dusk_g = DUSK[1],
-        dusk_b = DUSK[2],
-        dusk_gain = DUSK_GAIN,
         cloud_albedo = CLOUD_ALBEDO,
-        cloud_night = CLOUD_NIGHT,
-        twilight = TWILIGHT,
-        twilight_carry = TWILIGHT_CARRY,
+        cloud_height = CLOUD_HEIGHT,
+        scale_height = SCALE_HEIGHT,
+        air_r = AIR[0],
+        air_g = AIR[1],
+        air_b = AIR[2],
+        sun_r = SUNLIGHT,
+        sun_g = SUNLIGHT * 0.98,
+        sun_b = SUNLIGHT * 0.95,
     )
 }
 
@@ -931,7 +1051,7 @@ pub fn render_once(seconds: f64) -> Result<Vec<u8>> {
 }
 
 impl Visual for Globe {
-    fn render(&self, gpu: &Graphics, seconds: f64, _seed: u64, frame: usize) -> Result<()> {
+    fn render(&mut self, gpu: &Graphics, seconds: f64, _seed: u64, frame: usize) -> Result<()> {
         Globe::render(self, gpu, seconds, frame)
     }
 
@@ -977,6 +1097,68 @@ mod tests {
             "the glow should fade out before the frame edge, got {}",
             alpha(2, half)
         );
+    }
+
+    /// Time the globe on whatever adapter is present, from the moment the maps
+    /// start decoding to a run of frames. Only useful relative to another run on
+    /// the same machine.
+    #[test]
+    #[ignore = "a benchmark; needs a working GPU adapter"]
+    fn frame_time() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let started = std::time::Instant::now();
+        let mut globe = Globe::new(&gpu).expect("an Earth renderer");
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        println!(
+            "globe setup: {:.0} ms",
+            started.elapsed().as_secs_f64() * 1e3
+        );
+        Visual::render(&mut globe, &gpu, 0.0, 0, 0).expect("a frame");
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        let frames = 240;
+        let mut worst = 0.0f64;
+        let started = std::time::Instant::now();
+        for i in 0..frames {
+            let begun = std::time::Instant::now();
+            // Spread over a whole day, so the night side is timed too.
+            let seconds = i as f64 * SUN_PERIOD as f64 / frames as f64;
+            Visual::render(&mut globe, &gpu, seconds, 0, i % SLOTS).expect("a frame");
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+            worst = worst.max(begun.elapsed().as_secs_f64());
+        }
+        let mean = started.elapsed().as_secs_f64() / frames as f64;
+        println!(
+            "globe frame: mean {:.3} ms, worst {:.3} ms",
+            mean * 1e3,
+            worst * 1e3
+        );
+        // Back to back with one wait at the end: what the GPU itself sustains,
+        // without the per-frame round trip.
+        let started = std::time::Instant::now();
+        for i in 0..frames {
+            let seconds = i as f64 * SUN_PERIOD as f64 / frames as f64;
+            Visual::render(&mut globe, &gpu, seconds, 0, i % SLOTS).expect("a frame");
+        }
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        let sustained = started.elapsed().as_secs_f64() / frames as f64;
+        println!("globe frame, back to back: {:.3} ms", sustained * 1e3);
+    }
+
+    /// Write frames through a whole day to `GLOBE_PREVIEW_DIR`, for design work.
+    #[test]
+    #[ignore = "writes design previews; set GLOBE_PREVIEW_DIR"]
+    fn previews() {
+        let Ok(dir) = std::env::var("GLOBE_PREVIEW_DIR") else {
+            return;
+        };
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let globe = Globe::new(&gpu).expect("an Earth renderer");
+        for (k, share) in [0.0, 0.15, 0.3, 0.5, 0.75, 0.88].iter().enumerate() {
+            let pixels = globe.read_back(&gpu, *share * SUN_PERIOD as f64);
+            let path = std::path::Path::new(&dir).join(format!("globe-{k}.png"));
+            image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
+                .expect("a preview image");
+        }
     }
 
     /// The sun travels once round the planet every half hour, so the lit side

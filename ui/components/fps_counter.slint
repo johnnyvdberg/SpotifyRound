@@ -1,0 +1,34 @@
+// A frame-rate readout, toggled with the F key or `show_fps` in the config.
+//
+// It sits at the top of the circle, where the round glass still has room for
+// it inside the progress ring, and above everything else so it also shows over
+// the visualizer.
+
+import { Theme } from "../theme.slint";
+import { Idle, Stats } from "../state.slint";
+
+export component FpsCounter inherits Rectangle {
+    width: max(140px, label.preferred-width + 48px);
+    height: 44px;
+    x: (1080px - self.width) / 2;
+    y: 72px;
+    border-radius: 22px;
+    background: #000000b0;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    visible: Stats.shown;
+
+    label := Text {
+        width: parent.width;
+        height: parent.height;
+        // The scene's own rate only means something while it is drawing.
+        text: Idle.active
+            ? "\{Stats.display} fps · scene \{Stats.scene} · \{round(Stats.scene-ms * 10) / 10} ms"
+            : "\{Stats.display} fps";
+        color: Theme.ink;
+        font-family: Theme.font;
+        font-size: 18px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

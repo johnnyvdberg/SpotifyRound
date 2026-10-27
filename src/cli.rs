@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub windowed: bool,
 
+    /// Show the frame-rate readout from the start (the F key toggles it)
+    #[arg(long, global = true)]
+    pub fps: bool,
+
     /// Directory holding config.toml and tokens.json
     #[arg(long, global = true, value_name = "DIR")]
     pub config_dir: Option<PathBuf>,

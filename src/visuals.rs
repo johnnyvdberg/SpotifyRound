@@ -9,7 +9,7 @@
 //! single image and a scene index, so it needs no knowledge of the scene itself.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -17,6 +17,7 @@ use rand::RngCore as _;
 use slint::wgpu_30::wgpu;
 
 use crate::dive::Bell;
+use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
 use crate::ui::{AppWindow, WindowExt};
@@ -31,10 +32,12 @@ const FPS: u64 = crate::app::TARGET_FPS;
 pub enum Scene {
     Globe,
     Bell,
+    /// The same voyage as the bell, rasterised in 3D.
+    Nautilus,
 }
 
 impl Scene {
-    pub const ALL: [Scene; 2] = [Scene::Globe, Scene::Bell];
+    pub const ALL: [Scene; 3] = [Scene::Globe, Scene::Bell, Scene::Nautilus];
 
     pub fn index(self) -> usize {
         self as usize
@@ -46,6 +49,7 @@ impl Scene {
         match self {
             Scene::Globe => crate::globe::SIZE as f32,
             Scene::Bell => crate::dive::SIZE as f32,
+            Scene::Nautilus => crate::dive3d::SIZE as f32,
         }
     }
 
@@ -53,6 +57,7 @@ impl Scene {
         match self {
             Scene::Globe => Ok(Box::new(Globe::new(gpu)?)),
             Scene::Bell => Ok(Box::new(Bell::new(gpu)?)),
+            Scene::Nautilus => Ok(Box::new(Nautilus::new(gpu)?)),
         }
     }
 
@@ -84,21 +89,26 @@ impl Scene {
 
 /// A scene's rendering interface. The display thread only ever calls these.
 pub(crate) trait Visual: Send {
-    fn render(&self, gpu: &Graphics, seconds: f64, seed: u64, frame: usize) -> Result<()>;
+    fn render(&mut self, gpu: &Graphics, seconds: f64, seed: u64, frame: usize) -> Result<()>;
     fn texture(&self, frame: usize) -> wgpu::Texture;
+    /// A swipe on the visualizer: move `legs` stretches on (or back) through the
+    /// scene's journey. Scenes without one ignore it.
+    fn travel(&mut self, _legs: i32) {}
 }
 
 /// Render the selected scene while the visualizer is visible.
 ///
 /// `scene` names the scene the controller wants, `available` reports which
 /// scenes finished building, and `running` turns the whole render thread off
-/// while the overlay is hidden.
+/// while the overlay is hidden. `travel` counts swipes on the visualizer, +1 on
+/// and -1 back; only the change since the last frame matters.
 pub fn spawn(
     ui: slint::Weak<AppWindow>,
     gpu: Graphics,
     running: Arc<AtomicBool>,
     scene: Arc<AtomicUsize>,
     available: Arc<AtomicU64>,
+    travel: Arc<AtomicI64>,
 ) {
     let spawned = std::thread::Builder::new()
         .name("visualizer".into())
@@ -149,7 +159,10 @@ pub fn spawn(
             let mut last = Instant::now();
             let mut deadline = last;
             let mut active = usize::MAX;
+            let mut travelled = travel.load(Ordering::Relaxed);
             let mut drawn = 0u32;
+            // Time spent recording and submitting frames since the last report.
+            let mut busy = Duration::ZERO;
             let mut reported = Instant::now();
 
             loop {
@@ -178,13 +191,21 @@ pub fn spawn(
                     active = requested;
                     seed = world_seed();
                     clocks[active] = 0.0;
+                    // Swipes made before this visit belong to another one.
+                    travelled = travel.load(Ordering::Relaxed);
                 }
                 clocks[active] += dt;
 
-                let Some(renderer) = renderers[active].as_ref() else {
+                let Some(renderer) = renderers[active].as_mut() else {
                     continue;
                 };
+                let swiped = travel.load(Ordering::Relaxed);
+                if swiped != travelled {
+                    renderer.travel((swiped - travelled).clamp(-7, 7) as i32);
+                    travelled = swiped;
+                }
                 let current = sequences[active];
+                let begun = Instant::now();
                 if let Err(err) = renderer.render(&gpu, clocks[active], seed, current) {
                     tracing::warn!(%err, "drawing a visualisation failed");
                     std::thread::sleep(Duration::from_secs(1));
@@ -199,9 +220,19 @@ pub fn spawn(
                 }
                 sequences[active] = (current + 1) % SLOTS;
                 drawn += 1;
+                busy += begun.elapsed();
                 if reported.elapsed() >= Duration::from_secs(1) {
-                    tracing::debug!(fps = drawn, slots, "visualizer");
+                    let ms = busy.as_secs_f32() * 1e3 / drawn as f32;
+                    tracing::debug!(fps = drawn, ms, slots, "visualizer");
+                    let frames = drawn as i32;
+                    if ui
+                        .upgrade_in_event_loop(move |ui| ui.set_scene_stats(frames, ms))
+                        .is_err()
+                    {
+                        return;
+                    }
                     drawn = 0;
+                    busy = Duration::ZERO;
                     reported = Instant::now();
                 }
 

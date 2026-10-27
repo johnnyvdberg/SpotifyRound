@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
-import { App, Idle } from "state.slint";
+import { App, Idle, Stats } from "state.slint";
+import { FpsCounter } from "components/fps_counter.slint";
 import { ProgressRing } from "components/progress_ring.slint";
 import { StatusToast } from "components/status_toast.slint";
 import { IdleScreen } from "screens/idle.slint";
@@ -11,13 +12,28 @@ import { DevicePicker } from "screens/devices.slint";
 
 // Re-export the shared API so the Rust side can address the globals and structs.
 export { Theme } from "theme.slint";
-export { App, Devices, DeviceItem, Idle, Library, Player, PlaylistItem, QueueItem } from "state.slint";
+export { App, Devices, DeviceItem, Idle, Library, Player, PlaylistItem, QueueItem, Stats } from "state.slint";
 
 export component AppWindow inherits Window {
     title: "Spotify Round";
     width: 1080px;
     height: 1080px;
     background: Theme.bg;
+    forward-focus: keys;
+
+    // Keys: F toggles the frame-rate readout. Zero-sized, so it never takes a
+    // touch from the screens.
+    keys := FocusScope {
+        width: 0;
+        height: 0;
+        key-pressed(event) => {
+            if (event.text == "f" || event.text == "F") {
+                Stats.shown = !Stats.shown;
+                return accept;
+            }
+            reject
+        }
+    }
 
     // The visualizer covers the screen with an opaque frame once it has faded in,
     // so everything under it is hidden rather than drawn: skip the work.
@@ -85,4 +101,6 @@ export component AppWindow inherits Window {
         text: App.status;
         shown: App.status-visible;
     }
+
+    FpsCounter { }
 }
