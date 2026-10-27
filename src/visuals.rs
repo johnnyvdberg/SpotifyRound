@@ -221,9 +221,7 @@ pub fn spawn(
             let mut busy = Duration::ZERO;
             let mut gpu_busy = Duration::ZERO;
             let mut reported = Instant::now();
-            // Frames handed to the UI, and how many of them it has taken.
-            let mut sent = 0u64;
-            let taken = Arc::new(AtomicU64::new(0));
+            let mut in_flight = std::collections::VecDeque::new();
 
             loop {
                 if !take_built(&mut renderers, &mut mask, &mut building, &mut slots) {
@@ -277,11 +275,6 @@ pub fn spawn(
                     renderer.travel((swiped - travelled).clamp(-7, 7) as i32);
                     travelled = swiped;
                 }
-                // A frame the UI never shows still costs the GPU, and takes it
-                // from the frames the UI is drawing: wait until the last one has
-                // been taken.
-                wait_for(|| taken.load(Ordering::Acquire) >= sent, TAKE_TIMEOUT);
-
                 let current = sequences[active];
                 let begun = Instant::now();
                 if let Err(err) = renderer.render(&gpu, clocks[active], seed, current) {
@@ -289,24 +282,26 @@ pub fn spawn(
                     std::thread::sleep(Duration::from_secs(1));
                     continue;
                 }
-                let submitted = Instant::now();
-                busy += submitted - begun;
-                // One frame in flight: submitting faster than the GPU finishes
-                // only queues work up ahead of the UI's frames, until every frame
-                // on screen is late.
-                gpu_busy += finish(&gpu);
-
+                busy += begun.elapsed();
+                // Shown right after the UI thread submits it: both run there,
+                // in order.
                 let slot = active * SLOTS + current;
-                let handed = taken.clone();
-                sent += 1;
                 if ui
-                    .upgrade_in_event_loop(move |ui| {
-                        ui.show_idle_frame(slot);
-                        handed.fetch_add(1, Ordering::Release);
-                    })
+                    .upgrade_in_event_loop(move |ui| ui.show_idle_frame(slot))
                     .is_err()
                 {
                     return;
+                }
+                // Two frames in flight, no more: submitting faster than the GPU
+                // finishes only queues work up ahead of the UI's frames, until
+                // every frame on screen is late. One would leave the GPU idle
+                // while the UI thread, waiting on the display, gets round to
+                // submitting the next. Once a frame is done, the UI has taken it.
+                in_flight.push_back(gpu.mark());
+                while in_flight.len() > 1 {
+                    if let Some(oldest) = in_flight.pop_front() {
+                        gpu_busy += gpu.wait_for(&oldest, GPU_TIMEOUT).unwrap_or(GPU_TIMEOUT);
+                    }
                 }
                 sequences[active] = (current + 1) % SLOTS;
                 drawn += 1;
@@ -343,41 +338,10 @@ pub fn spawn(
     }
 }
 
-/// How long to wait for the UI to take a frame before drawing the next anyway,
-/// so a window that stops drawing cannot stall the scene for good.
-const TAKE_TIMEOUT: Duration = Duration::from_millis(100);
-/// How long to wait for the GPU to finish a frame before giving up on it.
+/// How long to wait for the GPU, and the UI thread that submits for this one,
+/// to finish a frame before drawing the next anyway, so a window that stops
+/// drawing cannot stall the scene for good.
 const GPU_TIMEOUT: Duration = Duration::from_millis(500);
-
-/// Wait until everything submitted so far has finished on the GPU, and say how
-/// long that took. That includes any of the UI's work queued ahead of the
-/// scene's, which is what decides when the frame can be on screen.
-///
-/// The device is polled rather than waited on, so the UI thread's own
-/// submissions are never held up behind this thread.
-fn finish(gpu: &Graphics) -> Duration {
-    let submitted = Instant::now();
-    let done = Arc::new(AtomicBool::new(false));
-    let flag = done.clone();
-    gpu.queue
-        .on_submitted_work_done(move || flag.store(true, Ordering::Release));
-    wait_for(
-        || {
-            let _ = gpu.device.poll(wgpu::PollType::Poll);
-            done.load(Ordering::Acquire)
-        },
-        GPU_TIMEOUT,
-    );
-    submitted.elapsed()
-}
-
-/// Check `ready` until it holds or `timeout` has passed, sleeping in between.
-fn wait_for(mut ready: impl FnMut() -> bool, timeout: Duration) {
-    let until = Instant::now() + timeout;
-    while !ready() && Instant::now() < until {
-        std::thread::sleep(Duration::from_micros(250));
-    }
-}
 
 fn world_seed() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

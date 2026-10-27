@@ -85,13 +85,14 @@ struct Globals {
 pub(crate) struct Nautilus {
     background: wgpu::RenderPipeline,
     terrain_pipeline: wgpu::RenderPipeline,
-    models: wgpu::RenderPipeline,
+    /// Solid models, one pipeline per entry of [`MATERIALS`].
+    models: Vec<wgpu::RenderPipeline>,
     /// The same for sealed models, their back faces culled.
-    sealed: wgpu::RenderPipeline,
+    sealed: Vec<wgpu::RenderPipeline>,
     /// Marks the corners of the sea outside the round window as covered.
     mask: wgpu::RenderPipeline,
-    /// The same, for models fading in or out, which only it may discard.
-    fading: wgpu::RenderPipeline,
+    /// The same, for models fading in or out, which only they may discard.
+    fading: Vec<wgpu::RenderPipeline>,
     glass: wgpu::RenderPipeline,
     sprites: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
@@ -130,6 +131,29 @@ pub(crate) struct Nautilus {
     /// Parts of the scene a benchmark leaves out, to see what each costs.
     #[cfg(test)]
     skip: u16,
+}
+
+/// The materials models get a pipeline of their own for, as `MATERIAL` in
+/// `scene.wgsl`: plain first, then those of [`world::material`]. Anything else
+/// is drawn by the last, -1, which reads the material per instance.
+const MATERIALS: [i32; 8] = [
+    0,
+    world::material::LAVA as i32,
+    world::material::COPPER as i32,
+    world::material::SURFACE as i32,
+    world::material::VAULT as i32,
+    world::material::ICE as i32,
+    world::material::GOLD as i32,
+    -1,
+];
+
+/// The index into [`MATERIALS`] of the pipeline for an instance.
+fn material_slot(i: &Instance) -> usize {
+    let material = i.extra[0].round() as i32;
+    MATERIALS
+        .iter()
+        .position(|&m| m == material)
+        .unwrap_or(MATERIALS.len() - 1)
 }
 
 /// Which pipeline a run of instances is drawn with.
@@ -578,30 +602,28 @@ impl Nautilus {
         // Models that are fully there, compiled without the discard so the GPU
         // can skip whatever is hidden before shading it; and those fading in or
         // out, by coverage.
-        let models = pipeline(
-            "Dive3d models",
-            "vs_model",
-            "fs_model",
-            &model_buffers,
-            None,
-            true,
-            nearer,
-            false,
-            &[("FADING", 0.0)],
-            None,
-        );
-        let sealed = pipeline(
-            "Dive3d sealed models",
-            "vs_model",
-            "fs_model",
-            &model_buffers,
-            None,
-            true,
-            nearer,
-            false,
-            &[("FADING", 0.0)],
-            Some(wgpu::Face::Back),
-        );
+        // Each in a pipeline per material.
+        let per_material = |label, coverage, fading: f64, cull| {
+            MATERIALS
+                .iter()
+                .map(|&material| {
+                    pipeline(
+                        label,
+                        "vs_model",
+                        "fs_model",
+                        &model_buffers,
+                        None,
+                        true,
+                        nearer,
+                        coverage,
+                        &[("FADING", fading), ("MATERIAL", f64::from(material))],
+                        cull,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let models = per_material("Dive3d models", false, 0.0, None);
+        let sealed = per_material("Dive3d sealed models", false, 0.0, Some(wgpu::Face::Back));
         // Before anything else, the corners outside the round window are
         // marked as nearest of all, so nothing drawn there is shaded.
         let mask = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -638,18 +660,7 @@ impl Nautilus {
             multiview_mask: None,
             cache: None,
         });
-        let fading = pipeline(
-            "Dive3d fading models",
-            "vs_model",
-            "fs_model",
-            &model_buffers,
-            None,
-            true,
-            nearer,
-            true,
-            &[("FADING", 1.0)],
-            None,
-        );
+        let fading = per_material("Dive3d fading models", true, 1.0, None);
         let glass = pipeline(
             "Dive3d glass",
             "vs_model",
@@ -805,7 +816,8 @@ impl Nautilus {
         // fading in or out (the ice always, as it fades by where it is), then
         // the translucent ones.
         let mut all: Vec<Instance> = Vec::with_capacity(4096);
-        let mut draws: Vec<(usize, usize, u32, u32, Kind)> = Vec::new();
+        // Model, level of detail, first instance, count, kind, material slot.
+        let mut draws: Vec<(usize, usize, u32, u32, Kind, usize)> = Vec::new();
         let fades = |i: &Instance| i.extra[2] < 0.999 || i.extra[0] == world::material::ICE;
         // A mirrored instance turns its model inside out.
         let mirrored = |i: &Instance| {
@@ -852,21 +864,27 @@ impl Nautilus {
             } else {
                 (&self.frame.solid, &solid_levels)
             };
+            // Glass has one shader for every material.
+            let slots = if glassy { 1 } else { MATERIALS.len() };
             for (model, list) in lists.iter().enumerate() {
                 for lod in 0..lods[model].len() {
-                    let first = all.len();
-                    let room = MAX_INSTANCES - first;
-                    let wanted = list
-                        .iter()
-                        .zip(&levels[model])
-                        .filter(|&(i, &level)| {
-                            level == lod && (glassy || kind_of(model, i) == kind)
-                        })
-                        .map(|(i, _)| *i);
-                    all.extend(wanted.take(room));
-                    let n = all.len() - first;
-                    if n > 0 {
-                        draws.push((model, lod, first as u32, n as u32, kind));
+                    for slot in 0..slots {
+                        let first = all.len();
+                        let room = MAX_INSTANCES - first;
+                        let wanted = list
+                            .iter()
+                            .zip(&levels[model])
+                            .filter(|&(i, &level)| {
+                                level == lod
+                                    && (glassy
+                                        || (kind_of(model, i) == kind && material_slot(i) == slot))
+                            })
+                            .map(|(i, _)| *i);
+                        all.extend(wanted.take(room));
+                        let n = all.len() - first;
+                        if n > 0 {
+                            draws.push((model, lod, first as u32, n as u32, kind, slot));
+                        }
                     }
                 }
             }
@@ -953,7 +971,7 @@ impl Nautilus {
             // every other model, can be skipped before it is shaded.
             pass.set_vertex_buffer(1, self.instances.slice(..));
             if tunnel_drawn && !self.skips(part::MODELS) {
-                pass.set_pipeline(&self.models);
+                pass.set_pipeline(&self.models[material_slot(&all[tunnel_instance as usize])]);
                 pass.set_vertex_buffer(0, self.tunnel.slice(..));
                 pass.set_index_buffer(self.tunnel_indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..tunnel_count, 0, tunnel_instance..tunnel_instance + 1);
@@ -961,14 +979,18 @@ impl Nautilus {
             let models = |pass: &mut wgpu::RenderPass, wanted: Kind| {
                 pass.set_vertex_buffer(0, self.vertices.slice(..));
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.set_pipeline(match wanted {
-                    Kind::Sealed => &self.sealed,
-                    Kind::Solid => &self.models,
-                    Kind::Fading => &self.fading,
-                    Kind::Glass => &self.glass,
-                });
-                for &(model, lod, first, count, kind) in &draws {
+                let mut bound = None;
+                for &(model, lod, first, count, kind, slot) in &draws {
                     if kind == wanted {
+                        if bound != Some(slot) {
+                            pass.set_pipeline(match wanted {
+                                Kind::Sealed => &self.sealed[slot],
+                                Kind::Solid => &self.models[slot],
+                                Kind::Fading => &self.fading[slot],
+                                Kind::Glass => &self.glass,
+                            });
+                            bound = Some(slot);
+                        }
                         let l = self.lods[model][lod];
                         pass.draw_indexed(l.first..l.first + l.count, l.base, first..first + count);
                     }
@@ -1006,7 +1028,7 @@ impl Nautilus {
         }
         self.porthole
             .draw(gpu, &mut encoder, seconds, seed, at, frame);
-        gpu.queue.submit(std::iter::once(encoder.finish()));
+        gpu.submit(encoder.finish());
         Ok(())
     }
 

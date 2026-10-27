@@ -37,6 +37,14 @@ const SHADER_TYPE_FilterImageColorMatrix: i32 = 10;
 
 const TAU: f32 = 6.28318530717958647692528676655900577;
 
+// Fixed per pipeline: the renderer makes a pipeline for each shader type and
+// for drawing with or without a glyph texture anyway, so each one can be
+// compiled with only the code its draws take. Without that, every pixel runs a
+// shader sized for all eleven, with every uniform any of them reads. -1 and
+// true leave it to the uniforms.
+override SHADER_TYPE: i32 = -1;
+override GLYPHS: bool = true;
+
 struct ViewSize {
     x: f32,
     y: f32,
@@ -104,7 +112,7 @@ var glyph_sampler: sampler;
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
     var result: vec4<f32>;
-    let shader_type_int: i32 = i32(params.shader_type);
+    let shader_type_int: i32 = select(i32(params.shader_type), SHADER_TYPE, SHADER_TYPE >= 0);
 
     var strokeAlpha: f32 = 1.0;
     if (shader_type_int != SHADER_TYPE_TextureCopyUnclipped && shader_type_int != SHADER_TYPE_FillColorUnclipped && shader_type_int != SHADER_TYPE_FilterImage) {
@@ -168,7 +176,7 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
 
     var scissor: f32 = scissorMask(vertex.fpos, params);
 
-    if (params.glyph_texture_type != 0.0) {
+    if (GLYPHS && params.glyph_texture_type != 0.0) {
         // Textured tris
         var mask: vec4<f32> = textureSample(glyph_texture, glyph_sampler, vertex.ftcoord);
 

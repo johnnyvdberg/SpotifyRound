@@ -63,6 +63,12 @@ const TEXTURE_RANGE: f32 = 1.6;
 // model that is fully there goes through a pipeline compiled without it.
 override FADING: bool = true;
 
+// The material every model this pipeline draws is made of, or -1 to take it
+// from each instance. A pipeline per material compiles only that material's
+// shading: with all of them in, the shader is too large for the Pi's GPU to
+// keep more than two of its threads at once, and every pixel pays for it.
+override MATERIAL: i32 = -1;
+
 // What every colour is multiplied by as it is stored: the sea is kept in ten
 // bits a channel, which hold no more than 1, so it is stored at half its
 // brightness, to keep the highlights up to 2 that the porthole's grade and
@@ -597,7 +603,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // Fading things out by coverage, through the multisampling: they melt
     // away as their biome passes, rather than pop.
     var coverage = in.fade;
-    switch (in.material) {
+    switch (select(in.material, u32(MATERIAL), MATERIAL >= 0)) {
         // Pillow lava, molten through its cracks.
         case 1u: {
             let crack = 1.0 - smooth01(0.0, 0.05, abs(vnoise(in.local.x * 6.0 + in.local.y * 3.0, in.local.z * 6.0, 11u) - 0.5));

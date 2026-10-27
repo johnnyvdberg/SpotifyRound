@@ -7,6 +7,8 @@ mod dive3d;
 mod format;
 mod globe;
 mod gpu;
+#[cfg(test)]
+mod gpu_cost;
 mod motion;
 mod porthole;
 mod ring;

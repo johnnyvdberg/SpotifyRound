@@ -206,7 +206,6 @@ pub(crate) struct Globe {
 impl Globe {
     pub(crate) fn new(gpu: &Graphics) -> Result<Self> {
         let device = &gpu.device;
-        let queue = &gpu.queue;
         let limit = device.limits().max_texture_dimension_2d;
 
         // Bound in shader order: day, night, clouds, relief with the water mask.
@@ -222,8 +221,7 @@ impl Globe {
                 (wgpu::TextureFormat::R8Unorm, 1, map.to_grey())
             };
             views.push(upload(
-                device,
-                queue,
+                gpu,
                 &mips,
                 name,
                 map.width,
@@ -236,8 +234,7 @@ impl Globe {
         let relief = Map::decode(NORMAL)?;
         let water = Map::decode(SPECULAR)?;
         views.push(upload(
-            device,
-            queue,
+            gpu,
             &mips,
             "relief",
             relief.width,
@@ -292,8 +289,38 @@ impl Globe {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                loaded(6),
+                loaded(7),
             ],
         });
+
+        // What each pixel of the frame sees that never changes: where on the
+        // maps it lies before the planet turns, and the air between it and the
+        // viewer. Worked out once, below, instead of every frame: the Pi's GPU
+        // is short of arithmetic, and the inverse trigonometry and exponentials
+        // behind these were a fair share of each frame's.
+        let target = |label, format| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: SIZE,
+                        height: SIZE,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        // Single floats: a 4096-texel map needs finer steps than half floats.
+        let mapping = target("Globe mapping", MAPPING);
+        let air = target("Globe air", AIR_FORMAT);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Globe bind group"),
@@ -322,6 +349,14 @@ impl Globe {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&mapping),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&air),
                 },
             ],
         });
@@ -363,6 +398,8 @@ impl Globe {
             cache: None,
         });
 
+        draw_geometry(gpu, &shader, &uniforms, &mapping, &air);
+
         let frames = (0..SLOTS)
             .map(|_| {
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -399,23 +436,8 @@ impl Globe {
     /// Draw the frame for `seconds` of run time into `frame` and submit it,
     /// without waiting for the GPU.
     fn render(&self, gpu: &Graphics, seconds: f64, frame: usize) -> Result<()> {
-        let half = self.size() as f32 / 2.0;
-        let turns = (seconds / REVOLUTION as f64) as f32;
-        let clouds = (seconds / REVOLUTION as f64 * (1.0 + CLOUD_DRIFT as f64)) as f32;
-        let sky = sun_at(seconds);
-        let to_planet = tilt();
-        let sun = rotate(&to_planet, sky);
-        let view = rotate(&to_planet, [0.0, 0.0, 1.0]);
-        let uniforms = Uniforms {
-            frame: [half, half, half * PLANET, half * PLANET * ATMOSPHERE],
-            spin: [turns.rem_euclid(1.0), clouds.rem_euclid(1.0), 0.0, 0.0],
-            sun: [sun[0], sun[1], sun[2], 0.0],
-            gloss: half_vector(sun, view),
-            sky: [sky[0], sky[1], sky[2], 0.0],
-            to_planet: to_planet.map(|row| [row[0], row[1], row[2], 0.0]),
-        };
         gpu.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms_at(seconds)));
 
         let mut encoder = gpu
             .device
@@ -443,7 +465,7 @@ impl Globe {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        gpu.queue.submit(std::iter::once(encoder.finish()));
+        gpu.submit(encoder.finish());
         Ok(())
     }
 
@@ -508,10 +530,6 @@ impl Globe {
         buffer.unmap();
         pixels
     }
-
-    fn size(&self) -> u32 {
-        SIZE
-    }
 }
 
 fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -527,11 +545,149 @@ fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// A texture the shader reads texel by texel, never filtered.
+fn loaded(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+/// Formats of the per-pixel tables: map coordinates, and the air's
+/// transmittance with the sea's Fresnel term.
+const MAPPING: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
+const AIR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Fill the per-pixel tables, once: `fs_geometry` over the whole frame, with
+/// the uniforms of any moment, since none of what it reads ever changes.
+fn draw_geometry(
+    gpu: &Graphics,
+    shader: &wgpu::ShaderModule,
+    uniforms: &wgpu::Buffer,
+    mapping: &wgpu::TextureView,
+    air: &wgpu::TextureView,
+) {
+    let device = &gpu.device;
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Globe geometry bind group"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Globe geometry bind group"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniforms.as_entire_binding(),
+        }],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Globe geometry pipeline layout"),
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let target = |format| {
+        Some(wgpu::ColorTargetState {
+            format,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })
+    };
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Globe geometry pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_geometry"),
+            targets: &[target(MAPPING), target(AIR_FORMAT)],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    gpu.queue
+        .write_buffer(uniforms, 0, bytemuck::bytes_of(&uniforms_at(0.0)));
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Globe geometry encoder"),
+    });
+    {
+        let attachment = |view| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Globe geometry pass"),
+            color_attachments: &[attachment(mapping), attachment(air)],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    gpu.submit(encoder.finish());
+    // The frames write the same uniforms: let this pass have its own first.
+    if gpu.wait(std::time::Duration::from_secs(30)).is_none() {
+        tracing::warn!("the globe's geometry took too long to draw");
+    }
+}
+
 /// The sun's direction at `seconds` of run time.
 ///
 /// It travels once around the vertical axis every [`SUN_PERIOD`], so the lit side
 /// slides across the disc: the terminator sweeps in, the city lights take over,
 /// and quarter of an hour later daylight comes back round.
+/// The shader's parameters for `seconds` of run time.
+fn uniforms_at(seconds: f64) -> Uniforms {
+    let half = SIZE as f32 / 2.0;
+    let turns = (seconds / REVOLUTION as f64) as f32;
+    let clouds = (seconds / REVOLUTION as f64 * (1.0 + CLOUD_DRIFT as f64)) as f32;
+    let sky = sun_at(seconds);
+    let to_planet = tilt();
+    let sun = rotate(&to_planet, sky);
+    let view = rotate(&to_planet, [0.0, 0.0, 1.0]);
+    Uniforms {
+        frame: [half, half, half * PLANET, half * PLANET * ATMOSPHERE],
+        spin: [turns.rem_euclid(1.0), clouds.rem_euclid(1.0), 0.0, 0.0],
+        sun: [sun[0], sun[1], sun[2], 0.0],
+        gloss: half_vector(sun, view),
+        sky: [sky[0], sky[1], sky[2], 0.0],
+        to_planet: to_planet.map(|row| [row[0], row[1], row[2], 0.0]),
+    }
+}
+
 fn sun_at(seconds: f64) -> [f32; 3] {
     let angle = (seconds / SUN_PERIOD as f64) * std::f64::consts::TAU;
     let (sin, cos) = angle.sin_cos();
@@ -580,8 +736,7 @@ fn rotate(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 /// Upload a map at its native size and let the GPU build the mip chain.
 #[allow(clippy::too_many_arguments)]
 fn upload(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    gpu: &Graphics,
     mips: &MipChain,
     label: &str,
     width: u32,
@@ -590,6 +745,8 @@ fn upload(
     data: &[u8],
     bytes_per_texel: u32,
 ) -> Result<wgpu::TextureView> {
+    let device = &gpu.device;
+    let queue = &gpu.queue;
     let levels = (width.max(height) as f32).log2().floor() as u32 + 1;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
@@ -626,7 +783,7 @@ fn upload(
             depth_or_array_layers: 1,
         },
     );
-    mips.build(device, queue, &texture, levels, format);
+    mips.build(gpu, &texture, levels, format);
     Ok(texture.create_view(&wgpu::TextureViewDescriptor::default()))
 }
 
@@ -720,12 +877,12 @@ impl MipChain {
 
     fn build(
         &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: &Graphics,
         texture: &wgpu::Texture,
         levels: u32,
         format: wgpu::TextureFormat,
     ) {
+        let device = &gpu.device;
         let Some((_, pipeline)) = self.pipelines.iter().find(|(f, _)| *f == format) else {
             tracing::warn!(?format, "no mip pipeline for this map format");
             return;
@@ -778,7 +935,7 @@ impl MipChain {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        queue.submit(std::iter::once(encoder.finish()));
+        gpu.submit(encoder.finish());
     }
 }
 
@@ -832,6 +989,10 @@ struct Uniforms {{
 @group(0) @binding(3) var cloud_map: texture_2d<f32>;
 @group(0) @binding(4) var relief_map: texture_2d<f32>;
 @group(0) @binding(5) var map_sampler: sampler;
+// Per pixel, from `fs_geometry`: map coordinates before the planet turns, and
+// the air's transmittance toward the viewer with the sea's Fresnel term.
+@group(0) @binding(6) var mapping_map: texture_2d<f32>;
+@group(0) @binding(7) var air_map: texture_2d<f32>;
 
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
@@ -944,6 +1105,37 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {{
     return vec4<f32>(globe.rgb * globe.a + space(in.position.xy) * (1.0 - globe.a), 1.0);
 }}
 
+struct Geometry {{
+    @location(0) mapping: vec4<f32>,
+    @location(1) air: vec4<f32>,
+}};
+
+// What never changes for a pixel, worked out once into the tables `shade`
+// reads: where it lies on the maps before the planet turns, and what the air
+// between it and the viewer lets through.
+@fragment
+fn fs_geometry(in: Varying) -> Geometry {{
+    let p = vec2<f32>(
+        (in.position.x - params.frame.x) / params.frame.z,
+        (params.frame.y - in.position.y) / params.frame.z,
+    );
+    let distance = min(length(p), 1.0);
+    let z = sqrt(max(1.0 - distance * distance, 0.0));
+    let n_screen = vec3<f32>(p, z);
+    let n = vec3<f32>(
+        dot(params.to_planet[0].xyz, n_screen),
+        dot(params.to_planet[1].xyz, n_screen),
+        dot(params.to_planet[2].xyz, n_screen),
+    );
+    let lat = asin(clamp(n.y, -1.0, 1.0));
+    let lon0 = atan2(n.x, n.z);
+    var out: Geometry;
+    out.mapping = vec4<f32>(0.5 + lon0 / TAU, 0.5 - lat / PI, 0.0, 0.0);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - z, 5.0);
+    out.air = vec4<f32>(exp(-AIR * airmass(z)), fresnel);
+    return out;
+}}
+
 fn shade(in: Varying) -> vec4<f32> {{
     // Screen position in planet radii, y up.
     let p = vec2<f32>(
@@ -970,15 +1162,17 @@ fn shade(in: Varying) -> vec4<f32> {{
         dot(params.to_planet[1].xyz, n_screen),
         dot(params.to_planet[2].xyz, n_screen),
     );
-    let lat = asin(clamp(n.y, -1.0, 1.0));
-    let lon0 = atan2(n.x, n.z);
-    let uv = vec2<f32>(0.5 + lon0 / TAU + params.spin.x, 0.5 - lat / PI);
+    let texel = vec2<i32>(in.position.xy);
+    let mapped = textureLoad(mapping_map, texel, 0).xy;
+    let uv = vec2<f32>(mapped.x + params.spin.x, mapped.y);
+    let air = textureLoad(air_map, texel, 0);
 
     // Tangent frame, used to tilt the normal with the relief map and to cast
-    // the clouds' shadows.
-    let sin_lon = sin(lon0);
-    let cos_lon = cos(lon0);
-    let cos_lat = cos(lat);
+    // the clouds' shadows; the latitude's cosine and the longitude's sine and
+    // cosine follow from the normal itself.
+    let cos_lat = sqrt(max(n.x * n.x + n.z * n.z, 1e-8));
+    let sin_lon = n.x / cos_lat;
+    let cos_lon = n.z / cos_lat;
     let east = vec3<f32>(cos_lon, 0.0, -sin_lon);
     let north = vec3<f32>(-n.y * sin_lon, cos_lat, -n.y * cos_lon);
     let relief = textureSampleBias(relief_map, map_sampler, uv, BIAS + 0.4);
@@ -1013,7 +1207,7 @@ fn shade(in: Varying) -> vec4<f32> {{
 
     // A calm sea mirrors the sun: a tight glint and a broad sheen, both
     // stronger at a grazing angle.
-    let fresnel = 0.02 + 0.98 * pow(1.0 - mu_view, 5.0);
+    let fresnel = air.a;
     let nh = max(dot(n, params.gloss.xyz), 0.0);
     // From orbit the glint is a soft patch, spread by the waves, not a mirror's disc.
     let glint = pow(nh, 260.0) * 0.9 + pow(nh, 45.0) * 0.06;
@@ -1041,8 +1235,7 @@ fn shade(in: Varying) -> vec4<f32> {{
 
     // The air between the ground and the viewer: it dims what is behind it and
     // adds its own blue, thickening toward the limb.
-    let path = airmass(mu_view);
-    let through = exp(-AIR * path);
+    let through = air.rgb;
     let sun_air = sun_high * smoothstep01(-0.10, 0.08, mu_sun);
     colour = colour * through + sun_air * (vec3<f32>(1.0) - through) * 0.45;
 

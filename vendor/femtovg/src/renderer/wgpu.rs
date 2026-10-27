@@ -1593,7 +1593,14 @@ impl PipelineState {
             fragment: Some(wgpu::FragmentState {
                 module: shader_module,
                 entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
+                // Only the branch this pipeline's draws take is compiled in.
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[
+                        ("SHADER_TYPE", f64::from(self.shader_type.to_u8())),
+                        ("GLYPHS", if self.enable_glyph_texture { 1.0 } else { 0.0 }),
+                    ],
+                    ..Default::default()
+                },
                 targets: &[Some(self.color_target_state.clone())],
             }),
             primitive: wgpu::PrimitiveState {

@@ -215,7 +215,11 @@ impl Porthole {
             &bezel_pipeline,
             &bezel_group,
         );
-        gpu.queue.submit(std::iter::once(encoder.finish()));
+        gpu.submit(encoder.finish());
+        // The frames write the same uniforms: let the bezel have its own first.
+        if gpu.wait(std::time::Duration::from_secs(30)).is_none() {
+            tracing::warn!("the porthole's bezel took too long to draw");
+        }
 
         let frames = (0..SLOTS)
             .map(|_| {
