@@ -4989,7 +4989,6 @@ dependencies = [
  "bytemuck",
  "clap",
  "directories",
- "femtovg",
  "image",
  "pollster",
  "qrcode",

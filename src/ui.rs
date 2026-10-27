@@ -17,7 +17,7 @@ use crate::motion::Frame;
 /// Create the window.
 ///
 /// The graphics backend is already chosen by then: [`crate::gpu::install`] hands
-/// Slint a wgpu device on Vulkan before this runs, so femtovg draws the UI and the
+/// Slint a wgpu device on Vulkan before this runs, so Skia draws the UI and the
 /// idle globe through the same GPU.
 pub fn create_window(fullscreen: bool, show_fps: bool) -> Result<AppWindow> {
     let window = AppWindow::new().context("creating the Slint window")?;
