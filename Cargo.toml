@@ -15,6 +15,11 @@ path = "src/main.rs"
 # Render straight through DRM/KMS with the GPU, for a Pi running without a
 # compositor (`cargo build --release --features kms`).
 kms = ["slint/backend-linuxkms"]
+# The renderer Slint draws the window with, on the shared wgpu device: femtovg,
+# or Skia (`--no-default-features --features skia`).
+default = ["femtovg"]
+femtovg = ["slint/renderer-femtovg-wgpu"]
+skia = ["slint/renderer-skia"]
 
 [dependencies]
 animato = "1.7.3"
@@ -39,10 +44,12 @@ slint = { version = "1.18", default-features = false, features = [
     "backend-winit",
     "compat-1-2",
     "accessibility",
-    "renderer-femtovg-wgpu",
     "unstable-wgpu-30",
 ] }
 thiserror = "2.0.21"
+# The same wgpu as `slint::wgpu_30`, named here for its default features: WGSL
+# shaders and the Vulkan, Metal and GL backends, whichever renderer Slint uses.
+wgpu = "30"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 toml = "1.1.8"
 tracing = "0.1.44"
@@ -74,5 +81,7 @@ slint = { version = "1.18", default-features = false, features = [
     "compat-1-2",
     "renderer-software",
 ] }
+# The renderer Slint draws with, used directly by the `gpu_cost` benchmark.
+femtovg = { version = "0.27", default-features = false, features = ["wgpu"] }
 
 
