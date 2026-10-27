@@ -75,4 +75,9 @@ slint = { version = "1.18", default-features = false, features = [
     "renderer-software",
 ] }
 
+# femtovg with render passes suited to a tile-based GPU such as the Pi's V3D:
+# the window clear happens in the pass instead of loading the old frame, and the
+# stencil is never loaded or stored. See `vendor/femtovg/PATCHED.md`.
+[patch.crates-io]
+femtovg = { path = "vendor/femtovg" }
 
