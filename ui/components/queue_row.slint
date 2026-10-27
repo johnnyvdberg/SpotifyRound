@@ -1,6 +1,6 @@
 // One row in the playback queue.
 
-import { Theme } from "../theme.slint";
+import { Pointer, Theme } from "../theme.slint";
 import { TapArea } from "./tap_area.slint";
 
 export component QueueRow inherits Rectangle {
@@ -91,7 +91,7 @@ export component QueueRow inherits Rectangle {
     }
 
     touch := TapArea {
-        mouse-cursor: pointer;
+        mouse-cursor: Pointer.hand;
         tapped => { root.clicked(); }
     }
 }

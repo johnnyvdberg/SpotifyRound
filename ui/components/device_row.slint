@@ -1,6 +1,6 @@
 // One Spotify Connect device in the picker.
 
-import { Theme } from "../theme.slint";
+import { Pointer, Theme } from "../theme.slint";
 import { IconGlyph } from "icons.slint";
 import { TapArea } from "tap_area.slint";
 
@@ -85,7 +85,7 @@ export component DeviceRow inherits Rectangle {
 
     touch := TapArea {
         enabled: root.selectable;
-        mouse-cursor: root.selectable ? pointer : default;
+        mouse-cursor: root.selectable ? Pointer.hand : Pointer.plain;
         tapped => { root.clicked(); }
     }
 }

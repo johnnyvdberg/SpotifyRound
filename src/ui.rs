@@ -22,6 +22,8 @@ use crate::motion::Frame;
 pub fn create_window(fullscreen: bool, show_fps: bool) -> Result<AppWindow> {
     let window = AppWindow::new().context("creating the Slint window")?;
     window.window().set_fullscreen(fullscreen);
+    // Full screen is the kiosk, and a kiosk is driven by touch: no pointer.
+    window.global::<Pointer>().set_hidden(fullscreen);
     window.global::<Stats>().set_shown(show_fps);
     watch_rendering(&window);
     Ok(window)
@@ -670,17 +672,17 @@ mod preview {
         window.set_idle(true, 0.45);
         save(&window, &soft, "10-idle-fade");
 
-        // ---- diving bell ----
-        let pixels = crate::dive::render_once(70.0, 7_321).unwrap();
-        window.set_idle_scene(1, crate::dive::SIZE as f32);
+        // ---- the Nautilus ----
+        let pixels = crate::dive3d::render_once(70.0, 7_321).unwrap();
+        window.set_idle_scene(1, crate::dive3d::SIZE as f32);
         window.set_idle(true, 1.0);
         window.set_idle_frame(slint::Image::from_rgba8(
             slint::SharedPixelBuffer::clone_from_slice(
                 &pixels,
-                crate::dive::SIZE,
-                crate::dive::SIZE,
+                crate::dive3d::SIZE,
+                crate::dive3d::SIZE,
             ),
         ));
-        save(&window, &soft, "12-diving-bell");
+        save(&window, &soft, "12-nautilus");
     }
 }

@@ -1,10 +1,11 @@
-import { Theme } from "../theme.slint";
+import { Pointer, Theme } from "../theme.slint";
 import { Idle } from "../state.slint";
 
 // Taps and horizontal swipes on the visuals. Only a press that starts here
 // counts: the swipe that opened the visualizer started on the player, and must
 // not close it again or send it travelling when the finger lifts.
 component IdleGestures inherits TouchArea {
+    mouse-cursor: Pointer.plain;
     callback tapped();
     // +1 for a swipe to the left, on to what lies ahead; -1 to the right, back.
     callback swiped(int);
@@ -41,9 +42,9 @@ component IdleGestures inherits TouchArea {
 
 // The idle visualizer.
 //
-// A scene chosen at random from the renderers that came up: the Earth turning in
-// the middle of the circle, or a procedural dive seen through the porthole of a
-// diving bell. Rust draws the frames; this screen only picks the size and
+// A scene chosen at random from the renderers that came up: the Earth turning
+// with its atmosphere out to the rim, or the Nautilus' voyage seen through its
+// salon window. Rust draws the frames; this screen only picks the size and
 // cross-fades them over the player.
 
 export component IdleScreen inherits Rectangle {
@@ -55,13 +56,10 @@ export component IdleScreen inherits Rectangle {
     background: Theme.bg.with-alpha(Idle.fade);
 
     // Air glow behind the planet, so it sits in space rather than on a page.
-    // The dive brings its own casing and fills the panel.
     Rectangle {
-        width: 1060px;
-        height: 1060px;
-        x: 10px;
-        y: 10px;
-        border-radius: 530px;
+        width: 1080px;
+        height: 1080px;
+        border-radius: 540px;
         background: @radial-gradient(circle, #4b86d814 0%, #244a7d10 52%, transparent 76%);
         visible: Idle.scene == 0;
     }
@@ -76,13 +74,12 @@ export component IdleScreen inherits Rectangle {
         opacity: Idle.fade;
     }
 
-    // A slow breath at the rim, echoing the ring the player wears.
+    // A slow breath at the rim, echoing the ring the player wears; the
+    // atmosphere fades out beneath it.
     Rectangle {
-        width: 1040px;
-        height: 1040px;
-        x: 20px;
-        y: 20px;
-        border-radius: 520px;
+        width: 1080px;
+        height: 1080px;
+        border-radius: 540px;
         border-width: 3px;
         border-color: Theme.accent.with-alpha(0.10 + 0.10 * Idle.fade);
         background: transparent;

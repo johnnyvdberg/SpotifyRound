@@ -6,7 +6,10 @@
 // select whatever row it ended on. A press that travels more than a few pixels is
 // treated as a gesture instead.
 
+import { Pointer } from "../theme.slint";
+
 export component TapArea inherits TouchArea {
+    mouse-cursor: Pointer.plain;
     callback tapped();
 
     // Movement smaller than this is still a tap; a finger always wobbles.

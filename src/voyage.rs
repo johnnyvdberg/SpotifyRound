@@ -1,15 +1,14 @@
 //! Where the Nautilus is on its voyage, and how deep.
 //!
-//! The diving-bell scene is drawn entirely by `dive.wgsl`, but the voyage is
-//! steered from here: how far the Nautilus has come, how high it cruises above
+//! The 3D dive draws the voyage, but it is steered from here: how far the Nautilus has come, how high it cruises above
 //! the seabed and how deep it is below the surface. Keeping that state on the
 //! CPU lets a swipe carry the boat on to the next stretch of sea, and lets the
 //! depth follow a dive profile at a believable rate of climb, rather than jump
 //! with every change of biome.
 //!
-//! The biome sequence and the seabed depths mirror the constants at the top of
-//! `dive.wgsl`; the two must agree, or the seabed would not be where the gauges
-//! say it is.
+//! The biome sequence mirrors `leg` in `dive3d/scene.wgsl`; the two
+//! must agree, or the seabed would change character where the gauges say it
+//! does not.
 
 use std::f64::consts::TAU;
 
@@ -49,8 +48,7 @@ const CRUISE: [(f64, f64); 7] = [
 const CEILING: [f64; 7] = [0.70, 99.0, 99.0, 99.0, 0.62, 99.0, 2.45];
 /// Closest the Nautilus comes to the seabed.
 const CLEARANCE: f64 = 0.15;
-/// The lava cave, and the height of its vault above its floor (`CAVE_ROOF` in
-/// `dive.wgsl`). The vault is drawn wherever the cave covers a third of the
+/// The lava cave, and the height of its vault above its floor. The vault is drawn wherever the cave covers a third of the
 /// view's biome mix, so from there on the Nautilus must already be under it.
 const CAVE: usize = 4;
 const CAVE_ROOF: f64 = 0.95;
@@ -204,7 +202,7 @@ pub struct Biome {
 }
 
 impl Biome {
-    /// The same sequence as `biome` and `leg` in `dive.wgsl`.
+    /// The same sequence as `leg` in `dive3d/scene.wgsl`.
     pub fn at(x: f64, seed: f32) -> Self {
         let u = x / LEG;
         let k = u.floor();

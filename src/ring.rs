@@ -23,7 +23,8 @@ pub const SLOTS: usize = 3;
 
 /// Must match the rim geometry in `ui/main.slint` and `swipe_area.slint`.
 const CENTER: f32 = 540.0;
-const RADIUS: f32 = 520.0;
+// As far out as the head dot allows: the panel's own bezel frames the ring.
+const RADIUS: f32 = 531.0;
 const THICKNESS: f32 = 6.0;
 /// Radius of the head dot, and the larger one shown while scrubbing.
 const HEAD: f32 = 8.0;
@@ -398,20 +399,22 @@ mod tests {
         .unwrap();
 
         // The played half reaches from the top clockwise to the bottom.
-        let top = pixel(&pixels, 540, 20);
+        // The band's centre line, from the edge of the frame.
+        let band = (CENTER - RADIUS) as u32;
+        let top = pixel(&pixels, 540, band);
         assert!(top[3] > 200, "the arc is not opaque: {top:?}");
         assert!(
             top[1] > 150 && top[1] > top[0],
             "the arc does not use the accent: {top:?}"
         );
         // The unplayed half is the faint track.
-        let left = pixel(&pixels, 20, 540);
+        let left = pixel(&pixels, band, 540);
         assert!(
             left[3] > 0 && left[3] < 60,
             "the track is missing or too strong: {left:?}"
         );
         // The head dot sits at the end of the arc.
-        let head = pixel(&pixels, 540, 1060);
+        let head = pixel(&pixels, 540, SIZE - band);
         assert!(head[3] > 200, "the head dot is missing: {head:?}");
         // Nothing is drawn inside the circle or outside the band.
         assert_eq!(pixel(&pixels, 540, 540)[3], 0);

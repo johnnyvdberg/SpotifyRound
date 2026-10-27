@@ -6,8 +6,10 @@
 // taps from the content above.
 
 import { Player } from "../state.slint";
+import { Pointer } from "../theme.slint";
 
 export component SwipeArea inherits TouchArea {
+    mouse-cursor: Pointer.plain;
     callback swipe-left();
     callback swipe-right();
     callback swipe-down();
@@ -20,7 +22,7 @@ export component SwipeArea inherits TouchArea {
     callback seek(float);
 
     // Ring geometry, matching `src/ring.rs`.
-    private property <float> ring-radius: 520;
+    private property <float> ring-radius: 531;
     private property <float> ring-band: 46;
     // Movement below this is a tap rather than a gesture.
     private property <length> tap-slop: 14px;

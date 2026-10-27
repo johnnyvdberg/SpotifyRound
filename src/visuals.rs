@@ -16,7 +16,6 @@ use anyhow::Result;
 use rand::RngCore as _;
 use slint::wgpu_30::wgpu;
 
-use crate::dive::Bell;
 use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
@@ -31,13 +30,12 @@ const FPS: u64 = crate::app::TARGET_FPS;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scene {
     Globe,
-    Bell,
-    /// The same voyage as the bell, rasterised in 3D.
+    /// The Nautilus' voyage, seen through its salon window.
     Nautilus,
 }
 
 impl Scene {
-    pub const ALL: [Scene; 3] = [Scene::Globe, Scene::Bell, Scene::Nautilus];
+    pub const ALL: [Scene; 2] = [Scene::Globe, Scene::Nautilus];
 
     pub fn index(self) -> usize {
         self as usize
@@ -48,7 +46,6 @@ impl Scene {
     pub fn size(self) -> f32 {
         match self {
             Scene::Globe => crate::globe::SIZE as f32,
-            Scene::Bell => crate::dive::SIZE as f32,
             Scene::Nautilus => crate::dive3d::SIZE as f32,
         }
     }
@@ -56,7 +53,6 @@ impl Scene {
     fn build(self, gpu: &Graphics) -> Result<Box<dyn Visual>> {
         match self {
             Scene::Globe => Ok(Box::new(Globe::new(gpu)?)),
-            Scene::Bell => Ok(Box::new(Bell::new(gpu)?)),
             Scene::Nautilus => Ok(Box::new(Nautilus::new(gpu)?)),
         }
     }
@@ -335,7 +331,7 @@ mod tests {
     #[test]
     fn only_available_scenes_are_chosen() {
         for _ in 0..64 {
-            assert_eq!(Scene::random(0b10), Scene::Bell);
+            assert_eq!(Scene::random(0b10), Scene::Nautilus);
             assert_eq!(Scene::random(0b01), Scene::Globe);
         }
     }

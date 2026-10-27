@@ -1,6 +1,6 @@
 // Pill shaped text button.
 
-import { Theme } from "../theme.slint";
+import { Pointer, Theme } from "../theme.slint";
 
 export component PillButton inherits Rectangle {
     in property <string> label: "";
@@ -34,7 +34,7 @@ export component PillButton inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.enabled;
-        mouse-cursor: pointer;
+        mouse-cursor: Pointer.hand;
         clicked => { root.clicked(); }
     }
 }

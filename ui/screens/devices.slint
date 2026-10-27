@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Pointer, Theme } from "../theme.slint";
 import { App, Devices } from "../state.slint";
 import { DeviceRow } from "../components/device_row.slint";
 import { IconButton } from "../components/icon_button.slint";
@@ -49,7 +49,9 @@ export component DevicePicker inherits Rectangle {
         animate y { duration: 240ms; easing: ease-out; }
 
         // Swallow taps on the panel's own background: only the scrim closes it.
-        TouchArea { }
+        TouchArea {
+            mouse-cursor: Pointer.plain;
+        }
 
         Text {
             x: 38px;

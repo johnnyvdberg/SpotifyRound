@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Pointer, Theme } from "../theme.slint";
 import { App, Player } from "../state.slint";
 import { AlbumArt } from "../components/album_art.slint";
 import { IconButton } from "../components/icon_button.slint";
@@ -117,7 +117,7 @@ export component NowPlaying inherits Rectangle {
         }
 
         device-touch := TouchArea {
-            mouse-cursor: pointer;
+            mouse-cursor: Pointer.hand;
             clicked => { App.open-devices(); }
         }
     }

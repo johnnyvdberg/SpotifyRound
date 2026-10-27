@@ -1,6 +1,6 @@
 // A round, tactile icon button.
 
-import { Theme } from "../theme.slint";
+import { Pointer, Theme } from "../theme.slint";
 import { IconGlyph } from "icons.slint";
 
 export component IconButton inherits Rectangle {
@@ -44,7 +44,7 @@ export component IconButton inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.enabled;
-        mouse-cursor: pointer;
+        mouse-cursor: Pointer.hand;
         clicked => { root.clicked(); }
     }
 }

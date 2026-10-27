@@ -2,6 +2,18 @@
 // Everything is authored at 1080x1080 logical pixels; the physical display is
 // circular, so interactive content is kept inside a ~500px radius.
 
+// The mouse pointer. A kiosk shows none: the round panel's touch controller
+// often reports itself as a mouse, and the compositor would draw an arrow
+// over the display. Every touch target takes its cursor from here, and a
+// background area covers the gaps between them, because any element without
+// one shows the default arrow again.
+export global Pointer {
+    // Set from Rust: true when running full screen.
+    in-out property <bool> hidden: false;
+    out property <MouseCursor> hand: hidden ? MouseCursor.none : MouseCursor.pointer;
+    out property <MouseCursor> plain: hidden ? MouseCursor.none : MouseCursor.default;
+}
+
 export global Theme {
     out property <color> bg: #07070a;
     out property <color> ink: #f5f5f8;

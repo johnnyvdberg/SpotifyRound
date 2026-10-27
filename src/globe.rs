@@ -36,7 +36,7 @@ const NORMAL: &[u8] = include_bytes!("../assets/earth/normal.tif");
 const SPECULAR: &[u8] = include_bytes!("../assets/earth/specular.tif");
 
 /// Size of the rendered frame. The view draws it 1:1, so nothing is scaled.
-pub const SIZE: u32 = 920;
+pub const SIZE: u32 = 1080;
 /// Seconds for one revolution of the planet.
 const REVOLUTION: f32 = 192.0;
 /// How much faster than the ground the cloud sheet turns, so the weather
@@ -54,7 +54,8 @@ pub(crate) const SLOTS: usize = crate::visuals::SLOTS;
 /// Extra mip levels to skip when sampling the maps. A slightly softer planet,
 /// but it stops the city lights and the relief sparkling as the surface turns.
 const DETAIL_BIAS: f32 = 0.45;
-/// Planet radius as a fraction of the frame's half-size, leaving room for the halo.
+/// Planet radius as a fraction of the frame's half-size, leaving room for the
+/// halo, which reaches the very edge of the panel.
 const PLANET: f32 = 0.93;
 /// Outer radius of the atmosphere, as a multiple of the planet's radius.
 const ATMOSPHERE: f32 = 1.075;

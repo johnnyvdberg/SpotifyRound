@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Pointer, Theme } from "theme.slint";
 import { App, Idle, Stats } from "state.slint";
 import { FpsCounter } from "components/fps_counter.slint";
 import { ProgressRing } from "components/progress_ring.slint";
@@ -11,7 +11,7 @@ import { Queue } from "screens/queue.slint";
 import { DevicePicker } from "screens/devices.slint";
 
 // Re-export the shared API so the Rust side can address the globals and structs.
-export { Theme } from "theme.slint";
+export { Pointer, Theme } from "theme.slint";
 export { App, Devices, DeviceItem, Idle, Library, Player, PlaylistItem, QueueItem, Stats } from "state.slint";
 
 export component AppWindow inherits Window {
@@ -23,6 +23,12 @@ export component AppWindow inherits Window {
 
     // Keys: F toggles the frame-rate readout. Zero-sized, so it never takes a
     // touch from the screens.
+    // Under everything: the gaps between touch targets get the pointer too, so
+    // it stays hidden in a kiosk wherever it rests.
+    TouchArea {
+        mouse-cursor: Pointer.plain;
+    }
+
     keys := FocusScope {
         width: 0;
         height: 0;

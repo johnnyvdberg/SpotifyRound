@@ -1,15 +1,15 @@
 //! The Nautilus' voyage as a real 3D scene.
 //!
-//! The same voyage as [`crate::dive`] — the same seven biomes, the same
-//! swipes and dive profile from [`crate::voyage`] — but rasterised: a seabed
+//! Seven biomes in turn, with the swipes and the dive profile of
+//! [`crate::voyage`], rasterised: a seabed
 //! mesh lifted in the vertex shader, procedurally generated models placed and
 //! animated each frame by [`world`], a depth buffer and 4× multisampling. A
 //! pixel only pays for what actually covers it, instead of every pixel asking
 //! every feature whether it is there.
 //!
 //! The window itself is not part of the 3D scene: the brass bezel, the gauges,
-//! the engraved finish and the bending of the glass are the procedural dive's
-//! own passes, borrowed through [`crate::dive::Porthole`].
+//! the engraved finish and the bending of the glass are full-screen passes of
+//! their own, in [`crate::porthole::Porthole`].
 
 mod heightmap;
 mod helm;
@@ -20,15 +20,15 @@ mod world;
 use anyhow::Result;
 use slint::wgpu_30::wgpu;
 
-use crate::dive::Porthole;
 use crate::gpu::Graphics;
+use crate::porthole::Porthole;
 use crate::visuals::Visual;
 use crate::voyage::{Biome, Voyage};
 use helm::{Helm, Pose};
 use mesh::{Library, Vertex};
 use world::{Frame, Instance, Seabed, Sprite, World};
 
-pub use crate::dive::SIZE;
+pub use crate::porthole::SIZE;
 
 /// Edge of the square the sea is rendered into. Geometry is cheap here, so it
 /// is drawn a little sharper than the procedural sea.
@@ -707,7 +707,7 @@ impl Nautilus {
             self.helm.steer(&self.seabed, voyage, at);
         }
         self.draw(gpu, seconds, seed, 0).expect("a 3D dive frame");
-        crate::dive::read_texture(gpu, &self.porthole.texture(0))
+        crate::porthole::read_texture(gpu, &self.porthole.texture(0))
     }
 }
 
