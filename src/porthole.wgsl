@@ -324,7 +324,8 @@ fn fs_composite(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
 
     let over = textureLoad(bezel, vec2<i32>(in.xy), 0);
     var col = vec3<f32>(0.0);
-    if (rp < GLASS + 0.002 && over.a < 0.999) {
+    let sea_shows = rp < GLASS + 0.002 && over.a < 0.999;
+    if (sea_shows) {
         var q = p;
         if (GLASS_BEND > 0.0) {
             q += normalize(p + vec2<f32>(0.0001)) * soft(0.62, 1.0, rp / GLASS) * GLASS_BEND;
@@ -334,12 +335,15 @@ fn fs_composite(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
 
         // An engraver's finish, after the plates of the 1871 edition: fine
         // hatching that only shows in the shadows, and a warm, inky grade.
+        // Only where it is dark enough to show: elsewhere it changes nothing.
         let lum = dot(col, vec3<f32>(0.30, 0.55, 0.15));
-        let hatch_a = 0.5 + 0.5 * sin((in.x + in.y) * 1.25);
-        let hatch_b = 0.5 + 0.5 * sin((in.x - in.y) * 1.25);
-        let dark = soft(0.16, 0.02, lum);
-        let lines = hatch_a * soft(0.0, 1.0, dark) + hatch_b * soft(0.5, 1.0, dark);
-        col *= 1.0 - 0.22 * lines * dark;
+        if (lum < 0.16) {
+            let hatch_a = 0.5 + 0.5 * sin((in.x + in.y) * 1.25);
+            let hatch_b = 0.5 + 0.5 * sin((in.x - in.y) * 1.25);
+            let dark = soft(0.16, 0.02, lum);
+            let lines = hatch_a * soft(0.0, 1.0, dark) + hatch_b * soft(0.5, 1.0, dark);
+            col *= 1.0 - 0.22 * lines * dark;
+        }
         col = mix(col, col * vec3<f32>(1.08, 1.0, 0.88), soft(0.10, 0.50, lum));
     }
     col = col * (1.0 - over.a) + over.rgb;
@@ -351,7 +355,10 @@ fn fs_composite(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
     col = needle(col, p, gauge_centre(DEPTH_GAUGE), (reading - 0.5) * 4.7 * 0.92, vec3<f32>(0.60, 0.10, 0.06));
     col = needle(col, p, gauge_centre(LOG_GAUGE), params.scene.y / LEG * TAU, vec3<f32>(0.06, 0.07, 0.11));
 
-    // Dither away the banding in the dark water.
-    col += (hash21(in.xy + fract(t) * 91.0) - 0.5) / 255.0;
+    // Dither away the banding in the dark water. Over the bezel, stored in
+    // eight bits already, it would round away again: there it is left out.
+    if (sea_shows) {
+        col += (hash21(in.xy + fract(t) * 91.0) - 0.5) / 255.0;
+    }
     return vec4<f32>(col, 1.0);
 }

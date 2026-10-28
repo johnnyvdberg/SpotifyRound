@@ -219,8 +219,9 @@ mod part {
     /// Not a part: draw into a quarter of the pixels, the geometry unchanged,
     /// to tell what the fragments cost from what the vertices do.
     pub const QUARTER: u16 = 64;
-    /// Not parts either: every texture lookup a flat grey; no procedural
-    /// noise; trilinear instead of anisotropic filtering.
+    /// Not parts either: every texture lookup a flat grey (only in a scene
+    /// built [`Nautilus::with_plain_textures`]); no procedural noise;
+    /// trilinear instead of anisotropic filtering.
     pub const PLAIN_TEXTURES: u16 = 128;
     pub const NO_NOISE: u16 = 256;
     pub const ANISOTROPY: u16 = 512;
@@ -233,7 +234,6 @@ mod part {
 /// `scene.wgsl`), and the extra variant that changes the sampler.
 #[cfg_attr(not(test), allow(dead_code))]
 mod shader_switch {
-    pub const PLAIN_TEXTURES: u32 = 1;
     pub const NO_NOISE: u32 = 2;
 }
 
@@ -245,6 +245,16 @@ impl Nautilus {
     /// The scene with its sea stored as `colour`: half floats, or anything
     /// that holds 0 to 1, at half brightness.
     fn with_colour(gpu: &Graphics, colour: wgpu::TextureFormat) -> Result<Self> {
+        Self::build(gpu, colour, false)
+    }
+
+    /// The scene with every surface a flat grey, to see what texturing costs.
+    #[cfg(test)]
+    fn with_plain_textures(gpu: &Graphics) -> Result<Self> {
+        Self::build(gpu, COLOUR, true)
+    }
+
+    fn build(gpu: &Graphics, colour: wgpu::TextureFormat, plain: bool) -> Result<Self> {
         let scale = if colour == wgpu::TextureFormat::Rgba16Float {
             1.0
         } else {
@@ -582,7 +592,14 @@ impl Nautilus {
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[constants, &[("SEA_SCALE", f64::from(scale))]].concat(),
+                        constants: &[
+                            constants,
+                            &[
+                                ("SEA_SCALE", f64::from(scale)),
+                                ("PLAIN_TEXTURES", f64::from(u8::from(plain))),
+                            ],
+                        ]
+                        .concat(),
                         ..Default::default()
                     },
                 }),
@@ -859,9 +876,6 @@ impl Nautilus {
             uniforms.counts[0] = 0.0;
         }
         let mut switches = 0;
-        if self.skips(part::PLAIN_TEXTURES) {
-            switches |= shader_switch::PLAIN_TEXTURES;
-        }
         if self.skips(part::NO_NOISE) {
             switches |= shader_switch::NO_NOISE;
         }
@@ -1442,6 +1456,8 @@ mod tests {
         // The same scene, its sea in half floats as it was before.
         let mut floats =
             Nautilus::with_colour(&gpu, wgpu::TextureFormat::Rgba16Float).expect("a 3D dive");
+        // And with every surface a flat grey.
+        let mut plain = Nautilus::with_plain_textures(&gpu).expect("a 3D dive");
         let variants = [
             ("everything", 0),
             ("no terrain", part::TERRAIN),
@@ -1461,7 +1477,7 @@ mod tests {
         let legs = [1.0, 3.0, 4.0];
         let frames = 20;
         // Warm up, so the first variant does not pay for anything the rest skip.
-        for scene in [&mut scene, &mut floats] {
+        for scene in [&mut scene, &mut floats, &mut plain] {
             for i in 0..10 {
                 scene
                     .draw(&gpu, leg(1.0) + f64::from(i), 0, 0)
@@ -1473,6 +1489,8 @@ mod tests {
         for (name, skip) in variants {
             let scene = if name == "half-float sea" {
                 &mut floats
+            } else if skip == part::PLAIN_TEXTURES {
+                &mut plain
             } else {
                 &mut scene
             };
