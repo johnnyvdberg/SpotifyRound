@@ -20,7 +20,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::world::{CAVE, Seabed, corridor, corridor_slope, hash};
+use super::world::{CAVE, Seabed, TRENCH, corridor, corridor_slope, hash};
 use crate::voyage::{Position, SPEED};
 
 /// The boat's pose for one frame.
@@ -71,6 +71,9 @@ impl Spring {
 
 /// How far round the window turns to look up the cave's tunnel.
 pub const LOOK: f32 = 0.9;
+/// How far the boat heels to port along the trench's rim, so the window
+/// looks down over its edge.
+pub const PEER: f32 = 0.2;
 
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
@@ -238,7 +241,8 @@ impl Helm {
             let heading = course + wander + look + TAU * (self.turns + progress);
             self.yaw.follow(heading, 0.7, dt, 0.4);
             let bank = (-self.yaw.rate * 0.5 + 0.010 * (t * 0.21 + phase).sin()).clamp(-0.08, 0.08);
-            self.roll.follow(bank, 0.9, dt, 0.2);
+            let peer = PEER * smooth(0.3, 0.9, seabed.share(x, corridor(x), TRENCH));
+            self.roll.follow(bank + peer, 0.9, dt, 0.2);
         }
 
         let pos = [x, self.height.value, z];

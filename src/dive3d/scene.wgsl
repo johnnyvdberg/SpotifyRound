@@ -84,7 +84,7 @@ const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
 const LEG: f32 = 3.4;
 const BLEND: f32 = 0.32;
-const BIOMES: i32 = 7;
+const BIOMES: i32 = 8;
 const SHALLOWS: i32 = 0;
 const FOREST: i32 = 1;
 const WRECKS: i32 = 2;
@@ -94,6 +94,14 @@ const ABYSS: i32 = 5;
 const ARCTIC: i32 = 6;
 // The material of the lava cave's tunnel, `world::material::VAULT`.
 const VAULT: u32 = 5u;
+const TRENCH: i32 = 7;
+
+// The biome of the `n`th leg of a circuit, as `voyage::ORDER`: the trench,
+// last in every table, comes between the forest and the wrecks. Worked out
+// rather than looked up, which would cost the Pi a table in every shader.
+fn order(n: i32) -> i32 {
+    return select(select(n - 1, TRENCH, n == 2), n, n < 2);
+}
 
 // ---------------------------------------------------------------------------
 // Shared with world.rs
@@ -166,8 +174,8 @@ fn leg(x: f32) -> Leg {
     let u = x / LEG;
     let k = floor(u);
     let start = i32(g.world.x * f32(BIOMES));
-    let a = ((i32(k) + start) % BIOMES + BIOMES) % BIOMES;
-    let b = ((i32(k) + 1 + start) % BIOMES + BIOMES) % BIOMES;
+    let a = order(((i32(k) + start) % BIOMES + BIOMES) % BIOMES);
+    let b = order(((i32(k) + 1 + start) % BIOMES + BIOMES) % BIOMES);
     return Leg(a, b, smooth01(1.0 - BLEND, 1.0, u - k));
 }
 
@@ -175,7 +183,7 @@ fn presence(l: Leg, id: i32) -> f32 {
     return select(0.0, 1.0 - l.w, l.a == id) + select(0.0, l.w, l.b == id);
 }
 
-fn by_biome(l: Leg, values: array<f32, 7>) -> f32 {
+fn by_biome(l: Leg, values: array<f32, 8>) -> f32 {
     var v = values;
     return mix(v[l.a], v[l.b], l.w);
 }
@@ -208,14 +216,20 @@ fn ground(x: f32, z: f32) -> f32 {
 // The same in two parts: the massif under the lava cave, and the rest.
 fn ground_parts(x: f32, z: f32) -> vec2<f32> {
     let l = leg(voyage_x(x, z));
-    let base = -by_biome(l, array<f32, 7>(1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5));
-    let lift = by_biome(l, array<f32, 7>(0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40)) * relief(x, z).x;
-    let rough = by_biome(l, array<f32, 7>(0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05));
-    let ridges = by_biome(l, array<f32, 7>(1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4));
+    let base = -by_biome(l, array<f32, 8>(1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2));
+    let lift = by_biome(l, array<f32, 8>(0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30)) * relief(x, z).x;
+    let rough = by_biome(l, array<f32, 8>(0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05));
+    let ridges = by_biome(l, array<f32, 8>(1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4));
     let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1u) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2u);
     let off = abs(z - corridor(x));
     let far = smooth01(7.0, 22.0, off) * (0.3 + ridges * vnoise(x * 0.16, z * 0.16 + 3.0, 4u));
-    return vec2<f32>(base + lift + rough * (n - 0.45) + far, massif(x, z, l, off));
+    // The trench's terraces. Only vertex shaders find the ground, so no
+    // pixel pays for them.
+    var trench = presence(l, TRENCH);
+    if (trench > 0.0) {
+        trench *= trench_profile(x, z - corridor(x));
+    }
+    return vec2<f32>(base + lift + rough * (n - 0.45) + far + trench, massif(x, z, l, off));
 }
 
 // The lava cave's massif, rising either side of its tunnel: the part of the
@@ -228,6 +242,23 @@ fn massif(x: f32, z: f32, l: Leg, off: f32) -> f32 {
 // The massif alone at (x, z).
 fn massif_at(x: f32, z: f32) -> f32 {
     return massif(x, z, leg(voyage_x(x, z)), abs(z - corridor(x)));
+}
+
+// The trench's terraces and gullies, exactly as `world::trench_profile`.
+fn trench_profile(x: f32, across: f32) -> f32 {
+    let u = across - 0.25 * sin(x * 0.29 + 1.0) - 0.12 * sin(x * 0.83);
+    let down = 1.2 * smooth01(1.3, 1.6, u)
+        + 1.5 * smooth01(2.1, 2.4, u)
+        + 1.6 * smooth01(2.8, 3.2, u)
+        + 0.8 * smooth01(3.3, 3.8, u);
+    let up = 1.8 * smooth01(4.0, 4.35, u)
+        + 1.6 * smooth01(4.9, 5.2, u)
+        + 1.6 * smooth01(5.7, 6.0, u)
+        + 1.3 * smooth01(6.6, 7.0, u);
+    let back = 1.2 * smooth01(-1.9, -2.4, u) + 1.4 * smooth01(-3.6, -4.2, u);
+    let cut = smooth01(0.55, 0.95, sin(x * 1.9 + 1.4 * sin(x * 0.61)));
+    let gully = cut * (0.2 + 0.35 * smooth01(-1.2, 1.6, u)) * smooth01(-2.0, -1.2, u) * smooth01(2.8, 2.2, u);
+    return up + back - down - gully;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +425,7 @@ fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> 
 }
 
 fn floor_albedo(l: Leg) -> vec3<f32> {
-    var albedos = array<vec3<f32>, 7>(
+    var albedos = array<vec3<f32>, 8>(
         vec3<f32>(0.62, 0.56, 0.42),
         vec3<f32>(0.40, 0.36, 0.26),
         vec3<f32>(0.32, 0.30, 0.26),
@@ -402,13 +433,14 @@ fn floor_albedo(l: Leg) -> vec3<f32> {
         vec3<f32>(0.10, 0.09, 0.09),
         vec3<f32>(0.17, 0.16, 0.17),
         vec3<f32>(0.36, 0.37, 0.38),
+        vec3<f32>(0.58, 0.55, 0.47),
     );
     return mix(albedos[l.a], albedos[l.b], l.w);
 }
 
 fn surface_of(l: Leg) -> vec2<i32> {
-    // Sand, sand, silt, sand, basalt, silt, sand: by biome.
-    var layers = array<i32, 7>(12, 12, 13, 12, 10, 13, 12);
+    // Sand, sand, silt, sand, basalt, silt, sand, silt: by biome.
+    var layers = array<i32, 8>(12, 12, 13, 12, 10, 13, 12, 13);
     return vec2<i32>(layers[l.a], layers[l.b]);
 }
 

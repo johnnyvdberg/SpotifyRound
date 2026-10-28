@@ -16,7 +16,7 @@ use std::f32::consts::{PI, TAU};
 use super::helm::Pose;
 use super::mesh::Model;
 use super::textures::Surface;
-use crate::voyage::Biome;
+use crate::voyage::{BIOMES, Biome};
 
 pub const SHALLOWS: usize = 0;
 pub const FOREST: usize = 1;
@@ -25,6 +25,8 @@ pub const ATLANTIS: usize = 3;
 pub const CAVE: usize = 4;
 pub const ABYSS: usize = 5;
 pub const ARCTIC: usize = 6;
+/// Last in the tables, though not on the voyage: see `voyage::ORDER`.
+pub const TRENCH: usize = 7;
 
 /// Height of the cave's vault above its floor, and the ice's thickness.
 pub const CAVE_ROOF: f32 = 1.6;
@@ -138,6 +140,43 @@ pub fn voyage_x(x: f32, z: f32) -> f32 {
     x + 1.2 * (off * 0.31).sin() + 0.8 * ((off * 0.73 + 1.3).sin() - 1.3f32.sin())
 }
 
+/// The trench beside the corridor, as a change in the seabed's height at
+/// `across` units to port of it (where the window looks) and `x` along it: a
+/// level rim the boat sails along, cut by gullies running down into the
+/// trench; below it terraces stepping down past the window to a floor some
+/// sixty metres down, and the far wall rising again in terraces across the
+/// gulf. Behind the boat the ground steps up, so a turn about looks up a wall.
+/// Sines rather than noise, as `ground` in the shader pays for it per vertex.
+pub fn trench_profile(x: f32, across: f32) -> f32 {
+    let u = across - trench_wander(x);
+    let down = 1.2 * smooth(1.3, 1.6, u)
+        + 1.5 * smooth(2.1, 2.4, u)
+        + 1.6 * smooth(2.8, 3.2, u)
+        + 0.8 * smooth(3.3, 3.8, u);
+    let up = 1.8 * smooth(4.0, 4.35, u)
+        + 1.6 * smooth(4.9, 5.2, u)
+        + 1.6 * smooth(5.7, 6.0, u)
+        + 1.3 * smooth(6.6, 7.0, u);
+    let back = 1.2 * smooth(-1.9, -2.4, u) + 1.4 * smooth(-3.6, -4.2, u);
+    // Gullies cross the rim and the first terraces, deepening as they go.
+    let cut = smooth(0.55, 0.95, (x * 1.9 + 1.4 * (x * 0.61).sin()).sin());
+    let gully =
+        cut * (0.2 + 0.35 * smooth(-1.2, 1.6, u)) * smooth(-2.0, -1.2, u) * smooth(2.8, 2.2, u);
+    up + back - down - gully
+}
+
+/// How far the trench's terraces wander to port of their line at `x`, so
+/// their edges never run straight.
+pub fn trench_wander(x: f32) -> f32 {
+    0.25 * (x * 0.29 + 1.0).sin() + 0.12 * (x * 0.83).sin()
+}
+
+/// Where the trench's terrace edges lie across the corridor, before they
+/// wander: the three steps down from the rim on the near side, then the far
+/// wall's three lips, which face the window.
+const NEAR_LIPS: [f32; 3] = [1.3, 2.1, 2.8];
+const FAR_LIPS: [f32; 4] = [4.35, 5.2, 6.0, 7.0];
+
 /// The lava cave is a tunnel through a massif: its radius, and how high the
 /// rock rises either side of it.
 pub const TUNNEL: f32 = 1.05;
@@ -149,10 +188,10 @@ pub const TUNNEL_SHARE: f32 = 0.85;
 /// whatever the boat does. The voyage's own depths run from one to forty
 /// units; here they are compressed, so the drop into the abyss is a steep
 /// shelf rather than a gulf. The gauge undoes this (`helm::depth_reading`).
-pub const SEABED: [f32; 7] = [1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5];
+pub const SEABED: [f32; BIOMES] = [1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2];
 /// How strongly the heightmap's relief shows in each biome: rugged in the
 /// abyss, nearly flat under the paved city of Atlantis.
-pub const RELIEF: [f32; 7] = [0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40];
+pub const RELIEF: [f32; BIOMES] = [0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30];
 
 /// The seabed of one visit: its heightmap and the biome sequence's seed.
 pub struct Seabed {
@@ -176,7 +215,7 @@ impl Seabed {
         self.biome(x, z).weight(id) as f32
     }
 
-    fn by_biome(b: &Biome, values: [f32; 7]) -> f32 {
+    fn by_biome(b: &Biome, values: [f32; BIOMES]) -> f32 {
         values[b.a] + (values[b.b] - values[b.a]) * b.w as f32
     }
 
@@ -187,8 +226,8 @@ impl Seabed {
         let b = self.biome(x, z);
         let base = -Self::by_biome(&b, SEABED);
         let relief = Self::by_biome(&b, RELIEF) * super::heightmap::sample(&self.map, x, z)[0];
-        let rough = Self::by_biome(&b, [0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05]);
-        let ridges = Self::by_biome(&b, [1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4]);
+        let rough = Self::by_biome(&b, [0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05]);
+        let ridges = Self::by_biome(&b, [1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4]);
         let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2);
         let off = (z - corridor(x)).abs();
         let far = smooth(7.0, 22.0, off) * (0.3 + ridges * vnoise(x * 0.16, z * 0.16 + 3.0, 4));
@@ -197,7 +236,13 @@ impl Seabed {
             * MASSIF
             * smooth(TUNNEL * 1.05, TUNNEL * 1.8, off)
             * (0.85 + 0.3 * vnoise(x * 0.4, z * 0.4, 5));
-        base + relief + rough * (n - 0.45) + far + massif
+        let trench = b.weight(TRENCH) as f32;
+        let trench = if trench > 0.0 {
+            trench * trench_profile(x, z - corridor(x))
+        } else {
+            0.0
+        };
+        base + relief + rough * (n - 0.45) + far + massif + trench
     }
 
     /// The tunnel's cross-section at `x`, where there is one: its centre, its
@@ -276,7 +321,7 @@ impl World<'_> {
         self.seabed.share(x, z, id)
     }
 
-    fn by_biome(b: &Biome, values: [f32; 7]) -> f32 {
+    fn by_biome(b: &Biome, values: [f32; BIOMES]) -> f32 {
         Seabed::by_biome(b, values)
     }
 
@@ -705,12 +750,13 @@ pub fn build(world: &World, frame: &mut Frame) {
     let algae = carried(Surface::Kelp, 2.0);
     let copper = carried(Surface::Copper, 1.0);
     let skin = carried(Surface::Skin, 3.0);
-    let steps: [(Placer, Option<[f32; 4]>); 20] = [
+    let steps: [(Placer, Option<[f32; 4]>); 21] = [
         (planes, None),
         (rocks, None),
         (kelp, None),
         (forest, algae),
         (gardens, None),
+        (trench, rock),
         (wrecks, wood),
         (ruins, marble),
         (cave, rock),
@@ -778,7 +824,7 @@ fn rocks(w: &World, f: &mut Frame) {
         }
         let b = w.biome(x, z);
         let molten = b.weight(CAVE) as f32;
-        let tone = World::by_biome(&b, [0.32, 0.24, 0.22, 0.30, 0.12, 0.14, 0.26]);
+        let tone = World::by_biome(&b, [0.32, 0.24, 0.22, 0.30, 0.12, 0.14, 0.26, 0.27]);
         let model =
             [Model::Rock0, Model::Rock1, Model::Rock2][(hash(ix, iz, 14) * 3.0) as usize % 3];
         let flat = 0.55 + 0.35 * hash(ix, iz, 15);
@@ -976,6 +1022,220 @@ fn gardens(w: &World, f: &mut Frame) {
                 .grounded();
             }
         }
+    }
+}
+
+/// The trench: life clinging to its terraces — sea pens glowing faintly on
+/// the treads, crinoids by their edges, sponges, fans and tube worms on the
+/// far wall facing the window — slabs of rock jutting over each drop,
+/// sediment spilling from the lips and drifting down, and lights blinking
+/// deep in the dark at the bottom.
+fn trench(w: &World, f: &mut Frame) {
+    let c = w.pose.pos;
+    if [-4.0, 0.0, 4.0]
+        .iter()
+        .all(|dx| w.share(c[0] + dx, c[2], TRENCH) <= 0.0)
+    {
+        return;
+    }
+    let rim = -SEABED[TRENCH];
+    let t = w.t;
+    // Life on the terraces and the far wall.
+    for (ix, iz, x, z) in cells(w, 0.3, 0.6, 9.0, 500) {
+        let share = w.share(x, z, TRENCH);
+        let needs = hash(ix, iz, 501) * 0.5 + 0.35;
+        if share < needs {
+            continue;
+        }
+        let u = z - corridor(x) - trench_wander(x);
+        if !(1.0..7.6).contains(&u) {
+            continue;
+        }
+        let y = w.ground(x, z);
+        if !w.visible([x, y + 0.1, z], 0.3) {
+            continue;
+        }
+        f.fade = fade(share, needs);
+        let pick = hash(ix, iz, 502);
+        let slope = (w.ground(x, z + 0.04) - w.ground(x, z - 0.04)) / 0.08;
+        let yaw = hash(ix, iz, 503) * TAU;
+        if slope > 1.2 {
+            // The far wall, facing the window: stand a little out from it.
+            let p = [x, y, z - 0.03];
+            if pick < 0.4 {
+                let hue = [[0.85, 0.62, 0.22], [0.55, 0.30, 0.62], [0.80, 0.38, 0.22]]
+                    [(hash(ix, iz, 504) * 3.0) as usize % 3];
+                for k in 0..3 {
+                    let a = k as f32 * 2.1 + yaw;
+                    let h = 0.08 + 0.12 * hash(ix, iz, 505 + k);
+                    f.put(
+                        Model::Sponge,
+                        place(
+                            [p[0] + a.cos() * 0.04, p[1] - 0.01, p[2] + a.sin() * 0.02],
+                            a,
+                            0.0,
+                            -0.35,
+                            [0.03, h, 0.03],
+                        ),
+                        hue,
+                    );
+                }
+            } else if pick < 0.7 {
+                let s = 0.12 + 0.14 * hash(ix, iz, 508);
+                let hue = if hash(ix, iz, 509) < 0.5 {
+                    [0.90, 0.42, 0.30]
+                } else {
+                    [0.92, 0.80, 0.55]
+                };
+                f.put(
+                    Model::Fan,
+                    place(p, (hash(ix, iz, 510) - 0.5) * 0.6, 0.0, -0.3, [s, s, s]),
+                    hue,
+                )
+                .moving(anim::SWAY, yaw, 0.1, 0.6);
+            } else {
+                // Tube worms: white tubes, red plumes.
+                for k in 0..4 {
+                    let a = k as f32 * 1.6 + yaw;
+                    let h = 0.05 + 0.06 * hash(ix, iz, 511 + k);
+                    let foot = [p[0] + a.cos() * 0.03, p[1] - 0.02, p[2] + a.sin() * 0.015];
+                    let top = [foot[0], foot[1] + h, foot[2] - 0.02];
+                    f.put(
+                        Model::Cylinder,
+                        between(foot, top, 0.006),
+                        [0.80, 0.78, 0.70],
+                    );
+                    f.put(
+                        Model::Sphere,
+                        place(top, a, 0.0, 0.0, [0.012, 0.018, 0.012]),
+                        [0.85, 0.12, 0.10],
+                    )
+                    .glowing(0.15);
+                }
+            }
+        } else if slope.abs() < 0.6 {
+            if pick < 0.55 {
+                // A sea pen, glowing faintly as sea pens do.
+                let h = 0.12 + 0.12 * hash(ix, iz, 515);
+                f.put(
+                    Model::Kelp,
+                    place([x, y, z], yaw, 0.0, 0.0, [0.35, h, 0.35]),
+                    [0.90, 0.62, 0.40],
+                )
+                .moving(anim::SWAY, yaw, 0.04, 0.7)
+                .glowing(0.12)
+                .grounded();
+            } else if pick < 0.8 {
+                // A crinoid: a stalk and a crown of feathery arms.
+                let h = 0.12 + 0.1 * hash(ix, iz, 516);
+                let top = [x, y + h, z];
+                let hue = if hash(ix, iz, 517) < 0.5 {
+                    [0.92, 0.75, 0.25]
+                } else {
+                    [0.80, 0.25, 0.30]
+                };
+                f.put(
+                    Model::Cylinder,
+                    between([x, y - 0.01, z], top, 0.005),
+                    [0.45, 0.40, 0.32],
+                )
+                .grounded();
+                for k in 0..5 {
+                    let a = k as f32 / 5.0 * TAU + yaw + 0.15 * (t * 0.6 + k as f32).sin();
+                    let tip = [
+                        top[0] + a.cos() * 0.07,
+                        top[1] + 0.05,
+                        top[2] + a.sin() * 0.07,
+                    ];
+                    f.put(Model::Cone, between(top, tip, 0.008), hue);
+                }
+            }
+        }
+    }
+    // Slabs of rock jutting over each drop, and sediment spilling from them.
+    for ix in ((c[0] - 7.0) / 0.55).floor() as i32..=((c[0] + 7.0) / 0.55).ceil() as i32 {
+        for (k, &lip) in NEAR_LIPS.iter().chain(FAR_LIPS.iter()).enumerate() {
+            let k = k as i32;
+            let h = hash(ix, k, 520);
+            if h < 0.45 {
+                continue;
+            }
+            let x = (ix as f32 + 0.5 + (hash(ix, k, 521) - 0.5) * 0.6) * 0.55;
+            // Over the drop: toward the window on the far wall.
+            let out = if k >= NEAR_LIPS.len() as i32 {
+                -1.0
+            } else {
+                1.0
+            };
+            let edge = corridor(x) + trench_wander(x) + lip;
+            let share = w.share(x, edge, TRENCH);
+            if share < 0.6 {
+                continue;
+            }
+            let top = w.ground(x, edge - out * 0.2);
+            let size = 0.25 + 0.3 * hash(ix, k, 522);
+            let p = [x, top - 0.05, edge + out * 0.05];
+            if !w.visible(p, size * 1.2) {
+                continue;
+            }
+            f.fade = fade(share, 0.6);
+            let model =
+                [Model::Rock0, Model::Rock1, Model::Rock2][(hash(ix, k, 523) * 3.0) as usize % 3];
+            let tone = 0.26 + 0.08 * hash(ix, k, 524);
+            f.put(
+                model,
+                place(
+                    p,
+                    (hash(ix, k, 525) - 0.5) * 0.8,
+                    0.0,
+                    0.12 * out,
+                    [size * 1.4, size * 0.22, size * 0.8],
+                ),
+                [tone, tone * 0.96, tone * 0.9],
+            );
+            // Now and then sediment spills from the lip and drifts down.
+            if hash(ix, k, 526) < 0.3 {
+                let fall = 1.4 + 0.6 * hash(ix, k, 527);
+                for n in 0..18 {
+                    let age = (t * 0.07 + n as f32 / 18.0 + h * 7.0).fract();
+                    let spread = 0.03 + 0.25 * age;
+                    let q = [
+                        x + spread * (n as f32 * 2.4 + t * 0.3).sin(),
+                        p[1] - 0.05 - age * fall,
+                        p[2] + out * (0.15 + 0.35 * age) + spread * 0.5 * (n as f32 * 1.7).cos(),
+                    ];
+                    let a = smooth(0.0, 0.1, age) * (1.0 - age) * 0.45 * f.fade;
+                    f.sprite(q, 0.03 + 0.09 * age, [0.55 * a, 0.50 * a, 0.40 * a], MOTE);
+                }
+            }
+        }
+    }
+    // Lights blinking deep in the trench, where the daylight never reaches.
+    for (ix, iz, x, z) in cells(w, 0.4, 1.5, 10.0, 530) {
+        let share = w.share(x, z, TRENCH);
+        if share < 0.5 || hash(ix, iz, 531) < 0.5 {
+            continue;
+        }
+        let y = w.ground(x, z);
+        if y > rim - 2.6 {
+            continue;
+        }
+        let p = [x, y + 0.1 + 1.6 * hash(ix, iz, 532), z];
+        if !w.visible(p, 0.1) {
+            continue;
+        }
+        let blink = (t * (0.5 + hash(ix, iz, 533)) + hash(ix, iz, 534) * TAU)
+            .sin()
+            .max(0.0);
+        let a = blink * smooth(0.5, 0.8, share);
+        let hue = if hash(ix, iz, 535) < 0.7 {
+            [0.10, 0.70, 0.95]
+        } else {
+            [0.40, 0.95, 0.55]
+        };
+        f.sprite(p, 0.025, [hue[0] * a, hue[1] * a, hue[2] * a], GLOW);
+        let halo = a * 0.12;
+        f.sprite(p, 0.14, [hue[0] * halo, hue[1] * halo, hue[2] * halo], GLOW);
     }
 }
 
@@ -1822,7 +2082,7 @@ struct Species {
     speed: f32,
     band: (f32, f32),
     back: [f32; 3],
-    gate: [f32; 7],
+    gate: [f32; BIOMES],
     salt: u32,
 }
 
@@ -1836,7 +2096,7 @@ const SPECIES: [Species; 4] = [
         speed: 0.035,
         band: (0.6, 1.4),
         back: [0.22, 0.26, 0.28],
-        gate: [1.0, 0.8, 1.0, 1.0, 0.0, 0.0, 0.5],
+        gate: [1.0, 0.8, 1.0, 1.0, 0.0, 0.0, 0.5, 0.8],
         salt: 200,
     },
     Species {
@@ -1846,7 +2106,7 @@ const SPECIES: [Species; 4] = [
         speed: -0.045,
         band: (0.3, 0.9),
         back: [0.30, 0.36, 0.38],
-        gate: [1.0, 1.0, 0.8, 0.6, 0.15, 0.0, 0.8],
+        gate: [1.0, 1.0, 0.8, 0.6, 0.15, 0.0, 0.8, 0.7],
         salt: 210,
     },
     Species {
@@ -1856,7 +2116,7 @@ const SPECIES: [Species; 4] = [
         speed: 0.075,
         band: (0.10, 0.35),
         back: [0.48, 0.40, 0.20],
-        gate: [1.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0],
+        gate: [1.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 0.0],
         salt: 220,
     },
     Species {
@@ -1866,7 +2126,7 @@ const SPECIES: [Species; 4] = [
         speed: 0.030,
         band: (0.06, 0.25),
         back: [0.32, 0.42, 0.46],
-        gate: [1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.6],
+        gate: [1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.6, 0.4],
         salt: 230,
     },
 ];
@@ -2418,7 +2678,7 @@ fn polar(w: &World, f: &mut Frame) {
 /// Marine snow, krill, plankton, embers and the bubbles shed by the hull.
 /// Shafts of sunlight slanting down from the surface where it is shallow and
 /// bright enough: through the shallows, between the forest's trees, over the
-/// wrecks and through the leads in the ice. Each is rooted in a cell of a
+/// wrecks, down into the trench and through the leads in the ice. Each is rooted in a cell of a
 /// grid fixed in the world, so the boat sails among them; they breathe as the
 /// waves above gather and scatter the light, and sway with them.
 fn shafts(w: &World, f: &mut Frame) {
@@ -2431,7 +2691,8 @@ fn shafts(w: &World, f: &mut Frame) {
         let bright = (b.weight(SHALLOWS)
             + 0.6 * b.weight(FOREST)
             + 0.35 * b.weight(WRECKS)
-            + 0.5 * b.weight(ARCTIC)) as f32;
+            + 0.5 * b.weight(ARCTIC)
+            + 0.45 * b.weight(TRENCH)) as f32;
         if h > bright.min(1.0) * 0.55 {
             continue;
         }
@@ -2603,6 +2864,23 @@ mod tests {
     use super::*;
     use crate::voyage::Voyage;
 
+    /// Along the trench the rim the boat sails is level, and beside it, where
+    /// the window looks, the seabed falls away and rises again across the gulf.
+    #[test]
+    fn the_trench_falls_away_beside_the_rim() {
+        let seabed = Seabed::new(3, 0.0);
+        let start = crate::voyage::LEG * Biome::leg_of(TRENCH) as f64;
+        for k in 0..20 {
+            let x = (start + crate::voyage::LEG * (0.1 + 0.025 * k as f64)) as f32;
+            assert_eq!(seabed.share(x, corridor(x), TRENCH), 1.0);
+            let at = |across: f32| seabed.ground(x, corridor(x) + trench_wander(x) + across);
+            let rim = at(0.0);
+            assert!((at(0.9) - rim).abs() < 0.8, "the rim is level at {x}");
+            assert!(rim - at(3.6) > 4.0, "the trench is deep at {x}");
+            assert!(at(7.5) > rim, "the far wall rises above the rim at {x}");
+        }
+    }
+
     /// Mid-way through each leg of the voyage, its signature things are in view.
     #[test]
     fn every_biome_has_its_landmarks() {
@@ -2615,13 +2893,14 @@ mod tests {
             // outside the round window from up the tunnel.
             (CAVE, Model::Cone),
             (ARCTIC, Model::Keel),
+            (TRENCH, Model::Sponge),
         ];
         for (leg, model) in landmarks {
             let mut found = 0;
             // A few moments through the leg, as any one could fall in a gap.
             for k in 0..6 {
-                let seconds =
-                    crate::voyage::LEG / crate::voyage::SPEED * (leg as f64 + 0.2 + 0.1 * k as f64);
+                let seconds = crate::voyage::LEG / crate::voyage::SPEED
+                    * (Biome::leg_of(leg) as f64 + 0.2 + 0.1 * k as f64);
                 let mut voyage = Voyage::default();
                 let position = voyage.advance(seconds, 0.0);
                 let seabed = Seabed::new(3, 0.0);

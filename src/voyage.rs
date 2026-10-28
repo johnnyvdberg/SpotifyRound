@@ -18,7 +18,13 @@ pub const SPEED: f64 = 0.055;
 /// into the next biome.
 pub const LEG: f64 = 3.4;
 const BLEND: f64 = 0.32;
-pub const BIOMES: usize = 7;
+pub const BIOMES: usize = 8;
+/// The order the legs come in, by biome: shallows, forest, the trench,
+/// wrecks, Atlantis, lava cave, abyss, polar ice, and round again. A biome's
+/// number is its place in every per-biome table, which the trench, added
+/// last, keeps at the end of; the voyage takes it between the forest and the
+/// wrecks, where the seabed first breaks away below a still sunlit rim.
+pub const ORDER: [usize; BIOMES] = [0, 1, 7, 2, 3, 4, 5, 6];
 
 /// Where a visit starts within its first leg: on a settled stretch, rather than
 /// mid-transition.
@@ -29,10 +35,11 @@ const LANDING: f64 = LEG * 0.15;
 const PASSAGE: f64 = 3.5;
 
 /// Depth of the seabed below the surface in each biome, in world units:
-/// shallows, forest, wrecks, Atlantis, lava cave, abyss, polar ice.
-const SEABED: [f64; 7] = [1.0, 3.2, 6.0, 9.0, 13.0, 40.0, 3.0];
+/// shallows, forest, wrecks, Atlantis, lava cave, abyss, polar ice, trench
+/// (its rim: the trench falls away beside the boat, not under it).
+const SEABED: [f64; BIOMES] = [1.0, 3.2, 6.0, 9.0, 13.0, 40.0, 3.0, 4.5];
 /// The band the Nautilus cruises in above the seabed, per biome.
-const CRUISE: [(f64, f64); 7] = [
+const CRUISE: [(f64, f64); BIOMES] = [
     (0.25, 0.55),
     // Low among the trunks of the forest, as the divers walk it.
     (0.22, 0.55),
@@ -42,10 +49,12 @@ const CRUISE: [(f64, f64); 7] = [
     (0.25, 2.00),
     // Under the ice the Nautilus keeps close beneath the pack.
     (1.25, 2.30),
+    // Low along the trench's rim, so the window looks over its edge.
+    (0.25, 0.70),
 ];
 /// The highest the Nautilus may rise above the seabed: a fathom under the
 /// surface in the shallows, under the cave's vault, and clear of the ice.
-const CEILING: [f64; 7] = [0.70, 99.0, 99.0, 99.0, 0.62, 99.0, 2.45];
+const CEILING: [f64; BIOMES] = [0.70, 99.0, 99.0, 99.0, 0.62, 99.0, 2.45, 99.0];
 /// Closest the Nautilus comes to the seabed.
 const CLEARANCE: f64 = 0.15;
 /// The lava cave, and the height of its vault above its floor. The vault is drawn wherever the cave covers a third of the
@@ -207,13 +216,19 @@ impl Biome {
         let u = x / LEG;
         let k = u.floor();
         let start = (seed * BIOMES as f32) as i64;
-        let id = |k: f64| (k as i64 + start).rem_euclid(BIOMES as i64) as usize;
+        let id = |k: f64| ORDER[(k as i64 + start).rem_euclid(BIOMES as i64) as usize];
         let t = ((u - k - (1.0 - BLEND)) / BLEND).clamp(0.0, 1.0);
         Self {
             a: id(k),
             b: id(k + 1.0),
             w: t * t * (3.0 - 2.0 * t),
         }
+    }
+
+    /// Which leg of a circuit starting with the shallows biome `id` is.
+    #[cfg(test)]
+    pub fn leg_of(id: usize) -> usize {
+        ORDER.iter().position(|&b| b == id).unwrap_or(0)
     }
 
     /// How much of biome `id` there is here, 0 to 1.
@@ -228,7 +243,7 @@ impl Biome {
         weight
     }
 
-    fn mix(&self, values: [f64; 7]) -> f64 {
+    fn mix(&self, values: [f64; BIOMES]) -> f64 {
         values[self.a] + (values[self.b] - values[self.a]) * self.w
     }
 }
@@ -237,7 +252,9 @@ impl Biome {
 mod tests {
     use super::*;
 
+    const ATLANTIS: usize = 3;
     const ABYSS: usize = 5;
+    const TRENCH: usize = 7;
 
     #[test]
     fn a_visit_starts_in_the_seeds_biome() {
@@ -245,7 +262,7 @@ mod tests {
         let at = voyage.advance(0.0, 0.0);
         assert_eq!(Biome::at(at.x, 0.0).a, 0);
         let at = voyage.advance(0.0, 0.5);
-        assert_eq!(Biome::at(at.x, 0.5).a, 3);
+        assert_eq!(Biome::at(at.x, 0.5).a, ATLANTIS);
     }
 
     #[test]
@@ -274,7 +291,7 @@ mod tests {
         voyage.travel(1, 30.0);
         voyage.travel(1, 30.5);
         let at = voyage.advance(30.5 + PASSAGE + 0.1, 0.0);
-        assert_eq!(Biome::at(at.x, 0.0).a, 2);
+        assert_eq!(Biome::at(at.x, 0.0).a, TRENCH);
         voyage.travel(-1, 40.0);
         let at = voyage.advance(40.0 + PASSAGE + 0.1, 0.0);
         assert_eq!(Biome::at(at.x, 0.0).a, 1);
@@ -306,8 +323,8 @@ mod tests {
     fn the_nautilus_is_always_under_the_vault() {
         for swipe in [false, true] {
             let mut voyage = Voyage::default();
-            // Seed 0: leg 3 is Atlantis, where it cruises up to a whole unit high.
-            let mut seconds = LEG / SPEED * 3.3;
+            // Seed 0: from Atlantis, where it cruises up to a whole unit high.
+            let mut seconds = LEG / SPEED * (Biome::leg_of(ATLANTIS) as f64 + 0.3);
             voyage.advance(seconds, 0.0);
             if swipe {
                 voyage.travel(1, seconds);
@@ -329,7 +346,7 @@ mod tests {
     #[test]
     fn the_abyss_is_deep() {
         let mut voyage = Voyage::default();
-        let seconds = LEG / SPEED * (ABYSS as f64 + 0.4);
+        let seconds = LEG / SPEED * (Biome::leg_of(ABYSS) as f64 + 0.4);
         let at = voyage.advance(seconds, 0.0);
         assert_eq!(Biome::at(at.x, 0.0).a, ABYSS);
         assert!(at.depth > 30.0);

@@ -32,8 +32,9 @@ impl Place {
     }
 }
 
+/// The legs of seed 0's circuit, in the order of `voyage::ORDER`.
 const NAMES: [&str; BIOMES] = [
-    "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic",
+    "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
 ];
 
 /// Every place to shoot, in order.
