@@ -6,15 +6,15 @@ export CARGO_TARGET_DIR=/target
 # Built from a copy with fresh modification times: cargo decides what to
 # rebuild by them, and checkouts sharing /target (or a `git archive` export,
 # which carries the commit's times) would otherwise reuse another's build.
+# Copying, building and taking a private copy of the test binary all happen
+# under one lock: copied before it, the sources could be older than another
+# checkout's build made while this one waited, and that build would be used.
 mkdir -p /work
-tar -C /src --exclude=./target --exclude=./.git -cf - . | tar -C /work -xmf -
 cd /work
-
-# Builds share /target, so the build and taking a private copy of its test
-# binary happen under one lock: another checkout's build cannot slip between.
 echo "== building" >&2
 flock /target/.shaderdb.lock bash -c '
     set -o pipefail
+    tar -C /src --exclude=./target --exclude=./.git -cf - . | tar -C /work -xmf -
     cargo test --release --locked --no-run --message-format=json 2>/dev/stderr \
         | grep "\"test\":true" \
         | sed -n "s/.*\"executable\":\"\([^\"]*\)\".*/\1/p" | head -1 > /work/.test-binary
