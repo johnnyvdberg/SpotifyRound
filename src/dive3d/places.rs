@@ -53,5 +53,19 @@ pub fn all() -> Vec<Place> {
             7,
         ));
     }
+    // Through the lava cave's tunnel and past its secrets, which the window
+    // sees ahead of the boat: from the approach, looking in at the mouth,
+    // along the passages, and out of the far mouth.
+    for (name, at) in [
+        ("approach", 3.55),
+        ("tunnel-mouth", 3.70),
+        ("entering", 3.80),
+        ("passages-1", 3.90),
+        ("passages-2", 3.98),
+        ("passages-3", 4.10),
+        ("far-mouth", 4.22),
+    ] {
+        places.push(Place::new(format!("4-cave-{name}"), at, 0));
+    }
     places
 }

@@ -562,8 +562,21 @@ snow and bubbles pay nothing for them, and they replace the sunbeams the open wa
 on every pixel behind everything else. The lava cave is
 a real tunnel: a massif rises across the corridor and the boat enters it through a mouth in its cliff
 face, under a ragged arch of basalt veined with molten rock, hung with stalactites and lit from below
-by lava pools, and leaves by the far mouth; the mesh is rebuilt each frame for the stretch in view,
-from rings fixed in the world.
+by lava pools, and leaves by the far mouth; the mesh is built from rings fixed in the world, once
+as the boat nears the tunnel. Its walls are ledged and pocked, darker in the hollows, and
+glisten where the searchlight strikes them. Off it open the cave's secrets, the same five in
+every cave in an order of the seabed's own: a passage down to a chamber of molten rock with
+embers drifting out, a grotto lit by breathing colonies of luminous creatures, a gallery of
+violet crystals, a doorway of dressed stone with signs on its lintel and steps up into a warm
+light, and a chimney in the vault letting down a shaft of pale light. Each is a passage lofted
+from the edge of a hole cut in the wall (or the vault), bent on round a corner so its end is
+never seen, with the massif's rock cut back for it and the dome swelling over it. Their light
+costs almost nothing per pixel: how far each point of the tunnel stands over its floor, how dark
+its rock is and the coloured light each passage throws on the rock round its mouth are baked
+into the tunnel's vertices, glows and embers are sprites, and the crystals are glass. The tunnel
+has a material and pipeline of its own (`MATERIAL` reaches the vertex shader too), so no other
+model pays for it: its fragment shader came down from 1518 to 874 instructions on the Pi, and the
+per-instance one from 2369 to 1412, once neither looked up the seabed's height per pixel.
 The seabed is a random heightmap made afresh on every visit — rolling ground, folded ridges and the
 odd canyon, 64 units to a tile — shown more strongly in the rugged abyss than under the paved city;
 it shelves between the seas, so the boat drops over an edge into the abyss and climbs out to the ice.

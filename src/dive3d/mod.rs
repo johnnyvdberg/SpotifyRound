@@ -571,7 +571,12 @@ impl Nautilus {
                     module: &shader,
                     entry_point: Some(vs),
                     buffers,
-                    compilation_options: Default::default(),
+                    // The material too, which the tunnel's vertices are read
+                    // by (`vs_model`).
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants,
+                        ..Default::default()
+                    },
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
@@ -1280,11 +1285,21 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     ];
     let haze = blend([0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12]);
 
-    // The lights that matter most: nearest the window, weighed by their reach.
+    // The lights that matter most: nearest what the window looks at, a
+    // little way out from it, weighed by their reach.
+    let ahead = [
+        cam[0] + out[0] * 1.5,
+        cam[1] + out[1] * 1.5,
+        cam[2] + out[2] * 1.5,
+    ];
     let mut lights: Vec<_> = frame.lights.iter().collect();
     lights.sort_by(|a, b| {
         let score = |l: &&world::Light| {
-            let d = [l.pos[0] - cam[0], l.pos[1] - cam[1], l.pos[2] - 1.5];
+            let d = [
+                l.pos[0] - ahead[0],
+                l.pos[1] - ahead[1],
+                l.pos[2] - ahead[2],
+            ];
             (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / l.range
         };
         score(a).total_cmp(&score(b))
