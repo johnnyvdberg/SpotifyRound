@@ -354,7 +354,7 @@ src/
 ├── porthole.wgsl      its shaders: brass bezel, gauge faces, engraving, bending glass, needles
 ├── dive3d/            idle scene: the Nautilus' voyage, rasterised in 3D
 │   ├── mod.rs         renderer: passes, pipelines, lighting; lays the porthole over the sea
-│   ├── helm.rs        how the boat moves: surge, cruise height, pitch, roll, turns about, all on springs
+│   ├── helm.rs        how the boat moves: a 20 m hull's track, height, pitch, roll and clearances
 │   ├── heightmap.rs   the random seabed of each visit: rolling ground, ridges and canyons
 │   ├── terrain.rs     the seabed in tiles, built as they come into view and dropped behind
 │   ├── textures.rs    fourteen procedural surfaces: rock, planks, marble, scales, skin, copper…
@@ -568,14 +568,25 @@ The seabed is a random heightmap made afresh on every visit — rolling ground, 
 odd canyon, 64 units to a tile — shown more strongly in the rugged abyss than under the paved city;
 it shelves between the seas, so the boat drops over an edge into the abyss and climbs out to the ice.
 The sea's surface stays at the same height whatever the boat does. The helm in `helm.rs` sails the
-boat over it like a submarine: it surges a little in speed and keeps its height above the highest
-ground about and ahead, filtered over seconds, so it passes over a gully rather than ducking into
-it and climbs well before a ridge; it noses up into a climb and down into a dive, eases its heading
-from side to side and banks into each change, and every couple of minutes slows and turns right round
-on its axis, so the whole sea goes past the window. In the cave it swings the window round to look
-up the tunnel. Every motion is on a critically damped spring, so neither a swipe nor the shelf ever
-jolts the view, and in a fast passage the rush of bubbles streaking past the glass covers the quicker
-motion; the manometer reads the boat's real depth. Things fade in and out as their
+boat as the hull it is — twenty metres long and three high, about 1.8 × 0.27 units, the salon window
+halfway along its port side — at a survey pace of about 1.2 knots, swinging only a few percent in
+speed. It goes where it points: its track is the corridor's meander plus a slow wander of the
+helmsman's own, never bending tighter than about ten hull lengths' radius, and it banks a degree or
+two into each bend. It climbs and dives on ballast and planes at under a metre a second, gathering
+way over a quarter of a minute and braking harder than it starts, noses up or down at most six
+degrees, and reads the ground and the roof several lengths ahead, so it starts over a ridge, or down
+under the cave's vault at its mouth, in good time and sails over a gully rather than ducking into it.
+Every point of the hull, not just the window, keeps about a metre of water under it and inside the
+tunnel. Near the surface the swell heaves it a few decimetres and rolls it a fraction of a degree,
+less the deeper it goes. In the cave, at dead slow, the helmsman sets the boat up to about 30°
+across the tunnel so the window looks up it — no farther than the hull clears both walls, and
+swinging it no faster than half a degree a second. A swipe's passage is the voyage fast-forwarded:
+the climbs and dives run on the voyage's own clock, so the boat rides the ground as it would have at
+cruising pace, its attitude turning at most three times its cruising rate, and the rush of bubbles
+streaking past the glass covers the speed. `HELM_LOG_DIR=<dir> cargo test --release survey --
+--ignored` logs a few voyages' poses — knots, rate of turn, turning radius, climb, pitch, roll and
+the hull's clearances — and a test holds the helm to them. The helm costs a few microseconds a
+frame, and the manometer reads the boat's real depth. Things fade in and out as their
 sea comes and goes, by coverage through the multisampling, and the ice fades at its edges rather
 than stopping at a line. Fourteen procedural surfaces — rock, planking, veined
 marble, fish scales, whale skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt —
