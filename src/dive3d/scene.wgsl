@@ -92,8 +92,6 @@ const ATLANTIS: i32 = 3;
 const CAVE: i32 = 4;
 const ABYSS: i32 = 5;
 const ARCTIC: i32 = 6;
-// The material of the lava cave's tunnel, `world::material::VAULT`.
-const VAULT: u32 = 5u;
 const TRENCH: i32 = 7;
 
 // The biome of the `n`th leg of a circuit, as `voyage::ORDER`: the trench,
@@ -237,11 +235,6 @@ fn ground_parts(x: f32, z: f32) -> vec2<f32> {
 fn massif(x: f32, z: f32, l: Leg, off: f32) -> f32 {
     return presence(l, CAVE) * MASSIF * smooth01(TUNNEL * 1.05, TUNNEL * 1.8, off)
         * (0.85 + 0.3 * vnoise(x * 0.4, z * 0.4, 5u));
-}
-
-// The massif alone at (x, z).
-fn massif_at(x: f32, z: f32) -> f32 {
-    return massif(x, z, leg(voyage_x(x, z)), abs(z - corridor(x)));
 }
 
 // The trench's terraces and gullies, exactly as `world::trench_profile`.
@@ -607,9 +600,16 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.fade = i.extra.z;
     out.fog = fog_at(world);
     out.floor_y = 0.0;
-    if (i.extra.y > 0.5 || u32(i.extra.x + 0.5) == VAULT) {
-        let parts = ground_parts(world.x, world.z);
-        out.floor_y = parts.x + select(parts.y, 0.0, u32(i.extra.x + 0.5) == VAULT);
+    if (i.extra.y > 0.5) {
+        out.floor_y = ground(world.x, world.z);
+    }
+    // The tunnel's vertices carry their height over its floor and how dark
+    // their rock is in `aux`, and the light its passages throw on them as
+    // their colour (`world::tunnel`).
+    if (MATERIAL == VAULT) {
+        out.albedo = i.colour.rgb * v.aux.y;
+        out.local = vec3<f32>(v.aux.x, 0.0, 0.0);
+        out.local_normal = v.colour;
     }
     return out;
 }
@@ -653,8 +653,52 @@ fn triplanar(at: vec3<f32>, facing: vec3<f32>, layer: i32) -> vec3<f32> {
     return (x + y + z) * TEXTURE_RANGE;
 }
 
+// The lava cave's tunnel and its passages (`world::tunnel`), a material of
+// its own: its pipeline compiles only this, and no other pays for it.
+const VAULT: i32 = 5;
+
+// The tunnel's rock: basalt laid down flow on flow, wet where the
+// searchlight catches it, glowing red low down where the lava lights it and
+// veined with molten rock, and lit by what glows in its passages. How high
+// each point stands over the floor and the light the passages throw on it
+// are baked into the tunnel's vertices (`vs_model`), so none of it is
+// worked out per pixel.
+fn vault(in: Lit) -> vec3<f32> {
+    let p = in.world;
+    let above = in.local.x;
+    let t = g.camera.w;
+    var n = normalize(in.normal);
+    let to_camera = normalize(g.camera.xyz - p);
+    if (dot(n, to_camera) < 0.0) {
+        n = -n;
+    }
+    let texture = triplanar(p * in.surface.y, n, i32(in.surface.x + 0.5));
+    let rock = vnoise(p.x * 5.0, p.z * 5.0, 12u) * 0.6 + vnoise(p.y * 7.0 + p.x, p.z * 13.0, 13u) * 0.4;
+    // Strata: paler and darker bands, one flow of lava on the last.
+    let band = 0.78 + 0.22 * sin(p.y * 21.0 + rock * 5.0);
+    let albedo = in.albedo * texture * band;
+    let glow = (1.0 - smooth01(0.0, 1.2, above)) * (0.85 + 0.15 * sin(t * 1.9 + p.x));
+    var colour = albedo * (0.55 + 0.7 * rock) * (light_at(p, n) + vec3<f32>(0.10, 0.06, 0.05));
+    colour += vec3<f32>(0.45, 0.10, 0.02) * glow * (0.5 + 0.5 * smooth01(0.55, 0.80, rock));
+    // Wet rock, glistening where the searchlight strikes it.
+    let h = normalize(to_camera - g.lamp.xyz);
+    colour += vec3<f32>(0.85, 0.82, 0.75) * pow(max(dot(n, h), 0.0), 20.0) * g.lamp.w * 0.3 * rock;
+    // Veins of molten rock run along the walls, so the arch reads in
+    // perspective all the way up the tunnel.
+    let course = vnoise(p.x * 1.1, p.y * 3.2 + p.z * 1.7, 17u);
+    let vein = 1.0 - smooth01(0.010, 0.035, abs(course - 0.5));
+    let pulse = 0.75 + 0.25 * sin(t * 1.3 + p.x * 2.0);
+    colour += vec3<f32>(0.75, 0.24, 0.04) * vein * pulse * (0.35 + 0.65 * glow);
+    // The passages' light, wavering a little.
+    colour += in.local_normal * (0.9 + 0.1 * sin(t * 2.3 + p.x * 3.0 + p.y * 2.0));
+    return colour;
+}
+
 @fragment
 fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if (MATERIAL == VAULT) {
+        return vec4<f32>(mix(vault(in), in.fog.rgb, in.fog.a) * SEA_SCALE, in.fade);
+    }
     let p = in.world;
     // Things that move carry their texture; things that stay put wear it in
     // world space, at the same scale everywhere.
@@ -707,20 +751,6 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let ripple = sin(p.x * 9.0 + t * 0.7 + 1.5 * sin(p.z * 5.0 - t * 0.4)) * sin(p.z * 7.0 + t * 0.5 + 1.2 * sin(p.x * 4.0));
             let bright = caustic(p.xz * vec2<f32>(5.0, 6.0) + vec2<f32>(t * 0.2, -t * 0.1), t * 0.6);
             colour = (vec3<f32>(0.45, 0.78, 0.74) * (0.78 + 0.22 * ripple) + vec3<f32>(0.35, 0.45, 0.40) * bright) * g.sun.w * 1.3;
-        }
-        // The tunnel's rock, glowing red low down where the lava lights it.
-        case 5u: {
-            let rock = vnoise(p.x * 5.0, p.z * 5.0, 12u) * 0.6 + vnoise(p.y * 7.0 + p.x, p.z * 13.0, 13u) * 0.4;
-            let above = p.y - (in.floor_y + massif_at(p.x, p.z));
-            let glow = (1.0 - smooth01(0.0, 1.8, above)) * (0.85 + 0.15 * sin(t * 1.9 + p.x));
-            colour = albedo * (0.55 + 0.7 * rock) * (light_at(p, n) + vec3<f32>(0.10, 0.06, 0.05));
-            colour += vec3<f32>(0.45, 0.10, 0.02) * glow * (0.5 + 0.5 * smooth01(0.55, 0.80, rock));
-            // Veins of molten rock run along the walls, so the arch reads in
-            // perspective all the way up the tunnel.
-            let course = vnoise(p.x * 1.1, p.y * 3.2 + p.z * 1.7, 17u);
-            let vein = 1.0 - smooth01(0.010, 0.035, abs(course - 0.5));
-            let pulse = 0.75 + 0.25 * sin(t * 1.3 + p.x * 2.0);
-            colour += vec3<f32>(0.75, 0.24, 0.04) * vein * pulse * (0.35 + 0.65 * glow);
         }
         // The pack ice from below: floes glowing with daylight, open leads.
         case 6u: {
@@ -862,7 +892,10 @@ fn vs_shaft(
     // Melting away as the window passes through it, rather than filling the
     // glass, and hazed by the water like everything else.
     let d = length(at - g.camera.xyz);
-    out.colour = tint.rgb * g.sun.w * smooth01(0.35, 1.1, d) * (1.0 - fog_of(d)) * SEA_SCALE;
+    // `tint.w` marks a shaft lit by its own light, as from the lava cave's
+    // chimneys, rather than by the sun's.
+    let strength = select(g.sun.w, 1.0, tint.w > 0.5);
+    out.colour = tint.rgb * strength * smooth01(0.35, 1.1, d) * (1.0 - fog_of(d)) * SEA_SCALE;
     return out;
 }
 

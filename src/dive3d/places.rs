@@ -60,13 +60,28 @@ pub fn all() -> Vec<Place> {
     // How the Nautilus moves: setting itself across the cave's tunnel at its
     // mouth, well inside it and leaving it, and part way through a swipe's
     // passage, the rush of bubbles at its height.
-    for (name, leg) in [("mouth", 3.95), ("deep", 4.4), ("far-mouth", 4.8)] {
-        places.push(Place::new(format!("helm-cave-{name}"), leg, 0));
+    let cave = crate::voyage::Biome::leg_of(super::world::CAVE) as f64;
+    for (name, at) in [("mouth", -0.05), ("deep", 0.4), ("far-mouth", 0.8)] {
+        places.push(Place::new(format!("helm-cave-{name}"), cave + at, 0));
     }
     for (name, after) in [("gathering", 0.8), ("rushing", 1.75), ("settling", 3.0)] {
         let mut place = Place::new(format!("helm-swipe-{name}"), 1.5, 0);
         place.swiped = Some(after);
         places.push(place);
+    }
+    // Through the lava cave's tunnel and past its secrets, which the window
+    // sees ahead of the boat: from the approach, looking in at the mouth,
+    // along the passages, and out of the far mouth.
+    for (name, at) in [
+        ("approach", -0.45),
+        ("tunnel-mouth", -0.30),
+        ("entering", -0.20),
+        ("passages-1", -0.10),
+        ("passages-2", -0.02),
+        ("passages-3", 0.10),
+        ("far-mouth", 0.22),
+    ] {
+        places.push(Place::new(format!("{cave}-cave-{name}"), cave + at, 0));
     }
     places
 }

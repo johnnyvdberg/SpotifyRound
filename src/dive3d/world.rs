@@ -184,6 +184,140 @@ pub const MASSIF: f32 = 4.5;
 /// The cave's share of the biome mix from which its tunnel is built.
 pub const TUNNEL_SHARE: f32 = 0.85;
 
+/// What lies off the lava cave's tunnel, glimpsed as the Nautilus passes:
+/// passages to places it never goes, each lit by what is in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Secret {
+    /// A passage down to a chamber of molten rock, embers drifting out.
+    Ember,
+    /// A grotto lit by colonies of luminous creatures.
+    Grotto,
+    /// A gallery of crystals, glinting violet.
+    Crystal,
+    /// A doorway cut by hands long gone, with steps up into a warm light.
+    Door,
+    /// A chimney in the vault, a shaft of pale light falling from it.
+    Chimney,
+}
+
+impl Secret {
+    const ALL: [Secret; 5] = [
+        Secret::Ember,
+        Secret::Grotto,
+        Secret::Crystal,
+        Secret::Door,
+        Secret::Chimney,
+    ];
+
+    /// The colour of the light within, and how strongly it glows.
+    fn light(self) -> ([f32; 3], f32) {
+        match self {
+            Secret::Ember => ([1.0, 0.33, 0.06], 1.2),
+            Secret::Grotto => ([0.12, 0.85, 0.62], 0.75),
+            Secret::Crystal => ([0.55, 0.32, 1.0], 0.75),
+            Secret::Door => ([1.0, 0.72, 0.30], 0.9),
+            Secret::Chimney => ([0.42, 0.68, 1.0], 0.85),
+        }
+    }
+}
+
+/// One of the tunnel's openings, laid out in the corridor's own frame: along
+/// the voyage in x, across from the corridor in `o` (z less `corridor(x)`),
+/// and up from the tunnel's floor.
+#[derive(Clone, Copy, Debug)]
+pub struct Opening {
+    pub kind: Secret,
+    /// The middle of its mouth along the voyage, and half its width.
+    pub x: f32,
+    pub half: f32,
+    /// How far it runs out of the tunnel (up, for a chimney), how far it
+    /// bends along the voyage by its end, and how far its floor climbs.
+    pub depth: f32,
+    pub bend: f32,
+    pub rise: f32,
+}
+
+/// The tunnel's rings: how far apart, and how many points round each.
+const RING_STEP: f32 = 0.1;
+const AROUND: usize = 36;
+/// Where a side passage leaves the wall, across from the corridor, and the
+/// last point round the ring its mouth takes in, from the window's side's foot.
+const WALL: f32 = 1.0;
+const SIDE_TOP: usize = 11;
+/// Openings off each tunnel.
+const OPENINGS: usize = 5;
+/// The points round the ring a chimney's mouth spans: in the crown, a little
+/// toward the window, where it can be seen.
+const CHIMNEY_AROUND: (usize, usize) = (13, 17);
+/// Where a chimney's mouth lies across from the corridor and above the floor.
+const CHIMNEY_O: f32 = 0.37;
+const CHIMNEY_H: f32 = 1.0;
+
+impl Opening {
+    fn side(&self) -> bool {
+        self.kind != Secret::Chimney
+    }
+
+    /// The tunnel's rings the mouth spans, first and last.
+    fn rings(&self) -> (i32, i32) {
+        let k0 = ((self.x - self.half) / RING_STEP).round() as i32;
+        let k1 = ((self.x + self.half) / RING_STEP).round() as i32;
+        (k0, k1.max(k0 + 2))
+    }
+
+    /// The middle of its section a fraction `s` of the way in, as (x, o,
+    /// height above the floor), and the section's sideways direction in (x, o).
+    fn path(&self, s: f32) -> ([f32; 3], [f32; 2]) {
+        let x = self.x + self.bend * s * s;
+        if self.side() {
+            let t = [2.0 * self.bend * s, self.depth];
+            let l = (t[0] * t[0] + t[1] * t[1]).sqrt();
+            (
+                [x, WALL + self.depth * s, 0.2 + self.rise * s * s],
+                [t[1] / l, -t[0] / l],
+            )
+        } else {
+            (
+                [x, CHIMNEY_O + 0.35 * s, CHIMNEY_H + self.depth * s],
+                [1.0, 0.0],
+            )
+        }
+    }
+
+    /// A point of its wall a fraction `s` in, `angle` round its section: an
+    /// arch open to the floor for a passage (a squared one for a doorway), a
+    /// ring for a chimney. In (x, o, height above the floor).
+    fn wall(&self, s: f32, angle: f32) -> [f32; 3] {
+        let (c, across) = self.path(s);
+        if self.side() {
+            let w = self.half * (1.0 + 0.1 * s);
+            let h = 0.62 * (1.0 - 0.15 * s);
+            let (mut a, mut b) = (angle.cos(), angle.sin());
+            if self.kind == Secret::Door {
+                a = (1.4 * a).clamp(-1.0, 1.0);
+                b = (1.4 * b).clamp(-1.0, 1.0);
+            }
+            [
+                c[0] + across[0] * w * a,
+                c[1] + across[1] * w * a,
+                c[2] + h * b,
+            ]
+        } else {
+            let r = 1.0 - 0.3 * s;
+            [
+                c[0] + self.half * r * angle.cos(),
+                c[1] + 0.22 * r * angle.sin(),
+                c[2],
+            ]
+        }
+    }
+}
+
+/// From the corridor's frame into the world, over a floor at `floor`.
+fn corridor_point(p: [f32; 3], floor: f32) -> [f32; 3] {
+    [p[0], floor + p[2], corridor(p[0]) + p[1]]
+}
+
 /// Visual depth of each biome's seabed below the surface, which lies at y = 0
 /// whatever the boat does. The voyage's own depths run from one to forty
 /// units; here they are compressed, so the drop into the abyss is a steep
@@ -232,10 +366,16 @@ impl Seabed {
         let off = (z - corridor(x)).abs();
         let far = smooth(7.0, 22.0, off) * (0.3 + ridges * vnoise(x * 0.16, z * 0.16 + 3.0, 4));
         // The lava cave's massif, rising either side of its tunnel.
-        let massif = b.weight(CAVE) as f32
+        let mut massif = b.weight(CAVE) as f32
             * MASSIF
             * smooth(TUNNEL * 1.05, TUNNEL * 1.8, off)
             * (0.85 + 0.3 * vnoise(x * 0.4, z * 0.4, 5));
+        // Cut back to the floor where a side passage runs into it. Only here:
+        // the shader's `ground` beds models in the sand, and nothing it beds
+        // stands in a passage.
+        if massif > 0.0 {
+            massif *= 1.0 - self.bay(x, z - corridor(x));
+        }
         let trench = b.weight(TRENCH) as f32;
         let trench = if trench > 0.0 {
             trench * trench_profile(x, z - corridor(x))
@@ -243,6 +383,96 @@ impl Seabed {
             0.0
         };
         base + relief + rough * (n - 0.45) + far + massif + trench
+    }
+
+    /// The openings off the lava cave's tunnel nearest `x`, if a cave is
+    /// near: the same five secrets in every cave, in an order and at places
+    /// of the seabed's own.
+    pub fn openings(&self, x: f32) -> Option<[Opening; OPENINGS]> {
+        let leg = crate::voyage::LEG as f32;
+        let u = (x / leg).floor();
+        let k = [u, u + 1.0]
+            .into_iter()
+            .find(|k| Biome::at(f64::from((k + 0.5) * leg), self.seed).a == CAVE)?;
+        let ki = k as i32;
+        let salt = self.seed.to_bits() & 0xffff;
+        // The four side passages in an order of the seabed's own; the
+        // chimney last, in the vault between the first two.
+        let mut kinds = Secret::ALL;
+        for i in (1..OPENINGS - 1).rev() {
+            let j = (hash(ki, i as i32, 700 + salt) * (i + 1) as f32) as usize;
+            kinds.swap(i, j.min(i));
+        }
+        // The tunnel opens a little before the leg begins (TUNNEL_SHARE of
+        // the cave as it blends in) and runs some 2.8 units.
+        let start = (k - 0.07) * leg;
+        Some(std::array::from_fn(|i| {
+            let h = |n: u32| hash(ki, i as i32, 710 + n + salt);
+            let kind = kinds[i];
+            let slot = if kind == Secret::Chimney {
+                0.5
+            } else {
+                i as f32
+            };
+            let x = start + 0.5 + slot * 0.58 + (h(0) - 0.5) * 0.06;
+            // Bent on ahead, all alike so none runs into the next, so the
+            // window looks along each as it passes and its end is round
+            // the corner; the chimney back over the tunnel.
+            let toward = if kind == Secret::Chimney { -0.4 } else { 1.0 };
+            let (half, depth, bend, rise) = match kind {
+                Secret::Ember => (0.25, 1.5, 0.3, -0.08),
+                Secret::Grotto => (0.24, 1.4, 0.3, 0.06),
+                Secret::Crystal => (0.23, 1.3, 0.3, 0.10),
+                Secret::Door => (0.17, 1.2, 0.3, 0.0),
+                Secret::Chimney => (0.15, 1.6, 0.30, 0.0),
+            };
+            Opening {
+                kind,
+                x,
+                half,
+                depth: depth * (0.9 + 0.2 * h(1)),
+                bend: bend * toward,
+                rise,
+            }
+        }))
+    }
+
+    /// How far the side passages clear the massif at (x, o): 1 within one,
+    /// where the rock is cut back to the tunnel's floor.
+    fn bay(&self, x: f32, o: f32) -> f32 {
+        if !(0.85..3.3).contains(&o) {
+            return 0.0;
+        }
+        let Some(openings) = self.openings(x) else {
+            return 0.0;
+        };
+        openings
+            .iter()
+            .filter(|p| p.side())
+            .map(|p| {
+                let s = ((o - WALL) / p.depth).clamp(0.0, 1.0);
+                let (c, _) = p.path(s);
+                let width = p.half * (1.0 + 0.1 * s) + 0.12;
+                smooth(width + 0.12, width, (x - c[0]).abs())
+                    * smooth(WALL + p.depth + 0.4, WALL + p.depth + 0.2, o)
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// Whether (x, o) lies in the mouth of an opening, `side` or overhead, to
+    /// keep columns and stalactites out of the way.
+    pub fn in_mouth(&self, x: f32, o: f32, side: bool) -> bool {
+        self.openings(x).is_some_and(|list| {
+            list.iter().any(|p| {
+                p.side() == side
+                    && (x - p.x).abs() < p.half + 0.1
+                    && if side {
+                        o > 0.3
+                    } else {
+                        (-0.05..0.8).contains(&o)
+                    }
+            })
+        })
     }
 
     /// The tunnel's cross-section at `x`, where there is one: its centre, its
@@ -404,6 +634,8 @@ pub struct Frame {
     pub tunnel_version: u64,
     /// The stretch of rings the tunnel was built for, and the seabed's seed.
     tunnel_span: Option<(i32, i32, u32)>,
+    /// The passages off the tunnel, built with it.
+    passages: Vec<Passage>,
     /// How far what is being placed has faded in, as its biome comes and goes.
     fade: f32,
     /// The texture for models that have none of their own, while placing one
@@ -423,6 +655,7 @@ impl Frame {
             tunnel_indices: Vec::new(),
             tunnel_version: 0,
             tunnel_span: None,
+            passages: Vec::new(),
             fade: 1.0,
             skin: None,
         }
@@ -1571,6 +1804,10 @@ fn cave(w: &World, f: &mut Frame) {
         if cluster < 0.48 || share < 0.6 {
             continue;
         }
+        // Not in front of a passage's mouth.
+        if w.seabed.in_mouth(x, z - corridor(x), true) {
+            continue;
+        }
         f.fade = fade(share, 0.6);
         let y = w.ground(x, z);
         let h = 0.04 + 0.30 * smooth(0.48, 0.90, cluster) * (0.5 + 0.5 * hash(ix, iz, 102));
@@ -1595,6 +1832,10 @@ fn cave(w: &World, f: &mut Frame) {
     for (ix, iz, x, z) in cells(w, 0.2, 0.5, 12.0, 110) {
         let off = z - corridor(x);
         if off.abs() > TUNNEL * 0.75 || hash(ix, iz, 111) < 0.3 {
+            continue;
+        }
+        // None hangs over a chimney's open mouth.
+        if w.seabed.in_mouth(x, off, false) {
             continue;
         }
         let Some((c, _, share)) = w.seabed.tunnel_at(x) else {
@@ -1650,19 +1891,76 @@ fn cave(w: &World, f: &mut Frame) {
     }
 }
 
+/// A passage off the tunnel, as built: its opening, and the floor of the
+/// tunnel where it leaves it.
+#[derive(Clone, Copy, Debug)]
+struct Passage {
+    opening: Opening,
+    floor: f32,
+}
+
+impl Passage {
+    fn at(&self, p: [f32; 3]) -> [f32; 3] {
+        corridor_point(p, self.floor)
+    }
+
+    /// The middle of its section a fraction `s` of the way in.
+    fn centre(&self, s: f32) -> [f32; 3] {
+        self.at(self.opening.path(s).0)
+    }
+
+    fn wall(&self, s: f32, angle: f32) -> [f32; 3] {
+        self.at(self.opening.wall(s, angle))
+    }
+
+    /// Where its light spills out into the tunnel.
+    fn mouth(&self) -> [f32; 3] {
+        if self.opening.side() {
+            self.at([self.opening.x, WALL - 0.05, 0.35])
+        } else {
+            self.centre(0.0)
+        }
+    }
+}
+
+fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
+}
+
+fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
 /// The tunnel through the cave's massif: a ragged arch of rock inside, the
 /// massif's dome over it outside, and at each mouth the cliff face with the
-/// opening in it. Built for the stretch in view, from rings fixed in the
-/// world, so it never shifts as the boat moves; and only when that stretch
-/// gains or loses a ring, as nothing else about it changes.
+/// opening in it; and off it the passages to the cave's secrets, cut
+/// through its wall and vault. Built from rings fixed in the world, so it
+/// never shifts as the boat moves. A tunnel is short, so it is built whole
+/// once the boat comes near it, and not again until it is left behind.
 fn tunnel(w: &World, f: &mut Frame) {
+    build_tunnel(w, f);
+    passages(w, f);
+}
+
+fn build_tunnel(w: &World, f: &mut Frame) {
     use super::mesh::Vertex;
-    const STEP: f32 = 0.2;
-    const AROUND: usize = 20;
+    let seabed = w.seabed;
     let cam = w.camera();
-    let first = ((cam - 16.0) / STEP).floor() as i32;
-    let last = ((cam + 16.0) / STEP).ceil() as i32;
-    let span = Some((first, last, w.seabed.seed.to_bits()));
+    let first = ((cam - 16.0) / RING_STEP).floor() as i32;
+    let last = ((cam + 16.0) / RING_STEP).ceil() as i32;
+    let inside = |k: i32| {
+        let x = k as f32 * RING_STEP;
+        seabed.share(x, corridor(x), CAVE) >= TUNNEL_SHARE
+    };
+    let (from, to) = match (
+        (first..=last).find(|&k| inside(k)),
+        (first..=last).rev().find(|&k| inside(k)),
+    ) {
+        (Some(a), Some(b)) => (a, b),
+        _ => (0, -1),
+    };
+    let span = Some((from, to, seabed.seed.to_bits()));
     if f.tunnel_span == span {
         return;
     }
@@ -1670,81 +1968,283 @@ fn tunnel(w: &World, f: &mut Frame) {
     f.tunnel_version += 1;
     f.tunnel.clear();
     f.tunnel_indices.clear();
+    f.passages.clear();
+    if from > to {
+        return;
+    }
+    // The passages whose mouths lie wholly within the tunnel.
+    for k in [from, to] {
+        for opening in seabed.openings(k as f32 * RING_STEP).into_iter().flatten() {
+            let (k0, k1) = opening.rings();
+            let whole = (k0 - 1..=k1 + 1).all(|k| (from..=to).contains(&k) && inside(k));
+            if whole && !f.passages.iter().any(|p| p.opening.x == opening.x) {
+                f.passages.push(Passage {
+                    opening,
+                    floor: seabed.tunnel_floor(opening.x),
+                });
+            }
+        }
+    }
+    let passages = &f.passages;
     let verts = &mut f.tunnel;
     let indices = &mut f.tunnel_indices;
-    let vertex = |p: [f32; 3]| Vertex {
-        pos: p,
-        normal: [0.0; 3],
-        colour: [1.0; 3],
-        aux: [0.0; 2],
+    // The light each passage throws on the rock about its mouth, baked into
+    // the tunnel's vertices: no lights to pay for per pixel.
+    let glows: Vec<([f32; 3], [f32; 3])> = passages
+        .iter()
+        .map(|p| {
+            let (c, k) = p.opening.kind.light();
+            (p.mouth(), c.map(|v| v * k * 0.45))
+        })
+        .collect();
+    let spill = |p: [f32; 3]| {
+        let mut e = [0.0f32; 3];
+        for (m, c) in &glows {
+            let d = distance(p, *m);
+            let fall = (-d * d / 0.1).exp();
+            for j in 0..3 {
+                e[j] += c[j] * fall;
+            }
+        }
+        e
     };
+    // The dome swells out over the side passages, so none runs out of it.
+    let swell = |x: f32| {
+        passages
+            .iter()
+            .filter(|p| p.opening.side())
+            .map(|p| {
+                let o = p.opening;
+                let lo = o.x - o.half - 0.15 + o.bend.min(0.0);
+                let hi = o.x + o.half + 0.15 + o.bend.max(0.0);
+                smooth(lo - 0.3, lo, x) * smooth(hi + 0.3, hi, x)
+            })
+            .fold(0.0, f32::max)
+    };
+    let n = AROUND + 1;
+    let n32 = n as u32;
     // Each ring: AROUND + 1 inner points then as many outer ones.
-    let ring = |x: f32, c: [f32; 3], lat: [f32; 3], share: f32| -> Vec<[f32; 3]> {
-        let mut points = Vec::with_capacity(2 * (AROUND + 1));
+    let mut rings: Vec<Option<u32>> = Vec::new();
+    for k in from..=to {
+        let x = k as f32 * RING_STEP;
+        let Some((c, lat, share)) = seabed.tunnel_at(x) else {
+            rings.push(None);
+            continue;
+        };
+        let floor = c[1] - 0.25 * TUNNEL;
+        let swell = swell(x);
+        rings.push(Some(verts.len() as u32));
         for outer in [false, true] {
-            for i in 0..=AROUND {
+            for i in 0..n {
                 let a = -0.2 * PI + i as f32 / AROUND as f32 * 1.4 * PI;
-                let (across, up) = if outer {
+                let (across, up, shade) = if outer {
                     (
-                        TUNNEL * 1.9,
+                        TUNNEL * 1.9 + 1.7 * swell * a.cos().max(0.0),
                         MASSIF * share * (0.85 + 0.3 * vnoise(x * 0.4, a, 5)),
+                        1.0,
                     )
                 } else {
+                    // Rougher than the radius the boat keeps clear of, but
+                    // only ever outward from it; with ledges where one flow
+                    // of lava lies on the last, and darker in the hollows.
                     let r = Seabed::tunnel_radius(x, a);
-                    (r, 0.85 * r)
+                    let rough =
+                        0.06 * vnoise(x * 7.0, a * 6.0, 21) + 0.03 * vnoise(x * 17.0, a * 13.0, 24);
+                    let ledge = 0.05 * smooth(0.55, 0.7, vnoise(x * 1.3, a * 4.0, 25));
+                    let shade = (1.0 - 4.0 * rough) * (0.8 + 0.35 * vnoise(x * 1.7, a * 2.3, 23));
+                    let r = r + rough + ledge;
+                    (r, 0.85 * r, shade)
                 };
-                points.push([
+                let p = [
                     c[0] + lat[0] * across * a.cos(),
                     c[1] + up * a.sin(),
                     c[2] + lat[2] * across * a.cos(),
-                ]);
+                ];
+                verts.push(Vertex {
+                    pos: p,
+                    normal: [0.0; 3],
+                    colour: if outer { [0.0; 3] } else { spill(p) },
+                    aux: [p[1] - floor, shade.max(0.3)],
+                });
             }
         }
-        points
+    }
+    // Whether the inner quad from ring k to the next, from point i round to
+    // the next, is cut away for a passage's mouth.
+    let holed = |k: i32, i: usize| {
+        passages.iter().any(|p| {
+            let (k0, k1) = p.opening.rings();
+            (k0..k1).contains(&k)
+                && if p.opening.side() {
+                    i < SIDE_TOP
+                } else {
+                    (CHIMNEY_AROUND.0..CHIMNEY_AROUND.1).contains(&i)
+                }
+        })
     };
-    let n = AROUND as u32 + 1;
-    let mut previous: Option<(u32, Vec<[f32; 3]>)> = None;
-    let cap = |verts: &mut Vec<Vertex>, indices: &mut Vec<u32>, points: &[[f32; 3]]| {
-        // A mouth: the cliff face between the arch and the dome.
+    // A mouth: the cliff face between the arch and the dome, with vertices
+    // of its own, so its edge stays sharp.
+    let cap = |verts: &mut Vec<Vertex>, indices: &mut Vec<u32>, ring: u32| {
         let base = verts.len() as u32;
-        verts.extend(points.iter().map(|&p| vertex(p)));
-        for i in 0..n - 1 {
+        for i in 0..2 * n {
+            let v = verts[ring as usize + i];
+            verts.push(Vertex {
+                normal: [0.0; 3],
+                ..v
+            });
+        }
+        for i in 0..n32 - 1 {
             indices.extend_from_slice(&[
                 base + i,
                 base + i + 1,
-                base + n + i + 1,
+                base + n32 + i + 1,
                 base + i,
-                base + n + i + 1,
-                base + n + i,
+                base + n32 + i + 1,
+                base + n32 + i,
             ]);
         }
     };
-    for k in first..=last {
-        let x = k as f32 * STEP;
-        match w.seabed.tunnel_at(x) {
-            Some((c, lat, share)) => {
-                let points = ring(x, c, lat, share);
-                let base = verts.len() as u32;
-                verts.extend(points.iter().map(|&p| vertex(p)));
-                match &previous {
-                    Some((prev, _)) => {
-                        for half in [0, n] {
-                            for i in 0..n - 1 {
-                                let (a, b) = (prev + half + i, prev + half + i + 1);
-                                let (c, d) = (base + half + i, base + half + i + 1);
-                                indices.extend_from_slice(&[a, c, b, b, c, d]);
-                            }
+    for j in 0..rings.len() {
+        let k = from + j as i32;
+        let previous = if j > 0 { rings[j - 1] } else { None };
+        match (previous, rings[j]) {
+            (Some(p), Some(b)) => {
+                for half in [0, n32] {
+                    for i in 0..n32 - 1 {
+                        if half == 0 && holed(k - 1, i as usize) {
+                            continue;
                         }
+                        let (a, bb) = (p + half + i, p + half + i + 1);
+                        let (c, d) = (b + half + i, b + half + i + 1);
+                        indices.extend_from_slice(&[a, c, bb, bb, c, d]);
                     }
-                    None => cap(verts, indices, &points),
-                }
-                previous = Some((base, points));
-            }
-            None => {
-                if let Some((_, points)) = previous.take() {
-                    cap(verts, indices, &points);
                 }
             }
+            (None, Some(b)) => cap(verts, indices, b),
+            (Some(p), None) => cap(verts, indices, p),
+            (None, None) => {}
+        }
+    }
+    if let Some(&Some(b)) = rings.last() {
+        cap(verts, indices, b);
+    }
+    // The passages, lofted from the edge of each mouth into the rock.
+    for p in passages {
+        let o = p.opening;
+        let (k0, k1) = o.rings();
+        let Some(ring) = (k0..=k1)
+            .map(|k| rings[(k - from) as usize])
+            .collect::<Option<Vec<u32>>>()
+        else {
+            continue;
+        };
+        let ring = |k: i32| ring[(k - k0) as usize];
+        let mut edge: Vec<u32> = Vec::new();
+        if o.side() {
+            edge.extend((0..=SIDE_TOP as u32).map(|i| ring(k0) + i));
+            edge.extend((k0 + 1..k1).map(|k| ring(k) + SIDE_TOP as u32));
+            edge.extend((0..=SIDE_TOP as u32).rev().map(|i| ring(k1) + i));
+        } else {
+            let (i0, i1) = (CHIMNEY_AROUND.0 as u32, CHIMNEY_AROUND.1 as u32);
+            edge.extend((i0..=i1).map(|i| ring(k0) + i));
+            edge.extend((k0 + 1..k1).map(|k| ring(k) + i1));
+            edge.extend((i0..=i1).rev().map(|i| ring(k1) + i));
+            edge.extend((k0 + 1..k1).rev().map(|k| ring(k) + i0));
+        }
+        let closed = !o.side();
+        let m = edge.len();
+        let points: Vec<[f32; 3]> = edge.iter().map(|&e| verts[e as usize].pos).collect();
+        // Where round the passage's section each point of the edge goes: by
+        // its length along the edge for an arch, by its bearing for a ring.
+        let angles: Vec<f32> = if closed {
+            points
+                .iter()
+                .map(|q| {
+                    let across = (q[2] - corridor(q[0]) - CHIMNEY_O) / 0.22;
+                    across.atan2((q[0] - o.x) / o.half)
+                })
+                .collect()
+        } else {
+            let mut along = vec![0.0f32];
+            for j in 1..m {
+                along.push(along[j - 1] + distance(points[j], points[j - 1]));
+            }
+            let total = along[m - 1].max(1e-4);
+            along
+                .iter()
+                .map(|d| 1.2 * PI - d / total * 1.4 * PI)
+                .collect()
+        };
+        let start: Vec<[f32; 3]> = angles.iter().map(|&a| p.wall(0.0, a)).collect();
+        let (light, strength) = o.kind.light();
+        let segments = if closed { m } else { m - 1 };
+        let mut previous = edge;
+        const STEPS: usize = 12;
+        for step in 1..=STEPS {
+            let s = step as f32 / STEPS as f32;
+            // The mouth's own ragged edge, eased into the passage's section.
+            let keep = 1.0 - smooth(0.0, 0.45, s);
+            let centre = p.centre(s);
+            let base = verts.len() as u32;
+            for j in 0..m {
+                let a = angles[j];
+                let mut q = p.wall(s, a);
+                if o.kind != Secret::Door {
+                    let r = 0.88 + 0.24 * vnoise(s * 5.0 + o.x * 3.0, a * 2.5, 22);
+                    q = lerp3(centre, q, r);
+                }
+                let q = [0, 1, 2].map(|i| q[i] + (points[j][i] - start[j][i]) * keep);
+                // Its own light, the brighter the deeper in: in spots where
+                // luminous things have settled, in glints in a crystal seam.
+                let mut e = smooth(0.0, 0.75, s).powf(0.8) * strength;
+                let spots = match o.kind {
+                    Secret::Grotto => {
+                        0.25 + 1.8
+                            * smooth(0.6, 0.72, vnoise(q[0] * 9.0, q[1] * 9.0 + q[2] * 5.0, 26))
+                    }
+                    Secret::Crystal => {
+                        0.4 + 1.4
+                            * smooth(0.6, 0.75, vnoise(q[0] * 12.0 + q[2] * 7.0, q[1] * 12.0, 27))
+                    }
+                    _ => 1.0,
+                };
+                // Evenly at the far end, which shades smoothly into it.
+                e *= spots + (1.0 - spots) * smooth(0.75, 1.0, s);
+                verts.push(Vertex {
+                    pos: q,
+                    normal: [0.0; 3],
+                    colour: light.map(|c| c * e),
+                    aux: [q[1] - p.floor, 0.45 + 0.1 * s],
+                });
+            }
+            for j in 0..segments {
+                let j2 = (j + 1) % m;
+                let (a, b) = (previous[j], previous[j2]);
+                let (c, d) = (base + j as u32, base + j2 as u32);
+                indices.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+            previous = (0..m as u32).map(|j| base + j).collect();
+        }
+        // The far end, round the bend, where the light comes from.
+        let on = norm({
+            let (a, b) = (p.centre(0.9), p.centre(1.0));
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+        });
+        let middle = previous.iter().fold([0.0f32; 3], |acc, &v| {
+            add(acc, verts[v as usize].pos.map(|c| c / m as f32))
+        });
+        let tip = add(middle, on.map(|c| c * 0.25));
+        let tip_index = verts.len() as u32;
+        verts.push(Vertex {
+            pos: tip,
+            normal: [0.0; 3],
+            colour: light.map(|c| c * strength * 1.2),
+            aux: [tip[1] - p.floor, 0.5],
+        });
+        // All the way round, across the floor too, so no gap shows under it.
+        for j in 0..m {
+            let j2 = (j + 1) % m;
+            indices.extend_from_slice(&[previous[j], previous[j2], tip_index]);
         }
     }
     // Smooth normals, which the shader turns toward the viewer.
@@ -1763,6 +2263,150 @@ fn tunnel(w: &World, f: &mut Frame) {
     }
     for (v, nn) in verts.iter_mut().zip(normals) {
         v.normal = norm(nn);
+    }
+}
+
+/// What lives in the passages, placed each frame: the glow deep in each,
+/// and embers, luminous colonies, crystals, a carved doorway or a shaft of
+/// pale light falling from the vault.
+fn passages(w: &World, f: &mut Frame) {
+    let t = w.t;
+    for n in 0..f.passages.len() {
+        let p = f.passages[n];
+        let o = p.opening;
+        if !w.visible(p.centre(0.5), 1.5) {
+            continue;
+        }
+        let (light, _) = o.kind.light();
+        let tint = |k: f32| light.map(|c| c * k);
+        let id = (o.x * 10.0).round() as i32;
+        // The water in a side passage's mouth, hazed with its light, so it
+        // shows from along the tunnel as well as from in front.
+        if o.side() {
+            f.sprite(p.centre(0.12), 0.32, tint(0.16), GLOW);
+        }
+        let h = |k: i32, salt: u32| hash(id, k, salt);
+        match o.kind {
+            Secret::Ember => {
+                let flicker = 0.8 + 0.2 * (t * 2.3 + o.x).sin() * (t * 3.7).sin();
+                f.sprite(p.centre(0.85), 0.6, tint(0.5 * flicker), GLOW);
+                f.light(p.centre(0.45), 0.55, tint(0.8 * flicker));
+                // Embers drifting out on the warm water, rising as they go.
+                for k in 0..12 {
+                    let along = (t * 0.06 + h(k, 801)).fract();
+                    let s = 1.0 - along;
+                    let mut q = lerp3(p.centre(s), p.wall(s, PI * (0.15 + 0.7 * h(k, 802))), 0.6);
+                    q[1] += along * 0.35;
+                    let glow = smooth(0.0, 0.2, along) * (1.0 - along);
+                    f.sprite(q, 0.014, [1.0 * glow, 0.42 * glow, 0.08 * glow], EMBER);
+                }
+            }
+            Secret::Grotto => {
+                f.sprite(p.centre(0.8), 0.5, tint(0.22), GLOW);
+                f.light(p.centre(0.45), 0.5, tint(0.5));
+                // Colonies of luminous creatures on the walls, each breathing
+                // its light in its own time.
+                for k in 0..22 {
+                    let s = 0.15 + 0.85 * h(k, 811);
+                    let a = PI * (-0.1 + 1.2 * h(k, 812));
+                    let q = lerp3(p.centre(s), p.wall(s, a), 0.92);
+                    let pulse = 0.5 + 0.5 * (t * (0.5 + 0.6 * h(k, 813)) + k as f32).sin();
+                    f.sprite(q, 0.02 + 0.03 * h(k, 814), tint(0.9 * pulse * pulse), GLOW);
+                }
+            }
+            Secret::Crystal => {
+                f.sprite(p.centre(0.85), 0.45, tint(0.28), GLOW);
+                f.light(p.centre(0.4), 0.5, tint(0.5));
+                // Crystals grown out of the walls toward the passage's middle,
+                // glinting in turn.
+                for k in 0..14 {
+                    let s = 0.2 + 0.6 * h(k, 821);
+                    let a = PI
+                        * if k % 2 == 0 {
+                            -0.12 + 0.35 * h(k, 822)
+                        } else {
+                            0.77 + 0.35 * h(k, 822)
+                        };
+                    let base = p.wall(s, a);
+                    let c = p.centre(s);
+                    let inward = norm([c[0] - base[0], c[1] - base[1] + 0.3, c[2] - base[2]]);
+                    let len = 0.05 + 0.10 * h(k, 823);
+                    let tip = add(base, inward.map(|v| v * len));
+                    f.glass(
+                        Model::Hex,
+                        between(base, tip, 0.012 + 0.012 * h(k, 824)),
+                        [0.55, 0.40, 1.0],
+                    )
+                    .glowing(0.35);
+                    let twinkle = (t * 1.3 + k as f32 * 2.1).sin().max(0.0).powi(8);
+                    f.sprite(tip, 0.03, tint(0.3 + 1.2 * twinkle), GLOW);
+                }
+            }
+            Secret::Door => {
+                f.sprite(p.centre(0.9), 0.45, tint(0.32), GLOW);
+                f.light(p.centre(0.5), 0.6, tint(0.7));
+                // A doorway of dressed stone, set a little way in, and steps
+                // up into the light.
+                let into = WALL + o.depth * 0.3;
+                // Along the passage's bend, `at` out from the corridor.
+                let along = |at: f32| o.path((at - WALL) / o.depth).0[0];
+                let door = along(into);
+                let stone = [0.24, 0.23, 0.21];
+                let block = |f: &mut Frame, at: [f32; 3], size: [f32; 3]| {
+                    f.put(Model::Box, place(p.at(at), 0.0, 0.0, 0.0, size), stone)
+                        .textured(Surface::Marble, 3.0);
+                };
+                for side in [-1.0, 1.0] {
+                    block(f, [door + side * o.half, into, 0.34], [0.05, 0.37, 0.07]);
+                }
+                block(f, [door, into, 0.72], [o.half + 0.1, 0.06, 0.08]);
+                for k in 0..3 {
+                    let top = 0.05 * (k + 1) as f32;
+                    let at = into + 0.12 + 0.13 * k as f32;
+                    block(
+                        f,
+                        [along(at), at, top * 0.5 - 0.02],
+                        [o.half * 0.95, top * 0.5 + 0.02, 0.07],
+                    );
+                }
+                // Signs cut in the lintel, catching the light.
+                for k in 0..5 {
+                    let x = door + (k as f32 - 2.0) * o.half * 0.4;
+                    let shine = 0.5 + 0.5 * (t * 0.8 + k as f32 * 1.7).sin();
+                    f.sprite(
+                        p.at([x, into - 0.085, 0.72]),
+                        0.016,
+                        tint(0.5 + 0.8 * shine),
+                        GLOW,
+                    );
+                }
+            }
+            Secret::Chimney => {
+                let top = p.centre(0.05);
+                let foot = [top[0], p.floor + 0.05, top[2]];
+                let breathe = 0.75 + 0.25 * (t * 0.4 + o.x).sin();
+                let k = 0.3 * breathe;
+                f.shafts.push(Sprite {
+                    place: [top[0], top[1], top[2], 0.08],
+                    // w: lit by its own light, not the sun's.
+                    tint: [light[0] * k, light[1] * k, light[2] * k, 1.0],
+                    stretch: [foot[0] - top[0], foot[1] - top[1], foot[2] - top[2], 0.0],
+                });
+                f.sprite(p.centre(0.7), 0.4, tint(0.35), GLOW);
+                f.light([top[0], p.floor + 0.3, top[2]], 0.6, tint(0.45));
+                // Motes sinking through the shaft.
+                for k in 0..14 {
+                    let fall = (t * 0.03 + h(k, 831)).fract();
+                    let q = [
+                        top[0] + (h(k, 832) - 0.5) * 0.18,
+                        top[1] + (foot[1] - top[1]) * fall,
+                        top[2] + (h(k, 833) - 0.5) * 0.18,
+                    ];
+                    let glow = smooth(0.0, 0.15, fall) * smooth(1.0, 0.8, fall);
+                    f.sprite(q, 0.01, tint(0.6 * glow), GLOW);
+                }
+            }
+        }
     }
 }
 
@@ -2878,6 +3522,40 @@ mod tests {
             assert!((at(0.9) - rim).abs() < 0.8, "the rim is level at {x}");
             assert!(rim - at(3.6) > 4.0, "the trench is deep at {x}");
             assert!(at(7.5) > rim, "the far wall rises above the rim at {x}");
+        }
+    }
+
+    /// Every cave's tunnel has its five secrets, each wholly inside it, and
+    /// the massif is cut back for the side passages and nowhere near the
+    /// boat's way.
+    #[test]
+    fn the_cave_has_its_secrets() {
+        for visit in [0, 7, 123] {
+            let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
+            let seabed = Seabed::new(visit, seed);
+            let leg = crate::voyage::LEG as f32;
+            let cave = (0..crate::voyage::BIOMES)
+                .map(|k| k as f32)
+                .find(|k| Biome::at(f64::from((k + 0.5) * leg), seed).a == CAVE)
+                .unwrap();
+            let openings = seabed.openings(cave * leg).expect("a cave's openings");
+            for kind in Secret::ALL {
+                assert!(openings.iter().any(|o| o.kind == kind), "no {kind:?}");
+            }
+            for o in openings {
+                for x in [o.x - o.half - 0.1, o.x + o.half + 0.1] {
+                    assert!(
+                        seabed.tunnel_at(x).is_some(),
+                        "{:?} outside the tunnel",
+                        o.kind
+                    );
+                }
+                if o.side() {
+                    let (c, _) = o.path(0.6);
+                    assert!(seabed.bay(c[0], c[1]) > 0.99, "{:?} not cut", o.kind);
+                }
+                assert_eq!(seabed.bay(o.x, 0.3), 0.0, "cut into the boat's way");
+            }
         }
     }
 
