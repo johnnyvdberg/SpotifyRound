@@ -14,9 +14,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "${1:?usage: shaderdb.sh <repo checkout> [raw log]}" && pwd)
 raw=${2:-$(mktemp -t v3d-shaderdb.XXXXXX)}
-# One build directory per checkout: cargo goes by modification times, and a
-# `git archive` export carries old ones, so a shared one can go stale.
-volume=v3d-shaderdb-target-$(printf %s "$repo" | shasum | cut -c1-12)
+# One build directory for every checkout, so dependencies build once;
+# inner.sh copies the checkout in with fresh times, so it is always rebuilt.
+volume=v3d-shaderdb-target
 
 docker build -q -t v3d-shaderdb "$here" >/dev/null
 
