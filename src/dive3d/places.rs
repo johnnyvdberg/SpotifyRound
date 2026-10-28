@@ -15,6 +15,8 @@ pub struct Place {
     pub name: String,
     pub leg: f64,
     pub seed: u64,
+    /// Seconds since a swipe on to the next leg, for a shot mid-passage.
+    pub swiped: Option<f64>,
 }
 
 impl Place {
@@ -23,6 +25,7 @@ impl Place {
             name: name.into(),
             leg,
             seed,
+            swiped: None,
         }
     }
 
@@ -53,6 +56,17 @@ pub fn all() -> Vec<Place> {
             n as f64 + 0.45,
             7,
         ));
+    }
+    // How the Nautilus moves: setting itself across the cave's tunnel at its
+    // mouth, well inside it and leaving it, and part way through a swipe's
+    // passage, the rush of bubbles at its height.
+    for (name, leg) in [("mouth", 3.95), ("deep", 4.4), ("far-mouth", 4.8)] {
+        places.push(Place::new(format!("helm-cave-{name}"), leg, 0));
+    }
+    for (name, after) in [("gathering", 0.8), ("rushing", 1.75), ("settling", 3.0)] {
+        let mut place = Place::new(format!("helm-swipe-{name}"), 1.5, 0);
+        place.swiped = Some(after);
+        places.push(place);
     }
     places
 }

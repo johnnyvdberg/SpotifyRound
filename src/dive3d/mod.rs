@@ -1154,18 +1154,44 @@ impl Nautilus {
 
     #[cfg(test)]
     fn read_back(&mut self, gpu: &Graphics, seconds: f64, seed: u64) -> Vec<u8> {
+        self.read_back_swiped(gpu, seconds, seed, None)
+    }
+
+    /// As [`Self::read_back`], with a swipe on to the next leg `swiped`
+    /// seconds before the frame, if given.
+    #[cfg(test)]
+    fn read_back_swiped(
+        &mut self,
+        gpu: &Graphics,
+        seconds: f64,
+        seed: u64,
+        swiped: Option<f64>,
+    ) -> Vec<u8> {
+        // A swipe leaves the voyage a leg on: start afresh before and after.
+        if swiped.is_some() {
+            self.voyage = Voyage::default();
+        }
         // Sail the last twenty seconds first, so the helm has settled as it
         // would have on screen.
         self.draw(gpu, seconds - 20.0, seed, 0)
             .expect("a 3D dive frame");
         for i in 1..600 {
             let at = seconds - 20.0 + f64::from(i) / 30.0;
+            if let Some(before) = swiped
+                && at - 1.0 / 30.0 < seconds - before
+                && at >= seconds - before
+            {
+                self.voyage.travel(1, at);
+            }
             let voyage = self
                 .voyage
                 .advance(at, (seed % 1_000_003) as f32 / 1_000_003.0);
             self.helm.steer(&self.seabed, voyage, at);
         }
         self.draw(gpu, seconds, seed, 0).expect("a 3D dive frame");
+        if swiped.is_some() {
+            self.voyage = Voyage::default();
+        }
         crate::porthole::read_texture(gpu, &self.porthole.texture(0))
     }
 }
@@ -1380,7 +1406,7 @@ mod tests {
              flex-wrap:wrap;gap:12px}figure{margin:0}img{width:360px}</style>\n",
         );
         for (i, place) in places.iter().enumerate() {
-            let pixels = scene.read_back(&gpu, place.seconds(), place.seed);
+            let pixels = scene.read_back_swiped(&gpu, place.seconds(), place.seed, place.swiped);
             let frame = image::RgbaImage::from_raw(SIZE, SIZE, pixels).expect("a whole frame");
             let file = format!("{}.png", place.name);
             frame.save(dir.join(&file)).expect("a screenshot");
