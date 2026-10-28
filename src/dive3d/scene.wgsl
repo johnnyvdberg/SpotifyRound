@@ -56,6 +56,8 @@ const MASSIF: f32 = 4.5;
 const RELIEF_PERIOD: f32 = 64.0;
 // Textures store 0..1.6 as 0..1, so they can brighten as well as darken.
 const TEXTURE_RANGE: f32 = 1.6;
+// log2 of the surfaces' size, `textures::SIZE`.
+const SURFACE_LOD: f32 = 8.0;
 
 // Whether this models pipeline draws things that are fading in or out. Only
 // that one may discard fragments: the Pi's tile-based GPU skips hidden
@@ -101,8 +103,12 @@ fn hash(ix: i32, iz: i32, salt: u32) -> f32 {
 
 // Switches the `frame_cost` benchmark sets in `counts.y`, to find what each
 // kind of work costs. Always zero on screen.
-const PLAIN_TEXTURES: u32 = 1u;
 const NO_NOISE: u32 = 2u;
+
+// Every surface a flat grey, for the same benchmark. A pipeline constant
+// rather than a switch in `counts.y`: tested in the shader, it costs the Pi's
+// GPU about thirty instructions a texture lookup.
+override PLAIN_TEXTURES: bool = false;
 
 fn debug(flag: u32) -> bool {
     return (u32(g.counts.y) & flag) != 0u;
@@ -359,6 +365,9 @@ struct Ground {
     @location(1) normal: vec3<f32>,
     // `fog_at` the vertex.
     @location(2) fog: vec4<f32>,
+    // `voyage_x` at the vertex. It bends gently, so it is worked out per
+    // vertex, and only which biome it falls in is found per pixel.
+    @location(3) voyage: f32,
 };
 
 @vertex
@@ -369,6 +378,7 @@ fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> 
     out.normal = normal;
     out.position = project(world);
     out.fog = fog_at(world);
+    out.voyage = voyage_x(world.x, world.z);
     return out;
 }
 
@@ -394,7 +404,7 @@ fn surface_of(l: Leg) -> vec2<i32> {
 @fragment
 fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     let p = in.world;
-    let l = leg(voyage_x(p.x, p.z));
+    let l = leg(in.voyage);
     let n = normalize(in.normal);
     // Sampled first, while every pixel is still doing the same thing.
     let layers = surface_of(l);
@@ -557,10 +567,14 @@ fn tap(uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>, layer: i32, weight: f32) -
     if (weight <= 0.0) {
         return vec3<f32>(0.0);
     }
-    if (debug(PLAIN_TEXTURES)) {
+    if (PLAIN_TEXTURES) {
         return vec3<f32>(0.6 * weight);
     }
-    return textureSampleGrad(surfaces, surface_sampler, uv, layer, ddx, ddy).rgb * weight;
+    // The level of detail a sample with these gradients picks, worked out
+    // here: the Pi's GPU has no sampling by gradients, and Mesa works the same
+    // level out for it in a longer way, at twice the cost of the lookup itself.
+    let lod = 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy))) + SURFACE_LOD;
+    return textureSampleLevel(surfaces, surface_sampler, uv, layer, lod).rgb * weight;
 }
 
 // Weights for projecting along x, y and z by a surface's facing. A projection
