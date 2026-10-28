@@ -575,7 +575,7 @@ down over the edge. Slabs of rock jut over each drop, sediment spills from some 
 down, sponges, sea fans and tube worms cling to the far wall, faintly glowing sea pens and
 crinoids stand on the terraces, lights blink in the dark at the bottom, and the water is clear
 enough for sunlight to slant down into it. The biomes' tables keep their numbers, the trench last;
-`voyage::ORDER` (and `ORDER` in the shader) says the order the legs come in.
+`voyage::ORDER` (and `order` in the shader) says the order the legs come in.
 The seabed is a random heightmap made afresh on every visit — rolling ground, folded ridges and the
 odd canyon, 64 units to a tile — shown more strongly in the rugged abyss than under the paved city;
 it shelves between the seas, so the boat drops over an edge into the abyss and climbs out to the ice.

@@ -91,9 +91,13 @@ const CAVE: i32 = 4;
 const ABYSS: i32 = 5;
 const ARCTIC: i32 = 6;
 const TRENCH: i32 = 7;
-// The order the legs come in, as `voyage::ORDER`: the trench, last in every
-// table, comes between the forest and the wrecks.
-const ORDER = array<i32, 8>(0, 1, 7, 2, 3, 4, 5, 6);
+
+// The biome of the `n`th leg of a circuit, as `voyage::ORDER`: the trench,
+// last in every table, comes between the forest and the wrecks. Worked out
+// rather than looked up, which would cost the Pi a table in every shader.
+fn order(n: i32) -> i32 {
+    return select(select(n - 1, TRENCH, n == 2), n, n < 2);
+}
 
 // ---------------------------------------------------------------------------
 // Shared with world.rs
@@ -162,8 +166,8 @@ fn leg(x: f32) -> Leg {
     let u = x / LEG;
     let k = floor(u);
     let start = i32(g.world.x * f32(BIOMES));
-    let a = ORDER[((i32(k) + start) % BIOMES + BIOMES) % BIOMES];
-    let b = ORDER[((i32(k) + 1 + start) % BIOMES + BIOMES) % BIOMES];
+    let a = order(((i32(k) + start) % BIOMES + BIOMES) % BIOMES);
+    let b = order(((i32(k) + 1 + start) % BIOMES + BIOMES) % BIOMES);
     return Leg(a, b, smooth01(1.0 - BLEND, 1.0, u - k));
 }
 
