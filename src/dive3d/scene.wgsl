@@ -443,9 +443,15 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     albedo = mix(albedo, vec3<f32>(0.22, 0.21, 0.20) * texture, steep * 0.6);
     let distance = length(p - g.camera.xyz);
     let detail = exp(-distance * 0.25);
-    albedo *= mix(1.0, 0.65 + 0.5 * vnoise(p.x * 14.0, p.z * 14.0, 9u), detail * (1.0 - steep));
+    // Fine detail fades out with distance, and the water all but hides the
+    // seabed by then: past about sixteen units it would change no pixel by
+    // so much as a step of the panel's, so its noise is left out there.
+    let near = detail > 0.02;
+    if (near) {
+        albedo *= mix(1.0, 0.65 + 0.5 * vnoise(p.x * 14.0, p.z * 14.0, 9u), detail * (1.0 - steep));
+    }
     let sand = presence(l, SHALLOWS) + 0.5 * presence(l, FOREST) + 0.5 * presence(l, ARCTIC);
-    if (sand > 0.0) {
+    if (sand > 0.0 && near) {
         let ripple = sin((p.x * 0.8 + p.z) * 26.0 + vnoise(p.x * 3.0, p.z * 3.0, 5u) * 4.0);
         albedo *= 1.0 - 0.16 * sand * detail * smooth01(0.3, 1.0, ripple);
     }
@@ -461,7 +467,10 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     if (cave > 0.0) {
         let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + p.x * 3.0) * sin(g.camera.w * 2.9 + p.z * 2.0);
         let veins = 1.0 - smooth01(0.0, 0.04, abs(vnoise(p.x * 1.4, p.z * 1.9, 6u) - 0.5));
-        let fine = (1.0 - smooth01(0.0, 0.03, abs(vnoise(p.x * 4.0, p.z * 5.0, 7u) - 0.5))) * detail;
+        var fine = 0.0;
+        if (detail > 0.01) {
+            fine = (1.0 - smooth01(0.0, 0.03, abs(vnoise(p.x * 4.0, p.z * 5.0, 7u) - 0.5))) * detail;
+        }
         let pools = smooth01(0.66, 0.74, vnoise(p.x * 0.55 + 7.0, p.z * 0.55, 8u));
         // Lava lies on the level; on a slope it would only smear.
         colour += vec3<f32>(1.0, 0.36, 0.07) * (veins * 0.9 + fine * 0.5 + pools * 1.4) * flicker * cave * (1.0 - steep);
