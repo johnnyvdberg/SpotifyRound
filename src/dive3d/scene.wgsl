@@ -89,6 +89,8 @@ const ATLANTIS: i32 = 3;
 const CAVE: i32 = 4;
 const ABYSS: i32 = 5;
 const ARCTIC: i32 = 6;
+// The material of the lava cave's tunnel, `world::material::VAULT`.
+const VAULT: u32 = 5u;
 
 // ---------------------------------------------------------------------------
 // Shared with world.rs
@@ -196,6 +198,12 @@ fn relief(x: f32, z: f32) -> vec3<f32> {
 // The seabed's height, exactly as `Seabed::ground`: the biome's depth below
 // the surface, the heightmap's relief, fine roughness, and mountains far off.
 fn ground(x: f32, z: f32) -> f32 {
+    let parts = ground_parts(x, z);
+    return parts.x + parts.y;
+}
+
+// The same in two parts: the massif under the lava cave, and the rest.
+fn ground_parts(x: f32, z: f32) -> vec2<f32> {
     let l = leg(voyage_x(x, z));
     let base = -by_biome(l, array<f32, 7>(1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5));
     let lift = by_biome(l, array<f32, 7>(0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40)) * relief(x, z).x;
@@ -204,10 +212,19 @@ fn ground(x: f32, z: f32) -> f32 {
     let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1u) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2u);
     let off = abs(z - corridor(x));
     let far = smooth01(7.0, 22.0, off) * (0.3 + ridges * vnoise(x * 0.16, z * 0.16 + 3.0, 4u));
-    // The lava cave's massif, rising either side of its tunnel.
-    let massif = presence(l, CAVE) * MASSIF * smooth01(TUNNEL * 1.05, TUNNEL * 1.8, off)
+    return vec2<f32>(base + lift + rough * (n - 0.45) + far, massif(x, z, l, off));
+}
+
+// The lava cave's massif, rising either side of its tunnel: the part of the
+// ground that climbs steeply across it.
+fn massif(x: f32, z: f32, l: Leg, off: f32) -> f32 {
+    return presence(l, CAVE) * MASSIF * smooth01(TUNNEL * 1.05, TUNNEL * 1.8, off)
         * (0.85 + 0.3 * vnoise(x * 0.4, z * 0.4, 5u));
-    return base + lift + rough * (n - 0.45) + far + massif;
+}
+
+// The massif alone at (x, z).
+fn massif_at(x: f32, z: f32) -> f32 {
+    return massif(x, z, leg(voyage_x(x, z)), abs(z - corridor(x)));
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +507,10 @@ struct Lit {
     @location(8) @interpolate(flat) surface: vec4<f32>,
     @location(9) @interpolate(flat) fade: f32,
     // The seabed's height under the vertex, for bedding grounded models in
-    // its sand: once per vertex rather than once per pixel.
+    // its sand and lighting the tunnel's rock from the lava below: once per
+    // vertex rather than once per pixel.
+    // For the tunnel, the ground without its massif, which climbs too steeply
+    // across the tunnel's mouths to follow from one vertex to the next.
     @location(10) floor_y: f32,
     // `fog_at` the vertex.
     @location(11) fog: vec4<f32>,
@@ -552,8 +572,9 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.fade = i.extra.z;
     out.fog = fog_at(world);
     out.floor_y = 0.0;
-    if (i.extra.y > 0.5) {
-        out.floor_y = ground(world.x, world.z);
+    if (i.extra.y > 0.5 || u32(i.extra.x + 0.5) == VAULT) {
+        let parts = ground_parts(world.x, world.z);
+        out.floor_y = parts.x + select(parts.y, 0.0, u32(i.extra.x + 0.5) == VAULT);
     }
     return out;
 }
@@ -655,7 +676,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         // The tunnel's rock, glowing red low down where the lava lights it.
         case 5u: {
             let rock = vnoise(p.x * 5.0, p.z * 5.0, 12u) * 0.6 + vnoise(p.y * 7.0 + p.x, p.z * 13.0, 13u) * 0.4;
-            let above = p.y - ground(p.x, p.z);
+            let above = p.y - (in.floor_y + massif_at(p.x, p.z));
             let glow = (1.0 - smooth01(0.0, 1.8, above)) * (0.85 + 0.15 * sin(t * 1.9 + p.x));
             colour = albedo * (0.55 + 0.7 * rock) * (light_at(p, n) + vec3<f32>(0.10, 0.06, 0.05));
             colour += vec3<f32>(0.45, 0.10, 0.02) * glow * (0.5 + 0.5 * smooth01(0.55, 0.80, rock));
