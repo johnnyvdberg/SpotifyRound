@@ -84,26 +84,42 @@ const SUN_PERIOD: f32 = 1800.0;
 struct Map {
     width: u32,
     height: u32,
-    /// RGB, three bytes per texel, exactly as decoded.
+    /// Bytes per texel: one for the single-channel sheets (the clouds and the
+    /// city lights are stored as greyscale JPEGs), three for everything else.
+    channels: u32,
+    /// Texels exactly as decoded.
     pixels: Vec<u8>,
 }
 
 impl Map {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        let image = image::load_from_memory(bytes)
-            .context("decoding an Earth map")?
-            .to_rgb8();
+        let image = image::load_from_memory(bytes).context("decoding an Earth map")?;
+        let (width, height) = (image.width(), image.height());
+        // A greyscale sheet is kept as it is: expanding it to RGB only for
+        // `into_grey` to fold it back costs two passes over 8 million texels
+        // and gives the very same bytes.
+        let (channels, pixels) = match image {
+            image::DynamicImage::ImageLuma8(grey) => (1, grey.into_raw()),
+            other => (3, other.into_rgb8().into_raw()),
+        };
         Ok(Self {
-            width: image.width(),
-            height: image.height(),
-            pixels: image.into_raw(),
+            width,
+            height,
+            channels,
+            pixels,
         })
     }
 
     /// Expand to RGBA for the GPU; the colour maps keep their channels.
     fn to_rgba(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.pixels.len() / self.channels as usize * 4);
+        if self.channels == 1 {
+            for &grey in &self.pixels {
+                out.extend_from_slice(&[grey, grey, grey, 255]);
+            }
+            return out;
+        }
         let (texels, _) = self.pixels.as_chunks::<3>();
-        let mut out = Vec::with_capacity(texels.len() * 4);
         for texel in texels {
             out.extend_from_slice(&[texel[0], texel[1], texel[2], 255]);
         }
@@ -112,23 +128,27 @@ impl Map {
 
     /// The relief's two slopes with `water` alongside, for one texture that
     /// answers both "which way does the ground face" and "is this sea".
-    fn pack_relief(&self, water: &Map) -> Vec<u8> {
+    fn pack_relief(&self, water: Map) -> Vec<u8> {
         let (texels, _) = self.pixels.as_chunks::<3>();
-        let mask = water.to_grey();
+        let (water_width, water_height) = (water.width, water.height);
+        let mask = water.into_grey();
         let mut out = Vec::with_capacity(texels.len() * 4);
         for (i, texel) in texels.iter().enumerate() {
             // The water map is the same size as the relief; were it not, the
             // nearest row and column would do.
-            let x = (i as u32 % self.width) * water.width / self.width;
-            let y = (i as u32 / self.width) * water.height / self.height;
-            let sea = mask[(y * water.width + x) as usize];
+            let x = (i as u32 % self.width) * water_width / self.width;
+            let y = (i as u32 / self.width) * water_height / self.height;
+            let sea = mask[(y * water_width + x) as usize];
             out.extend_from_slice(&[texel[0], texel[1], sea, 255]);
         }
         out
     }
 
-    /// Luminance, for the cloud and water masks.
-    fn to_grey(&self) -> Vec<u8> {
+    /// Luminance, for the cloud and water masks. A greyscale map already is.
+    fn into_grey(self) -> Vec<u8> {
+        if self.channels == 1 {
+            return self.pixels;
+        }
         let (texels, _) = self.pixels.as_chunks::<3>();
         texels
             .iter()
@@ -147,17 +167,18 @@ impl Map {
         let scale = limit as f32 / self.width.max(self.height) as f32;
         let width = ((self.width as f32 * scale) as u32).clamp(1, limit);
         let height = ((self.height as f32 * scale) as u32).clamp(1, limit);
-        let Some(source) =
-            image::RgbImage::from_raw(self.width, self.height, std::mem::take(&mut self.pixels))
-        else {
+        let pixels = std::mem::take(&mut self.pixels);
+        let filter = image::imageops::FilterType::Lanczos3;
+        let resized = if self.channels == 1 {
+            image::GrayImage::from_raw(self.width, self.height, pixels)
+                .map(|source| image::imageops::resize(&source, width, height, filter).into_raw())
+        } else {
+            image::RgbImage::from_raw(self.width, self.height, pixels)
+                .map(|source| image::imageops::resize(&source, width, height, filter).into_raw())
+        };
+        let Some(resized) = resized else {
             return;
         };
-        let resized = image::imageops::resize(
-            &source,
-            width,
-            height,
-            image::imageops::FilterType::Lanczos3,
-        );
         tracing::warn!(
             from = format!("{}x{}", self.width, self.height),
             to = format!("{width}x{height}"),
@@ -165,7 +186,7 @@ impl Map {
         );
         self.width = width;
         self.height = height;
-        self.pixels = resized.into_raw();
+        self.pixels = resized;
     }
 }
 
@@ -208,31 +229,45 @@ impl Globe {
         let device = &gpu.device;
         let limit = device.limits().max_texture_dimension_2d;
 
+        // Decoding the five JPEG and TIFF sheets is most of the start-up time
+        // and purely CPU work, so each gets a core of its own: on the Pi's four
+        // A76s the planet comes up several times sooner. Holding all the
+        // decoded sheets at once costs about 50 MB, briefly.
+        let decoded = std::thread::scope(|scope| {
+            [DAY, NIGHT, CLOUDS, NORMAL, SPECULAR]
+                .map(|bytes| scope.spawn(move || Map::decode(bytes)))
+                .map(|job| {
+                    job.join()
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("decoding an Earth map panicked")))
+                })
+        });
+        let [day, night, clouds, relief, water] = decoded;
+
         // Bound in shader order: day, night, clouds, relief with the water mask.
         let mips = MipChain::new(device);
         let mut views = Vec::with_capacity(4);
-        // One map at a time, so the sheets never all sit in RAM at once.
-        for (name, bytes) in [("day", DAY), ("night", NIGHT), ("clouds", CLOUDS)] {
-            let mut map = Map::decode(bytes)?;
+        for (name, map) in [("day", day), ("night", night), ("clouds", clouds)] {
+            let mut map = map?;
             map.fit(limit);
+            let (width, height) = (map.width, map.height);
             let (format, texel_bytes, data) = if name == "day" {
                 (wgpu::TextureFormat::Rgba8UnormSrgb, 4, map.to_rgba())
             } else {
-                (wgpu::TextureFormat::R8Unorm, 1, map.to_grey())
+                (wgpu::TextureFormat::R8Unorm, 1, map.into_grey())
             };
             views.push(upload(
                 gpu,
                 &mips,
                 name,
-                map.width,
-                map.height,
+                width,
+                height,
                 format,
                 &data,
                 texel_bytes,
             )?);
         }
-        let relief = Map::decode(NORMAL)?;
-        let water = Map::decode(SPECULAR)?;
+        let relief = relief?;
+        let water = water?;
         views.push(upload(
             gpu,
             &mips,
@@ -240,7 +275,7 @@ impl Globe {
             relief.width,
             relief.height,
             wgpu::TextureFormat::Rgba8Unorm,
-            &relief.pack_relief(&water),
+            &relief.pack_relief(water),
             4,
         )?);
 
@@ -664,11 +699,6 @@ fn draw_geometry(
     }
 }
 
-/// The sun's direction at `seconds` of run time.
-///
-/// It travels once around the vertical axis every [`SUN_PERIOD`], so the lit side
-/// slides across the disc: the terminator sweeps in, the city lights take over,
-/// and quarter of an hour later daylight comes back round.
 /// The shader's parameters for `seconds` of run time.
 fn uniforms_at(seconds: f64) -> Uniforms {
     let half = SIZE as f32 / 2.0;
@@ -688,6 +718,11 @@ fn uniforms_at(seconds: f64) -> Uniforms {
     }
 }
 
+/// The sun's direction at `seconds` of run time.
+///
+/// It travels once around the vertical axis every [`SUN_PERIOD`], so the lit side
+/// slides across the disc: the terminator sweeps in, the city lights take over,
+/// and quarter of an hour later daylight comes back round.
 fn sun_at(seconds: f64) -> [f32; 3] {
     let angle = (seconds / SUN_PERIOD as f64) * std::f64::consts::TAU;
     let (sin, cos) = angle.sin_cos();
@@ -1031,7 +1066,12 @@ fn sunlight(mu: f32) -> vec3<f32> {{
 
 // One frame of the planet in linear light, premultiplied, encoded to sRGB.
 fn encode(linear: vec3<f32>, alpha: f32) -> vec4<f32> {{
-    // A soft shoulder instead of a hard clip, for the sun glint.
+    // A soft shoulder instead of a hard clip, for the sun glint. Only the
+    // glint ever reaches it; everywhere else this is the plain curve, so the
+    // three exponentials are skipped.
+    if (max(max(linear.r, linear.g), linear.b) <= 0.8) {{
+        return vec4<f32>(pow(linear, vec3<f32>(1.0 / 2.2)), alpha);
+    }}
     let over = max(linear - vec3<f32>(0.8), vec3<f32>(0.0));
     let shaped = min(linear, vec3<f32>(0.8)) + 0.2 * (vec3<f32>(1.0) - exp(-over * 5.0));
     return vec4<f32>(pow(shaped, vec3<f32>(1.0 / 2.2)), alpha);
@@ -1101,7 +1141,11 @@ fn space(position: vec2<f32>) -> vec3<f32> {{
 fn fs_main(in: Varying) -> @location(0) vec4<f32> {{
     // Laid over space the way Slint composited the frame when it was
     // transparent: Slint takes a wgpu texture for straight alpha.
+    // Most of the frame is the opaque planet, which hides space entirely.
     let globe = shade(in);
+    if (globe.a >= 1.0) {{
+        return vec4<f32>(globe.rgb, 1.0);
+    }}
     return vec4<f32>(globe.rgb * globe.a + space(in.position.xy) * (1.0 - globe.a), 1.0);
 }}
 
@@ -1208,10 +1252,15 @@ fn shade(in: Varying) -> vec4<f32> {{
     // A calm sea mirrors the sun: a tight glint and a broad sheen, both
     // stronger at a grazing angle.
     let fresnel = air.a;
-    let nh = max(dot(n, params.gloss.xyz), 0.0);
-    // From orbit the glint is a soft patch, spread by the waves, not a mirror's disc.
-    let glint = pow(nh, 260.0) * 0.9 + pow(nh, 45.0) * 0.06;
-    colour += sun_ground * glint * (0.25 + fresnel) * water * (1.0 - cloud);
+    let open_sea = water * (1.0 - cloud);
+    // Land and overcast sea have no glint, so they skip it; over open water
+    // both lobes share one logarithm.
+    if (open_sea > 0.0) {{
+        let log_nh = log2(max(dot(n, params.gloss.xyz), 0.0));
+        // From orbit the glint is a soft patch, spread by the waves, not a mirror's disc.
+        let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
+        colour += sun_ground * glint * (0.25 + fresnel) * open_sea;
+    }}
     colour += SKYLIGHT * 2.0 * fresnel * water * smoothstep01(-0.1, 0.3, mu_sun);
 
     // The cloud tops and the air above the ground stand above most of the
