@@ -147,10 +147,10 @@ impl Artwork {
     /// `corner` is the radius, in decoded pixels, of the softening baked into the
     /// alpha channel while the pixels are prepared off the UI thread.
     pub async fn load(&self, url: &str, size: u32, corner: u32) -> Result<Arc<Art>> {
-        let key = format!("{url}|{size}|{corner}");
-        if let Some(hit) = self.cache.lock().expect("artwork cache").get(&key) {
-            return Ok(hit.clone());
+        if let Some(hit) = self.cached(url, size, corner) {
+            return Ok(hit);
         }
+        let key = cache_key(url, size, corner);
 
         let art = if let Some(spec) = url.strip_prefix("mock://cover/") {
             let (hue, seed) = parse_mock_spec(spec);
@@ -180,6 +180,16 @@ impl Artwork {
         }
         cache.insert(key, art.clone());
         Ok(art)
+    }
+
+    /// Artwork that is already decoded, without waiting. Lists use it to fill
+    /// their rows in one go instead of once per cover as the loads complete.
+    pub fn cached(&self, url: &str, size: u32, corner: u32) -> Option<Arc<Art>> {
+        self.cache
+            .lock()
+            .expect("artwork cache")
+            .get(&cache_key(url, size, corner))
+            .cloned()
     }
 
     /// Render a QR code onto a white canvas.
@@ -217,6 +227,10 @@ impl Artwork {
             accent: Rgb::new(30, 215, 96),
         })
     }
+}
+
+fn cache_key(url: &str, size: u32, corner: u32) -> String {
+    format!("{url}|{size}|{corner}")
 }
 
 fn decode(bytes: &[u8], size: u32, corner: u32) -> Result<Art> {

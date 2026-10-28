@@ -161,7 +161,12 @@ pub trait WindowExt: Sized {
     fn set_playlists_loading(&self, loading: bool);
     fn set_playlists_error(&self, message: &str);
     fn set_current_playlist(&self, uri: &str);
+    /// Give one playlist row its cover, in place. Skipped when the list was
+    /// replaced since and `index` is no longer that playlist.
+    fn set_playlist_cover(&self, index: usize, uri: &str, art: &Art);
     fn set_queue(&self, rows: Vec<QueueItem>, subtitle: &str, reset: bool);
+    /// Give one queue row its cover, in place, like `set_playlist_cover`.
+    fn set_queue_cover(&self, index: usize, uri: &str, art: &Art);
     fn set_queue_loading(&self, loading: bool);
     fn set_queue_error(&self, message: &str);
 }
@@ -413,6 +418,19 @@ impl WindowExt for AppWindow {
         self.global::<Library>().set_current_playlist(uri.into());
     }
 
+    // Covers arrive one at a time. Replacing the whole model for each would
+    // rebuild every row and upload every cover already shown again, once per
+    // arrival; changing the one row redraws only that row.
+    fn set_playlist_cover(&self, index: usize, uri: &str, art: &Art) {
+        let rows = self.global::<Library>().get_playlists();
+        if let Some(mut row) = rows.row_data(index)
+            && row.uri == uri
+        {
+            row.cover = art.image();
+            rows.set_row_data(index, row);
+        }
+    }
+
     fn set_queue(&self, rows: Vec<QueueItem>, subtitle: &str, reset: bool) {
         let library = self.global::<Library>();
         library.set_queue(ModelRc::from(Rc::new(VecModel::from(rows))));
@@ -423,6 +441,16 @@ impl WindowExt for AppWindow {
             // Scrolls the list back to the track that is playing. Cover artwork
             // arrives later and must not move the list under the user's finger.
             library.set_queue_revision(library.get_queue_revision() + 1);
+        }
+    }
+
+    fn set_queue_cover(&self, index: usize, uri: &str, art: &Art) {
+        let rows = self.global::<Library>().get_queue();
+        if let Some(mut row) = rows.row_data(index)
+            && row.uri == uri
+        {
+            row.cover = art.image();
+            rows.set_row_data(index, row);
         }
     }
 

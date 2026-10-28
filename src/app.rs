@@ -1812,63 +1812,81 @@ impl Shared {
             return;
         }
 
+        // Covers decoded before go in with the rows; only the missing ones are
+        // loaded, and each then changes its own row instead of the whole list.
+        let (covers, jobs) = self.split_covers(
+            &rows,
+            |row| row.cover.as_deref(),
+            PLAYLIST_ART_SIZE,
+            THUMB_CORNER,
+            |row| &row.uri,
+        );
         let generation = self.playlists_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        {
-            let rows = rows.clone();
-            let subtitle = subtitle.clone();
-            let _ = self.ui.upgrade_in_event_loop(move |ui| {
-                let items = rows
-                    .iter()
-                    .map(|row| playlist_item(row, None))
-                    .collect::<Vec<_>>();
-                ui.set_playlists(items, &subtitle);
-            });
+        let _ = self.ui.upgrade_in_event_loop(move |ui| {
+            let items = rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| playlist_item(row, covers.get(&index).map(|art| art.as_ref())))
+                .collect::<Vec<_>>();
+            ui.set_playlists(items, &subtitle);
+        });
+        if jobs.is_empty() {
+            return;
         }
 
-        let jobs: Vec<(usize, String)> = rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| row.cover.clone().map(|url| (index, url)))
-            .collect();
-
-        let mut covers: HashMap<usize, Arc<Art>> = HashMap::new();
         self.spawn_cmd(move |this| async move {
             let mut set = tokio::task::JoinSet::new();
-            for (index, url) in jobs {
+            for job in jobs {
                 let this = this.clone();
                 set.spawn(async move {
-                    (
-                        index,
-                        this.artwork
-                            .load(&url, PLAYLIST_ART_SIZE, THUMB_CORNER)
-                            .await,
-                    )
+                    let art = this
+                        .artwork
+                        .load(&job.url, PLAYLIST_ART_SIZE, THUMB_CORNER)
+                        .await;
+                    (job, art)
                 });
             }
 
             while let Some(joined) = set.join_next().await {
-                let Ok((index, Ok(art))) = joined else {
+                let Ok((job, Ok(art))) = joined else {
                     continue;
                 };
                 if this.playlists_generation.load(Ordering::SeqCst) != generation {
                     return;
                 }
-                covers.insert(index, art);
-                let rows = rows.clone();
-                let subtitle = subtitle.clone();
-                let covers = covers.clone();
                 let _ = this.ui.upgrade_in_event_loop(move |ui| {
-                    let items = rows
-                        .iter()
-                        .enumerate()
-                        .map(|(index, row)| {
-                            playlist_item(row, covers.get(&index).map(|art| art.as_ref()))
-                        })
-                        .collect::<Vec<_>>();
-                    ui.set_playlists(items, &subtitle);
+                    ui.set_playlist_cover(job.index, &job.uri, &art);
                 });
             }
         });
+    }
+
+    /// Splits a list's covers into those already decoded, by row, and the
+    /// loads still to run.
+    fn split_covers<T>(
+        &self,
+        rows: &[T],
+        cover: impl Fn(&T) -> Option<&str>,
+        size: u32,
+        corner: u32,
+        uri: impl Fn(&T) -> &str,
+    ) -> (HashMap<usize, Arc<Art>>, Vec<CoverJob>) {
+        let mut cached = HashMap::new();
+        let mut jobs = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            let Some(url) = cover(row) else { continue };
+            match self.artwork.cached(url, size, corner) {
+                Some(art) => {
+                    cached.insert(index, art);
+                }
+                None => jobs.push(CoverJob {
+                    index,
+                    uri: uri(row).to_owned(),
+                    url: url.to_owned(),
+                }),
+            }
+        }
+        (cached, jobs)
     }
 
     // ---- queue --------------------------------------------------------
@@ -1966,58 +1984,50 @@ impl Shared {
             return;
         }
 
+        // As for playlists: decoded covers go in with the rows, so a queue that
+        // is shown again appears whole, and the rest fill in row by row.
+        let (covers, jobs) = self.split_covers(
+            &rows,
+            |row| row.cover.as_deref(),
+            QUEUE_ART_SIZE,
+            QUEUE_CORNER,
+            |row| &row.uri,
+        );
         let generation = self.queue_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        {
-            let rows = rows.clone();
-            let subtitle = subtitle.clone();
-            let _ = self.ui.upgrade_in_event_loop(move |ui| {
-                let items = rows
-                    .iter()
-                    .map(|row| queue_item(row, None))
-                    .collect::<Vec<_>>();
-                ui.set_queue(items, &subtitle, true);
-            });
+        let _ = self.ui.upgrade_in_event_loop(move |ui| {
+            let items = rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| queue_item(row, covers.get(&index).map(|art| art.as_ref())))
+                .collect::<Vec<_>>();
+            ui.set_queue(items, &subtitle, true);
+        });
+        if jobs.is_empty() {
+            return;
         }
 
-        let jobs: Vec<(usize, String)> = rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| row.cover.clone().map(|url| (index, url)))
-            .collect();
-
-        let mut covers: HashMap<usize, Arc<Art>> = HashMap::new();
         self.spawn_cmd(move |this| async move {
             let mut set = tokio::task::JoinSet::new();
-            for (index, url) in jobs {
+            for job in jobs {
                 let this = this.clone();
                 set.spawn(async move {
-                    (
-                        index,
-                        this.artwork.load(&url, QUEUE_ART_SIZE, QUEUE_CORNER).await,
-                    )
+                    let art = this
+                        .artwork
+                        .load(&job.url, QUEUE_ART_SIZE, QUEUE_CORNER)
+                        .await;
+                    (job, art)
                 });
             }
 
             while let Some(joined) = set.join_next().await {
-                let Ok((index, Ok(art))) = joined else {
+                let Ok((job, Ok(art))) = joined else {
                     continue;
                 };
                 if this.queue_generation.load(Ordering::SeqCst) != generation {
                     return;
                 }
-                covers.insert(index, art);
-                let rows = rows.clone();
-                let subtitle = subtitle.clone();
-                let covers = covers.clone();
                 let _ = this.ui.upgrade_in_event_loop(move |ui| {
-                    let items = rows
-                        .iter()
-                        .enumerate()
-                        .map(|(index, row)| {
-                            queue_item(row, covers.get(&index).map(|art| art.as_ref()))
-                        })
-                        .collect::<Vec<_>>();
-                    ui.set_queue(items, &subtitle, false);
+                    ui.set_queue_cover(job.index, &job.uri, &art);
                 });
             }
         });
@@ -2276,6 +2286,13 @@ impl Shared {
 // ---------------------------------------------------------------------------
 // Row view models
 // ---------------------------------------------------------------------------
+
+/// A list cover still to be loaded, and the row it belongs to.
+struct CoverJob {
+    index: usize,
+    uri: String,
+    url: String,
+}
 
 #[derive(Clone)]
 struct PlaylistRow {

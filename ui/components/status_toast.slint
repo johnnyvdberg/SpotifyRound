@@ -14,6 +14,9 @@ export component StatusToast inherits Rectangle {
     border-color: Theme.hairline;
     opacity: shown ? 1 : 0;
     y: shown ? 150px : 116px;
+    // Faded out, it would still be composited through a cached layer at zero
+    // alpha on every frame; once the fade has finished there is nothing to draw.
+    visible: self.opacity > 0;
 
     animate opacity { duration: 260ms; }
     animate y { duration: 260ms; easing: ease-out; }
