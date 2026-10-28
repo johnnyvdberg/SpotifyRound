@@ -40,7 +40,12 @@ fn init_tracing(cli: &Cli) {
         1 => "info",
         _ => "debug",
     };
-    let filter = cli.log.clone().unwrap_or_else(|| default.to_owned());
+    let mut filter = cli.log.clone().unwrap_or_else(|| default.to_owned());
+    // Measuring the frame rate is asked for explicitly: its report is shown
+    // whatever else the log leaves out.
+    if std::env::var_os("SPOTIFY_ROUND_FULL_SPEED").is_some() {
+        filter.push_str(",spotify_round::ui=info");
+    }
     let filter = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("warn"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)

@@ -32,8 +32,13 @@ pub fn create_window(fullscreen: bool, show_fps: bool) -> Result<AppWindow> {
 /// Say in the log which graphics API draws the frames, so `-v` shows whether the
 /// display really runs on the GPU, and count the frames presented for the
 /// frame-rate readout.
+///
+/// With `SPOTIFY_ROUND_FULL_SPEED` set, every frame asks for the next at once,
+/// whether anything changed or not, and the rate is logged each second: how
+/// fast each screen can be drawn at all.
 fn watch_rendering(window: &AppWindow) {
     let weak = window.as_weak();
+    let full_speed = std::env::var_os("SPOTIFY_ROUND_FULL_SPEED").is_some();
     let mut frames = 0;
     let mut since = std::time::Instant::now();
     let result = window
@@ -44,12 +49,24 @@ fn watch_rendering(window: &AppWindow) {
             }
             slint::RenderingState::AfterRendering => {
                 frames += 1;
+                if full_speed && let Some(window) = weak.upgrade() {
+                    window.window().request_redraw();
+                }
                 if since.elapsed() >= std::time::Duration::from_secs(1) {
                     let rate = frames;
                     (frames, since) = (0, std::time::Instant::now());
                     // Written after the frame, so it is shown with the next one.
                     // Hidden, it is left alone, so it wakes nothing.
                     if let Some(window) = weak.upgrade() {
+                        if full_speed {
+                            let app = window.global::<App>();
+                            tracing::info!(
+                                fps = rate,
+                                screen = app.get_screen(),
+                                idle = window.global::<Idle>().get_active(),
+                                "full speed"
+                            );
+                        }
                         let stats = window.global::<Stats>();
                         if stats.get_shown() {
                             stats.set_display(rate);

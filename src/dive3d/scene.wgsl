@@ -57,6 +57,18 @@ const RELIEF_PERIOD: f32 = 64.0;
 // Textures store 0..1.6 as 0..1, so they can brighten as well as darken.
 const TEXTURE_RANGE: f32 = 1.6;
 
+// Whether this models pipeline draws things that are fading in or out. Only
+// that one may discard fragments: the Pi's tile-based GPU skips hidden
+// fragments before shading them only when a shader cannot discard, so every
+// model that is fully there goes through a pipeline compiled without it.
+override FADING: bool = true;
+
+// What every colour is multiplied by as it is stored: the sea is kept in ten
+// bits a channel, which hold no more than 1, so it is stored at half its
+// brightness, to keep the highlights up to 2 that the porthole's grade and
+// its bending of the glass blend from.
+override SEA_SCALE: f32 = 1.0;
+
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
 const LEG: f32 = 3.4;
@@ -81,7 +93,19 @@ fn hash(ix: i32, iz: i32, salt: u32) -> f32 {
     return f32(h & 0x00ffffffu) / 16777216.0;
 }
 
+// Switches the `frame_cost` benchmark sets in `counts.y`, to find what each
+// kind of work costs. Always zero on screen.
+const PLAIN_TEXTURES: u32 = 1u;
+const NO_NOISE: u32 = 2u;
+
+fn debug(flag: u32) -> bool {
+    return (u32(g.counts.y) & flag) != 0u;
+}
+
 fn vnoise(x: f32, z: f32, salt: u32) -> f32 {
+    if (debug(NO_NOISE)) {
+        return 0.5;
+    }
     let fx = floor(x);
     let fz = floor(z);
     let ix = i32(fx);
@@ -234,6 +258,10 @@ fn light_at(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         let lv = g.lights[i].xyz - p;
         let r = g.lights[i].w;
         let d2 = dot(lv, lv);
+        // Beyond four ranges a light's falloff is exactly zero.
+        if (d2 >= 16.0 * r * r) {
+            continue;
+        }
         let fall = 1.0 / (1.0 + d2 / (r * r)) * (1.0 - smooth01(r * 2.0, r * 4.0, sqrt(d2)));
         light += g.light_colours[i].rgb * fall * (max(dot(n, lv * inverseSqrt(max(d2, 1e-6))), 0.0) * 0.8 + 0.2);
     }
@@ -259,9 +287,37 @@ struct Screen {
 fn vs_background(@builtin(vertex_index) index: u32) -> Screen {
     var corners = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
     var out: Screen;
+    // At the far plane of the reversed depth buffer: drawn after everything
+    // solid, it only shades the pixels nothing else covers.
     out.position = vec4<f32>(corners[index], 0.0, 1.0);
     out.ndc = corners[index];
     return out;
+}
+
+// The corners of the square the sea is drawn into lie outside the round
+// window: the porthole samples no further out than the glass's edge, bent a
+// little outward (`porthole.wgsl`), just past the square's sides. A ring from
+// there out past the corners, at the nearest depth, is drawn before anything
+// else, so nothing behind it is shaded.
+const MASK_SEGMENTS: u32 = 64u;
+const MASK_INNER: f32 = 1.03;
+
+@vertex
+fn vs_mask(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+    );
+    let c = corners[index % 6u];
+    let a = (f32(index / 6u) + c.x) * TAU / f32(MASK_SEGMENTS);
+    // The inner edge's chords stay outside the circle they cut across.
+    let r = select(MASK_INNER / cos(PI / f32(MASK_SEGMENTS)), 2.0, c.y > 0.5);
+    return vec4<f32>(cos(a) * r, sin(a) * r, 1.0, 1.0);
+}
+
+@fragment
+fn fs_mask() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
 }
 
 @fragment
@@ -281,7 +337,7 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
             + pow(max(sin(slant * 1.73 + 2.1), 0.0), 12.0) * 0.4;
         c += vec3<f32>(0.13, 0.39, 0.37) * ray * exp(-down * 1.6) * 0.85 * g.sun.w;
     }
-    return vec4<f32>(c, 1.0);
+    return vec4<f32>(c * SEA_SCALE, 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,24 +351,12 @@ struct Ground {
 };
 
 @vertex
-fn vs_terrain(@location(0) grid: vec3<f32>) -> Ground {
-    // Rings of detail centred on the boat, each snapped to twice its own
-    // spacing, so every vertex stays fixed in the world however the boat
-    // moves or turns. The coarser rings sit a hair lower, so where a ring
-    // overlaps the finer one inside it the finer wins.
-    let spacing = grid.z;
-    let snap = 2.0 * spacing;
-    let centre = floor(g.camera.xz / snap) * snap;
-    let x = centre.x + grid.x;
-    let z = centre.y + grid.y;
-    let y = ground(x, z) - select(0.0, spacing * 0.25, spacing > 0.1);
-    let e = max(spacing, 0.03);
-    let dx = ground(x + e, z) - ground(x - e, z);
-    let dz = ground(x, z + e) - ground(x, z - e);
+fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> Ground {
+    // Built on the CPU a tile at a time, already in the world (`terrain.rs`).
     var out: Ground;
-    out.world = vec3<f32>(x, y, z);
-    out.normal = normalize(vec3<f32>(-dx, 2.0 * e, -dz));
-    out.position = project(out.world);
+    out.world = world;
+    out.normal = normal;
+    out.position = project(world);
     return out;
 }
 
@@ -344,14 +388,18 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     let layers = surface_of(l);
     // Projected along all three axes: the floor's own material on the level,
     // rock on whichever vertical faces a slope turns toward, so nothing smears.
-    var w = pow(abs(n), vec3<f32>(4.0));
-    w /= w.x + w.y + w.z;
-    let flat_a = textureSample(surfaces, surface_sampler, p.xz * 1.3, layers.x).rgb;
-    let flat_b = textureSample(surfaces, surface_sampler, p.xz * 1.3, layers.y).rgb;
-    let side_x = textureSample(surfaces, surface_sampler, p.zy * 1.3, 1).rgb;
-    let side_z = textureSample(surfaces, surface_sampler, p.xy * 1.3, 1).rgb;
+    let w = facing_weights(n);
+    let at = p * 1.3;
+    let dx = dpdx(at);
+    let dy = dpdy(at);
+    // The two biomes' floors are blended only while one sea gives way to the
+    // next; the rest of the time one of them has no weight and is skipped.
+    let flat_a = tap(at.xz, dx.xz, dy.xz, layers.x, w.y * (1.0 - l.w));
+    let flat_b = tap(at.xz, dx.xz, dy.xz, layers.y, w.y * l.w);
+    let side_x = tap(at.zy, dx.zy, dy.zy, 1, w.x);
+    let side_z = tap(at.xy, dx.xy, dy.xy, 1, w.z);
     let steep = smooth01(0.12, 0.40, 1.0 - n.y);
-    let texture = (mix(flat_a, flat_b, l.w) * w.y + side_x * w.x + side_z * w.z) * TEXTURE_RANGE;
+    let texture = (flat_a + flat_b + side_x + side_z) * TEXTURE_RANGE;
     var albedo = floor_albedo(l) * mix(vec3<f32>(1.0), texture, 0.85);
     albedo = mix(albedo, vec3<f32>(0.22, 0.21, 0.20) * texture, steep * 0.6);
     let distance = length(p - g.camera.xyz);
@@ -379,7 +427,7 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
         // Lava lies on the level; on a slope it would only smear.
         colour += vec3<f32>(1.0, 0.36, 0.07) * (veins * 0.9 + fine * 0.5 + pools * 1.4) * flicker * cave * (1.0 - steep);
     }
-    return vec4<f32>(fogged(colour, p), 1.0);
+    return vec4<f32>(fogged(colour, p) * SEA_SCALE, 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +467,9 @@ struct Lit {
     @location(7) local_normal: vec3<f32>,
     @location(8) @interpolate(flat) surface: vec4<f32>,
     @location(9) @interpolate(flat) fade: f32,
+    // The seabed's height under the vertex, for bedding grounded models in
+    // its sand: once per vertex rather than once per pixel.
+    @location(10) floor_y: f32,
 };
 
 // Bend a model where it lives: plants sway, fish sweep their tails sideways
@@ -475,18 +526,46 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.local_normal = v.normal;
     out.surface = i.surface;
     out.fade = i.extra.z;
+    out.floor_y = 0.0;
+    if (i.extra.y > 0.5) {
+        out.floor_y = ground(world.x, world.z);
+    }
     return out;
 }
 
 // A texture projected along three axes and blended by the surface's facing,
 // so no model needs texture coordinates.
-fn triplanar(at: vec3<f32>, facing: vec3<f32>, layer: i32) -> vec3<f32> {
+// One projection of a texture, skipped when it carries no weight. The
+// gradients are taken outside any branch, so filtering is exactly as a plain
+// sample's would be.
+fn tap(uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>, layer: i32, weight: f32) -> vec3<f32> {
+    if (weight <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    if (debug(PLAIN_TEXTURES)) {
+        return vec3<f32>(0.6 * weight);
+    }
+    return textureSampleGrad(surfaces, surface_sampler, uv, layer, ddx, ddy).rgb * weight;
+}
+
+// Weights for projecting along x, y and z by a surface's facing. A projection
+// under 1% of the blend is dropped and the rest renormalised: it cannot be
+// seen, and most pixels then need only one texture lookup instead of three.
+fn facing_weights(facing: vec3<f32>) -> vec3<f32> {
     var w = pow(abs(facing), vec3<f32>(4.0));
     w /= max(w.x + w.y + w.z, 1e-4);
-    let x = textureSample(surfaces, surface_sampler, at.zy, layer).rgb;
-    let y = textureSample(surfaces, surface_sampler, at.xz, layer).rgb;
-    let z = textureSample(surfaces, surface_sampler, at.xy, layer).rgb;
-    return (x * w.x + y * w.y + z * w.z) * TEXTURE_RANGE;
+    w = select(w, vec3<f32>(0.0), w < vec3<f32>(0.01));
+    return w / max(w.x + w.y + w.z, 1e-4);
+}
+
+fn triplanar(at: vec3<f32>, facing: vec3<f32>, layer: i32) -> vec3<f32> {
+    let w = facing_weights(facing);
+    let dx = dpdx(at);
+    let dy = dpdy(at);
+    let x = tap(at.zy, dx.zy, dy.zy, layer, w.x);
+    let y = tap(at.xz, dx.xz, dy.xz, layer, w.y);
+    let z = tap(at.xy, dx.xy, dy.xy, layer, w.z);
+    return (x + y + z) * TEXTURE_RANGE;
 }
 
 @fragment
@@ -507,7 +586,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     var albedo = in.albedo * texture;
     // Bedded in the sand: the foot of anything on the seabed takes its colour.
     if (in.grounded > 0.5) {
-        let floor_y = ground(p.x, p.z);
+        let floor_y = in.floor_y;
         let buried = 1.0 - smooth01(floor_y + 0.005, floor_y + 0.05, p.y);
         let l = leg(voyage_x(p.x, p.z));
         albedo = mix(albedo, floor_albedo(l) * 0.9, buried * 0.85);
@@ -566,10 +645,12 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
         default: {}
     }
-    if (coverage <= 0.01) {
-        discard;
+    if (FADING) {
+        if (coverage <= 0.01) {
+            discard;
+        }
     }
-    return vec4<f32>(fogged(colour, p), coverage);
+    return vec4<f32>(fogged(colour, p) * SEA_SCALE, coverage);
 }
 
 // Translucent models — jellyfish bells and tentacles — add light, brightest at
@@ -582,7 +663,7 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
     let rim = 1.0 - abs(dot(n, v));
     let lit = light_at(p, v) * 0.25 + vec3<f32>(0.3);
     let glow = in.albedo * (0.15 + 0.85 * rim * rim) * lit + in.albedo * in.glow;
-    return vec4<f32>(glow * in.fade * (1.0 - fog_of(length(p - g.camera.xyz))), 0.0);
+    return vec4<f32>(glow * in.fade * (1.0 - fog_of(length(p - g.camera.xyz))) * SEA_SCALE, 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -652,5 +733,5 @@ fn fs_sprite(in: Sprite) -> @location(0) vec4<f32> {
             a = exp(-r * r * 4.0);
         }
     }
-    return vec4<f32>(in.colour * a, 0.0);
+    return vec4<f32>(in.colour * a * SEA_SCALE, 0.0);
 }

@@ -61,7 +61,8 @@ export component IdleScreen inherits Rectangle {
         height: 1080px;
         border-radius: 540px;
         background: @radial-gradient(circle, #4b86d814 0%, #244a7d10 52%, transparent 76%);
-        visible: Idle.scene == 0;
+        // Not while the player shows: a full-screen gradient drawn every frame.
+        visible: Idle.scene == 0 && Idle.fade > 0;
     }
 
     // The scene frame, transparent where the globe's atmosphere fades out.
@@ -72,6 +73,7 @@ export component IdleScreen inherits Rectangle {
         y: (parent.height - self.height) / 2;
         source: Idle.frame;
         opacity: Idle.fade;
+        visible: Idle.fade > 0;
     }
 
     // A slow breath at the rim, echoing the ring the player wears; the

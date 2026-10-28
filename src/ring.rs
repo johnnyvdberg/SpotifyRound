@@ -48,6 +48,19 @@ pub struct Input {
     pub has_track: bool,
 }
 
+impl Input {
+    /// The same, with the progress rounded to half a pixel along the rim:
+    /// the head moves less than that between most ticks, and every change
+    /// has the whole window drawn again.
+    pub fn on_pixels(self) -> Self {
+        let steps = RADIUS * std::f32::consts::TAU * 2.0;
+        Self {
+            progress: (self.progress * steps).round() / steps,
+            ..self
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
