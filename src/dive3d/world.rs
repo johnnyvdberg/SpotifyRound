@@ -14,7 +14,7 @@
 use std::f32::consts::{PI, TAU};
 
 use super::helm::Pose;
-use super::mesh::Model;
+use super::mesh::{self, Model};
 use super::textures::Surface;
 use crate::voyage::{BIOMES, Biome};
 
@@ -622,6 +622,9 @@ pub struct Frame {
     /// Shafts of sunlight: `place` is the top, `tint` the colour, `stretch`
     /// the run down to the foot.
     pub shafts: Vec<Sprite>,
+    /// Searchlight beams: `place` is the lamp and the beam's radius there,
+    /// `tint` the colour and its radius at the far end, `stretch` the run.
+    pub beams: Vec<Sprite>,
     pub lights: Vec<Light>,
     /// The tunnel through the lava cave's massif, in world space for the
     /// stretch in view. It depends only on the seabed and that stretch, so it
@@ -641,6 +644,8 @@ pub struct Frame {
     /// The texture for models that have none of their own, while placing one
     /// kind of thing: marble for the ruins, planking for the wrecks.
     skin: Option<[f32; 4]>,
+    /// The submarine encounter under way, decided when it is first seen.
+    encounter: Option<Encounter>,
 }
 
 impl Frame {
@@ -650,6 +655,7 @@ impl Frame {
             glass: (0..Model::ALL.len()).map(|_| Vec::new()).collect(),
             sprites: Vec::new(),
             shafts: Vec::new(),
+            beams: Vec::new(),
             lights: Vec::new(),
             tunnel: Vec::new(),
             tunnel_indices: Vec::new(),
@@ -658,6 +664,7 @@ impl Frame {
             passages: Vec::new(),
             fade: 1.0,
             skin: None,
+            encounter: None,
         }
     }
 
@@ -667,6 +674,7 @@ impl Frame {
         }
         self.sprites.clear();
         self.shafts.clear();
+        self.beams.clear();
         self.lights.clear();
     }
 
@@ -831,6 +839,8 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::Capsule => carried(Surface::Canvas, 1.0),
         Model::Manta => carried(Surface::Skin, 3.0),
         Model::Turtle => carried(Surface::Skin, 2.0),
+        Model::Submarine => carried(Surface::Plates, 5.0),
+        Model::Screw => carried(Surface::Copper, 1.0),
         _ => None,
     }
 }
@@ -983,7 +993,7 @@ pub fn build(world: &World, frame: &mut Frame) {
     let algae = carried(Surface::Kelp, 2.0);
     let copper = carried(Surface::Copper, 1.0);
     let skin = carried(Surface::Skin, 3.0);
-    let steps: [(Placer, Option<[f32; 4]>); 21] = [
+    let steps: [(Placer, Option<[f32; 4]>); 22] = [
         (planes, None),
         (rocks, None),
         (kelp, None),
@@ -1003,6 +1013,7 @@ pub fn build(world: &World, frame: &mut Frame) {
         (squid, skin),
         (drifters, None),
         (polar, None),
+        (submarines, None),
         (shafts, None),
         (particles, None),
     ];
@@ -3320,6 +3331,509 @@ fn polar(w: &World, f: &mut Frame) {
 }
 
 /// Marine snow, krill, plankton, embers and the bubbles shed by the hull.
+/// Seconds between chances of meeting another submarine, and her length:
+/// twenty metres.
+const ENCOUNTER_EVERY: f32 = 140.0;
+const SUB_LENGTH: f32 = 1.8;
+/// How fast the Nautilus goes on its voyage.
+const VOYAGE_SPEED: f32 = crate::voyage::SPEED as f32;
+
+/// How another submarine passes the Nautilus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Meeting {
+    /// Close by, the other way.
+    Pass,
+    /// Overtaking, a little farther out.
+    Overtake,
+    /// Drawing up alongside, keeping pace a while, then pulling ahead.
+    Alongside,
+    /// Far off across the water: in the dark, only her lights.
+    Far,
+    /// Nosing out of the gloom toward the window, then turning away.
+    Emerge,
+}
+
+/// The encounter of one slot of [`ENCOUNTER_EVERY`] seconds in one visit,
+/// decided when it begins: what kind, if any, from the sea it begins in.
+#[derive(Clone, Copy, Debug)]
+struct Encounter {
+    slot: i32,
+    visit: i32,
+    meeting: Option<Meeting>,
+    /// A swipe hurried the Nautilus away: she is left behind.
+    spoilt: bool,
+    /// Her depth on a spring, as she answers her planes: when last placed,
+    /// the height, and how fast it was changing.
+    depth: Option<(f32, f32, f32)>,
+}
+
+impl Meeting {
+    fn seconds(self) -> f32 {
+        match self {
+            Meeting::Pass => 55.0,
+            Meeting::Overtake => 90.0,
+            Meeting::Alongside => 100.0,
+            Meeting::Far => 80.0,
+            Meeting::Emerge => 75.0,
+        }
+    }
+
+    /// Turns of her screw a second.
+    fn revolutions(self) -> f32 {
+        match self {
+            Meeting::Alongside => 1.1,
+            Meeting::Overtake => 1.8,
+            _ => 1.4,
+        }
+    }
+
+    /// Where she is `u` (0 to 1) of the way through, from the window: along
+    /// the voyage (ahead positive), out from the corridor, and above the
+    /// window. `flip` is ±1, for the far crossing either way.
+    fn path(self, u: f32, flip: f32) -> [f32; 3] {
+        match self {
+            Meeting::Pass => [3.2 - 6.4 * u, 1.05, 0.05],
+            Meeting::Overtake => [-3.4 + 6.8 * u, 1.6, -0.1],
+            Meeting::Alongside => [
+                -3.5 * (1.0 - smooth(0.0, 0.4, u))
+                    + 3.5 * smooth(0.65, 1.0, u)
+                    + 0.12 * (u * 9.0).sin(),
+                2.3,
+                0.03 * (u * 7.0).sin(),
+            ],
+            Meeting::Far => [flip * (4.5 - 9.0 * u), 6.5, -0.5],
+            Meeting::Emerge => {
+                let (p0, p1, p2) = ([3.0, 7.5, -0.4], [1.5, 1.2, -0.1], [-3.5, 1.6, 0.05]);
+                let v = 1.0 - u;
+                [0, 1, 2].map(|i| v * v * p0[i] + 2.0 * v * u * p1[i] + u * u * p2[i])
+            }
+        }
+    }
+}
+
+/// The great things standing near the box from (x0, z0) to (x1, z1) that a
+/// submarine must rise over, as (x, z, radius, top): Atlantis' temples and
+/// the galleons' hulls and masts, from the cells `ruins` and `wrecks` place
+/// them in. The forest's trees and the city's columns stand too thick to
+/// weave between, so she keeps above them throughout (`cruise`).
+fn tall_things(w: &World, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(f32, f32, f32, f32)> {
+    let mut found = Vec::new();
+    let scan = |size: f32, salt: u32, keep: &mut dyn FnMut(i32, i32, f32, f32)| {
+        for iz in ((z0 - 1.0) / size).floor() as i32..=((z1 + 1.0) / size).ceil() as i32 {
+            for ix in ((x0 - 1.0) / size).floor() as i32..=((x1 + 1.0) / size).ceil() as i32 {
+                let (x, z) = cell_point(ix, iz, size, salt);
+                keep(ix, iz, x, z);
+            }
+        }
+    };
+    scan(5.0, 80, &mut |ix, iz, x, z| {
+        if w.share(x, z, ATLANTIS) >= 0.5
+            && hash(ix, iz, 81) >= 0.3
+            && (z - corridor(x)).abs() >= 2.0
+        {
+            let s = 1.4 + 0.4 * hash(ix, iz, 82);
+            found.push((x, z, 0.6 * s, w.ground(x, z) + 0.9 * s));
+        }
+    });
+    scan(2.4, 60, &mut |ix, iz, x, z| {
+        if w.share(x, z, WRECKS) < 0.5 || hash(ix, iz, 61) < 0.35 || (z - corridor(x)).abs() < 1.2 {
+            return;
+        }
+        let length = 2.2 + 1.0 * hash(ix, iz, 62);
+        let yaw = (hash(ix, iz, 63) - 0.5) * 1.2;
+        let (s, c) = yaw.sin_cos();
+        let y = w.ground(x, z);
+        let broken = hash(ix, iz, 65) < 0.5;
+        for (d, top, r) in [
+            (-0.35, 0.25, 0.2),
+            (0.0, 0.2, 0.2),
+            (0.35, 0.2, 0.2),
+            (-0.15, 0.62, 0.17),
+            (0.15, if broken { 0.3 } else { 0.62 }, 0.17),
+        ] {
+            found.push((
+                x + c * d * length,
+                z - s * d * length,
+                r * length,
+                y + top * length,
+            ));
+        }
+    });
+    found
+}
+
+/// How high the forest's canopy or the drowned city's columns stand about
+/// (x, z): taken over several units either way, so a submarine climbs over
+/// them, and stands off from the window, in a long, gentle slope rather than
+/// as fast as one sea gives way to the next.
+fn canopy(w: &World, x: f32, z: f32) -> f32 {
+    let (mut forest, mut city) = (0.0, 0.0);
+    for k in -4..=4 {
+        let b = w.biome(x + k as f32, z);
+        forest += b.weight(FOREST) as f32 / 9.0;
+        city += b.weight(ATLANTIS) as f32 / 9.0;
+    }
+    2.0 * smooth(0.15, 0.75, forest) + 1.1 * smooth(0.15, 0.75, city)
+}
+
+/// The height a submarine at (x, z), heading along `dir` across the
+/// seabed, keeps, held at `want` where nothing is in the way: as she cruises,
+/// clear of the seabed, over the forest's canopy and the city's columns and
+/// under the ice's keels; and then as she rises over a temple or a galleon's
+/// masts and settles again after.
+fn cruise(w: &World, x: f32, z: f32, dir: [f32; 2], want: f32) -> f32 {
+    let half = SUB_LENGTH * 0.5 + 0.2;
+    let mut ground = f32::MIN;
+    for k in -2..=2 {
+        let a = k as f32 * half * 0.5;
+        ground = ground.max(w.ground(x + dir[0] * a, z + dir[1] * a));
+    }
+    let canopy = canopy(w, x, z);
+    let ceiling = w.surface() - 0.3 - 0.85 * w.share(x, z, ARCTIC);
+    let floor = want.max(ground + 0.45).max(ground + 0.15 + canopy);
+    let mut y = floor;
+    for (ox, oz, r, top) in tall_things(w, x - half, x + half, z - half, z + half) {
+        // How far the obstacle is from her keel line, seen from above.
+        let (px, pz) = (ox - x, oz - z);
+        let along = (px * dir[0] + pz * dir[1]).clamp(-half, half);
+        let gap = (px - dir[0] * along).hypot(pz - dir[1] * along);
+        // She rises over it in good time, and settles again after.
+        let k = smooth(r + 1.8, r + 0.2, gap);
+        y = y.max(floor + k * (top + 0.3 - floor));
+    }
+    y.min(ceiling)
+}
+
+/// Now and then another submarine, a sister of the Nautilus, crosses the
+/// window: passing close the other way, overtaking, keeping pace alongside a
+/// while, far off across the water, or nosing out of the gloom. Iron plates
+/// and a ram, a turning screw shedding bubbles, ports glowing warm; in the
+/// dark seas her searchlight sweeps the water ahead of her, and in the abyss
+/// she is little more than her lights.
+fn submarines(w: &World, f: &mut Frame) {
+    let t = w.t;
+    let slot = (t / ENCOUNTER_EVERY).floor() as i32;
+    let visit = (w.seabed.seed * 1_000_003.0) as i32;
+    let start = slot as f32 * ENCOUNTER_EVERY + 8.0 + hash(slot, visit, 500) * 16.0;
+    if t < start {
+        return;
+    }
+    let speed = {
+        let v = w.pose.vel;
+        (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+    };
+    let known = f.encounter.filter(|e| e.slot == slot && e.visit == visit);
+    let mut encounter = known.unwrap_or_else(|| {
+        // Decided from the sea she is met in: where the Nautilus will be
+        // half a minute after it began, when she is most likely in view.
+        let x0 = w.camera() + VOYAGE_SPEED * (start + 30.0 - t);
+        let b = w.biome(x0, corridor(x0));
+        let meeting = if b.weight(CAVE) > 0.5 || hash(slot, visit, 501) > 0.85 {
+            None
+        } else {
+            let dark = 0.8 * b.weight(WRECKS) + b.weight(ATLANTIS) + b.weight(ABYSS);
+            let odds = if dark > 0.5 {
+                [
+                    (Meeting::Far, 3.0),
+                    (Meeting::Emerge, 3.0),
+                    (Meeting::Pass, 2.0),
+                    (Meeting::Alongside, 2.0),
+                    (Meeting::Overtake, 1.0),
+                ]
+            } else {
+                [
+                    (Meeting::Pass, 3.0),
+                    (Meeting::Alongside, 3.0),
+                    (Meeting::Overtake, 2.0),
+                    (Meeting::Emerge, 2.0),
+                    (Meeting::Far, 1.0),
+                ]
+            };
+            let mut roll = hash(slot, visit, 502) * odds.iter().map(|o| o.1).sum::<f32>();
+            odds.iter()
+                .find(|o| {
+                    roll -= o.1;
+                    roll < 0.0
+                })
+                .map(|o| o.0)
+        };
+        Encounter {
+            slot,
+            visit,
+            meeting,
+            spoilt: false,
+            depth: None,
+        }
+    });
+    // A swipe carries the Nautilus off and leaves her behind.
+    encounter.spoilt |= speed > 0.25;
+    f.encounter = Some(encounter);
+    let Some(meeting) = encounter.meeting else {
+        return;
+    };
+    let length = meeting.seconds();
+    let u = (t - start) / length;
+    if encounter.spoilt || u >= 1.0 {
+        return;
+    }
+    let flip = if hash(slot, visit, 503) < 0.5 {
+        1.0
+    } else {
+        -1.0
+    };
+
+    // Where she is at `tau`, in the world: along the voyage from where the
+    // Nautilus is then, and over whatever is in her way.
+    let at = |tau: f32, cruising: bool| -> [f32; 3] {
+        let u = (tau - start) / length;
+        let rel = meeting.path(u, flip);
+        let next = meeting.path(u + 0.01, flip);
+        let run = [
+            next[0] - rel[0] + VOYAGE_SPEED * length * 0.01,
+            next[1] - rel[1],
+        ];
+        let l = run[0].hypot(run[1]).max(1e-4);
+        let dir = [run[0] / l, run[1] / l];
+        let x = w.camera() + VOYAGE_SPEED * (tau - t) + rel[0];
+        let want = w.eye() + rel[2];
+        // Held up over a forest or a city, she keeps farther out, so the
+        // window, down among the trunks and columns, still sees her.
+        let (a, b) = (rel[1], 2.9 * canopy(w, x, corridor(x) + rel[1]));
+        // The larger, eased where one gives way to the other.
+        let out = 0.5 * (a + b + ((a - b) * (a - b) + 0.8).sqrt());
+        let y = if cruising {
+            cruise(w, x, corridor(x) + out, dir, want)
+        } else {
+            0.0
+        };
+        [x, y, corridor(x) + out]
+    };
+    let mut p = at(t, true);
+    // She answers her planes slowly: her depth follows the height she
+    // wants on a critically damped spring, so a ridge or a shelf never
+    // jerks her up or down.
+    let (y, rate) = match encounter.depth {
+        Some((last, y, rate)) if t > last && t - last < 0.5 => {
+            let dt = t - last;
+            let omega = 0.6;
+            let accel = omega * omega * (p[1] - y) - 2.0 * omega * rate;
+            let rate = (rate + accel * dt).clamp(-0.12, 0.12);
+            (y + rate * dt, rate)
+        }
+        _ => (p[1], 0.0),
+    };
+    // Never into the seabed, though.
+    p[1] = y.max(w.ground(p[0], p[2]) + 0.3);
+    encounter.depth = Some((t, p[1], rate));
+    f.encounter = Some(encounter);
+    let (before, after) = (at(t - 1.0, false), at(t + 1.0, false));
+    let vel = [
+        (after[0] - before[0]) * 0.5,
+        rate,
+        (after[2] - before[2]) * 0.5,
+    ];
+    let flat = vel[0].hypot(vel[2]).max(1e-4);
+    let yaw = (-vel[2]).atan2(vel[0]);
+    let pitch = rate.atan2(flat).clamp(-0.12, 0.12);
+    // Banking into her turns.
+    let turn = {
+        let a = [p[0] - before[0], p[2] - before[2]];
+        let b = [after[0] - p[0], after[2] - p[2]];
+        (a[0] * b[1] - a[1] * b[0]) / (a[0].hypot(a[1]) * b[0].hypot(b[1])).max(1e-6)
+    };
+    let roll = (turn * 3.0).clamp(-0.1, 0.1);
+    let water_speed = (flat * flat + vel[1] * vel[1]).sqrt();
+
+    let cave = w
+        .share(p[0], p[2], CAVE)
+        .max(w.share(w.camera(), w.pose.pos[2], CAVE));
+    let fading = fade(1.0 - cave, 0.7)
+        * smooth(0.0, 0.06, u)
+        * smooth(1.0, 0.94, u)
+        * (1.0 - smooth(0.12, 0.3, speed));
+    if fading <= 0.01 {
+        return;
+    }
+    f.fade = fading;
+    // How dark the water is, as the scene's daylight reckons it at the
+    // window.
+    let dark = {
+        let depth = 1.0 - (-(w.pose.depth as f32) / 7.0).exp();
+        let sun = (-depth * 4.3).exp();
+        (1.0 - smooth(0.04, 0.35, sun)) * (1.0 - cave)
+    };
+    let hull = place(p, yaw, pitch, roll, [SUB_LENGTH; 3]);
+    let to_world = |q: [f32; 3]| {
+        [0, 1, 2].map(|r| hull[r][0] * q[0] + hull[r][1] * q[1] + hull[r][2] * q[2] + hull[r][3])
+    };
+    let turned = |v: [f32; 3]| {
+        norm([0, 1, 2].map(|r| hull[r][0] * v[0] + hull[r][1] * v[1] + hull[r][2] * v[2]))
+    };
+    let cam = w.pose.pos;
+    let distance = {
+        let d = [p[0] - cam[0], p[1] - cam[1], p[2] - cam[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    };
+    let warm = [1.0, 0.82, 0.50];
+    let glow = 0.5 + 2.5 * dark;
+    if w.visible(p, SUB_LENGTH * 0.55) {
+        f.put(Model::Submarine, hull, [0.33, 0.34, 0.36])
+            .material(material::COPPER);
+        let spin = (t - start) * meeting.revolutions() * TAU;
+        f.put(
+            Model::Screw,
+            compose(&hull, &place(mesh::SUB_SCREW, 0.0, 0.0, spin, [0.058; 3])),
+            [0.62, 0.45, 0.25],
+        )
+        .material(material::COPPER);
+        // Her ports, a row along each side lit from within, and the glass of
+        // the pilot's cage.
+        let r = mesh::SUB_RADIUS * 1.01;
+        let up = 0.3f32;
+        let halo = 0.03 * (1.0 + distance * 0.25);
+        for side in [1.0f32, -1.0] {
+            let normal = [0.0, up.sin(), side * up.cos()];
+            let roll = if side > 0.0 { -up } else { PI + up };
+            for x in [-0.17, -0.10, -0.03, 0.04, 0.11] {
+                let local = [x, r * up.sin(), side * r * up.cos()];
+                let at = to_world(local);
+                let n = turned(normal);
+                let view = [cam[0] - at[0], cam[1] - at[1], cam[2] - at[2]];
+                if n[0] * view[0] + n[1] * view[1] + n[2] * view[2] < 0.0 {
+                    continue;
+                }
+                f.put(
+                    Model::Sphere,
+                    compose(&hull, &place(local, 0.0, 0.0, roll, [0.011, 0.011, 0.004])),
+                    warm,
+                )
+                .glowing(glow);
+                if dark > 0.05 {
+                    let k = 0.30 * dark * fading;
+                    f.sprite(
+                        add(at, [n[0] * 0.01, n[1] * 0.01, n[2] * 0.01]),
+                        halo,
+                        [warm[0] * k, warm[1] * k, warm[2] * k],
+                        GLOW,
+                    );
+                }
+            }
+        }
+        let cage = mesh::SUB_RADIUS + 0.012;
+        for (local, scale) in [
+            ([0.248, cage, 0.0], [0.003, 0.008, 0.012]),
+            ([0.20, cage + 0.002, 0.0185], [0.02, 0.008, 0.003]),
+            ([0.20, cage + 0.002, -0.0185], [0.02, 0.008, 0.003]),
+        ] {
+            f.put(
+                Model::Sphere,
+                compose(&hull, &place(local, 0.0, 0.0, 0.0, scale)),
+                warm,
+            )
+            .glowing(glow);
+        }
+        // The bubbles her screw throws off, left behind in the water as she
+        // goes on, rising as they drift.
+        let screw = to_world(mesh::SUB_SCREW);
+        let aft = turned([-1.0, 0.0, 0.0]);
+        for k in 0..28 {
+            let life = 6.0;
+            let cycle = (t + k as f32 * life / 28.0) / life;
+            let age = cycle.fract() * life;
+            let n = cycle.floor() as i32;
+            let spread = 0.015 + 0.02 * age;
+            let behind = water_speed * age;
+            let q = [
+                screw[0] + aft[0] * behind + (hash(n, k, 510) - 0.5) * spread,
+                screw[1] + aft[1] * behind + 0.05 * age + (hash(n, k, 511) - 0.5) * spread,
+                screw[2] + aft[2] * behind + (hash(n, k, 512) - 0.5) * spread,
+            ];
+            let alpha = smooth(0.0, 0.4, age) * smooth(life, life - 2.0, age) * fading;
+            if alpha > 0.0 && w.visible(q, 0.02) {
+                f.sprite(
+                    q,
+                    0.005 + 0.007 * hash(k, n, 513),
+                    [0.32 * alpha, 0.62 * alpha, 0.65 * alpha],
+                    BUBBLE,
+                );
+            }
+        }
+    }
+
+    // In dark water her searchlight sweeps the sea ahead of her, and the
+    // ground where it falls.
+    let lamp = smooth(0.15, 0.6, dark) * fading;
+    if lamp > 0.01 {
+        let o = to_world([
+            mesh::SUB_LANTERN[0] + 0.004,
+            mesh::SUB_LANTERN[1],
+            mesh::SUB_LANTERN[2],
+        ]);
+        let phase = hash(slot, visit, 504) * TAU;
+        let sweep = 0.6 * ((t - start) * 0.21 + phase).sin();
+        let dip = -0.16 + 0.08 * ((t - start) * 0.13 + phase).sin();
+        let dir = turned([dip.cos() * sweep.cos(), dip.sin(), -dip.cos() * sweep.sin()]);
+        let reach = 3.2;
+        let run = [dir[0] * reach, dir[1] * reach, dir[2] * reach];
+        let k = 0.8 * lamp;
+        let middle = add(o, [run[0] * 0.5, run[1] * 0.5, run[2] * 0.5]);
+        if w.visible(middle, reach * 0.5 + 0.5) {
+            f.beams.push(Sprite {
+                place: [o[0], o[1], o[2], 0.015],
+                tint: [k, 0.9 * k, 0.7 * k, 0.55],
+                stretch: [run[0], run[1], run[2], 0.0],
+            });
+        }
+        if w.visible(o, 0.3) {
+            // The lantern's glass, blazing when it looks toward the window.
+            let view = norm([cam[0] - o[0], cam[1] - o[1], cam[2] - o[2]]);
+            let facing = (dir[0] * view[0] + dir[1] * view[1] + dir[2] * view[2])
+                .max(0.0)
+                .powi(6);
+            f.put(
+                Model::Sphere,
+                compose(
+                    &hull,
+                    &place(mesh::SUB_LANTERN, 0.0, 0.0, 0.0, [0.004, 0.010, 0.010]),
+                ),
+                [1.0, 0.92, 0.75],
+            )
+            .glowing(0.5 + 5.0 * lamp);
+            let g = lamp * (0.25 + 1.5 * facing);
+            f.sprite(o, 0.04 + 0.12 * facing, [g, 0.9 * g, 0.7 * g], GLOW);
+        }
+        // A pool of light where the beam meets the seabed, or a glow in the
+        // water if it meets nothing.
+        let mut hit = None;
+        for step in 1..=12 {
+            let s = step as f32 * 0.25;
+            let q = add(o, [dir[0] * s, dir[1] * s, dir[2] * s]);
+            if q[1] < w.ground(q[0], q[2]) {
+                hit = Some(add(q, [-dir[0] * 0.2, 0.15 - dir[1] * 0.2, -dir[2] * 0.2]));
+                break;
+            }
+        }
+        let (spot, strength) = match hit {
+            Some(q) => (q, 1.0),
+            None => (add(o, [dir[0] * 1.5, dir[1] * 1.5, dir[2] * 1.5]), 0.5),
+        };
+        let c = 0.9 * lamp * strength;
+        f.light(spot, 0.5, [c, 0.85 * c, 0.6 * c]);
+    }
+}
+
+/// `child`'s transform, then `parent`'s: a part placed on a model.
+fn compose(parent: &[[f32; 4]; 3], child: &[[f32; 4]; 3]) -> [[f32; 4]; 3] {
+    let mut rows = [[0.0; 4]; 3];
+    for (r, row) in rows.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
+            *cell = (0..3).map(|k| parent[r][k] * child[k][c]).sum::<f32>()
+                + if c == 3 { parent[r][3] } else { 0.0 };
+        }
+    }
+    rows
+}
+
 /// Shafts of sunlight slanting down from the surface where it is shallow and
 /// bright enough: through the shallows, between the forest's trees, over the
 /// wrecks, down into the trench and through the leads in the ice. Each is rooted in a cell of a
@@ -3556,6 +4070,63 @@ mod tests {
                 }
                 assert_eq!(seabed.bay(o.x, 0.3), 0.0, "cut into the boat's way");
             }
+        }
+    }
+
+    /// Over half an hour's voyage another submarine comes into view now and
+    /// then, never for long, never in the lava cave, and never lurching.
+    #[test]
+    fn submarines_are_met_now_and_then() {
+        for visit in [0u64, 500_000] {
+            let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
+            let seabed = Seabed::new(visit, seed);
+            let mut voyage = Voyage::default();
+            let mut helm = super::super::helm::Helm::default();
+            let mut frame = Frame::new();
+            let (mut seen, mut met, mut last) = (0.0f32, 0, None::<f64>);
+            // Where she was seen the last two steps.
+            let mut track: Vec<(f64, [f32; 3])> = Vec::new();
+            let step = 0.25;
+            for i in 0..(1800.0 / step) as i32 {
+                let seconds = 5.0 + i as f64 * step;
+                let at = voyage.advance(seconds, seed);
+                let pose = helm.steer(&seabed, at, seconds);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: seconds as f32,
+                };
+                build(&world, &mut frame);
+                let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
+                    track.clear();
+                    continue;
+                };
+                seen += step as f32;
+                let here = seabed.biome(pose.pos[0], pose.pos[2]);
+                assert!(
+                    here.weight(CAVE) < 0.5,
+                    "a submarine in the cave at {seconds}"
+                );
+                if last.is_none_or(|l| seconds - l > 20.0) {
+                    met += 1;
+                }
+                last = Some(seconds);
+                // However she turns, rises or stands off, the way she moves
+                // changes gently from one moment to the next.
+                let p = [hull.rows[0][3], hull.rows[1][3], hull.rows[2][3]];
+                track.retain(|&(t, _)| seconds - t < 2.0 * step + 0.01);
+                if let [(_, a), (_, b)] = track[..] {
+                    let jerk = (0..3)
+                        .map(|i| (p[i] - 2.0 * b[i] + a[i]).powi(2))
+                        .sum::<f32>()
+                        .sqrt();
+                    assert!(jerk < 0.02, "she lurched {jerk:.3} at {seconds} s");
+                }
+                track.push((seconds, p));
+            }
+            println!("visit {visit}: {met} submarines, in view {seen:.0} s of 1800");
+            assert!(met >= 6, "only {met} encounters");
+            assert!(seen < 600.0, "submarines in view {seen} s of half an hour");
         }
     }
 

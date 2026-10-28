@@ -83,5 +83,25 @@ pub fn all() -> Vec<Place> {
     ] {
         places.push(Place::new(format!("{cave}-cave-{name}"), cave + at, 0));
     }
+    // Another submarine met on the way: the encounters run on the visit's
+    // clock (`submarines` in `world.rs`), so these are moments of visits 0
+    // and 500000 when one is in view.
+    let at = |seconds: f64| seconds / (LEG / SPEED);
+    for (name, seconds, visit) in [
+        ("encounter-alongside-shallows", 50.0, 0),
+        ("encounter-emerge-atlantis", 201.0, 0),
+        ("encounter-emerge-abyss", 313.0, 0),
+        ("encounter-overtake-forest", 503.0, 0),
+        ("encounter-emerge-wrecks", 612.0, 0),
+        ("encounter-pass-shallows", 880.0, 0),
+        ("encounter-alongside-wrecks", 1037.0, 0),
+        ("encounter-far-abyss", 1176.0, 0),
+        ("encounter-emerge-arctic", 1288.0, 0),
+        ("encounter-pass-forest", 310.0, 500_000),
+        ("encounter-pass-abyss", 1005.0, 500_000),
+        ("encounter-alongside-arctic", 1491.0, 500_000),
+    ] {
+        places.push(Place::new(name, at(seconds), visit));
+    }
     places
 }
