@@ -589,7 +589,11 @@ the view at the edge of the glass, gives the water an engraved hatching in the s
 plates of the first illustrated edition, lays the bezel over it and turns the needles. On a desktop
 GPU a frame costs about 3 ms, with the scene built in about 0.4 ms of CPU. `cargo test --release
 dive3d::tests::frame_time -- --ignored --nocapture` times it and `DIVE3D_PREVIEW_DIR=<dir> cargo
-test --release dive3d::tests::previews -- --ignored` writes a frame from each leg.
+test --release dive3d::tests::previews -- --ignored` writes a frame from each leg. For debugging,
+`DIVE3D_SHOTS_DIR=<dir> cargo test --release dive3d::tests::screenshots -- --ignored` shoots every
+place listed in `dive3d/places.rs` — each leg as it settles, in its middle and as it leaves, and
+another seabed — at full size, with a contact sheet and an `index.html` naming them;
+`DIVE3D_SHOTS=cave` keeps only the places whose names contain `cave`.
 
 The Pi needs a Vulkan driver: `sudo apt install libvulkan1 mesa-vulkan-drivers`. If the adapter cannot be
 created the overlay is simply left empty and a warning is logged; nothing else in the display depends on

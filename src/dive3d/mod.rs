@@ -14,6 +14,8 @@
 mod heightmap;
 mod helm;
 mod mesh;
+#[cfg(test)]
+mod places;
 mod terrain;
 mod textures;
 mod world;
@@ -1332,6 +1334,56 @@ mod tests {
 
     fn leg(n: f64) -> f64 {
         crate::voyage::LEG / crate::voyage::SPEED * (n + 0.35)
+    }
+
+    /// Write a frame of every place in [`places::all`] to `DIVE3D_SHOTS_DIR`,
+    /// with a contact sheet of them all and an `index.html` naming each.
+    #[test]
+    #[ignore = "writes debugging screenshots; set DIVE3D_SHOTS_DIR"]
+    fn screenshots() {
+        let Ok(dir) = std::env::var("DIVE3D_SHOTS_DIR") else {
+            return;
+        };
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).expect("a directory for the screenshots");
+        let only = std::env::var("DIVE3D_SHOTS").unwrap_or_default();
+        let places: Vec<_> = places::all()
+            .into_iter()
+            .filter(|p| p.name.contains(only.as_str()))
+            .collect();
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        const THUMB: u32 = 360;
+        const ACROSS: u32 = 4;
+        let rows = (places.len() as u32).div_ceil(ACROSS).max(1);
+        let mut sheet = image::RgbaImage::new(THUMB * ACROSS, THUMB * rows);
+        let mut html = String::from(
+            "<!doctype html><meta charset=utf-8><title>Dive screenshots</title>\n\
+             <style>body{background:#111;color:#ddd;font:14px sans-serif;display:flex;\
+             flex-wrap:wrap;gap:12px}figure{margin:0}img{width:360px}</style>\n",
+        );
+        for (i, place) in places.iter().enumerate() {
+            let pixels = scene.read_back(&gpu, place.seconds(), place.seed);
+            let frame = image::RgbaImage::from_raw(SIZE, SIZE, pixels).expect("a whole frame");
+            let file = format!("{}.png", place.name);
+            frame.save(dir.join(&file)).expect("a screenshot");
+            let thumb = image::imageops::resize(
+                &frame,
+                THUMB,
+                THUMB,
+                image::imageops::FilterType::Triangle,
+            );
+            let (x, y) = (i as u32 % ACROSS * THUMB, i as u32 / ACROSS * THUMB);
+            image::imageops::overlay(&mut sheet, &thumb, i64::from(x), i64::from(y));
+            html += &format!(
+                "<figure><a href=\"{file}\"><img src=\"{file}\"></a>\
+                 <figcaption>{i}: {} (leg {:.2}, seed {})</figcaption></figure>\n",
+                place.name, place.leg, place.seed
+            );
+            println!("{i:3}: {}", place.name);
+        }
+        sheet.save(dir.join("sheet.png")).expect("a contact sheet");
+        std::fs::write(dir.join("index.html"), html).expect("an index");
     }
 
     /// Write frames from every leg of the voyage to `DIVE3D_PREVIEW_DIR`.
