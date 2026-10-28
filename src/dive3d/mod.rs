@@ -78,6 +78,7 @@ struct Globals {
     levels: [f32; 4],
     world: [f32; 4],
     counts: [f32; 4],
+    tint: [f32; 4],
     lights: [[f32; 4]; 8],
     light_colours: [[f32; 4]; 8],
 }
@@ -95,6 +96,7 @@ pub(crate) struct Nautilus {
     fading: Vec<wgpu::RenderPipeline>,
     glass: wgpu::RenderPipeline,
     sprites: wgpu::RenderPipeline,
+    shafts: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     group: wgpu::BindGroup,
     #[cfg(test)]
@@ -222,6 +224,7 @@ mod part {
     pub const ANISOTROPY: u16 = 512;
     /// Every model at its full detail.
     pub const FULL_DETAIL: u16 = 1024;
+    pub const SHAFTS: u16 = 2048;
 }
 
 /// Shader switches for the benchmark, as `counts.y` bits (see `debug` in
@@ -719,6 +722,18 @@ impl Nautilus {
             &[],
             None,
         );
+        let shafts = pipeline(
+            "Dive3d shafts",
+            "vs_shaft",
+            "fs_shaft",
+            &sprite_buffers,
+            Some(additive),
+            false,
+            nearer,
+            false,
+            &[],
+            None,
+        );
 
         let porthole = Porthole::new(gpu, &resolved, SEA, BEND, scale);
         tracing::info!(
@@ -735,6 +750,7 @@ impl Nautilus {
             fading,
             glass,
             sprites,
+            shafts,
             globals,
             group,
             #[cfg(test)]
@@ -990,9 +1006,16 @@ impl Nautilus {
         let all = &self.staged;
         gpu.queue
             .write_buffer(&self.instances, 0, bytemuck::cast_slice(all));
+        // The shafts of sunlight follow the sprites in the same buffer.
         let sprites = &self.frame.sprites[..self.frame.sprites.len().min(MAX_SPRITES)];
+        let shafts = &self.frame.shafts[..self.frame.shafts.len().min(MAX_SPRITES - sprites.len())];
         gpu.queue
             .write_buffer(&self.sprite_buffer, 0, bytemuck::cast_slice(sprites));
+        gpu.queue.write_buffer(
+            &self.sprite_buffer,
+            std::mem::size_of_val(sprites) as u64,
+            bytemuck::cast_slice(shafts),
+        );
 
         let mut encoder = gpu
             .device
@@ -1099,6 +1122,12 @@ impl Nautilus {
                 pass.set_pipeline(&self.sprites);
                 pass.set_vertex_buffer(0, self.sprite_buffer.slice(..));
                 pass.draw(0..6, 0..sprites.len() as u32);
+            }
+            if !shafts.is_empty() && !self.skips(part::SHAFTS) {
+                let first = sprites.len() as u32;
+                pass.set_pipeline(&self.shafts);
+                pass.set_vertex_buffer(0, self.sprite_buffer.slice(..));
+                pass.draw(0..6, first..first + shafts.len() as u32);
             }
         }
         self.porthole
@@ -1234,11 +1263,20 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         pose.pos[2] + mount[2],
     ];
     let sun_dir = {
-        let d = [0.30f32, 1.0, 0.25];
+        let d = world::SUN;
         let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         [d[0] / l, d[1] / l, d[2] / l]
     };
     let cam = pose.pos;
+    // Water takes red light first, then green, blue last: the deeper the
+    // window, the bluer the daylight that reaches it.
+    let below = (pose.depth as f32).max(0.0);
+    let tint = [
+        (-(below - 1.0) * 0.32).exp(),
+        (-(below - 1.0) * 0.05).exp(),
+        (-(below - 1.0) * 0.07).exp(),
+    ];
+    let haze = blend([0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12]);
 
     // The lights that matter most: nearest the window, weighed by their reach.
     let mut lights: Vec<_> = frame.lights.iter().collect();
@@ -1258,12 +1296,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         out: v4(out),
         lamp_origin: v4(lamp_origin),
         sun: [sun_dir[0], sun_dir[1], sun_dir[2], sun],
-        water: [
-            water[0],
-            water[1],
-            water[2],
-            blend([0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12]),
-        ],
+        water: [water[0], water[1], water[2], haze],
         deep: [deep[0], deep[1], deep[2], pose.depth as f32],
         lamp: [lamp_dir[0], lamp_dir[1], lamp_dir[2], lamp],
         levels: [w.surface(), w.vault(), w.ice(), 0.0],
@@ -1274,6 +1307,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
             arctic,
         ],
         counts: [lights.len().min(8) as f32, 0.0, 0.0, 0.0],
+        tint: v4(tint),
         lights: [[0.0; 4]; 8],
         light_colours: [[0.0; 4]; 8],
     };
@@ -1362,6 +1396,7 @@ mod tests {
             ("no solid models", part::MODELS),
             ("no glass models", part::GLASS),
             ("no sprites", part::SPRITES),
+            ("no sun shafts", part::SHAFTS),
             ("no point lights", part::LIGHTS),
             ("porthole only", part::SEA),
             ("quarter pixels", part::QUARTER),

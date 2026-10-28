@@ -33,6 +33,9 @@ pub const ICE: f32 = 0.15;
 /// Half the view's width at unit distance.
 pub const VIEW: f32 = 0.41;
 
+/// Toward the sun, high and a little ahead and to the side, not normalised.
+pub const SUN: [f32; 3] = [0.30, 1.0, 0.25];
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Instance {
@@ -341,6 +344,9 @@ pub struct Frame {
     /// Translucent instances per model.
     pub glass: Vec<Vec<Instance>>,
     pub sprites: Vec<Sprite>,
+    /// Shafts of sunlight: `place` is the top, `tint` the colour, `stretch`
+    /// the run down to the foot.
+    pub shafts: Vec<Sprite>,
     pub lights: Vec<Light>,
     /// The tunnel through the lava cave's massif, in world space for the
     /// stretch in view. It depends only on the seabed and that stretch, so it
@@ -366,6 +372,7 @@ impl Frame {
             solid: (0..Model::ALL.len()).map(|_| Vec::new()).collect(),
             glass: (0..Model::ALL.len()).map(|_| Vec::new()).collect(),
             sprites: Vec::new(),
+            shafts: Vec::new(),
             lights: Vec::new(),
             tunnel: Vec::new(),
             tunnel_indices: Vec::new(),
@@ -381,6 +388,7 @@ impl Frame {
             list.clear();
         }
         self.sprites.clear();
+        self.shafts.clear();
         self.lights.clear();
     }
 
@@ -543,6 +551,8 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::Keel => fixed(Surface::Ice, 1.5),
         Model::Hex => fixed(Surface::Basalt, 2.5),
         Model::Capsule => carried(Surface::Canvas, 1.0),
+        Model::Manta => carried(Surface::Skin, 3.0),
+        Model::Turtle => carried(Surface::Skin, 2.0),
         _ => None,
     }
 }
@@ -695,7 +705,7 @@ pub fn build(world: &World, frame: &mut Frame) {
     let algae = carried(Surface::Kelp, 2.0);
     let copper = carried(Surface::Copper, 1.0);
     let skin = carried(Surface::Skin, 3.0);
-    let steps: [(Placer, Option<[f32; 4]>); 18] = [
+    let steps: [(Placer, Option<[f32; 4]>); 20] = [
         (planes, None),
         (rocks, None),
         (kelp, None),
@@ -710,9 +720,11 @@ pub fn build(world: &World, frame: &mut Frame) {
         (divers, copper),
         (shoals, None),
         (great_swimmers, None),
+        (gliders, None),
         (squid, skin),
         (drifters, None),
         (polar, None),
+        (shafts, None),
         (particles, None),
     ];
     for (step, skin) in steps {
@@ -2093,6 +2105,70 @@ fn great_swimmers(w: &World, f: &mut Frame) {
     }
 }
 
+/// Manta rays flying slowly through the shallows, over the wrecks and among
+/// the ruins of Atlantis, banking as they go; and green turtles rowing low
+/// over the shallows and through the forest.
+fn gliders(w: &World, f: &mut Frame) {
+    for (k, x) in procession(w, 0.06, 5.5, 340) {
+        let z = lane(x, 1.8 + 2.2 * hash(k, 1, 340), side(k, 340));
+        let share = w
+            .share(x, z, SHALLOWS)
+            .max(w.share(x, z, WRECKS))
+            .max(w.share(x, z, ATLANTIS));
+        if share < 0.4 || hash(k, 2, 340) < 0.35 {
+            continue;
+        }
+        f.fade = fade(share, 0.4);
+        let span = 0.30 + 0.12 * hash(k, 3, 340);
+        let phase = hash(k, 4, 340) * TAU;
+        let y = (w.ground(x, z) + 0.6 + 0.9 * hash(k, 5, 340)).min(w.surface() - 0.35)
+            + 0.08 * (w.t * 0.21 + phase).sin();
+        let p = [x, y, z];
+        if !w.visible(p, span) {
+            continue;
+        }
+        f.put(
+            Model::Manta,
+            place(
+                p,
+                0.12 * (w.t * 0.07 + phase).sin(),
+                0.08 * (w.t * 0.21 + phase).cos(),
+                0.22 * (w.t * 0.13 + phase).sin(),
+                [span; 3],
+            ),
+            [0.11, 0.115, 0.125],
+        )
+        .moving(anim::FLUKE, phase, 0.16, 0.85);
+    }
+    for (k, x) in procession(w, 0.035, 4.0, 350) {
+        let z = lane(x, 1.2 + 2.0 * hash(k, 1, 350), side(k, 350));
+        let share = w.share(x, z, SHALLOWS).max(w.share(x, z, FOREST));
+        if share < 0.4 || hash(k, 2, 350) < 0.4 {
+            continue;
+        }
+        f.fade = fade(share, 0.4);
+        let length = 0.20 + 0.06 * hash(k, 3, 350);
+        let phase = hash(k, 4, 350) * TAU;
+        let y = w.ground(x, z) + 0.25 + 0.5 * hash(k, 5, 350) + 0.04 * (w.t * 0.4 + phase).sin();
+        let p = [x, y, z];
+        if !w.visible(p, length) {
+            continue;
+        }
+        f.put(
+            Model::Turtle,
+            place(
+                p,
+                0.25 * (w.t * 0.09 + phase).sin(),
+                0.05 * (w.t * 0.4 + phase).cos(),
+                0.06 * (w.t * 0.3 + phase).sin(),
+                [length; 3],
+            ),
+            [0.20, 0.17, 0.10],
+        )
+        .moving(anim::FLUKE, phase, 0.22, 1.5);
+    }
+}
+
 /// The poulpe of chapter XVIII, met in the abyss.
 fn squid(w: &World, f: &mut Frame) {
     for (k, x) in procession(w, -0.03, 4.5, 330) {
@@ -2340,6 +2416,60 @@ fn polar(w: &World, f: &mut Frame) {
 }
 
 /// Marine snow, krill, plankton, embers and the bubbles shed by the hull.
+/// Shafts of sunlight slanting down from the surface where it is shallow and
+/// bright enough: through the shallows, between the forest's trees, over the
+/// wrecks and through the leads in the ice. Each is rooted in a cell of a
+/// grid fixed in the world, so the boat sails among them; they breathe as the
+/// waves above gather and scatter the light, and sway with them.
+fn shafts(w: &World, f: &mut Frame) {
+    let sun = norm(SUN);
+    let far = 7.0;
+    let top = w.surface();
+    for (ix, iz, x, z) in cells(w, 0.75, 0.3, far, 450) {
+        let h = hash(ix, iz, 451);
+        let b = w.biome(x, z);
+        let bright = (b.weight(SHALLOWS)
+            + 0.6 * b.weight(FOREST)
+            + 0.35 * b.weight(WRECKS)
+            + 0.5 * b.weight(ARCTIC)) as f32;
+        if h > bright.min(1.0) * 0.55 {
+            continue;
+        }
+        // Under the ice only the open leads let the sun through, so fewer.
+        let roof = top - ICE * b.weight(ARCTIC) as f32;
+        let foot = w.ground(x, z) + 0.15 + 0.4 * hash(ix, iz, 452);
+        if foot > roof - 0.3 {
+            continue;
+        }
+        let length = (roof - foot) / sun[1];
+        let sway = 0.06 * (w.t * 0.13 + h * 40.0).sin();
+        let start = [
+            x + sun[0] * length + sway,
+            roof,
+            z + sun[2] * length + 0.5 * sway,
+        ];
+        let run = [x - start[0], foot - start[1], z - start[2]];
+        let width = 0.04 + 0.12 * hash(ix, iz, 453);
+        let middle = add(start, [run[0] * 0.5, run[1] * 0.5, run[2] * 0.5]);
+        if !w.visible(middle, length * 0.5 + width) {
+            continue;
+        }
+        let depth = {
+            let out = w.pose.basis[2];
+            let c = w.pose.pos;
+            (middle[0] - c[0]) * out[0] + (middle[2] - c[2]) * out[2]
+        };
+        let breathe = 0.45 + 0.55 * (w.t * (0.25 + 0.2 * h) + h * 70.0).sin().max(0.0);
+        let k =
+            bright.min(1.0) * breathe * smooth(far, far - 2.0, depth) * 0.65 / (0.5 + width * 6.0);
+        f.shafts.push(Sprite {
+            place: [start[0], start[1], start[2], width],
+            tint: [0.30 * k, 0.75 * k, 0.70 * k, 0.0],
+            stretch: [run[0], run[1], run[2], 0.0],
+        });
+    }
+}
+
 fn particles(w: &World, f: &mut Frame) {
     let c = w.pose.pos;
     let b = w.biome(c[0], c[2]);

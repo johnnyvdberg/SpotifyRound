@@ -38,6 +38,9 @@ struct Globals {
     world: vec4<f32>,
     // x: point lights in use.
     counts: vec4<f32>,
+    // rgb: what the water above the window leaves of daylight's colours,
+    // having taken its red first, then its green.
+    tint: vec4<f32>,
     lights: array<vec4<f32>, 8>,
     light_colours: array<vec4<f32>, 8>,
 };
@@ -249,6 +252,7 @@ fn light_at(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     var light = vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5;
     // Light from the water all round, more from above.
     light += vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25);
+    light *= g.tint.rgb;
     if (sun > 0.03 && n.y > 0.2) {
         light *= 1.0 + caustic(p.xz * vec2<f32>(7.0, 9.0) + vec2<f32>(g.camera.w * 0.3, 0.0), g.camera.w * 0.9) * 0.9 * n.y * sun;
     }
@@ -333,20 +337,10 @@ fn fs_mask() -> @location(0) vec4<f32> {
 fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     let s = in.ndc * g.view.x;
     let local = normalize(vec3<f32>(s, 1.0));
-    // The boat's attitude turns the view; the water stays level.
+    // The boat's attitude turns the view; the water stays level. The sun's
+    // shafts are drawn in the water, as `fs_shaft`, rather than on it.
     let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
-    let x = s.x;
-    let y = dir.y / max(dir.z, 0.2);
-    var c = water_at(dir);
-    // Sunbeams slanting down through the middle distance.
-    if (g.sun.w > 0.02) {
-        let down = max(0.40 - y, 0.0);
-        let slant = (x + g.camera.x / 3.0 + down * 0.58) * 12.0 + 1.4 * sin(x * 3.1 + g.camera.w * 0.08);
-        let ray = pow(max(sin(slant + 1.1 * sin(down * 2.3 + g.camera.w * 0.13)), 0.0), 6.0) * 0.6
-            + pow(max(sin(slant * 1.73 + 2.1), 0.0), 12.0) * 0.4;
-        c += vec3<f32>(0.13, 0.39, 0.37) * ray * exp(-down * 1.6) * 0.85 * g.sun.w;
-    }
-    return vec4<f32>(c * SEA_SCALE, 1.0);
+    return vec4<f32>(water_at(dir) * SEA_SCALE, 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -753,4 +747,54 @@ fn fs_sprite(in: Sprite) -> @location(0) vec4<f32> {
         }
     }
     return vec4<f32>(in.colour * a * SEA_SCALE, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Shafts of sunlight
+// ---------------------------------------------------------------------------
+
+// A pipeline of their own, so the snow and bubbles, far more of them, pay
+// nothing for them.
+
+struct Shaft {
+    @builtin(position) position: vec4<f32>,
+    @location(0) corner: vec2<f32>,
+    @location(1) colour: vec3<f32>,
+};
+
+// A ribbon from `place` down the run in `run`, `place.w` wide either side,
+// turned about its length to face the window. Its corners are placed in the
+// world, so it clips like any other triangle.
+@vertex
+fn vs_shaft(
+    @builtin(vertex_index) index: u32,
+    @location(0) place: vec4<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) run: vec4<f32>,
+) -> Shaft {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let corner = corners[index];
+    let top = place.xyz;
+    let side = normalize(cross(run.xyz, g.camera.xyz - top)) * place.w;
+    let at = top + run.xyz * (0.5 - 0.5 * corner.y) + side * corner.x;
+    var out: Shaft;
+    out.position = project(at);
+    out.corner = corner;
+    // Melting away as the window passes through it, rather than filling the
+    // glass, and hazed by the water like everything else.
+    let d = length(at - g.camera.xyz);
+    out.colour = tint.rgb * g.sun.w * smooth01(0.35, 1.1, d) * (1.0 - fog_of(d)) * SEA_SCALE;
+    return out;
+}
+
+// Soft across, brightest just under the surface, fading on its way down.
+@fragment
+fn fs_shaft(in: Shaft) -> @location(0) vec4<f32> {
+    let across = 1.0 - in.corner.x * in.corner.x;
+    let y = in.corner.y;
+    let along = (1.0 - smooth01(0.75, 1.0, y)) * smooth01(-1.0, 0.1, y);
+    return vec4<f32>(in.colour * (across * across * along), 0.0);
 }

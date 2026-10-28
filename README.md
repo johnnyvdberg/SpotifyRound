@@ -41,8 +41,8 @@ Spotify **Premium** account.
   of the procedural scenes takes over the screen, chosen at random on every visit. The **Earth** is a
   rotating Blue Marble with Black Marble city lights, drifting clouds and their shadows, sun glint, sunset colour along the terminator and a scattering
   atmosphere. The **Nautilus** is the view from its salon window on a Jules Verne voyage, drawn as a 3D scene: the boat
-  travels from sunlit kelp shallows through the submarine forest, where helmeted divers walk the
-  seabed, past the galleons of Vigo Bay, the volcano-lit ruins of Atlantis and a lava cave down to
+  travels from sunlit kelp shallows, slanting shafts of sunlight, manta rays and sea turtles through the submarine
+  forest, where helmeted divers walk the seabed, past the galleons of Vigo Bay, the volcano-lit ruins of Atlantis and a lava cave down to
   the abyss and its giant squid, then up under the polar ice, while brass gauges in the bezel follow
   the dive. Swipe down on the player to summon the visualiser, swipe left or right on the dive to
   travel on to the next stretch of sea or back, and tap anywhere to fade back.
@@ -415,7 +415,11 @@ constant rate instead of twitching as the answers arrive.
 thread count and pays more besides. Passes, blending and buffer uploads are cheap by comparison.
 `cargo test gpu_cost -- --ignored --nocapture` (or `spotify-round-tests gpu_cost …` on the Pi)
 measures them on the GPU at hand, and `V3D_DEBUG=shaderdb` makes Mesa print each shader's
-instruction and thread count. So:
+instruction and thread count. That needs no Pi: `deploy/v3d-shaderdb/shaderdb.sh <checkout>` builds
+the Pi OS release of Mesa in Docker with its V3D noop `drm-shim`, compiles every pipeline of the
+scenes with the Pi 5's own compiler and prints each shader's instructions, threads and spills by
+pipeline label and entry point (about a minute once the image is built);
+`deploy/v3d-shaderdb/compare.py a.txt b.txt` shows what changed between two checkouts. So:
 
 - Slint draws the window with **Skia**, which compiles a small shader for each kind of draw.
   femtovg, Slint's other GPU renderer, runs one 1090-instruction shader for every paint type: a
@@ -522,11 +526,13 @@ the circuit somewhere new over a new seabed.
 Every
 model is generated when the scene is built, from a handful of generators: surfaces of revolution for
 columns, trunks, cones and bells; lofted bodies for the fish, shark, whale, dolphins, narwhals, penguins,
-the squid's mantle and the galleons' hulls; extrusions for fins, flukes, sails, stars and slabs of ice.
+the squid's mantle, the manta rays, the turtles' shells and the galleons' hulls; extrusions for fins,
+flukes, flippers, sails, stars and slabs of ice.
 Each frame `world.rs` visits the cells of the world in view and places what lives there — the same rock
 always in the same place — and the swimmers in their processions; a diver is a dozen capsules posed
 for its stride, a school a few hundred instances of one fish. The vertex shader bends them: fish sweep
-their tails sideways, whales and dolphins beat their flukes, kelp and fans sway, tentacles writhe and
+their tails sideways, whales and dolphins beat their flukes, and manta rays and turtles their wings
+and flippers with the same wave run out from the body; kelp and fans sway, tentacles writhe and
 bells pulse. The seabed is built by `terrain.rs` from the same heightmap `world.rs` places things
 with, so everything stands on it, and anything on the seabed takes on its sand where it meets it. It
 comes in tiles, built on the CPU the first time each comes into view and forgotten once the boat has
@@ -546,7 +552,14 @@ walk paths that bend round the rocks, trees and columns in their way. Rocks, kel
 in the cells of the whole view, whichever way it faces, and fade by coverage at the edge of their
 range, so nothing appears or vanishes in the middle of the window. Light comes from the sun through the surface, the searchlight as a real spotlight, and up to eight
 point lights — lava pools, vents, the volcano, the divers' lamp, anglerfish lures — with the water
-hazing everything by its distance; the surface and the ice are great planes overhead. The lava cave is
+hazing everything by its distance; the surface and the ice are great planes overhead. Daylight
+loses its red first on the way down, so the deeper the boat the bluer the light it sees by, a colour
+worked out once a frame. Where the sea is shallow enough, shafts of sunlight slant down from the
+surface, through the kelp, between the forest's trees, over the wrecks and through the leads in
+the ice: ribbons rooted in a grid fixed in the world, so the boat sails among them, breathing and
+swaying as the waves above gather the light. They are drawn in a pipeline of their own, so the
+snow and bubbles pay nothing for them, and they replace the sunbeams the open water used to paint
+on every pixel behind everything else. The lava cave is
 a real tunnel: a massif rises across the corridor and the boat enters it through a mouth in its cliff
 face, under a ragged arch of basalt veined with molten rock, hung with stalactites and lit from below
 by lava pools, and leaves by the far mouth; the mesh is rebuilt each frame for the stretch in view,

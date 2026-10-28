@@ -6,7 +6,9 @@
 //! vertex carries a colour multiplier, for the countershading of a fish or the
 //! planks of a hull, and two animation coordinates the vertex shader bends by:
 //! `aux.x` runs along a body from tail (-1) to head (+1), or along an arm from
-//! root (0) to tip (1); `aux.y` runs up a plant from root (0) to tip (1).
+//! root (0) to tip (1); `aux.y` runs up a plant from root (0) to tip (1). A
+//! ray's or a turtle's wings beat as a whale's flukes do, so for them `aux.x`
+//! runs from the body (+1) out to the tip of a wing or flipper (-1).
 //!
 //! Each model is also built coarser, at up to [`LODS`] levels of detail, from
 //! the same recipe with half the segments at each step: [`Lod`] records how
@@ -450,10 +452,12 @@ pub enum Model {
     Keel,
     Shell,
     Sponge,
+    Manta,
+    Turtle,
 }
 
 impl Model {
-    pub const ALL: [Model; 31] = [
+    pub const ALL: [Model; 33] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -485,6 +489,8 @@ impl Model {
         Model::Keel,
         Model::Shell,
         Model::Sponge,
+        Model::Manta,
+        Model::Turtle,
     ];
 
     pub fn index(self) -> usize {
@@ -689,6 +695,8 @@ impl Model {
             }
             Model::Prism => extrude(&[[-1.0, 0.0], [1.0, 0.0], [0.0, 1.0]], 2.0, [1.0; 3]),
             Model::Keel => keel(),
+            Model::Manta => manta(),
+            Model::Turtle => turtle(),
             Model::Shell => {
                 // One valve of a giant clam: a scalloped half-dome, ridged.
                 let mut p = Vec::new();
@@ -1037,6 +1045,159 @@ fn mantle() -> Mesh {
     .laid_flat();
     m.append(fins);
     m
+}
+
+/// A manta ray, two units across the wings with the head at +x: a thick body
+/// drawn out into thin, swept wings, the two horns of its cephalic fins either
+/// side of the mouth and a whip of a tail. Black above, white below.
+fn manta() -> Mesh {
+    let smooth = |a: f32, b: f32, v: f32| {
+        let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let mut m = loft(
+        -0.34,
+        0.34,
+        16,
+        20,
+        move |x| {
+            // Widest a little behind the middle, where the wings sweep back
+            // to their tips; a blunt, broad head in front.
+            let span = if x < -0.06 {
+                (1.0 - ((x + 0.06) / 0.28).powi(2)).max(0.0).sqrt()
+            } else {
+                1.0 - 0.72 * ((x + 0.06) / 0.40).powf(1.3)
+            };
+            let t = (x + 0.34) / 0.68;
+            let thick = 0.075 * (t * PI).sin().powf(0.5) + 0.004;
+            (0.0, thick, thick * 0.55, span.max(0.03))
+        },
+        countershade(0.55, 6.5),
+    )
+    // The wings thin out away from the body.
+    .map(
+        move |p| {
+            [
+                p[0],
+                p[1] * (1.0 - 0.8 * smooth(0.12, 0.55, p[2].abs())),
+                p[2],
+            ]
+        },
+        |n| n,
+    )
+    .smooth();
+    let horn = extrude(
+        &[[0.30, 0.0], [0.42, 0.01], [0.40, 0.03], [0.30, 0.03]],
+        0.03,
+        [0.6; 3],
+    );
+    let left = horn
+        .clone()
+        .map(|p| [p[0], p[1] - 0.02, p[2] + 0.22], |n| n);
+    let right = horn.map(|p| [p[0], p[1] - 0.02, p[2] - 0.22], |n| n);
+    let tail = lathe(
+        &[(0.0, 0.0), (0.012, 0.0), (0.002, 0.55), (0.0, 0.56)],
+        5,
+        |_, _| 1.0,
+        |_, _| [0.5; 3],
+        |_| [0.0; 2],
+    )
+    .map(|p| [-0.30 - p[1], p[0], p[2]], |n| [-n[1], n[0], n[2]]);
+    for part in [left, right, tail] {
+        m.append(part);
+    }
+    m.with_aux(|p| {
+        [
+            1.0 - 2.0 * ((p[2].abs() - 0.15) / 0.85).clamp(0.0, 1.0),
+            0.0,
+        ]
+    })
+}
+
+/// A green turtle, under a unit long with the head at +x: a high domed shell
+/// of broad scutes, a short neck and a round head, long front flippers to row
+/// with and small hind ones to steer, both drooping so they show side on.
+fn turtle() -> Mesh {
+    let mut m = loft(
+        -0.36,
+        0.50,
+        20,
+        12,
+        |x| {
+            if x < 0.26 {
+                let t = (x + 0.36) / 0.62;
+                let s = (t * PI).sin().powf(0.5);
+                (0.0, 0.17 * s + 0.01, 0.05 * s + 0.01, 0.22 * s + 0.01)
+            } else {
+                // The neck, then the head swelling out round it.
+                let t = (x - 0.26) / 0.24;
+                let head = (((t - 0.35) / 0.65).clamp(0.0, 1.0) * PI).sin();
+                let r = 0.040 + 0.030 * head;
+                (0.015, r, r * 0.8, r * 0.95)
+            }
+        },
+        |x, up| {
+            if x >= 0.26 {
+                [1.3, 1.2, 0.9]
+            } else if up > 0.0 {
+                // The scutes, pale at their seams.
+                let seam = ((x * 15.0).sin() * (up * 5.0).cos()).abs();
+                let v = if seam < 0.10 { 1.5 } else { 0.85 + 0.25 * seam };
+                [v, v * 0.95, v * 0.8]
+            } else {
+                [2.6, 2.4, 1.6]
+            }
+        },
+    );
+    let front = extrude(
+        &[
+            [0.0, 0.0],
+            [0.10, 0.06],
+            [0.02, 0.48],
+            [-0.08, 0.42],
+            [-0.06, 0.05],
+        ],
+        0.018,
+        [1.2, 1.15, 0.9],
+    )
+    .laid_flat();
+    let hind = extrude(
+        &[[0.0, 0.0], [0.05, 0.03], [-0.03, 0.17], [-0.10, 0.12]],
+        0.015,
+        [1.2, 1.15, 0.9],
+    )
+    .laid_flat();
+    // Laid flat, the paddles reach out along -z, and droop by `droop`;
+    // mirrored for the near side, and turned inside out again, as a mirror
+    // turns their winding.
+    let place = |part: &Mesh, x: f32, z: f32, droop: f32, mirror: bool| {
+        let (s, c) = droop.sin_cos();
+        let turn = move |v: [f32; 3]| [v[0], v[1] * c + v[2] * s, v[2] * c - v[1] * s];
+        let flip = move |v: [f32; 3]| if mirror { [v[0], v[1], -v[2]] } else { v };
+        let mut part = part.clone().map(
+            move |p| {
+                let q = flip(turn(p));
+                [q[0] + x, q[1] - 0.01, q[2] + z]
+            },
+            move |n| flip(turn(n)),
+        );
+        if mirror {
+            for t in part.indices.as_chunks_mut::<3>().0 {
+                t.swap(1, 2);
+            }
+        }
+        part
+    };
+    let parts = [
+        place(&front, 0.14, -0.15, 0.45, false),
+        place(&front, 0.14, 0.15, 0.45, true),
+        place(&hind, -0.26, -0.13, 0.6, false),
+        place(&hind, -0.26, 0.13, 0.6, true),
+    ];
+    for part in parts {
+        m.append(part);
+    }
+    m.with_aux(|p| [1.0 - 2.0 * ((p[2].abs() - 0.18) / 0.4).clamp(0.0, 1.0), 0.0])
 }
 
 fn hull() -> Mesh {
