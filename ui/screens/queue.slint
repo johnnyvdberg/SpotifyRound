@@ -73,12 +73,14 @@ export component Queue inherits Rectangle {
         content-height: max(root.list-height, root.content-height);
         interactive: root.content-height > root.list-height;
 
-        for item[i] in Library.queue : QueueRow {
-            y: root.pad-top + i * root.row-pitch;
-            width: 560px;
-            height: root.row-height;
-            // Rows dissolve before they reach the edges of the viewport.
-            opacity: ListFade.row-opacity(
+        // Rows dissolve before they reach the edges of the viewport. A row that
+        // has faded out completely is not drawn at all: at zero opacity it would
+        // still be drawn into a layer of its own and blended at nothing, every
+        // frame, and the viewport keeps a few rows past the fade lines. The
+        // wrapper carries the visibility, so it sits outside the opacity's
+        // layer instead of inside it.
+        for item[i] in Library.queue : Rectangle {
+            private property <float> row-fade: ListFade.row-opacity(
                 list.content-y,
                 root.pad-top + i * root.row-pitch,
                 root.row-height,
@@ -88,13 +90,23 @@ export component Queue inherits Rectangle {
                 root.list-height,
                 max(root.list-height, root.content-height),
             );
-            title: item.title;
-            subtitle: item.subtitle;
-            cover: item.cover;
-            duration: item.duration;
-            current: item.current;
-            pulse: Player.pulse;
-            clicked => { App.play-queue-item(item.uri); }
+            y: root.pad-top + i * root.row-pitch;
+            width: 560px;
+            height: root.row-height;
+            visible: self.row-fade > 0;
+
+            QueueRow {
+                width: 100%;
+                height: 100%;
+                opacity: parent.row-fade;
+                title: item.title;
+                subtitle: item.subtitle;
+                cover: item.cover;
+                duration: item.duration;
+                current: item.current;
+                pulse: Player.pulse;
+                clicked => { App.play-queue-item(item.uri); }
+            }
         }
     }
 

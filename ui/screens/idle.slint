@@ -59,14 +59,26 @@ export component IdleScreen inherits Rectangle {
 
     // The scene frame, opaque: the globe paints the space and the air glow
     // behind the planet itself (`src/globe.rs`).
-    Image {
+    //
+    // The visibility sits on a wrapper of its own. On the same element Slint
+    // puts it inside the opacity, and an opacity around anything with children
+    // is drawn through a layer: one at zero alpha, with nothing in it, on every
+    // frame of the player, and a full-screen one through every fade. Here the
+    // hidden frame skips the opacity altogether, and the image, alone under
+    // it, is faded with its own alpha.
+    Rectangle {
         width: Idle.frame-size;
         height: Idle.frame-size;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        source: Idle.frame;
-        opacity: Idle.fade;
         visible: Idle.fade > 0;
+
+        Image {
+            width: 100%;
+            height: 100%;
+            source: Idle.frame;
+            opacity: Idle.fade;
+        }
     }
 
     // A slow breath at the rim, echoing the ring the player wears; the

@@ -8,29 +8,37 @@ export component StatusToast inherits Rectangle {
 
     width: 640px;
     height: 78px;
-    border-radius: 39px;
-    background: #17171df5;
-    border-width: 1px;
-    border-color: Theme.hairline;
-    opacity: shown ? 1 : 0;
     y: shown ? 150px : 116px;
-    // Faded out, it would still be composited through a cached layer at zero
-    // alpha on every frame; once the fade has finished there is nothing to draw.
-    visible: self.opacity > 0;
+    // Faded out, the pill would still be drawn into a layer of its own and
+    // blended at zero alpha on every frame. Once the fade has finished there is
+    // nothing to draw; the visibility sits on this wrapper so that it also
+    // skips the layer, which the opacity would otherwise open around it.
+    visible: pill.opacity > 0;
 
-    animate opacity { duration: 260ms; }
     animate y { duration: 260ms; easing: ease-out; }
 
-    Text {
-        x: 34px;
-        y: 0;
-        width: parent.width - 68px;
-        height: parent.height;
-        text: root.text;
-        color: Theme.ink;
-        font-size: 19px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        overflow: elide;
+    pill := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 39px;
+        background: #17171df5;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        opacity: root.shown ? 1 : 0;
+
+        animate opacity { duration: 260ms; }
+
+        Text {
+            x: 34px;
+            y: 0;
+            width: parent.width - 68px;
+            height: parent.height;
+            text: root.text;
+            color: Theme.ink;
+            font-size: 19px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
     }
 }
