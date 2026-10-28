@@ -1234,15 +1234,17 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     let share = |id: usize| here.weight(id) as f32;
     let cave = share(world::CAVE);
     let arctic = share(world::ARCTIC);
-    let blend =
-        |values: [f32; 7]| values[here.a] + (values[here.b] - values[here.a]) * here.w as f32;
+    let blend = |values: [f32; crate::voyage::BIOMES]| {
+        values[here.a] + (values[here.b] - values[here.a]) * here.w as f32
+    };
     let tint = |c: [f32; 3]| {
         let c = mix3(c, [0.05, 0.22, 0.32], arctic * 0.75);
         mix3(c, [0.030, 0.012, 0.010], cave * 0.85)
     };
     let water = tint(water_tone(depth));
     let deep = tint(water_tone((depth + 0.30).min(1.1)));
-    let sun = (-depth * 4.3).exp() * (1.0 - 0.95 * cave);
+    // Over the trench the water is clear, and daylight reaches its walls.
+    let sun = (-depth * 4.3).exp() * (1.0 - 0.95 * cave) * (1.0 + 1.8 * share(world::TRENCH));
     let lamp = 0.22 + 0.95 * soft(0.12, 0.70, depth);
     let [right, up, out] = pose.basis;
     let in_boat = |v: [f32; 3]| {
@@ -1278,7 +1280,8 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         (-(below - 1.0) * 0.05).exp(),
         (-(below - 1.0) * 0.07).exp(),
     ];
-    let haze = blend([0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12]);
+    // The trench's water is clear, so its far wall shows across the gulf.
+    let haze = blend([0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11]);
 
     // The lights that matter most: nearest the window, weighed by their reach.
     let mut lights: Vec<_> = frame.lights.iter().collect();
@@ -1396,7 +1399,7 @@ mod tests {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
         let names = [
-            "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic",
+            "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
         ];
         let offsets: Vec<f64> = std::env::var("DIVE3D_PREVIEW_OFFSETS")
             .ok()
@@ -1509,7 +1512,7 @@ mod tests {
         scene.draw(&gpu, 0.0, 0, 0).expect("a frame");
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let names = [
-            "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic",
+            "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
         ];
         let frames = 60;
         let mut total = 0.0;

@@ -42,7 +42,8 @@ Spotify **Premium** account.
   rotating Blue Marble with Black Marble city lights, drifting clouds and their shadows, sun glint, sunset colour along the terminator and a scattering
   atmosphere. The **Nautilus** is the view from its salon window on a Jules Verne voyage, drawn as a 3D scene: the boat
   travels from sunlit kelp shallows, slanting shafts of sunlight, manta rays and sea turtles through the submarine
-  forest, where helmeted divers walk the seabed, past the galleons of Vigo Bay, the volcano-lit ruins of Atlantis and a lava cave down to
+  forest, where helmeted divers walk the seabed, along the rim of a terraced trench falling away into the dark,
+  past the galleons of Vigo Bay, the volcano-lit ruins of Atlantis and a lava cave down to
   the abyss and its giant squid, then up under the polar ice, while brass gauges in the bezel follow
   the dive. Swipe down on the player to summon the visualiser, swipe left or right on the dive to
   travel on to the next stretch of sea or back, and tap anywhere to fade back.
@@ -516,9 +517,9 @@ Earth textures: NASA **Blue Marble** (day) and **Black Marble** (night lights), 
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). They live in `assets/earth/`.
 
 **The Nautilus.** The view from the Nautilus' salon window, after *Twenty Thousand Leagues Under the
-Seas*, drawn as a real 3D scene in `dive3d/`. The boat travels on through seven legs of about a
+Seas*, drawn as a real 3D scene in `dive3d/`. The boat travels on through eight legs of about a
 minute each, cross-fading from one to the next: sunlit kelp shallows, the submarine forest of Crespo,
-the galleons of Vigo Bay, the ruins of Atlantis, a lava cave, the abyss, and the underside of the
+a trench, the galleons of Vigo Bay, the ruins of Atlantis, a lava cave, the abyss, and the underside of the
 polar ice before the shallows again. A swipe to the left carries it on to the next leg in a few
 seconds' surge, a swipe to the right back to the last; `voyage.rs` steers it, and every visit joins
 the circuit somewhere new over a new seabed.
@@ -564,6 +565,17 @@ a real tunnel: a massif rises across the corridor and the boat enters it through
 face, under a ragged arch of basalt veined with molten rock, hung with stalactites and lit from below
 by lava pools, and leaves by the far mouth; the mesh is rebuilt each frame for the stretch in view,
 from rings fixed in the world.
+Past the forest the seabed breaks into a trench, and the boat sails along its rim with the gulf
+beside the window: gullies cut across the rim and run down into it, the near wall steps down in
+terraces to a floor some sixty metres below, and the far wall climbs back in terraces across the
+gap, above the rim. All of it is the seabed's own height (`world::trench_profile`, a handful of
+smoothsteps and sines, mirrored in the shader), so the tiles' rock on the slopes makes the walls
+and nothing is added per pixel; the helm heels the boat a little to port there so the window looks
+down over the edge. Slabs of rock jut over each drop, sediment spills from some of them and drifts
+down, sponges, sea fans and tube worms cling to the far wall, faintly glowing sea pens and
+crinoids stand on the terraces, lights blink in the dark at the bottom, and the water is clear
+enough for sunlight to slant down into it. The biomes' tables keep their numbers, the trench last;
+`voyage::ORDER` (and `ORDER` in the shader) says the order the legs come in.
 The seabed is a random heightmap made afresh on every visit — rolling ground, folded ridges and the
 odd canyon, 64 units to a tile — shown more strongly in the rugged abyss than under the paved city;
 it shelves between the seas, so the boat drops over an edge into the abyss and climbs out to the ice.
