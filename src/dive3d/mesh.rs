@@ -454,10 +454,12 @@ pub enum Model {
     Sponge,
     Manta,
     Turtle,
+    Submarine,
+    Screw,
 }
 
 impl Model {
-    pub const ALL: [Model; 33] = [
+    pub const ALL: [Model; 35] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -491,6 +493,8 @@ impl Model {
         Model::Sponge,
         Model::Manta,
         Model::Turtle,
+        Model::Submarine,
+        Model::Screw,
     ];
 
     pub fn index(self) -> usize {
@@ -697,6 +701,8 @@ impl Model {
             Model::Keel => keel(),
             Model::Manta => manta(),
             Model::Turtle => turtle(),
+            Model::Submarine => submarine(),
+            Model::Screw => screw(),
             Model::Shell => {
                 // One valve of a giant clam: a scalloped half-dome, ridged.
                 let mut p = Vec::new();
@@ -1307,6 +1313,160 @@ fn keel() -> Mesh {
             move |p| [p[0] * c - p[1] * s + x, p[0] * s + p[1] * c, p[2]],
             move |n| [n[0] * c - n[1] * s, n[0] * s + n[1] * c, n[2]],
         ));
+    }
+    m
+}
+
+/// A sister of the Nautilus, one unit long with the spur at +0.5: a spindle of
+/// iron plates, its stern drawn to a point for the screw's shaft, its bow to
+/// the ram; a long platform along its back with the pilot's cage forward and
+/// the lantern above it, a rudder and diving planes at the stern and inclined
+/// planes either side of the bow. Its beam is 0.15, as three metres to twenty.
+/// The screw, the glowing ports and the lantern's glass are placed with it.
+pub const SUB_RADIUS: f32 = 0.075;
+/// Where on the submarine the lantern's lens is, and its screw's hub.
+pub const SUB_LANTERN: [f32; 3] = [0.205, SUB_RADIUS + 0.044, 0.0];
+pub const SUB_SCREW: [f32; 3] = [-0.488, 0.0, 0.0];
+
+fn submarine() -> Mesh {
+    const R: f32 = SUB_RADIUS;
+    let ogive = |t: f32| 1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(2);
+    let mut m = loft(
+        -0.47,
+        0.50,
+        40,
+        16,
+        move |x| {
+            let r = if x < -0.20 {
+                0.010 + (R - 0.010) * ogive((x + 0.47) / 0.27)
+            } else if x < 0.20 {
+                R
+            } else if x < 0.42 {
+                R - (R - 0.014) * ((x - 0.20) / 0.22).powf(1.5)
+            } else {
+                // The spur: a ram of steel, drawn to a point.
+                0.014 * (1.0 - (x - 0.42) / 0.08).max(0.08)
+            };
+            (0.0, r, r, r)
+        },
+        // Darker below, where no light falls and the weed grows.
+        |_, up| {
+            let v = 0.82 + 0.18 * up;
+            [v, v * 0.98, v * 0.95]
+        },
+    );
+    let dark = [0.55; 3];
+    // The platform along the back, a plank deck on the plating.
+    m.append(extrude(
+        &[
+            [-0.22, R - 0.012],
+            [0.26, R - 0.012],
+            [0.26, R + 0.005],
+            [-0.22, R + 0.005],
+        ],
+        0.050,
+        [0.70, 0.62, 0.52],
+    ));
+    // The pilot's cage, its lenticular glass placed with the ports.
+    m.append(extrude(
+        &[
+            [0.15, R - 0.005],
+            [0.25, R - 0.005],
+            [0.245, R + 0.022],
+            [0.225, R + 0.032],
+            [0.16, R + 0.032],
+        ],
+        0.036,
+        [0.75; 3],
+    ));
+    // The lantern's housing, above the cage and behind its glass.
+    m.append(extrude(
+        &[
+            [0.17, R + 0.03],
+            [0.205, R + 0.03],
+            [0.205, R + 0.058],
+            [0.185, R + 0.062],
+            [0.17, R + 0.055],
+        ],
+        0.026,
+        dark,
+    ));
+    // The rudder above and below the shaft, forward of the screw.
+    for up in [1.0f32, -1.0] {
+        m.append(
+            extrude(
+                &[
+                    [-0.465, 0.004],
+                    [-0.40, 0.004],
+                    [-0.425, 0.068],
+                    [-0.465, 0.075],
+                ],
+                0.006,
+                dark,
+            )
+            .map(
+                move |p| [p[0], p[1] * up, p[2] * up],
+                move |n| [n[0], n[1] * up, n[2] * up],
+            ),
+        );
+    }
+    // Diving planes at the stern and inclined planes at the bow, either side.
+    for side in [1.0f32, -1.0] {
+        let fin = |poly: &[[f32; 2]], root: f32| {
+            extrude(poly, 0.006, dark).map(
+                // Turned flat, about x: a rotation, so it stays wound outward.
+                move |p| [p[0], -p[2] * side, p[1] * side + root * side],
+                move |n| [n[0], -n[2] * side, n[1] * side],
+            )
+        };
+        m.append(fin(
+            &[[-0.462, 0.0], [-0.405, 0.0], [-0.43, 0.06], [-0.465, 0.065]],
+            0.004,
+        ));
+        m.append(fin(
+            &[[0.20, 0.0], [0.27, 0.0], [0.255, 0.045], [0.22, 0.05]],
+            R * 0.85,
+        ));
+    }
+    m.with_aux(|p| [p[0] * 2.0, 0.0])
+}
+
+/// The submarine's screw, a unit in radius about x: four broad blades,
+/// pitched, on a hub. It turns as the instance is rolled.
+fn screw() -> Mesh {
+    let mut m = loft(
+        -0.30,
+        0.30,
+        6,
+        10,
+        |x| {
+            let r = 0.18 * (1.0 - (x / 0.30).powi(4)).max(0.0).sqrt() + 0.02;
+            (0.0, r, r, r)
+        },
+        |_, _| [0.8; 3],
+    );
+    let blade = [
+        [-0.10, 0.10],
+        [0.12, 0.10],
+        [0.32, 0.55],
+        [0.22, 0.92],
+        [-0.02, 1.0],
+        [-0.22, 0.72],
+    ];
+    let pitch: f32 = 0.65;
+    for k in 0..4 {
+        let theta = k as f32 * TAU / 4.0;
+        // Blade space is (across, out, through); turned about `out` by the
+        // pitch, then set round the hub: rotations only, so it stays wound
+        // outward.
+        let (sp, cp) = pitch.sin_cos();
+        let (st, ct) = theta.sin_cos();
+        let turn = move |p: [f32; 3]| {
+            let across = p[0] * cp - p[2] * sp;
+            let through = p[0] * sp + p[2] * cp;
+            [through, p[1] * ct + across * st, p[1] * st - across * ct]
+        };
+        m.append(extrude(&blade, 0.06, [1.0; 3]).map(turn, turn));
     }
     m
 }

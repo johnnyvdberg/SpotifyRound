@@ -2,7 +2,8 @@
 //!
 //! Each layer of one texture array is a tileable pattern made from wrapping
 //! noise: grained rock, planking, veined marble, fish scales, wrinkled whale
-//! skin, copper going green, canvas, coral, kelp, basalt, ice, sand and silt.
+//! skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt and
+//! riveted iron plating.
 //! They are mostly tone, close to white on average, so a model's own colour
 //! still decides its hue and the texture adds the detail. The shader projects
 //! them along three axes, so no model needs texture coordinates.
@@ -28,10 +29,11 @@ pub enum Surface {
     Ice,
     Sand,
     Silt,
+    Plates,
 }
 
 impl Surface {
-    pub const ALL: [Surface; 14] = [
+    pub const ALL: [Surface; 15] = [
         Surface::Plain,
         Surface::Rock,
         Surface::Wood,
@@ -46,6 +48,7 @@ impl Surface {
         Surface::Ice,
         Surface::Sand,
         Surface::Silt,
+        Surface::Plates,
     ];
 
     pub fn layer(self) -> f32 {
@@ -220,6 +223,32 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             let soft = fbm(u, v, 6, 5, 120);
             let pebble = smooth(0.10, 0.06, cells(u, v, 18, 121));
             grey((0.78 + 0.35 * soft) * (1.0 - 0.25 * pebble))
+        }
+        Surface::Plates => {
+            // Iron plates in courses, each course offset by half a plate,
+            // lapped at dark seams and fastened by a line of rivets along
+            // each edge; streaked with rust below the rivets.
+            let (rows, across) = (4.0, 3.0);
+            let row = (v * rows).floor();
+            let pu = (u * across + row * 0.5).fract();
+            let pv = (v * rows).fract();
+            let plate = hash(
+                ((u * across + row * 0.5).floor() as i32).rem_euclid(across as i32),
+                row as i32,
+                130,
+            );
+            let seam = smooth(0.0, 0.03, pu.min(1.0 - pu)) * smooth(0.0, 0.04, pv.min(1.0 - pv));
+            // Lines of rivets just in from each plate's edges, eight texels
+            // apart.
+            let dot = |du: f32, dv: f32| smooth(2.2, 1.0, du.hypot(dv) * SIZE as f32);
+            let spaced = |t: f32| ((t * 32.0).fract() - 0.5) / 32.0;
+            let rows_v = (pv - 0.14).abs().min((pv - 0.86).abs()) / rows;
+            let rows_u = (pu - 0.05).abs().min((pu - 0.95).abs()) / across;
+            let rivets = dot(spaced(u), rows_v).max(dot(rows_u, spaced(v)));
+            let grain = 0.88 + 0.2 * fbm(u, v, 16, 3, 131) + 0.12 * (plate - 0.5);
+            let rust = smooth(0.55, 0.8, fbm(u, v, 4, 3, 132)) * (0.4 + 0.6 * pv);
+            let c = grey(grain * (0.35 + 0.65 * seam) + 0.45 * rivets);
+            mix(c, [0.85, 0.45, 0.25], rust * 0.35)
         }
     }
 }

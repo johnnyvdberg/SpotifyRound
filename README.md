@@ -357,7 +357,7 @@ src/
 │   ├── helm.rs        how the boat moves: surge, cruise height, pitch, roll, turns about, all on springs
 │   ├── heightmap.rs   the random seabed of each visit: rolling ground, ridges and canyons
 │   ├── terrain.rs     the seabed in tiles, built as they come into view and dropped behind
-│   ├── textures.rs    fourteen procedural surfaces: rock, planks, marble, scales, skin, copper…
+│   ├── textures.rs    fifteen procedural surfaces: rock, planks, marble, scales, skin, copper…
 │   ├── mesh.rs        every model, generated at start-up from lathes, lofts and extrusions
 │   ├── world.rs       what is in the water each frame: features, swimmers, lights, sprites
 │   └── scene.wgsl     water, seabed, models, glass and sprites
@@ -577,10 +577,18 @@ up the tunnel. Every motion is on a critically damped spring, so neither a swipe
 jolts the view, and in a fast passage the rush of bubbles streaking past the glass covers the quicker
 motion; the manometer reads the boat's real depth. Things fade in and out as their
 sea comes and goes, by coverage through the multisampling, and the ice fades at its edges rather
-than stopping at a line. Fourteen procedural surfaces — rock, planking, veined
-marble, fish scales, whale skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt —
+than stopping at a line. Fifteen procedural surfaces — rock, planking, veined
+marble, fish scales, whale skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt,
+riveted iron plates —
 are projected along three axes, carried by the swimmers as they bend and fixed in the world on the
 seabed, the ruins and the wrecks; the seabed takes rock on its slopes.
+Every couple of minutes a sister of the Nautilus may cross the window, twenty metres of riveted iron
+with a ram at the bow, warm ports and a screw turning in a trail of bubbles: passing close the other
+way, overtaking, drawing up alongside for a while, far off across the water, or nosing out of the
+gloom and turning away, chosen by the sea she is met in and kept clear of the trees, columns, temples
+and masts. In dark water her searchlight sweeps the sea, a beam in a small pipeline of its own with
+one point light where it falls, and in the abyss she is little more than her lights. The encounters
+run on the visit's clock, so `places.rs` can find them (`DIVE3D_SHOTS=encounter`).
 It renders at 640 × 640 with 4× multisampling and a reversed depth buffer, then goes through the
 porthole in `porthole.rs`: a brass bezel with an engraved degree scale and twelve hex bolts, running
 out to the edge of the panel so its own bezel frames the window, a manometer reading the depth, a log turning once per leg and a cartouche with

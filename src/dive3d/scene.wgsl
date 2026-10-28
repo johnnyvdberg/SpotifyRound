@@ -798,3 +798,46 @@ fn fs_shaft(in: Shaft) -> @location(0) vec4<f32> {
     let along = (1.0 - smooth01(0.75, 1.0, y)) * smooth01(-1.0, 0.1, y);
     return vec4<f32>(in.colour * (across * across * along), 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// Searchlight beams
+// ---------------------------------------------------------------------------
+
+// Another submarine's searchlight in dark water: a ribbon from the lamp at
+// `place` along `run`, `place.w` wide either side at the lamp and `tint.w`
+// at the far end, turned about its length to face the window. A pipeline of
+// its own, like the shafts, so nothing else pays for its falloff, and lit
+// whatever the daylight.
+@vertex
+fn vs_beam(
+    @builtin(vertex_index) index: u32,
+    @location(0) place: vec4<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) run: vec4<f32>,
+) -> Shaft {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let corner = corners[index];
+    let along = 0.5 - 0.5 * corner.y;
+    let axis = place.xyz + run.xyz * along;
+    let side = normalize(cross(run.xyz, g.camera.xyz - axis) + vec3<f32>(1e-5, 0.0, 0.0));
+    let at = axis + side * mix(place.w, tint.w, along) * corner.x;
+    var out: Shaft;
+    out.position = project(at);
+    out.corner = corner;
+    let d = length(at - g.camera.xyz);
+    out.colour = tint.rgb * smooth01(0.2, 0.8, d) * (1.0 - fog_of(d)) * SEA_SCALE;
+    return out;
+}
+
+// Soft across; brightest at the lamp, spreading thin as the cone widens and
+// gone by its end.
+@fragment
+fn fs_beam(in: Shaft) -> @location(0) vec4<f32> {
+    let across = 1.0 - in.corner.x * in.corner.x;
+    let s = 0.5 - 0.5 * in.corner.y;
+    let along = smooth01(0.0, 0.03, s) * (1.0 - smooth01(0.45, 1.0, s)) / (1.0 + 10.0 * s * s);
+    return vec4<f32>(in.colour * (across * across * along), 0.0);
+}

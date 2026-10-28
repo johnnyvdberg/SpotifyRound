@@ -99,6 +99,8 @@ pub(crate) struct Nautilus {
     glass: wgpu::RenderPipeline,
     sprites: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
+    /// Searchlight beams of other submarines.
+    beams: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     group: wgpu::BindGroup,
     #[cfg(test)]
@@ -736,6 +738,18 @@ impl Nautilus {
             &[],
             None,
         );
+        let beams = pipeline(
+            "Dive3d beams",
+            "vs_beam",
+            "fs_beam",
+            &sprite_buffers,
+            Some(additive),
+            false,
+            nearer,
+            false,
+            &[],
+            None,
+        );
 
         let porthole = Porthole::new(gpu, &resolved, SEA, BEND, scale);
         tracing::info!(
@@ -753,6 +767,7 @@ impl Nautilus {
             glass,
             sprites,
             shafts,
+            beams,
             globals,
             group,
             #[cfg(test)]
@@ -1018,6 +1033,17 @@ impl Nautilus {
             std::mem::size_of_val(sprites) as u64,
             bytemuck::cast_slice(shafts),
         );
+        // The searchlight beams follow the shafts.
+        let beams = &self.frame.beams[..self
+            .frame
+            .beams
+            .len()
+            .min(MAX_SPRITES - sprites.len() - shafts.len())];
+        gpu.queue.write_buffer(
+            &self.sprite_buffer,
+            (std::mem::size_of_val(sprites) + std::mem::size_of_val(shafts)) as u64,
+            bytemuck::cast_slice(beams),
+        );
 
         let mut encoder = gpu
             .device
@@ -1130,6 +1156,12 @@ impl Nautilus {
                 pass.set_pipeline(&self.shafts);
                 pass.set_vertex_buffer(0, self.sprite_buffer.slice(..));
                 pass.draw(0..6, first..first + shafts.len() as u32);
+            }
+            if !beams.is_empty() && !self.skips(part::SHAFTS) {
+                let first = (sprites.len() + shafts.len()) as u32;
+                pass.set_pipeline(&self.beams);
+                pass.set_vertex_buffer(0, self.sprite_buffer.slice(..));
+                pass.draw(0..6, first..first + beams.len() as u32);
             }
         }
         self.porthole
