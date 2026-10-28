@@ -342,10 +342,17 @@ pub struct Frame {
     pub glass: Vec<Vec<Instance>>,
     pub sprites: Vec<Sprite>,
     pub lights: Vec<Light>,
-    /// The tunnel through the lava cave's massif, rebuilt each frame in world
-    /// space for the stretch in view.
+    /// The tunnel through the lava cave's massif, in world space for the
+    /// stretch in view. It depends only on the seabed and that stretch, so it
+    /// is kept from frame to frame and rebuilt only when the stretch moves on
+    /// by a ring, every few seconds rather than every frame.
     pub tunnel: Vec<super::mesh::Vertex>,
     pub tunnel_indices: Vec<u32>,
+    /// Counts the tunnel's rebuilds, so whoever keeps a copy of it on the GPU
+    /// can tell when theirs is out of date.
+    pub tunnel_version: u64,
+    /// The stretch of rings the tunnel was built for, and the seabed's seed.
+    tunnel_span: Option<(i32, i32, u32)>,
     /// How far what is being placed has faded in, as its biome comes and goes.
     fade: f32,
     /// The texture for models that have none of their own, while placing one
@@ -362,6 +369,8 @@ impl Frame {
             lights: Vec::new(),
             tunnel: Vec::new(),
             tunnel_indices: Vec::new(),
+            tunnel_version: 0,
+            tunnel_span: None,
             fade: 1.0,
             skin: None,
         }
@@ -373,8 +382,11 @@ impl Frame {
         }
         self.sprites.clear();
         self.lights.clear();
-        self.tunnel.clear();
-        self.tunnel_indices.clear();
+    }
+
+    /// Build the tunnel afresh next time: the seabed has changed.
+    pub fn forget_tunnel(&mut self) {
+        self.tunnel_span = None;
     }
 
     fn instance(&self, model: Model, rows: [[f32; 4]; 3], colour: [f32; 3]) -> Instance {
@@ -1368,8 +1380,9 @@ fn cave(w: &World, f: &mut Frame) {
 
 /// The tunnel through the cave's massif: a ragged arch of rock inside, the
 /// massif's dome over it outside, and at each mouth the cliff face with the
-/// opening in it. Rebuilt each frame for the stretch in view, from rings fixed
-/// in the world, so it never shifts as the boat moves.
+/// opening in it. Built for the stretch in view, from rings fixed in the
+/// world, so it never shifts as the boat moves; and only when that stretch
+/// gains or loses a ring, as nothing else about it changes.
 fn tunnel(w: &World, f: &mut Frame) {
     use super::mesh::Vertex;
     const STEP: f32 = 0.2;
@@ -1377,6 +1390,14 @@ fn tunnel(w: &World, f: &mut Frame) {
     let cam = w.camera();
     let first = ((cam - 16.0) / STEP).floor() as i32;
     let last = ((cam + 16.0) / STEP).ceil() as i32;
+    let span = Some((first, last, w.seabed.seed.to_bits()));
+    if f.tunnel_span == span {
+        return;
+    }
+    f.tunnel_span = span;
+    f.tunnel_version += 1;
+    f.tunnel.clear();
+    f.tunnel_indices.clear();
     let verts = &mut f.tunnel;
     let indices = &mut f.tunnel_indices;
     let vertex = |p: [f32; 3]| Vertex {

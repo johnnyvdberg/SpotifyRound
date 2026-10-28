@@ -111,10 +111,17 @@ pub(crate) struct Nautilus {
     ground_indices: wgpu::Buffer,
     ground_count: u32,
     terrain: Terrain,
-    /// The tunnel through the cave's massif, rebuilt each frame.
+    /// The tunnel through the cave's massif, and which of its builds
+    /// ([`world::Frame::tunnel_version`]) the buffers hold.
     tunnel: wgpu::Buffer,
     tunnel_indices: wgpu::Buffer,
+    tunnel_uploaded: Option<u64>,
     instances: wgpu::Buffer,
+    /// Kept from frame to frame so sorting the instances allocates nothing:
+    /// where each goes, the instances in that order, and the draws over them.
+    order: Vec<Staged>,
+    staged: Vec<Instance>,
+    draws: Vec<Draw>,
     sprite_buffer: wgpu::Buffer,
     colour: wgpu::TextureView,
     depth: wgpu::TextureView,
@@ -156,8 +163,8 @@ fn material_slot(i: &Instance) -> usize {
         .unwrap_or(MATERIALS.len() - 1)
 }
 
-/// Which pipeline a run of instances is drawn with.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Which pipeline a run of instances is drawn with, in the order they are drawn.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Kind {
     /// Solid and fully there, and closed: its back faces are culled.
     Sealed,
@@ -167,6 +174,33 @@ enum Kind {
     Fading,
     /// Translucent: jellyfish, bells, bubbles' shells.
     Glass,
+}
+
+/// One instance on its way to the GPU: which draw it joins, how far out it
+/// is, and where it is in the frame's lists.
+#[derive(Clone, Copy)]
+struct Staged {
+    kind: Kind,
+    slot: u32,
+    model: u32,
+    lod: u32,
+    depth: f32,
+    index: u32,
+}
+
+/// One draw: a run of instances of one model at one level of detail, all
+/// drawn by the same pipeline.
+#[derive(Clone, Copy)]
+struct Draw {
+    kind: Kind,
+    /// The material's pipeline, an index into [`MATERIALS`].
+    slot: usize,
+    model: usize,
+    lod: usize,
+    first: u32,
+    count: u32,
+    /// How far out its nearest instance is.
+    nearest: f32,
 }
 
 /// The parts of the scene `frame_cost` can leave out, as bits of `skip`.
@@ -715,7 +749,11 @@ impl Nautilus {
             terrain: Terrain::default(),
             tunnel,
             tunnel_indices,
+            tunnel_uploaded: None,
             instances,
+            order: Vec::new(),
+            staged: Vec::new(),
+            draws: Vec::new(),
             sprite_buffer,
             colour: colour_target,
             depth,
@@ -754,6 +792,7 @@ impl Nautilus {
             self.seabed = Seabed::new(visit, seed);
             self.helm = Helm::default();
             self.terrain.clear();
+            self.frame.forget_tunnel();
             self.visit = Some(visit);
             gpu.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -812,12 +851,14 @@ impl Nautilus {
         gpu.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&uniforms));
 
-        // Model by model: the solid instances that are fully there, those
-        // fading in or out (the ice always, as it fades by where it is), then
-        // the translucent ones.
-        let mut all: Vec<Instance> = Vec::with_capacity(4096);
-        // Model, level of detail, first instance, count, kind, material slot.
-        let mut draws: Vec<(usize, usize, u32, u32, Kind, usize)> = Vec::new();
+        // The solid instances that are fully there, those fading in or out
+        // (the ice always, as it fades by where it is), then the translucent
+        // ones; each material's together, so its pipeline is bound once. The
+        // solid ones go nearest first, within each draw and draw by draw, so
+        // the depth test turns away what lies behind them before it is
+        // shaded. The translucent ones keep the order they were placed in:
+        // they add up, and in ten bits a channel even the order of adding
+        // can show.
         let fades = |i: &Instance| i.extra[2] < 0.999 || i.extra[0] == world::material::ICE;
         // A mirrored instance turns its model inside out.
         let mirrored = |i: &Instance| {
@@ -826,10 +867,11 @@ impl Nautilus {
                 + a[2] * (b[0] * c[1] - b[1] * c[0]);
             det < 0.0
         };
+        let closed = &self.closed;
         let kind_of = |model: usize, i: &Instance| {
             if fades(i) {
                 Kind::Fading
-            } else if self.closed[model] && !mirrored(i) {
+            } else if closed[model] && !mirrored(i) {
                 Kind::Sealed
             } else {
                 Kind::Solid
@@ -844,56 +886,82 @@ impl Nautilus {
                 level_of(&lods[model], i, &pose)
             }
         };
-        let levels = |lists: &[Vec<Instance>]| -> Vec<Vec<usize>> {
-            lists
-                .iter()
-                .enumerate()
-                .map(|(model, list)| list.iter().map(|i| level_of(model, i)).collect())
-                .collect()
+        let out = pose.basis[2];
+        let depth = |i: &Instance| {
+            (0..3)
+                .map(|r| (i.rows[r][3] - pose.pos[r]) * out[r])
+                .sum::<f32>()
         };
-        let solid_levels = levels(&self.frame.solid);
-        let glass_levels = levels(&self.frame.glass);
-        for (kind, glassy) in [
-            (Kind::Sealed, false),
-            (Kind::Solid, false),
-            (Kind::Fading, false),
-            (Kind::Glass, true),
-        ] {
-            let (lists, levels) = if glassy {
-                (&self.frame.glass, &glass_levels)
+        let order = &mut self.order;
+        order.clear();
+        for (model, list) in self.frame.solid.iter().enumerate() {
+            order.extend(list.iter().enumerate().map(|(index, i)| Staged {
+                kind: kind_of(model, i),
+                slot: material_slot(i) as u32,
+                model: model as u32,
+                lod: level_of(model, i) as u32,
+                depth: depth(i),
+                index: index as u32,
+            }));
+        }
+        // Glass has one shader for every material.
+        for (model, list) in self.frame.glass.iter().enumerate() {
+            order.extend(list.iter().enumerate().map(|(index, i)| Staged {
+                kind: Kind::Glass,
+                slot: 0,
+                model: model as u32,
+                lod: level_of(model, i) as u32,
+                depth: 0.0,
+                index: index as u32,
+            }));
+        }
+        order.sort_unstable_by(|a, b| {
+            (a.kind, a.slot, a.model, a.lod)
+                .cmp(&(b.kind, b.slot, b.model, b.lod))
+                .then(a.depth.total_cmp(&b.depth))
+                .then(a.index.cmp(&b.index))
+        });
+        let all = &mut self.staged;
+        let draws = &mut self.draws;
+        all.clear();
+        draws.clear();
+        for s in order.iter().take(MAX_INSTANCES) {
+            let lists = if s.kind == Kind::Glass {
+                &self.frame.glass
             } else {
-                (&self.frame.solid, &solid_levels)
+                &self.frame.solid
             };
-            // Glass has one shader for every material.
-            let slots = if glassy { 1 } else { MATERIALS.len() };
-            for (model, list) in lists.iter().enumerate() {
-                for lod in 0..lods[model].len() {
-                    for slot in 0..slots {
-                        let first = all.len();
-                        let room = MAX_INSTANCES - first;
-                        let wanted = list
-                            .iter()
-                            .zip(&levels[model])
-                            .filter(|&(i, &level)| {
-                                level == lod
-                                    && (glassy
-                                        || (kind_of(model, i) == kind && material_slot(i) == slot))
-                            })
-                            .map(|(i, _)| *i);
-                        all.extend(wanted.take(room));
-                        let n = all.len() - first;
-                        if n > 0 {
-                            draws.push((model, lod, first as u32, n as u32, kind, slot));
-                        }
-                    }
+            all.push(lists[s.model as usize][s.index as usize]);
+            let (slot, model, lod) = (s.slot as usize, s.model as usize, s.lod as usize);
+            match draws.last_mut() {
+                Some(d) if (d.kind, d.slot, d.model, d.lod) == (s.kind, slot, model, lod) => {
+                    d.count += 1
                 }
+                _ => draws.push(Draw {
+                    kind: s.kind,
+                    slot,
+                    model,
+                    lod,
+                    first: all.len() as u32 - 1,
+                    count: 1,
+                    nearest: s.depth,
+                }),
             }
         }
+        // Stable, so the translucent draws stay in the order they came.
+        draws.sort_by(|a, b| {
+            (a.kind, a.slot)
+                .cmp(&(b.kind, b.slot))
+                .then(if a.kind == Kind::Glass {
+                    std::cmp::Ordering::Equal
+                } else {
+                    a.nearest.total_cmp(&b.nearest)
+                })
+        });
         // The tunnel is in world space already: one instance that moves nothing.
         let tunnel_count = self.frame.tunnel_indices.len().min(MAX_TUNNEL_INDICES) as u32;
-        let tunnel_drawn = tunnel_count > 0
-            && self.frame.tunnel.len() <= MAX_TUNNEL_VERTICES
-            && all.len() < MAX_INSTANCES;
+        let tunnel_fits = tunnel_count > 0 && self.frame.tunnel.len() <= MAX_TUNNEL_VERTICES;
+        let tunnel_drawn = tunnel_fits && all.len() < MAX_INSTANCES;
         let tunnel_instance = all.len() as u32;
         if tunnel_drawn {
             all.push(Instance {
@@ -907,6 +975,9 @@ impl Nautilus {
                 extra: [world::material::VAULT, 0.0, 1.0, 0.0],
                 surface: [textures::Surface::Basalt.layer(), 1.5, 0.0, 0.0],
             });
+        }
+        // It is only rebuilt when the boat has moved on by a ring of it.
+        if tunnel_fits && self.tunnel_uploaded != Some(self.frame.tunnel_version) {
             gpu.queue
                 .write_buffer(&self.tunnel, 0, bytemuck::cast_slice(&self.frame.tunnel));
             gpu.queue.write_buffer(
@@ -914,9 +985,11 @@ impl Nautilus {
                 0,
                 bytemuck::cast_slice(&self.frame.tunnel_indices[..tunnel_count as usize]),
             );
+            self.tunnel_uploaded = Some(self.frame.tunnel_version);
         }
+        let all = &self.staged;
         gpu.queue
-            .write_buffer(&self.instances, 0, bytemuck::cast_slice(&all));
+            .write_buffer(&self.instances, 0, bytemuck::cast_slice(all));
         let sprites = &self.frame.sprites[..self.frame.sprites.len().min(MAX_SPRITES)];
         gpu.queue
             .write_buffer(&self.sprite_buffer, 0, bytemuck::cast_slice(sprites));
@@ -980,20 +1053,22 @@ impl Nautilus {
                 pass.set_vertex_buffer(0, self.vertices.slice(..));
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 let mut bound = None;
-                for &(model, lod, first, count, kind, slot) in &draws {
-                    if kind == wanted {
-                        if bound != Some(slot) {
-                            pass.set_pipeline(match wanted {
-                                Kind::Sealed => &self.sealed[slot],
-                                Kind::Solid => &self.models[slot],
-                                Kind::Fading => &self.fading[slot],
-                                Kind::Glass => &self.glass,
-                            });
-                            bound = Some(slot);
-                        }
-                        let l = self.lods[model][lod];
-                        pass.draw_indexed(l.first..l.first + l.count, l.base, first..first + count);
+                for d in self.draws.iter().filter(|d| d.kind == wanted) {
+                    if bound != Some(d.slot) {
+                        pass.set_pipeline(match wanted {
+                            Kind::Sealed => &self.sealed[d.slot],
+                            Kind::Solid => &self.models[d.slot],
+                            Kind::Fading => &self.fading[d.slot],
+                            Kind::Glass => &self.glass,
+                        });
+                        bound = Some(d.slot);
                     }
+                    let l = self.lods[d.model][d.lod];
+                    pass.draw_indexed(
+                        l.first..l.first + l.count,
+                        l.base,
+                        d.first..d.first + d.count,
+                    );
                 }
             };
             if !self.skips(part::MODELS) {

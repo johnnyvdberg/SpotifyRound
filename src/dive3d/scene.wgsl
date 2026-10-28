@@ -600,11 +600,15 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     var albedo = in.albedo * texture;
     // Bedded in the sand: the foot of anything on the seabed takes its colour.
+    // Only the foot: the rest of the model, most of its pixels, skips finding
+    // the biome, which costs five sines a pixel.
     if (in.grounded > 0.5) {
         let floor_y = in.floor_y;
         let buried = 1.0 - smooth01(floor_y + 0.005, floor_y + 0.05, p.y);
-        let l = leg(voyage_x(p.x, p.z));
-        albedo = mix(albedo, floor_albedo(l) * 0.9, buried * 0.85);
+        if (buried > 0.0) {
+            let l = leg(voyage_x(p.x, p.z));
+            albedo = mix(albedo, floor_albedo(l) * 0.9, buried * 0.85);
+        }
     }
     var colour = albedo * light_at(p, n);
     colour += in.albedo * in.glow;
