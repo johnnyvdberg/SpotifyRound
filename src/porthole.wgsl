@@ -1,12 +1,15 @@
 // The Nautilus' salon window, around a sea drawn by the 3D dive.
 //
-// Two passes share this file:
+// Four entry points share this file:
 //
 // - `fs_overlay` draws the brass bezel, the riveted casing and the gauge faces.
-//   None of it moves, so it is drawn once when the scene is built.
-// - `fs_composite` runs at the panel's full resolution: it bends the sea at the
-//   edge of the glass, gives it an engraved finish, lays the bezel over it and
-//   draws the gauge needles, which are the only moving part of the frame.
+//   None of it moves, so it is drawn once when the scene is built and handed to
+//   Slint as a static overlay.
+// - `fs_sea` runs at the sea's own resolution: it bends the view at the edge of
+//   the glass and gives the water its engraved finish.
+// - `fs_needle` draws one gauge needle into a small transparent tile.
+// - `fs_composite` is the old full-resolution composite, kept for the design
+//   previews and tests, which still want one image.
 //
 // Positions are in units of the frame's height, with the window's centre at
 // the origin.
@@ -43,10 +46,14 @@ const GAUGE_R: f32 = 0.050;
 const GAUGE_RING: f32 = 0.442;
 const DEPTH_GAUGE: f32 = -2.235;
 const LOG_GAUGE: f32 = -0.907;
+// Edge of a needle tile, in pixels. Mirrors `porthole::NEEDLE`.
+const NEEDLE: f32 = 192.0;
 
 // How much the thick glass bends the view at its edge. The 3D dive renders a
 // plain perspective view and sets this so the composite bends it here.
 override GLASS_BEND: f32 = 0.0;
+// Which gauge a needle tile draws: 0 for the manometer, 1 for the log.
+override GAUGE: i32 = 0;
 // What the sea's colours were scaled by when they were stored, to fit them
 // in a format that holds no more than 1 (see `SEA_SCALE` in the 3D dive).
 override SEA_SCALE: f32 = 1.0;
@@ -287,6 +294,95 @@ fn fs_overlay(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
     let plate = cartouche(p);
     out = vec4<f32>(plate.rgb + out.rgb * (1.0 - plate.a), plate.a + out.a * (1.0 - plate.a));
     return out;
+}
+
+
+// The sea through the glass, at the dive's own resolution. The bezel, its
+// gauges and the needles are separate layers now: this pass only bends and
+// grades the water, and leaves everything outside the glass transparent.
+@fragment
+fn fs_sea(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
+    let size = params.scene.x;
+    let p = vec2<f32>(
+        (in.x - size * 0.5) / size,
+        (size * 0.5 - in.y) / size,
+    );
+    let rp = length(p);
+    if (rp > GLASS + 0.004) {
+        return vec4<f32>(0.0);
+    }
+
+    var q = p;
+    if (GLASS_BEND > 0.0) {
+        q += normalize(p + vec2<f32>(0.0001)) * soft(0.62, 1.0, rp / GLASS) * GLASS_BEND;
+    }
+    let uv = vec2<f32>(q.x, -q.y) / (2.0 * VIEW) + 0.5;
+    var col = textureSampleLevel(sea, sea_sampler, uv, 0.0).rgb / SEA_SCALE;
+
+    // An engraver's finish, after the plates of the 1871 edition. At the sea's
+    // resolution the 1080-pixel hatch would alias badly, so it is drawn a
+    // little coarser and survives the upscale.
+    let lum = dot(col, vec3<f32>(0.30, 0.55, 0.15));
+    if (lum < 0.16) {
+        let hatch_a = 0.5 + 0.5 * sin((in.x + in.y) * 1.5);
+        let hatch_b = 0.5 + 0.5 * sin((in.x - in.y) * 1.5);
+        let dark = soft(0.16, 0.02, lum);
+        let lines = hatch_a * soft(0.0, 1.0, dark) + hatch_b * soft(0.5, 1.0, dark);
+        col *= 1.0 - 0.22 * lines * dark;
+    }
+    col = mix(col, col * vec3<f32>(1.08, 1.0, 0.88), soft(0.10, 0.50, lum));
+
+    // Dither away the banding in the dark water, as the old full-resolution
+    // composite did. It is the panel's least significant bit; the upscale
+    // leaves it fine enough to still break the bands.
+    col += (hash21(in.xy + fract(params.frame.z) * 91.0) - 0.5) / 255.0;
+    return vec4<f32>(col, 1.0);
+}
+
+// A needle on its transparent tile, premultiplied. The gauge centre is the
+// tile's centre, so the tile can be laid over the bezel wherever the gauge is.
+fn needle_overlay(p: vec2<f32>, angle: f32, tip: vec3<f32>) -> vec4<f32> {
+    let l = p;
+    if (dot(l, l) > GAUGE_R * GAUGE_R) {
+        return vec4<f32>(0.0);
+    }
+    let dir = vec2<f32>(sin(angle), cos(angle));
+    let shadow_l = l - vec2<f32>(0.0025, -0.0025);
+    let reach = GAUGE_R * 0.80;
+    let ds = segment(shadow_l, -dir * reach * 0.25, dir * reach) - 0.0016;
+    let shadow = 0.35 * fill(ds, 0.002);
+    let along = clamp(dot(l, dir) / reach, -0.25, 1.0);
+    let width = mix(0.0022, 0.0006, max(along, 0.0));
+    let d = segment(l, -dir * reach * 0.25, dir * reach) - width;
+    let steel = mix(vec3<f32>(0.06, 0.07, 0.11), tip, soft(0.70, 0.78, along));
+    let needle = fill(d, 0.0007);
+    let cap = length(l) - 0.0055;
+    let cap_cov = fill(cap, 0.0007);
+    let cap_col = vec3<f32>(0.60, 0.42, 0.18) * (0.7 + 0.5 * soft(0.004, -0.004, l.x - l.y));
+
+    var rgb = vec3<f32>(0.0);
+    var alpha = 0.0;
+    // The shadow first, then the opaque steel and the brass cap over it.
+    rgb *= 1.0 - shadow;
+    alpha *= 1.0 - shadow;
+    rgb = steel * needle + rgb * (1.0 - needle);
+    alpha = needle + alpha * (1.0 - needle);
+    rgb = cap_col * cap_cov + rgb * (1.0 - cap_cov);
+    alpha = cap_cov + alpha * (1.0 - cap_cov);
+    return vec4<f32>(rgb, alpha);
+}
+
+@fragment
+fn fs_needle(@builtin(position) in: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = vec2<f32>(
+        (in.x - NEEDLE * 0.5) / params.frame.y,
+        (NEEDLE * 0.5 - in.y) / params.frame.y,
+    );
+    if (GAUGE == 0) {
+        let reading = log(1.0 + params.scene.w) / log(46.0);
+        return needle_overlay(p, (reading - 0.5) * 4.7 * 0.92, vec3<f32>(0.60, 0.10, 0.06));
+    }
+    return needle_overlay(p, params.scene.y / LEG * TAU, vec3<f32>(0.06, 0.07, 0.11));
 }
 
 // A blued-steel needle with a counterweight, pointing at `angle` (0 = up,

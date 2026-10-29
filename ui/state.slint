@@ -100,6 +100,11 @@ export global Idle {
     in-out property <length> frame-size: 1080px;
     // One frame of the selected visualisation, shown by `frame`.
     in-out property <image> frame;
+    // The Nautilus' static brass bezel, and the two gauge needles that move
+    // over it. Empty for the globe.
+    in-out property <image> bezel;
+    in-out property <image> needle-depth;
+    in-out property <image> needle-log;
     // The render targets every scene rotates through, flattened scene by scene.
     // They are kept as images here so the renderer caches them once, instead of
     // seeing a new image every frame.

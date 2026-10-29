@@ -237,7 +237,9 @@ where the round glass still has room for it, with the frames the window presente
 second and, while the visualizer runs, its own frame rate, the milliseconds its thread spent on
 each frame and the milliseconds the GPU took to finish it (`gpu`). Above 16 ms the GPU cannot keep
 60 fps. The window only counts frames from the first time the readout is shown, because counting
-costs the Pi a render pass a frame.
+costs the Pi a render pass a frame. With `SPOTIFY_ROUND_FULL_SPEED` set, the same one-second line is
+also written to `/tmp/spotify-round-fps` — window fps, screen, idle, scene fps, scene ms and gpu ms
+— for measuring a kiosk whose console cannot be read over SSH.
 
 ### Controls
 
@@ -351,10 +353,10 @@ src/
 ├── motion.rs          Animato: accent tween, reveal, pulse
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
 ├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
-├── porthole.rs        the Nautilus' window: bezel, gauges and the composite over the sea
-├── porthole.wgsl      its shaders: brass bezel, gauge faces, engraving, bending glass, needles
+├── porthole.rs        the Nautilus' window: static bezel, low-resolution sea, needle tiles
+├── porthole.wgsl      its shaders: brass bezel, gauges, sea bend, engraving, needles
 ├── dive3d/            idle scene: the Nautilus' voyage, rasterised in 3D
-│   ├── mod.rs         renderer: passes, pipelines, lighting; lays the porthole over the sea
+│   ├── mod.rs         renderer: passes, pipelines, lighting; draws the sea under the porthole
 │   ├── helm.rs        how the boat moves: a 20 m hull's track, height, pitch, roll and clearances
 │   ├── heightmap.rs   the random seabed of each visit: rolling ground, ridges and canyons
 │   ├── terrain.rs     the seabed in tiles, built as they come into view and dropped behind
@@ -427,12 +429,18 @@ pipeline label and entry point (about a minute once the image is built);
   full-screen femtovg layer cost about 5 ms on the Pi against 0.4 ms for a trivial shader, and the
   player alone 25 ms of the 16.7 ms a frame has. `--no-default-features --features femtovg`
   switches back, to compare.
+- The Nautilus' sea is 448 × 448 with **one** sample. Its brass bezel is one static 1080 texture and
+  its gauge needles are two 192-pixel tiles, so Slint composites the three instead of a 1080
+  fragment shader doing it every frame. On the Pi 5 the dive went from 32 ms a frame to **10.5 ms on
+  average and 11.7 ms on its heaviest leg**, measured with the kiosk paused so the benchmark had the
+  GPU to itself; with the kiosk running the window holds 60 fps.
 - What can be drawn together is: the player's glow, vignette and rim are one opaque texture from
-  `ring.rs`, and the globe paints the space behind itself, so each screen is one full-screen layer
-  for Slint.
+  `ring.rs`, and the globe paints the space behind itself, so those screens are one full-screen layer
+  for Slint. The Nautilus is its sea window plus the static bezel and the two small needle tiles.
 - Shaders are specialised where they branch on something fixed for a draw: the dive's model
-  shader gets a pipeline per material, and the globe works out once what never changes for a
-  pixel (where it lies on the maps, the air towards the viewer) instead of every frame.
+  shader gets a pipeline per material and per grounded flag, so a swimming fish does not carry the
+  seabed bedding its rocks need, and the globe works out once what never changes for a pixel (where
+  it lies on the maps, the air towards the viewer) instead of every frame.
 - No rendering notifier is installed unless the frame-rate readout asks for one: while one is set,
   Slint submits the window clear in a pass of its own.
 - Every submission is made on the UI thread (`Graphics::submit`). wgpu drains the queue before it
@@ -612,7 +620,7 @@ streaking past the glass covers the speed. `HELM_LOG_DIR=<dir> cargo test --rele
 --ignored` logs a few voyages' poses — knots, rate of turn, turning radius, climb, pitch, roll and
 the hull's clearances — and a test holds the helm to them. The helm costs a few microseconds a
 frame, and the manometer reads the boat's real depth. Things fade in and out as their
-sea comes and goes, by coverage through the multisampling, and the ice fades at its edges rather
+sea comes and goes: at one sample they melt into the water, and the ice fades at its edges rather
 than stopping at a line. Fifteen procedural surfaces — rock, planking, veined
 marble, fish scales, whale skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt,
 riveted iron plates —
@@ -625,15 +633,21 @@ gloom and turning away, chosen by the sea she is met in and kept clear of the tr
 and masts. In dark water her searchlight sweeps the sea, a beam in a small pipeline of its own with
 one point light where it falls, and in the abyss she is little more than her lights. The encounters
 run on the visit's clock, so `places.rs` can find them (`DIVE3D_SHOTS=encounter`).
-It renders at 640 × 640 with 4× multisampling and a reversed depth buffer, then goes through the
+It renders at 448 × 448 with one sample and a reversed depth buffer, then goes through the
 porthole in `porthole.rs`: a brass bezel with an engraved degree scale and twelve hex bolts, running
 out to the edge of the panel so its own bezel frames the window, a manometer reading the depth, a log turning once per leg and a cartouche with
-the Nautilus' *N*, all drawn once when the scene is built; each frame a full-resolution pass bends
-the view at the edge of the glass, gives the water an engraved hatching in the shadows, after the
-plates of the first illustrated edition, lays the bezel over it and turns the needles. On a desktop
-GPU a frame costs about 3 ms, with the scene built in about 0.4 ms of CPU. `cargo test --release
+the Nautilus' *N*, all drawn once when the scene is built. Each frame only the sea through the glass
+is drawn: bent at the edge, engraved in the shadows after the plates of the first illustrated
+edition and graded, at the sea's own resolution. The two needles are drawn into small transparent
+tiles at the gauges. Slint lays the layers over one another — sea, static bezel, needles — so the
+brass and the needles stay sharp while the water is only ever shaded once at 448 pixels. On the Pi 5
+a frame costs 10.5 ms on average and 11.7 ms on its heaviest leg; on a desktop GPU about 2 ms, with
+the scene built in about 0.4 ms of CPU. `cargo test --release
 dive3d::tests::frame_time -- --ignored --nocapture` times it and `DIVE3D_PREVIEW_DIR=<dir> cargo
-test --release dive3d::tests::previews -- --ignored` writes a frame from each leg. For debugging,
+test --release dive3d::tests::previews -- --ignored` writes a frame from each leg.
+`DIVE3D_LAYERS_DIR=<dir> cargo test --release dive3d::tests::porthole_layers -- --ignored` writes
+the runtime layers separately — the sea window, the static bezel and the two needle tiles — for
+checking the overlay. For debugging,
 `DIVE3D_SHOTS_DIR=<dir> cargo test --release dive3d::tests::screenshots -- --ignored` shoots every
 place listed in `dive3d/places.rs` — each leg as it settles, in its middle and as it leaves, and
 another seabed — at full size, with a contact sheet and an `index.html` naming them;

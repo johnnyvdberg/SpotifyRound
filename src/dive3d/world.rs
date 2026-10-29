@@ -45,7 +45,8 @@ pub struct Instance {
     pub colour: [f32; 4],
     pub anim: [f32; 4],
     /// x: material; y: 1 if it stands on the seabed; z: how far it has faded
-    /// in, as its biome comes and goes.
+    /// in, as its biome comes and goes; w: the seabed's height under it, for
+    /// the models that stand on it.
     pub extra: [f32; 4],
     /// x: texture layer; y: repeats per unit; z: 1 to texture in the model's
     /// own space, so the pattern moves with a swimming body.
@@ -1020,6 +1021,17 @@ pub fn build(world: &World, frame: &mut Frame) {
     for (step, skin) in steps {
         frame.style(skin);
         step(world, frame);
+    }
+    // The vertex shader beds a model into the sand by comparing each vertex
+    // with the ground under it. Once per instance is enough: a rock, a tree or
+    // a diver stands on the height at its foot, and this keeps the texture
+    // lookups and noise out of every vertex of every model.
+    for list in frame.solid.iter_mut().chain(frame.glass.iter_mut()) {
+        for instance in list.iter_mut() {
+            if instance.extra[1] > 0.5 {
+                instance.extra[3] = world.ground(instance.rows[0][3], instance.rows[2][3]);
+            }
+        }
     }
 }
 

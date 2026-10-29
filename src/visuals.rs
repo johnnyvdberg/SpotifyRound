@@ -107,6 +107,16 @@ impl Scene {
 pub(crate) trait Visual: Send {
     fn render(&mut self, gpu: &Graphics, seconds: f64, seed: u64, frame: usize) -> Result<()>;
     fn texture(&self, frame: usize) -> wgpu::Texture;
+    /// A static full-resolution layer laid over the frame, if the scene has
+    /// one (the Nautilus' brass porthole). `None` for scenes drawn wholly into
+    /// their frame.
+    fn overlay(&self) -> Option<wgpu::Texture> {
+        None
+    }
+    /// Two small layers over the frame and its overlay: the gauge needles.
+    fn needles(&self, _frame: usize) -> [Option<wgpu::Texture>; 2] {
+        [None, None]
+    }
     /// A swipe on the visualizer: move `legs` stretches on (or back) through the
     /// scene's journey. Scenes without one ignore it.
     fn travel(&mut self, _legs: i32) {}
@@ -255,8 +265,9 @@ pub fn spawn(
                 } else {
                     mask.trailing_zeros() as usize
                 };
+                let switched = requested != active;
 
-                if requested != active {
+                if switched {
                     // A new visit gets a fresh dive: different seabed, wreck,
                     // jellyfish and plankton.
                     active = requested;
@@ -270,6 +281,16 @@ pub fn spawn(
                 let Some(renderer) = renderers[active].as_mut() else {
                     continue;
                 };
+                if switched {
+                    // The bezel is static: hand it to the UI once per visit.
+                    let overlay = renderer.overlay();
+                    if ui
+                        .upgrade_in_event_loop(move |ui| ui.set_idle_overlay(overlay))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
                 let swiped = travel.load(Ordering::Relaxed);
                 if swiped != travelled {
                     renderer.travel((swiped - travelled).clamp(-7, 7) as i32);
@@ -284,10 +305,15 @@ pub fn spawn(
                 }
                 busy += begun.elapsed();
                 // Shown right after the UI thread submits it: both run there,
-                // in order.
+                // in order. The needle tiles travel with the frame so the UI
+                // swaps both in one go.
                 let slot = active * SLOTS + current;
+                let needles = renderer.needles(current);
                 if ui
-                    .upgrade_in_event_loop(move |ui| ui.show_idle_frame(slot))
+                    .upgrade_in_event_loop(move |ui| {
+                        ui.show_idle_frame(slot);
+                        ui.show_idle_needles(needles);
+                    })
                     .is_err()
                 {
                     return;

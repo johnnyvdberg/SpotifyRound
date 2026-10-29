@@ -3,13 +3,14 @@
 //! Seven biomes in turn, with the swipes and the dive profile of
 //! [`crate::voyage`], rasterised: a seabed built in
 //! tiles as it comes into view ([`terrain`]), procedurally generated models placed and
-//! animated each frame by [`world`], a depth buffer and 4× multisampling. A
+//! animated each frame by [`world`], a depth buffer and one sample. A
 //! pixel only pays for what actually covers it, instead of every pixel asking
 //! every feature whether it is there.
 //!
-//! The window itself is not part of the 3D scene: the brass bezel, the gauges,
-//! the engraved finish and the bending of the glass are full-screen passes of
-//! their own, in [`crate::porthole::Porthole`].
+//! The window itself is not part of the 3D scene: the brass bezel is one static
+//! texture, the sea through the glass is bent and engraved in a pass at its own
+//! resolution, and the gauge needles are small tiles, in
+//! [`crate::porthole::Porthole`].
 
 mod heightmap;
 mod helm;
@@ -35,9 +36,15 @@ use world::{Frame, Instance, Seabed, Sprite, World};
 pub use crate::porthole::SIZE;
 
 /// Edge of the square the sea is rendered into. Geometry is cheap here, so it
-/// is drawn a little sharper than the procedural sea.
-const SEA: u32 = 640;
-const SAMPLES: u32 = 4;
+/// is drawn a little sharper than the procedural sea; at 640 the dive could not
+/// keep 60 fps on the Pi, and 448 is the tuned size.
+const SEA: u32 = 448;
+/// Samples per pixel. Multisampling quarters the pixels each of the Pi GPU's
+/// tiles holds, and the tiles' fixed costs outweighed the smoother edges, which
+/// the upscale softens anyway; the one sample keeps the fading models smooth by
+/// blending them into the water instead (see `MULTISAMPLED` in `scene.wgsl`).
+const SAMPLES: u32 = 1;
+const MULTISAMPLED: bool = SAMPLES > 1;
 /// A coarser level of detail is drawn only where its surface strays from the
 /// full model's by less than `LOD_ERROR`, in pixels of the sea, which is
 /// drawn at `SEA` and no finer, so no difference smaller can be drawn; and, unless
@@ -88,7 +95,8 @@ struct Globals {
 pub(crate) struct Nautilus {
     background: wgpu::RenderPipeline,
     terrain_pipeline: wgpu::RenderPipeline,
-    /// Solid models, one pipeline per entry of [`MATERIALS`].
+    /// Solid models: one pipeline per entry of [`MATERIALS`] and grounded
+    /// flag.
     models: Vec<wgpu::RenderPipeline>,
     /// The same for sealed models, their back faces culled.
     sealed: Vec<wgpu::RenderPipeline>,
@@ -148,7 +156,8 @@ pub(crate) struct Nautilus {
 
 /// The materials models get a pipeline of their own for, as `MATERIAL` in
 /// `scene.wgsl`: plain first, then those of [`world::material`]. Anything else
-/// is drawn by the last, -1, which reads the material per instance.
+/// is drawn by the last, -1, which reads the material per instance. Each has a
+/// second pipeline for models that stand on the seabed (`GROUNDED`).
 const MATERIALS: [i32; 8] = [
     0,
     world::material::LAVA as i32,
@@ -167,6 +176,12 @@ fn material_slot(i: &Instance) -> usize {
         .iter()
         .position(|&m| m == material)
         .unwrap_or(MATERIALS.len() - 1)
+}
+
+/// The pipeline for an instance: its material's, of the pair for things that
+/// stand on the seabed or swim free.
+fn pipeline_slot(i: &Instance) -> usize {
+    material_slot(i) * 2 + usize::from(i.extra[1] > 0.5)
 }
 
 /// Which pipeline a run of instances is drawn with, in the order they are drawn.
@@ -199,7 +214,7 @@ struct Staged {
 #[derive(Clone, Copy)]
 struct Draw {
     kind: Kind,
-    /// The material's pipeline, an index into [`MATERIALS`].
+    /// The pipeline's index, into [`Nautilus::models`] and its siblings.
     slot: usize,
     model: usize,
     lod: usize,
@@ -498,24 +513,32 @@ impl Nautilus {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let colour_target = target(
-            "Dive3d colour",
+        let sea = target(
+            "Dive3d sea",
             colour,
-            SAMPLES,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
+            1,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
+        // Without multisampling the sea is drawn straight into the texture the
+        // porthole samples; with it, into a multisampled target that resolves
+        // into `sea`.
+        let colour_target = if MULTISAMPLED {
+            target(
+                "Dive3d colour",
+                colour,
+                SAMPLES,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+        } else {
+            sea.clone()
+        };
         let depth = target(
             "Dive3d depth",
             DEPTH,
             SAMPLES,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
-        let resolved = target(
-            "Dive3d sea",
-            colour,
-            1,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        );
+        let resolved = sea;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Dive3d shader"),
@@ -627,8 +650,9 @@ impl Nautilus {
                 }),
                 multisample: wgpu::MultisampleState {
                     count: SAMPLES,
-                    // Fading models out by coverage, so they melt away smoothly.
-                    alpha_to_coverage_enabled: coverage,
+                    // Fading models out by coverage while multisampled; at one
+                    // sample the fragment shader blends them into the water.
+                    alpha_to_coverage_enabled: coverage && MULTISAMPLED,
                     ..Default::default()
                 },
                 multiview_mask: None,
@@ -665,12 +689,12 @@ impl Nautilus {
         // Models that are fully there, compiled without the discard so the GPU
         // can skip whatever is hidden before shading it; and those fading in or
         // out, by coverage.
-        // Each in a pipeline per material.
+        // Each in a pipeline per material and grounded flag.
         let per_material = |label, coverage, fading: f64, cull| {
-            MATERIALS
-                .iter()
-                .map(|&material| {
-                    pipeline(
+            let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
+            for &material in &MATERIALS {
+                for grounded in [0.0, 1.0] {
+                    pipelines.push(pipeline(
                         label,
                         "vs_model",
                         "fs_model",
@@ -679,11 +703,17 @@ impl Nautilus {
                         true,
                         nearer,
                         coverage,
-                        &[("FADING", fading), ("MATERIAL", f64::from(material))],
+                        &[
+                            ("FADING", fading),
+                            ("MATERIAL", f64::from(material)),
+                            ("GROUNDED", grounded),
+                            ("MULTISAMPLED", f64::from(u8::from(MULTISAMPLED))),
+                        ],
                         cull,
-                    )
-                })
-                .collect::<Vec<_>>()
+                    ));
+                }
+            }
+            pipelines
         };
         let models = per_material("Dive3d models", false, 0.0, None);
         let sealed = per_material("Dive3d sealed models", false, 0.0, Some(wgpu::Face::Back));
@@ -949,7 +979,7 @@ impl Nautilus {
         for (model, list) in self.frame.solid.iter().enumerate() {
             order.extend(list.iter().enumerate().map(|(index, i)| Staged {
                 kind: kind_of(model, i),
-                slot: material_slot(i) as u32,
+                slot: pipeline_slot(i) as u32,
                 model: model as u32,
                 lod: level_of(model, i) as u32,
                 depth: depth(i),
@@ -1073,13 +1103,25 @@ impl Nautilus {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Dive3d sea pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.colour,
+                    view: if MULTISAMPLED {
+                        &self.colour
+                    } else {
+                        &self.resolved
+                    },
                     depth_slice: None,
-                    resolve_target: Some(&self.resolved),
+                    resolve_target: if MULTISAMPLED {
+                        Some(&self.resolved)
+                    } else {
+                        None
+                    },
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        // Only the resolved image is needed afterwards.
-                        store: wgpu::StoreOp::Discard,
+                        // Multisampled: only the resolved image is needed.
+                        store: if MULTISAMPLED {
+                            wgpu::StoreOp::Discard
+                        } else {
+                            wgpu::StoreOp::Store
+                        },
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1114,7 +1156,7 @@ impl Nautilus {
             // every other model, can be skipped before it is shaded.
             pass.set_vertex_buffer(1, self.instances.slice(..));
             if tunnel_drawn && !self.skips(part::MODELS) {
-                pass.set_pipeline(&self.models[material_slot(&all[tunnel_instance as usize])]);
+                pass.set_pipeline(&self.models[pipeline_slot(&all[tunnel_instance as usize])]);
                 pass.set_vertex_buffer(0, self.tunnel.slice(..));
                 pass.set_index_buffer(self.tunnel_indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..tunnel_count, 0, tunnel_instance..tunnel_instance + 1);
@@ -1229,7 +1271,8 @@ impl Nautilus {
         if swiped.is_some() {
             self.voyage = Voyage::default();
         }
-        crate::porthole::read_texture(gpu, &self.porthole.texture(0))
+        let preview = self.porthole.compose(gpu);
+        crate::porthole::read_texture(gpu, &preview, crate::porthole::SIZE)
     }
 }
 
@@ -1240,6 +1283,15 @@ impl Visual for Nautilus {
 
     fn texture(&self, frame: usize) -> wgpu::Texture {
         self.porthole.texture(frame)
+    }
+
+    fn overlay(&self) -> Option<wgpu::Texture> {
+        Some(self.porthole.bezel())
+    }
+
+    fn needles(&self, frame: usize) -> [Option<wgpu::Texture>; 2] {
+        let [depth, log] = self.porthole.needles(frame);
+        [Some(depth), Some(log)]
     }
 
     fn travel(&mut self, legs: i32) {
@@ -1503,6 +1555,49 @@ mod tests {
                 image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
                     .expect("a preview image");
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "writes the porthole's layers; set DIVE3D_LAYERS_DIR"]
+    fn porthole_layers() {
+        let Ok(dir) = std::env::var("DIVE3D_LAYERS_DIR") else {
+            return;
+        };
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).expect("a directory for the layers");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        scene.draw(&gpu, leg(0.0), 0, 0).expect("a frame");
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        let sea = crate::porthole::read_texture(&gpu, &scene.porthole.texture(0), SEA);
+        image::save_buffer(
+            dir.join("sea.png"),
+            &sea,
+            SEA,
+            SEA,
+            image::ExtendedColorType::Rgba8,
+        )
+        .expect("the sea");
+        let bezel = crate::porthole::read_texture(&gpu, &scene.porthole.bezel(), SIZE);
+        image::save_buffer(
+            dir.join("bezel.png"),
+            &bezel,
+            SIZE,
+            SIZE,
+            image::ExtendedColorType::Rgba8,
+        )
+        .expect("the bezel");
+        for (name, needle) in ["depth", "log"].into_iter().zip(scene.porthole.needles(0)) {
+            let pixels = crate::porthole::read_texture(&gpu, &needle, crate::porthole::NEEDLE);
+            image::save_buffer(
+                dir.join(format!("needle-{name}.png")),
+                &pixels,
+                crate::porthole::NEEDLE,
+                crate::porthole::NEEDLE,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("a needle");
         }
     }
 

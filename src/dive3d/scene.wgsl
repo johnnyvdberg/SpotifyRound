@@ -67,6 +67,13 @@ const SURFACE_LOD: f32 = 8.0;
 // fragments before shading them only when a shader cannot discard, so every
 // model that is fully there goes through a pipeline compiled without it.
 override FADING: bool = true;
+// Whether the sea is multisampled. With one sample a fading model is blended
+// into the water in the shader; with more, alpha-to-coverage does it.
+override MULTISAMPLED: bool = false;
+// Whether this models pipeline draws things that stand on the seabed. Only
+// those need the ground under their foot, so the swimmers' pipelines leave it
+// out.
+override GROUNDED: bool = false;
 
 // The material every model this pipeline draws is made of, or -1 to take it
 // from each instance. A pipeline per material compiles only that material's
@@ -529,19 +536,15 @@ struct Lit {
     @location(2) albedo: vec3<f32>,
     @location(3) @interpolate(flat) glow: f32,
     @location(4) @interpolate(flat) material: u32,
-    @location(5) @interpolate(flat) grounded: f32,
-    @location(6) local: vec3<f32>,
-    @location(7) local_normal: vec3<f32>,
-    @location(8) @interpolate(flat) surface: vec4<f32>,
-    @location(9) @interpolate(flat) fade: f32,
-    // The seabed's height under the vertex, for bedding grounded models in
-    // its sand and lighting the tunnel's rock from the lava below: once per
-    // vertex rather than once per pixel.
-    // For the tunnel, the ground without its massif, which climbs too steeply
-    // across the tunnel's mouths to follow from one vertex to the next.
-    @location(10) floor_y: f32,
+    @location(5) local: vec3<f32>,
+    @location(6) local_normal: vec3<f32>,
+    @location(7) @interpolate(flat) surface: vec4<f32>,
+    @location(8) @interpolate(flat) fade: f32,
+    // The seabed's height under a grounded model, for bedding its foot in the
+    // sand. `world::build` fills it in once per instance.
+    @location(9) floor_y: f32,
     // `fog_at` the vertex.
-    @location(11) fog: vec4<f32>,
+    @location(10) fog: vec4<f32>,
 };
 
 // Bend a model where it lives: plants sway, fish sweep their tails sideways
@@ -593,16 +596,14 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.albedo = i.colour.rgb * v.colour;
     out.glow = i.colour.a;
     out.material = u32(i.extra.x + 0.5);
-    out.grounded = i.extra.y;
     out.local = v.pos;
     out.local_normal = v.normal;
     out.surface = i.surface;
     out.fade = i.extra.z;
     out.fog = fog_at(world);
-    out.floor_y = 0.0;
-    if (i.extra.y > 0.5) {
-        out.floor_y = ground(world.x, world.z);
-    }
+    // `world::build` fills this in for models that stand on the seabed, so the
+    // vertex shader does not have to find the ground under every vertex.
+    out.floor_y = i.extra.w;
     // The tunnel's vertices carry their height over its floor and how dark
     // their rock is in `aux`, and the light its passages throw on them as
     // their colour (`world::tunnel`).
@@ -716,7 +717,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // Bedded in the sand: the foot of anything on the seabed takes its colour.
     // Only the foot: the rest of the model, most of its pixels, skips finding
     // the biome, which costs five sines a pixel.
-    if (in.grounded > 0.5) {
+    if (GROUNDED) {
         let floor_y = in.floor_y;
         let buried = 1.0 - smooth01(floor_y + 0.005, floor_y + 0.05, p.y);
         if (buried > 0.0) {
@@ -727,8 +728,8 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     var colour = albedo * light_at(p, n);
     colour += in.albedo * in.glow;
     let t = g.camera.w;
-    // Fading things out by coverage, through the multisampling: they melt
-    // away as their biome passes, rather than pop.
+    // Fading things out as their biome passes: at one sample they melt into
+    // the water, at more the multisampling carries fractional coverage.
     var coverage = in.fade;
     switch (select(in.material, u32(MATERIAL), MATERIAL >= 0)) {
         // Pillow lava, molten through its cracks.
@@ -767,6 +768,13 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     if (FADING) {
         if (coverage <= 0.01) {
             discard;
+        }
+        // One sample cannot carry fractional coverage: melt the model into the
+        // water it would have shown instead, which is what the eye sees through
+        // a partly covered pixel.
+        if (!MULTISAMPLED) {
+            colour = mix(in.fog.rgb, colour, coverage);
+            coverage = 1.0;
         }
     }
     return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, coverage);
