@@ -1370,3 +1370,29 @@ has the plants' and fish's kinds; the flicker needs a `g.camera.w` term) and
 proving pixel-identical is the next branch, then the cache. After that: chunk
 streaming, the instance/vertex packing with per-pipeline attribute subsets, the
 UI notifier/KMS overlay, and resolution.
+
+## 23. Shader animation, step one: the shell hinge
+
+The static cache is blocked on placement-time animation, so the first piece
+moved to the shader is the tridacna shell in the gardens. Its opening used to
+be a pitch baked at placement from `w.t` (`0.35 + 0.2 sin(w.t * 0.25 + ix)`);
+it is now a shader hinge: `anim::SHELL` (kind 6) in `animate`, rotating the
+local position about the shell's base from the same camera clock
+(`g.camera.w`), amplitude and phase carried in the instance's `anim`.
+
+- Visual: **mean 0.0157/255, max 35** at shell edges — the same class as the
+  accepted fish/kelp branch; the shells read the same.
+- Pi: **8.706 ms** vs 8.732 — within the run drift, as expected; this is a
+  prerequisite, not a frame-time win.
+- Tests: 109 pass.
+
+![shell hinge: current / shader hinge / amplified difference](branch-shell-hinge.png)
+
+### Remaining before the cache
+
+The same move is still needed for the trench light (`t = w.t` at the trench),
+the wreck/ruin flicker (several `w.t` sines in their colours/lights), and the
+polar swim phases. The rocks' seaweed sway already runs through `animate`
+(`anim::SWAY`), so it is cache-ready. Once the flicker is a `g.camera.w` term
+in the fragment (or the light) and the polar phases are in `anim`, the static
+cache can be retried against this pixel gate; then chunk streaming.

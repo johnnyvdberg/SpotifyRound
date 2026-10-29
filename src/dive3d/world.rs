@@ -105,6 +105,8 @@ pub mod anim {
     pub const FLUKE: f32 = 3.0;
     pub const WRITHE: f32 = 4.0;
     pub const PULSE: f32 = 5.0;
+    /// A tridacna shell hinged at its base, opening and closing.
+    pub const SHELL: f32 = 6.0;
 }
 
 /// Materials, as the fragment shader knows them.
@@ -1472,8 +1474,9 @@ fn gardens(w: &World, f: &mut Frame) {
         let yaw = hash(ix, iz, 42) * TAU;
         if green > roll * 0.8 + 0.2 {
             if b.weight(FOREST) > 0.5 && hash(ix, iz, 43) < 0.25 {
-                // A tridacna gaping slowly, the pearl in its throat.
-                let open = 0.35 + 0.2 * (w.t * 0.25 + ix as f32).sin();
+                // A tridacna gaping slowly, the pearl in its throat. The
+                // opening is the shader's hinge (anim::SHELL), not the
+                // placement, so the instance can be cached.
                 let s = 0.10;
                 f.put(
                     Model::Shell,
@@ -1483,9 +1486,10 @@ fn gardens(w: &World, f: &mut Frame) {
                 .grounded();
                 f.put(
                     Model::Shell,
-                    place([x, y + 0.01, z], yaw, open, 0.0, [s, s, s * 0.8]),
+                    place([x, y + 0.01, z], yaw, 0.0, 0.0, [s, s, s * 0.8]),
                     [0.55, 0.53, 0.47],
-                );
+                )
+                .moving(anim::SHELL, ix as f32, 0.2, 0.25);
                 f.put(
                     Model::Sphere,
                     place([x, y + 0.03, z], 0.0, 0.0, 0.0, [0.018; 3]),

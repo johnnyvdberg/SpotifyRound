@@ -815,6 +815,14 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
         p.x *= squeeze;
         p.z *= squeeze;
         p.y *= 1.0 + anim.z * 0.6 * beat;
+    } else if (kind == 6u) {
+        // A shell hinged at its base. The placement used to bake this from
+        // w.t; the shader does it from the same clock, so the instance is
+        // static and cacheable.
+        let a = 0.35 + anim.z * sin(t);
+        let y = p.y * cos(a) - p.z * sin(a);
+        p.z = p.y * sin(a) + p.z * cos(a);
+        p.y = y;
     }
     return p;
 }
