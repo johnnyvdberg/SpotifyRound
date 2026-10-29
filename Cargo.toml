@@ -28,7 +28,6 @@ skia = ["slint/renderer-skia"]
 femtovg = ["slint/renderer-femtovg-wgpu"]
 
 [dependencies]
-half = "2"
 animato = "1.7.3"
 anyhow = "1.0.104"
 base64 = "0.23.1"

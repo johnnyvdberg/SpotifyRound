@@ -835,3 +835,73 @@ the two water variants are probes, and the frame is still **9.65 ms mean /
 12.74 ms worst leg**. The render scale (§13) remains the one real lever for
 90 fps; the baked clipmap and the surface-water effects are recorded as losses
 so they are not tried again.
+
+## 15. Terrain resolution, normal maps, and a free underwater grade
+
+The clipmap prototype and its streaming bake were removed from the tree after
+§14 (the block mesh, bake textures, bindings, `DIVE3D_CLIPMAP`, the `half`
+dependency). The sections above stand as the measurement record; the tile
+terrain is again the only terrain.
+
+### Reducing the terrain mesh
+
+`DIVE3D_TERRAIN_LEVELS` (default 3) now chooses how many of the mesh levels to
+draw. Levels are dropped from the fine end, so the near mesh coarsens while the
+far extent stays. `frame_time` per leg, serial milliseconds (same run, Pi):
+
+| levels | spacing near | mean | shallows | forest | preview diff vs 3 |
+|---|---|---|---|---|---|
+| 3 | 0.08 m | 9.70 | 12.77 | 11.21 | — |
+| 2 | 0.32 m | 9.37 | 12.50 | 10.76 | mean 0.93, worst 3.76 |
+| 1 | 1.28 m | 8.79 | 11.77 | 10.03 | mean 2.67, worst 9.26 |
+
+Halving the near detail buys **0.33 ms** (3.4%) and a clearly softer seabed;
+dropping to the 1.28 m lattice buys 0.91 ms (9.4%) and a visibly faceted one.
+For comparison, the render scale (§13) buys 1.06 ms at 0.9 for a mean diff of
+0.27 — a much better trade. The knob stays (default 3) but is not a 90 fps
+lever; the mesh is not where the frame is.
+
+### Normal mapping: it adds detail, not the *missing* detail
+
+A normal map was baked from the relief map's slopes (512² RG8, sampled per
+pixel) and used in `fs_terrain` for the sun's diffuse and a small specular. It
+does add high-frequency light, but it costs **+1.6 ms** (levels 3: 10.09 ->
+11.73; levels 2: 9.50 -> 11.11) and it does not recover the coarse mesh: the
+level 2 preview with normals differs from level 3 by mean 1.26, *more* than
+level 2 without (0.93). The full-mesh preview changes by 0.57 on its own, so
+the detail is a new look, not a substitute for the lattice. The fragment work
+(the fetch, the sun `exp`, the normalise, the specular) is too expensive on
+V3D; the per-vertex baked light remains the cheap path. The probe was removed.
+
+### The cheap underwater effect: a grade in the fog mix
+
+A survey of low-spec underwater effects ([Ultra-Water](https://github.com/Humpalumps/Ultra-Water),
+[Kyoril's PS_Underwater](https://github.com/Kyoril/mmo/blob/develop/src/shared/deferred_shading/shaders/PS_Underwater.hlsl),
+[Ameye's caustics](https://ameye.dev/notes/realtime-caustics/), paddy-exe's
+[Godot port](https://github.com/paddy-exe/Godot-RealTimeCaustics),
+[GPU Gems 3 on radial god rays](https://developer.nvidia.com/gpugems/gpugems3/part-ii-light-and-shadows/chapter-13-volumetric-light-scattering-post-process),
+[Ultra-Water's marine snow](https://github.com/Humpalumps/Ultra-Water/blob/master/src/water/MarineSnow.js))
+found the same split as the water-surface survey: the geometry-needing effects
+(depth fog overlays, screen-color wobble, 16-tap rays, bloom, volumetric fog)
+cost 0.4–8 ms and usually a pass, while a few ALU folded into existing shaders
+read as underwater. The best look-per-cost was the per-channel fog/grade that
+PS_Underwater calls "the effect that actually reads as underwater".
+
+It is now in `fs_model` and `fs_terrain`, folded into the fog mix that already
+happened: the water desaturates the distance by 15% of the fog factor and lifts
+it by `(0.010, 0.030, 0.040)`. The previews change by mean **0.82/255** (worst
+leg 1.19, max 9), mostly on the far sand, and the `frame_time` is unchanged
+within noise (10.06 with vs 10.20 without in one run).
+
+It is opt-in in production with `SPOTIFY_ROUND_UNDERWATER=1` (and a test bit
+`UNDERWATER_GRADE` for the effect table), because it is a look change rather
+than a perf win. The survey's other cheap candidates, should the look want
+more: a sun glow + two procedural shafts + a 0.0012 wobble in the background
+(~0.01–0.04 ms, no fetch), one caustic fetch per pixel on the close models
+(~0.1–0.3 ms), and point-based marine snow (~0.02–0.08 ms). Skip the color-copy
+post, 16-tap god rays, bloom and volumetric fog on this GPU.
+
+**Where it stands.** The clipmap is gone, the terrain levels default to 3, and
+the underwater grade is off unless asked for. The frame is still ~9.7–10.2 ms
+mean (the spread is thermal/run-to-run), with the render scale the one large
+lever: 8.59 at 0.9, 7.90 at 0.833, 7.05 at 0.75. 109 tests pass.

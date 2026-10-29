@@ -56,15 +56,6 @@ struct Globals {
 // Caustics precomputed on the CPU once, instead of a sin/pow every vertex.
 @group(0) @binding(4) var caustic_map: texture_2d<f32>;
 @group(0) @binding(5) var caustic_sampler: sampler;
-// The clipmap's streaming bake (see the terrain section): height and normal,
-// the floor's colour and layer, its fine-detail strengths and its cave glow.
-@group(0) @binding(6) var bake_height: texture_2d<f32>;
-@group(0) @binding(7) var bake_normal: texture_2d<f32>;
-@group(0) @binding(8) var bake_albedo: texture_2d<f32>;
-@group(0) @binding(9) var bake_shade: texture_2d<f32>;
-@group(0) @binding(10) var bake_glow: texture_2d<f32>;
-@group(0) @binding(11) var bake_sampler: sampler;
-
 const RELIEF_SIZE: i32 = 512;
 // The lava cave's tunnel and the massif it runs through, as in `world.rs`.
 const TUNNEL: f32 = 1.05;
@@ -708,68 +699,19 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
         ).rgb * TEXTURE_RANGE;
     }
     var albedo = in.albedo * mix(vec3<f32>(1.0), texture, 0.85);
-    var colour = albedo * in.light;
-
-    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 1.0);
+    let colour = albedo * in.light;
+    var shaded = mix(colour, in.fog.rgb, in.fog.a);
+    // Underwater grade: the water takes the colour out of the distance and
+    // lifts the blue, folded into the fog mix that was already happening.
+    if (switched(32u)) {
+        let t = in.fog.a;
+        let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
+        shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
+            + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
+    }
+    return vec4<f32>(shaded * SEA_SCALE, 1.0);
 }
 
-
-// ---------------------------------------------------------------------------
-// Terrain, as a geometry clipmap from a streaming bake
-// ---------------------------------------------------------------------------
-//
-// The fixed block mesh and the instance list are the same as the first
-// clipmap attempt (`terrain::visible_blocks`); the ground height and the
-// floor's colour now come from a window of textures baked on the CPU and
-// streamed under the boat, so the vertex shader samples five small maps
-// instead of calling `ground` five times and five value noises. The bake
-// wraps every 128 units; the sampler repeats.
-
-const BAKE_WINDOW: f32 = 256.0;
-
-@if(full_hd)
-@vertex
-fn vs_clipmap(
-    @location(0) local: vec2<f32>,
-    @location(1) skirt: f32,
-    @location(2) origin: vec2<f32>,
-    @location(3) spacing: f32,
-) -> Ground {
-    let xz = origin + local * spacing;
-    let uv = xz / BAKE_WINDOW;
-    let h16 = textureSampleLevel(bake_height, bake_sampler, uv, 0.0).r;
-    let height = -16.0 + h16 * 24.0;
-    let n = normalize(textureSampleLevel(bake_normal, bake_sampler, uv, 0.0).rgb * 2.0 - 1.0);
-    let baked = textureSampleLevel(bake_albedo, bake_sampler, uv, 0.0);
-    let shade = textureSampleLevel(bake_shade, bake_sampler, uv, 0.0);
-    let glow = textureSampleLevel(bake_glow, bake_sampler, uv, 0.0);
-    var world = vec3<f32>(xz.x, height, xz.y);
-    if (skirt > 0.5) {
-        world.y = world.y - 4.0 * spacing;
-    }
-    var out: Ground;
-    out.position = project(world);
-    out.fog = fog_at(world);
-    out.uv = world.xz * 1.3;
-    out.layer = i32(baked.a * 16.0 + 0.5);
-    out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
-    let detail = exp(-length(world - g.camera.xyz) * 0.25);
-    var scale = mix(1.0, shade.x * 2.0, detail * shade.y);
-    scale *= 1.0 - shade.z * detail;
-    scale *= 1.0 - shade.w * detail;
-    let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + world.x * 3.0) * sin(g.camera.w * 2.9 + world.z * 2.0);
-    out.albedo = baked.rgb * scale + glow.rgb * 4.0 * (flicker * 0.35);
-    if (switched(8u)) {
-        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
-        out.light = g.tint.rgb * (
-            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
-            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
-        );
-    } else {
-        out.light = light_at(world, n);
-    }
-    return out;
-}
 
 // ---------------------------------------------------------------------------
 // Models
@@ -1058,7 +1000,14 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             discard;
         }
     }
-    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, coverage);
+    var shaded = mix(colour, in.fog.rgb, in.fog.a);
+    if (switched(32u)) {
+        let t = in.fog.a;
+        let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
+        shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
+            + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
+    }
+    return vec4<f32>(shaded * SEA_SCALE, coverage);
 }
 
 // Translucent models — jellyfish bells and tentacles — add light, brightest at
@@ -1184,7 +1133,14 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             discard;
         }
     }
-    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, coverage);
+    var shaded = mix(colour, in.fog.rgb, in.fog.a);
+    if (switched(32u)) {
+        let t = in.fog.a;
+        let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
+        shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
+            + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
+    }
+    return vec4<f32>(shaded * SEA_SCALE, coverage);
 }
 
 @if(full_hd)

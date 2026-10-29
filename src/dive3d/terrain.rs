@@ -139,21 +139,39 @@ struct Tile {
 pub struct Terrain {
     tiles: HashMap<Key, Tile>,
     free: Vec<u32>,
+    /// How many of `SPACING`'s levels to draw. Three is the full near/mid/
+    /// far set; two drops the 0.08 m level, one keeps only the 1.28 m one.
+    levels: usize,
 }
 
 impl Default for Terrain {
     fn default() -> Self {
+        Self::with_levels(SPACING.len())
+    }
+}
+
+impl Terrain {
+    pub fn with_levels(levels: usize) -> Self {
+        let levels = levels.clamp(1, SPACING.len());
         Self {
             tiles: HashMap::new(),
             free: (0..SLOTS as u32).rev().collect(),
+            levels,
         }
+    }
+
+    /// The spacing of the `level`th drawn level: levels are dropped from the
+    /// fine end, so the finest spacing grows and the far extent stays.
+    fn spacing(&self, level: usize) -> f32 {
+        SPACING[SPACING.len() - self.levels + level]
     }
 }
 
 impl Terrain {
     /// Forget every tile: the seabed has changed.
     pub fn clear(&mut self) {
-        *self = Self::default();
+        self.tiles.clear();
+        self.free = (0..SLOTS as u32).rev().collect();
     }
 
     /// The slots of the tiles to draw, nearest first. Tiles coming into view
@@ -161,7 +179,9 @@ impl Terrain {
     /// those the boat has left behind are dropped.
     pub fn update(&mut self, w: &World, mut upload: impl FnMut(u32, &[Point])) -> Vec<u32> {
         let c = w.pose.pos;
-        let tile = |level: usize| SPACING[level] * QUADS as f32;
+        let levels = self.levels;
+        let spacings: Vec<f32> = (0..levels).map(|l| self.spacing(l)).collect();
+        let tile = |level: usize| spacings[level] * QUADS as f32;
         // The boat's tile at each level.
         let at = |level: usize| {
             [
@@ -169,7 +189,7 @@ impl Terrain {
                 (c[2] / tile(level)).floor() as i32,
             ]
         };
-        let top = SPACING.len() - 1;
+        let top = levels - 1;
         // Each level's square, in its own tiles, as [first, last] per axis.
         let square = |level: usize| -> [[i32; 2]; 2] {
             if level == top {
@@ -178,7 +198,7 @@ impl Terrain {
                 at(level + 1).map(|b| [(b - NEST) * RATIO, (b + NEST + 1) * RATIO - 1])
             }
         };
-        let squares: Vec<_> = (0..SPACING.len()).map(square).collect();
+        let squares: Vec<_> = (0..levels).map(square).collect();
         // Whether a tile is drawn: inside its level's square, and not where
         // the finer level's square lies instead.
         let wanted = |&(level, i, j): &Key| {
@@ -202,6 +222,7 @@ impl Terrain {
         let mut drawn = Vec::new();
         for (level, [x, z]) in squares.iter().enumerate() {
             let size = tile(level);
+            let spacing = spacings[level];
             for j in z[0]..=z[1] {
                 for i in x[0]..=x[1] {
                     let key = (level, i, j);
@@ -216,14 +237,14 @@ impl Terrain {
                             (LOWEST + HIGHEST) * 0.5,
                             (j as f32 + 0.5) * size,
                         ];
-                        let rise = (HIGHEST - LOWEST) * 0.5 + SKIRT * SPACING[level];
+                        let rise = (HIGHEST - LOWEST) * 0.5 + SKIRT * spacing;
                         if !w.visible(middle, (size * size * 0.5 + rise * rise).sqrt()) {
                             continue;
                         }
                         let Some(slot) = self.free.pop() else {
                             continue;
                         };
-                        let (points, centre, radius) = build(w, level, i, j);
+                        let (points, centre, radius) = build(w, spacing, i, j);
                         upload(slot, &points);
                         self.tiles.insert(
                             key,
@@ -250,8 +271,7 @@ impl Terrain {
 
 /// Tile (i, j) of `level`: its vertices, and the centre and radius of a
 /// sphere around them.
-fn build(w: &World, level: usize, i: i32, j: i32) -> (Vec<Point>, [f32; 3], f32) {
-    let s = SPACING[level];
+fn build(w: &World, s: f32, i: i32, j: i32) -> (Vec<Point>, [f32; 3], f32) {
     let (x0, z0) = (i * QUADS as i32, j * QUADS as i32);
     // Heights with a border one vertex wide, for the normals at the edges:
     // the same central differences, a spacing either way, as the lattice's.
@@ -317,201 +337,6 @@ fn edges() -> [[usize; SIDE]; 4] {
         std::array::from_fn(|k| k * SIDE),
         std::array::from_fn(|k| k * SIDE + QUADS),
     ]
-}
-
-#[cfg(all(test, feature = "full-hd"))]
-#[cfg(all(test, feature = "full-hd"))]
-#[cfg(all(test, feature = "full-hd"))]
-/// One tile's vertices in its own block, for a geometry clipmap: `x` and `z`
-/// in tiles of the level's spacing, and a flag for the skirt vertices (which
-/// the vertex shader lowers by `SKIRT`). The grid is the same lattice and in
-/// the same order as [`build`] writes, so [`indices`] fits.
-pub fn block_mesh() -> Vec<[f32; 3]> {
-    let mut out = Vec::with_capacity(VERTICES);
-    for b in 0..SIDE {
-        for a in 0..SIDE {
-            out.push([a as f32, b as f32, 0.0]);
-        }
-    }
-    for edge in edges() {
-        for k in 0..SIDE {
-            let i = edge[k];
-            out.push([(i % SIDE) as f32, (i / SIDE) as f32, 1.0]);
-        }
-    }
-    out
-}
-
-/// A block's world corner and vertex spacing, for the clipmap's instances.
-#[cfg(all(test, feature = "full-hd"))]
-pub fn block_origin(level: usize, i: i32, j: i32) -> ([f32; 2], f32) {
-    let s = SPACING[level];
-    let size = s * QUADS as f32;
-    ([i as f32 * size, j as f32 * size], s)
-}
-
-/// The texture data for one rectangle of the clipmap's streaming bake.
-pub struct Baked {
-    pub w: u32,
-    pub h: u32,
-    pub height: Vec<u16>,
-    pub normal: Vec<u8>,
-    pub albedo: Vec<u16>,
-    pub shade: Vec<u16>,
-    pub glow: Vec<u16>,
-}
-
-fn q16(v: f32) -> u16 {
-    half::f16::from_f32(v.clamp(0.0, 1.0)).to_bits()
-}
-
-/// Bake `width` x `height` texels whose first centre is `(x0, z0)`, `step`
-/// world units apart: the ground, its normal, and `shade`'s floor colour,
-/// detail and veins, in the encodings `vs_clipmap` reads back. The normals
-/// are central differences over the same texel step, with one texel of
-/// border sampled for the edges.
-pub fn bake_rect(
-    w: &World,
-    x0: f32,
-    z0: f32,
-    width: u32,
-    height: u32,
-    step: f32,
-) -> Baked {
-    let ww = width as usize;
-    let hh = height as usize;
-    let bw = ww + 2;
-    let bh = hh + 2;
-    let mut heights = vec![0.0f32; bw * bh];
-    for j in 0..bh {
-        for i in 0..bw {
-            let x = x0 + (i as f32 - 1.0) * step;
-            let z = z0 + (j as f32 - 1.0) * step;
-            heights[j * bw + i] = w.seabed.ground(x, z);
-        }
-    }
-    let mut out = Baked {
-        w: width,
-        h: height,
-        height: vec![0; ww * hh],
-        normal: vec![0; ww * hh * 4],
-        albedo: vec![0; ww * hh * 4],
-        shade: vec![0; ww * hh * 4],
-        glow: vec![0; ww * hh * 4],
-    };
-    let span = HIGHEST - LOWEST;
-    for j in 0..hh {
-        for i in 0..ww {
-            let x = x0 + i as f32 * step;
-            let z = z0 + j as f32 * step;
-            let h = heights[(j + 1) * bw + i + 1];
-            let dx = heights[(j + 1) * bw + i + 2] - heights[(j + 1) * bw + i];
-            let dz = heights[(j + 2) * bw + i + 1] - heights[j * bw + i + 1];
-            let n = [-dx, 2.0 * step, -dz];
-            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-            let normal = [n[0] / l, n[1] / l, n[2] / l];
-            let (albedo, shade, glow) = shade(w, x, z, normal);
-            let k = j * ww + i;
-            out.height[k] = q16((h - LOWEST) / span);
-            out.normal[k * 4] = ((normal[0] * 0.5 + 0.5) * 255.0 + 0.5) as u8;
-            out.normal[k * 4 + 1] = ((normal[1] * 0.5 + 0.5) * 255.0 + 0.5) as u8;
-            out.normal[k * 4 + 2] = ((normal[2] * 0.5 + 0.5) * 255.0 + 0.5) as u8;
-            out.normal[k * 4 + 3] = 255;
-            out.albedo[k * 4] = q16(albedo[0]);
-            out.albedo[k * 4 + 1] = q16(albedo[1]);
-            out.albedo[k * 4 + 2] = q16(albedo[2]);
-            out.albedo[k * 4 + 3] = q16(albedo[3] / 16.0);
-            out.shade[k * 4] = q16(shade[0] * 0.5);
-            out.shade[k * 4 + 1] = q16(shade[1]);
-            out.shade[k * 4 + 2] = q16(shade[2]);
-            out.shade[k * 4 + 3] = q16(shade[3]);
-            out.glow[k * 4] = q16(glow[0] * 0.25);
-            out.glow[k * 4 + 1] = q16(glow[1] * 0.25);
-            out.glow[k * 4 + 2] = q16(glow[2] * 0.25);
-            out.glow[k * 4 + 3] = 0;
-        }
-    }
-    out
-}
-
-/// The tiles a clipmap would draw this frame: level and tile index, nearest
-/// first. The same squares, holes and culling as [`Terrain::update`], without
-/// building any geometry.
-#[cfg(all(test, feature = "full-hd"))]
-pub fn visible_blocks(w: &World) -> Vec<(usize, i32, i32)> {
-    let c = w.pose.pos;
-    let tile = |level: usize| SPACING[level] * QUADS as f32;
-    let at = |level: usize| {
-        [
-            (c[0] / tile(level)).floor() as i32,
-            (c[2] / tile(level)).floor() as i32,
-        ]
-    };
-    let top = SPACING.len() - 1;
-    let square = |level: usize| -> [[i32; 2]; 2] {
-        if level == top {
-            at(top).map(|b| [b - REACH, b + REACH])
-        } else {
-            at(level + 1).map(|b| [(b - NEST) * RATIO, (b + NEST + 1) * RATIO - 1])
-        }
-    };
-    let squares: Vec<_> = (0..SPACING.len()).map(square).collect();
-    let wanted = |level: usize, i: i32, j: i32| {
-        let [x, z] = squares[level];
-        let inside = x[0] <= i && i <= x[1] && z[0] <= j && j <= z[1];
-        let finer = level > 0 && {
-            let b = at(level);
-            (i - b[0]).abs() <= NEST && (j - b[1]).abs() <= NEST
-        };
-        inside && !finer
-    };
-    let mut out = Vec::new();
-    for level in 0..SPACING.len() {
-        let size = tile(level);
-        let [x, z] = squares[level];
-        for j in z[0]..=z[1] {
-            for i in x[0]..=x[1] {
-                if !wanted(level, i, j) {
-                    continue;
-                }
-                // The block's own height range, not the seabed's: the same
-                // cull the tile builder gets from its vertices, from nine
-                // samples. The four corners include the skirt, which hangs
-                // `SKIRT` spacings below the ground.
-                let mut low = f32::MAX;
-                let mut high = f32::MIN;
-                for b in 0..3 {
-                    for a in 0..3 {
-                        let x = (i as f32 + a as f32 * 0.5) * size;
-                        let z = (j as f32 + b as f32 * 0.5) * size;
-                        let h = w.seabed.ground(x, z);
-                        low = low.min(h);
-                        high = high.max(h);
-                    }
-                }
-                for (a, b) in [(0, 0), (2, 0), (0, 2), (2, 2)] {
-                    let x = (i as f32 + a as f32 * 0.5) * size;
-                    let z = (j as f32 + b as f32 * 0.5) * size;
-                    low = low.min(w.seabed.ground(x, z) - SKIRT * SPACING[level]);
-                }
-                let middle = [
-                    (i as f32 + 0.5) * size,
-                    (low + high) * 0.5,
-                    (j as f32 + 0.5) * size,
-                ];
-                let rise = (high - low) * 0.5;
-                let radius = (size * size * 0.5 + rise * rise).sqrt();
-                if !w.visible(middle, radius) {
-                    continue;
-                }
-                let d = [middle[0] - c[0], middle[1] - c[1], middle[2] - c[2]];
-                let reach = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - radius;
-                out.push((reach, level, i, j));
-            }
-        }
-    }
-    out.sort_by(|a, b| a.0.total_cmp(&b.0));
-    out.into_iter().map(|(_, l, i, j)| (l, i, j)).collect()
 }
 
 /// The triangles of one tile, the same for every tile: the grid, split
