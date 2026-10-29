@@ -101,7 +101,14 @@ pub fn all() -> Vec<Place> {
         ("encounter-pass-abyss", 1005.0, 500_000),
         ("encounter-alongside-arctic", 1491.0, 500_000),
     ] {
-        places.push(Place::new(name, at(seconds), visit));
+        // Named by the kind of meeting and its moment: the legs they were
+        // found in move whenever the voyage's order does.
+        let kind = name.rsplit_once('-').map_or(name, |(kind, _)| kind);
+        places.push(Place::new(
+            format!("{kind}-{seconds}s-visit{visit}"),
+            at(seconds),
+            visit,
+        ));
     }
     places
 }
