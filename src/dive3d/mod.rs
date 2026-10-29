@@ -224,6 +224,8 @@ pub(crate) struct Nautilus {
     seconds: f64,
     /// Whether the underwater grade runs; `SPOTIFY_ROUND_UNDERWATER`.
     underwater: bool,
+    /// Whether the seabed gets the low-poly facet bands; `SPOTIFY_ROUND_LOWPOLY`.
+    lowpoly: bool,
     /// Parts of the scene a benchmark leaves out, to see what each costs.
     #[cfg(test)]
     skip: u64,
@@ -369,6 +371,8 @@ mod part {
     pub const SHIMMER_WATER: u64 = 1 << 29;
     /// Not a part: the underwater grade on models and seabed.
     pub const UNDERWATER_GRADE: u64 = 1 << 30;
+    /// Not a part: the low-poly facet shading on the seabed.
+    pub const TERRAIN_FACETS: u64 = 1 << 31;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -627,6 +631,8 @@ mod shader_switch {
     pub const CHEAP_BACKGROUND: u32 = 16;
     /// The underwater grade in `fs_model` and `fs_terrain`.
     pub const UNDERWATER_GRADE: u32 = 32;
+    /// The low-poly facet bands in `fs_terrain`.
+    pub const TERRAIN_FACETS: u32 = 64;
 }
 
 impl Nautilus {
@@ -1313,6 +1319,7 @@ impl Nautilus {
         );
 
         let underwater = std::env::var_os("SPOTIFY_ROUND_UNDERWATER").is_some();
+        let lowpoly = std::env::var_os("SPOTIFY_ROUND_LOWPOLY").is_some();
         let levels = std::env::var("DIVE3D_TERRAIN_LEVELS")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
@@ -1370,6 +1377,7 @@ impl Nautilus {
             },
             visit: None,
             underwater,
+            lowpoly,
             frame: Frame::new(),
             seconds: 0.0,
             #[cfg(test)]
@@ -1460,6 +1468,9 @@ impl Nautilus {
         }
         if self.underwater || self.skips(part::UNDERWATER_GRADE) {
             switches |= shader_switch::UNDERWATER_GRADE;
+        }
+        if self.lowpoly || self.skips(part::TERRAIN_FACETS) {
+            switches |= shader_switch::TERRAIN_FACETS;
         }
         uniforms.counts[1] = switches as f32;
         gpu.queue
@@ -2644,6 +2655,7 @@ mod tests {
             ("pass: cheap water", part::CHEAP_WATER),
             ("pass: shimmer water", part::SHIMMER_WATER),
             ("underwater grade", part::UNDERWATER_GRADE),
+            ("terrain facets", part::TERRAIN_FACETS),
             ("pass: fading ice", part::FADING_ICE),
             ("pass: fading props", part::FADING_PROPS),
             ("probe: depth-first draws", part::DEPTH_FIRST_DRAWS),

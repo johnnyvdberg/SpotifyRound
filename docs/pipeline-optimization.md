@@ -905,3 +905,87 @@ post, 16-tap god rays, bloom and volumetric fog on this GPU.
 the underwater grade is off unless asked for. The frame is still ~9.7–10.2 ms
 mean (the spread is thermal/run-to-run), with the render scale the one large
 lever: 8.59 at 0.9, 7.90 at 0.833, 7.05 at 0.75. 109 tests pass.
+
+## 16. The look can change: best practice and a low-poly seabed
+
+With the look no longer fixed, the terrain was re-examined against current
+practice. The result is a comparison sheet, [dive3d-terrain.png](dive3d-terrain.png),
+and a low-poly option that trades the smooth seabed for a fast, deliberately
+faceted one. Beyond the frame-structure comparison, the wider references are
+[GPU Gems 2's GPU geometry clipmaps](https://developer.nvidia.com/gpugems/gpugems2/part-i-geometric-complexity/chapter-2-terrain-rendering-using-gpu-based-geometry),
+[Godot's mobile renderer](https://github.com/godotengine/godot/blob/master/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp)
+and [bevy_terrain's implementation notes](https://github.com/kurtkuehnert/bevy_terrain/blob/main/docs/implementation.md).
+
+### What the practice says
+
+The full survey is in §5 of [pipeline-comparison.md](pipeline-comparison.md),
+which compares this renderer with [vange-rs](https://github.com/kvark/vange-rs),
+[bevy_terrain](https://github.com/kurtkuehnert/bevy_terrain),
+Godot 4's mobile renderer, Filament and three.js. The short version, for a
+V3D-class GPU:
+
+- **The current shape is the right one.** A CPU-generated tiled heightfield
+  with a few LOD levels, skirts at the seams, frustum-culled tiles and a
+  per-vertex baked colour/light stream is the mobile workhorse (Godot, Unity
+  and Unreal all do a version of it). The tile builder is also the cache: it
+  pays for the fine shading once per tile, and 72 bytes of attributes go to the
+  vertex shader instead of a texture fetch.
+- **Vertex work is the currency, not draw calls.** There are ~67 terrain draws
+  and they are not the problem; the 345-instruction vertex shader on ~23k
+  vertices, twice a frame, is. The clipmap (§13) cut the draws to one and lost
+  2.2x because it moved work into the vertex shader; bevy_terrain's compute
+  quadtree + indirect draw would be the same trade on this GPU.
+- **Texture fetches in the vertex stage are very expensive here.** Both the
+  procedural and the baked clipmaps paid roughly the same as the `ground`
+  calls; any heightmap-in-the-VS design is out.
+- **Per-pixel lighting is expensive; per-pixel colour is cheap.** A relief
+  normal map in `fs_terrain` cost +1.6 ms (§15), but a fragment fog grade was
+  free and a fragment colour texture is one fetch. Detail should live in cheap
+  fragment fetches, not in geometry or per-pixel lights.
+- **The remaining vertex cost is the mesh itself.** Dropping LODs from the fine
+  end saves 0.33 ms (level 2) or 0.91 ms (level 1), but the smooth look shows
+  the loss. The look is what a stylised terrain changes: if the seabed is
+  *meant* to be faceted, the coarse mesh is no longer a defect.
+- **Resolution is still the largest lever**: 0.9 scale buys 1.06 ms; the
+  terrain mesh is ~1 ms of a ~10 ms frame.
+
+### The variants and the pictures
+
+The sheet compares four variants on four legs (the same seeds and times; full
+rows for all eight legs are in `target/previews-terrain*/`):
+
+| variant | mean frame | look |
+|---|---|---|
+| current, 3 levels, smooth | 10.20 (this run; 9.70 in the cooler LOD run) | the control |
+| coarse, 2 levels, smooth | 9.37 (LOD run) | softer sand, same silhouette |
+| coarse + facets | 9.97 | banded low-poly shading on the 0.32 m mesh |
+| low-poly, 1 level + facets | **9.43** | strongly faceted, 1.28 m facets |
+
+The facet variant needs one extra varying (the world position) and a tiny
+fragment block in `fs_terrain`: the triangle's own normal from
+`cross(dpdx(world), dpdy(world))`, quantised into three sun bands
+(`0.65 + 0.55 * band`). No texture fetch, no per-pixel light. On the same run
+it is **−0.77 ms** against the current 3-level terrain; the 2-level version with
+facets is −0.22 ms. The run-to-run drift on the Pi is ±0.5 ms, so compare within
+a run; the LOD-only run was 9.70 / 9.37 / 8.79.
+
+The look changes are real: the current-vs-coarse preview mean is 0.93/255, the
+coarse+facets 2.59, the low-poly 3.32. The sheet shows where: the shallows and
+forest lose the fine sand and the plant roots; the atlantis columns' floor and
+the arctic rocks are where the facets read most.
+
+![Terrain variants: current, coarse, coarse+facets, low-poly](dive3d-terrain.png)
+
+The low-poly mode is opt-in: `SPOTIFY_ROUND_LOWPOLY=1` and
+`DIVE3D_TERRAIN_LEVELS=1` (or `2` for the subtler facet look). The test bits
+are `TERRAIN_FACETS` / `UNDERWATER_GRADE`, and the render scale remains
+orthogonal.
+
+### Recommendation
+
+If the look may change, the **low-poly seabed (1 level + facets)** is the one
+to take: ~0.8 ms cheaper, and it reads as an intentional style rather than a
+degraded smooth terrain. The **coarse + facets** is the cautious version at
+~0.2 ms. The smooth 3-level terrain stays the default until that call is made;
+the 3.5–9% it would save is smaller than the render scale's 1–2.6 ms, so it is
+a look decision, not a performance rescue.

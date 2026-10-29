@@ -646,6 +646,7 @@ struct Ground {
     @location(3) fog: vec4<f32>,
     @location(4) @interpolate(flat) layer: i32,
     @location(5) lod: f32,
+    @location(6) world: vec3<f32>,
 };
 
 @if(full_hd)
@@ -661,6 +662,7 @@ fn vs_terrain(
     out.position = project(world);
     out.fog = fog_at(world);
     out.uv = world.xz * 1.3;
+    out.world = world;
     out.layer = i32(baked.w + 0.5);
     out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
     let n = normalize(normal);
@@ -708,6 +710,18 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
         let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
         shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
             + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
+    }
+    // Low-poly facets: the triangle's own normal, banded into three sun
+    // steps, over the smooth per-vertex light. The mesh is coarser and the
+    // facets are the look, not a defect to hide.
+    if (switched(64u)) {
+        var face = normalize(cross(dpdx(in.world), dpdy(in.world)));
+        if (face.y < 0.0) {
+            face = -face;
+        }
+        let base = clamp(dot(face, g.sun.xyz) * 0.75 + 0.25, 0.0, 1.0);
+        let band = floor(base * 3.0 + 0.5) / 3.0;
+        shaded *= 0.65 + 0.55 * band;
     }
     return vec4<f32>(shaded * SEA_SCALE, 1.0);
 }
