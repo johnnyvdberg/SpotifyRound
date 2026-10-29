@@ -350,6 +350,90 @@ pub fn block_origin(level: usize, i: i32, j: i32) -> ([f32; 2], f32) {
     ([i as f32 * size, j as f32 * size], s)
 }
 
+/// The texture data for one rectangle of the clipmap's streaming bake.
+pub struct Baked {
+    pub w: u32,
+    pub h: u32,
+    pub height: Vec<u16>,
+    pub normal: Vec<u8>,
+    pub albedo: Vec<u16>,
+    pub shade: Vec<u16>,
+    pub glow: Vec<u16>,
+}
+
+fn q16(v: f32) -> u16 {
+    half::f16::from_f32(v.clamp(0.0, 1.0)).to_bits()
+}
+
+/// Bake `width` x `height` texels whose first centre is `(x0, z0)`, `step`
+/// world units apart: the ground, its normal, and `shade`'s floor colour,
+/// detail and veins, in the encodings `vs_clipmap` reads back. The normals
+/// are central differences over the same texel step, with one texel of
+/// border sampled for the edges.
+pub fn bake_rect(
+    w: &World,
+    x0: f32,
+    z0: f32,
+    width: u32,
+    height: u32,
+    step: f32,
+) -> Baked {
+    let ww = width as usize;
+    let hh = height as usize;
+    let bw = ww + 2;
+    let bh = hh + 2;
+    let mut heights = vec![0.0f32; bw * bh];
+    for j in 0..bh {
+        for i in 0..bw {
+            let x = x0 + (i as f32 - 1.0) * step;
+            let z = z0 + (j as f32 - 1.0) * step;
+            heights[j * bw + i] = w.seabed.ground(x, z);
+        }
+    }
+    let mut out = Baked {
+        w: width,
+        h: height,
+        height: vec![0; ww * hh],
+        normal: vec![0; ww * hh * 4],
+        albedo: vec![0; ww * hh * 4],
+        shade: vec![0; ww * hh * 4],
+        glow: vec![0; ww * hh * 4],
+    };
+    let span = HIGHEST - LOWEST;
+    for j in 0..hh {
+        for i in 0..ww {
+            let x = x0 + i as f32 * step;
+            let z = z0 + j as f32 * step;
+            let h = heights[(j + 1) * bw + i + 1];
+            let dx = heights[(j + 1) * bw + i + 2] - heights[(j + 1) * bw + i];
+            let dz = heights[(j + 2) * bw + i + 1] - heights[j * bw + i + 1];
+            let n = [-dx, 2.0 * step, -dz];
+            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let normal = [n[0] / l, n[1] / l, n[2] / l];
+            let (albedo, shade, glow) = shade(w, x, z, normal);
+            let k = j * ww + i;
+            out.height[k] = q16((h - LOWEST) / span);
+            out.normal[k * 4] = ((normal[0] * 0.5 + 0.5) * 255.0 + 0.5) as u8;
+            out.normal[k * 4 + 1] = ((normal[1] * 0.5 + 0.5) * 255.0 + 0.5) as u8;
+            out.normal[k * 4 + 2] = ((normal[2] * 0.5 + 0.5) * 255.0 + 0.5) as u8;
+            out.normal[k * 4 + 3] = 255;
+            out.albedo[k * 4] = q16(albedo[0]);
+            out.albedo[k * 4 + 1] = q16(albedo[1]);
+            out.albedo[k * 4 + 2] = q16(albedo[2]);
+            out.albedo[k * 4 + 3] = q16(albedo[3] / 16.0);
+            out.shade[k * 4] = q16(shade[0] * 0.5);
+            out.shade[k * 4 + 1] = q16(shade[1]);
+            out.shade[k * 4 + 2] = q16(shade[2]);
+            out.shade[k * 4 + 3] = q16(shade[3]);
+            out.glow[k * 4] = q16(glow[0] * 0.25);
+            out.glow[k * 4 + 1] = q16(glow[1] * 0.25);
+            out.glow[k * 4 + 2] = q16(glow[2] * 0.25);
+            out.glow[k * 4 + 3] = 0;
+        }
+    }
+    out
+}
+
 /// The tiles a clipmap would draw this frame: level and tile index, nearest
 /// first. The same squares, holes and culling as [`Terrain::update`], without
 /// building any geometry.

@@ -734,3 +734,104 @@ terrain and the full water are unchanged, and the render scale is an opt-in
 setting (1.0), with 0.9/0.833 the measured look/90 fps trade. The frame is
 **9.65 ms mean** at 1.0 and **7.90 ms** at 0.833. The clipmap's 2.2× loss is
 recorded here so the same ground is not worked twice.
+
+## 14. The baked clipmap and what the water is really made of
+
+Two more low-spec ideas were built and measured against the same control: a
+texture-baked clipmap (the version §13 said might compete) and a survey of
+cheap water shaders from other projects.
+
+### The baked clipmap: the texture fetch is the cost
+
+The fixed block mesh from §13 now gets its ground and floor colour from a
+streaming bake instead of `ground`/`terrain_shade` in the vertex shader. The
+bake is a 256-unit ring of textures at 8 texels/unit (2048 x 2048): height
+(16-bit float), normal (RGBA8), floor colour + layer, detail strengths and cave
+glow (all 16-bit float). The first frame of a visit bakes the whole window on
+the CPU (4.2 M texels: the ground, the normal and `terrain::shade` per texel);
+after that only the strips entering the window are baked as the boat moves,
+so the steady-state frames pay a strip of a few thousand texels every few
+seconds, not a rebake. The vertex shader samples the five maps at `world/256`
+and reads the 16-bit height back to the world, so every vertex costs five
+fetches instead of five `ground` calls.
+
+Per-leg `frame_time`, serial milliseconds:
+
+| terrain | mean | shallows | forest | cave | abyss |
+|---|---|---|---|---|---|
+| tiles, CPU-baked | **9.67** | **12.74** | **11.20** | 10.04 | 8.23 |
+| clipmap, texture bake | 21.42 | 25.33 | 23.88 | 20.36 | 15.80 |
+
+It is still **2.2x slower**, almost exactly the procedural clipmap's 21.50:
+the five filtered texture fetches per vertex cost as much as the five `ground`
+calls (which themselves do four `relief` loads each). That is the finding:
+on V3D the **vertex texture fetch** is the expensive part, and any
+heightmap-in-the-vertex-shader clipmap pays it twice a frame. The tile vertex
+shader reads 72 bytes of attributes and no textures, and the CPU paid for
+those bytes once per tile; the tile builder *is* the height/shading cache.
+Baking it smaller or streaming it differently cannot fix the fetch count —
+only removing the per-vertex fetch can, and then there is no clipmap height.
+
+The look also differs more than the procedural version did: mean 0.31/255,
+10.6% of the shallows pixels over 2/255, max 74. The bake's 8 texels/unit and
+its 0.125-unit normals are coarser than the tile terrain's 12.5/unit near
+vertices and per-level normals (0.08/0.32/1.28); the fine sand, ripple and cave
+vein detail smooths. A 16/unit bake would be 4x the texture and the bake and
+still 2.2x slower, so it was not pursued.
+
+The baked clipmap stays behind `DIVE3D_CLIPMAP` as the prototype (the bake
+textures are one-texel dummies when it is off). The tile terrain remains the
+default.
+
+### The water: what other low-spec projects do, and what is actually visible
+
+Surveyed: [Godot Ocean Shader](https://github.com/immaculate-lift-studio/Godot-Ocean-Shader),
+[Godot pixelated water](https://github.com/taillight-games/godot-4-pixelated-water-shader),
+[Toon Water URP](https://github.com/yinb1426/Toon-Water-Shader),
+[Stylized Water](https://ameye.dev/notes/stylized-water-shader/) and its
+[realtime caustics](https://ameye.dev/notes/realtime-caustics/),
+[Godot Gerstner water](https://github.com/LesusX/Water-Shader),
+[HydraX](https://github.com/zinick/HydraX), and the
+[cheap water shader](https://godotshaders.com/shader/cheap-water-shader/).
+
+The survey's useful findings:
+
+- Almost every water shader is written for a **plane with depth**, and where it
+  looks expensive the cost is depth/opaque/reflection targets, not the colour:
+  the colour is nearly always `lerp(shallow, deep, depth01)`. Foam, refraction
+  and screen-space rays need the depth of the geometry behind the water, which
+  our background pass does not have.
+- The cheap ones move work out of the fragment shader or **quantise** (64-step
+  UVs, posterised colour, `step`-rounded foam). None runs more than a couple of
+  `sin`/`pow`/`exp` per pixel; those are the budget on V3D.
+- From below, the surface is a mirror except inside **Snell's window** at
+  48.6 degrees above the horizon; only the pixelated-water and Gerstner
+  projects even check whether the camera is underwater.
+
+Two of the survey's three cheap ideas were implemented and compared against the
+previews, behind test bits:
+
+- **Snell's window + TIR rim** (`0` samples, ~8 ALU). Visible only when
+  `dir.y > 0.62`, i.e. looking up past 48 degrees. Our camera looks sideways
+  and its top rows never reach that, so the variant differed from the control
+  by mean 0.051/255: the window is out of frame. It is a periscope/porthole
+  effect, not a salon-window one.
+- **A caustic shimmer surface** (`part::SHIMMER_WATER`): one caustic fetch
+  drifting across the underside replaced the two sines and the `pow(14)` glint.
+  The previews were **pixel-identical** to the control (mean 0.001/255, max 4):
+  the surface band the code has always shaded is itself barely in frame, so
+  the expensive path's sines and pow were drawing nothing. The whole-water
+  cost is the depth gradient and the searchlight beam; the cheap gradient
+  version saves only 0.05 ms, and that is the floor.
+
+So there is no water win to take. The surface effects from the other projects
+assume a plane with the surface in view, and this camera has neither; the
+existing water is already the low-spec answer (a gradient and a beam). The
+Snell and shimmer variants remain as test probes for a camera that looks up.
+
+**Where it stands.** Nothing from this round is on by default: the tile
+terrain, the full water and render scale 1.0 are unchanged, the clipmap and
+the two water variants are probes, and the frame is still **9.65 ms mean /
+12.74 ms worst leg**. The render scale (§13) remains the one real lever for
+90 fps; the baked clipmap and the surface-water effects are recorded as losses
+so they are not tried again.

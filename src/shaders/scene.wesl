@@ -56,6 +56,14 @@ struct Globals {
 // Caustics precomputed on the CPU once, instead of a sin/pow every vertex.
 @group(0) @binding(4) var caustic_map: texture_2d<f32>;
 @group(0) @binding(5) var caustic_sampler: sampler;
+// The clipmap's streaming bake (see the terrain section): height and normal,
+// the floor's colour and layer, its fine-detail strengths and its cave glow.
+@group(0) @binding(6) var bake_height: texture_2d<f32>;
+@group(0) @binding(7) var bake_normal: texture_2d<f32>;
+@group(0) @binding(8) var bake_albedo: texture_2d<f32>;
+@group(0) @binding(9) var bake_shade: texture_2d<f32>;
+@group(0) @binding(10) var bake_glow: texture_2d<f32>;
+@group(0) @binding(11) var bake_sampler: sampler;
 
 const RELIEF_SIZE: i32 = 512;
 // The lava cave's tunnel and the massif it runs through, as in `world.rs`.
@@ -412,6 +420,30 @@ fn fs_background_cheap(in: Screen) -> @location(0) vec4<f32> {
     return vec4<f32>(col * SEA_SCALE, 1.0);
 }
 
+@if(!full_hd)
+@fragment
+fn fs_background_shimmer(in: Screen) -> @location(0) vec4<f32> {
+    let s = in.ndc * g.view.x;
+    let local = normalize(vec3<f32>(s, 1.0));
+    let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
+    var col = water_at(dir);
+    let up = smooth01(0.05, 0.65, dir.y);
+    if (up > 0.0) {
+        let t = g.camera.w;
+        let shimmer = textureSampleLevel(
+            caustic_map,
+            caustic_sampler,
+            dir.xz * 1.2 + vec2<f32>(t * 0.010, t * -0.013),
+            0.0,
+        ).r;
+        let surface = mix(g.water.rgb, vec3<f32>(0.10, 0.32, 0.35), 0.55)
+            * (0.85 + 0.50 * shimmer)
+            + vec3<f32>(0.95, 0.88, 0.68) * (shimmer * shimmer) * (0.35 + g.sun.w * 0.8) * 0.6;
+        col = mix(col, surface, up * 0.88);
+    }
+    return vec4<f32>(col * SEA_SCALE, 1.0);
+}
+
 
 // The mobile-style sea: one depth/height mix and the water's tint, no wave,
 // glint or panel-sized arithmetic. Its own pipeline, so the expensive path is
@@ -423,6 +455,35 @@ fn fs_background_cheap(in: Screen) -> @location(0) vec4<f32> {
     let local = normalize(vec3<f32>(s, 1.0));
     let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
     let col = mix(g.deep.rgb, g.water.rgb, smooth01(-0.6, 0.5, dir.y)) * g.tint.rgb;
+    return vec4<f32>(col * SEA_SCALE, 1.0);
+}
+
+// The surface band: one caustic fetch that drifts across the underside,
+// with the sun's flecks, instead of the two sines and the pow(14) glint.
+// This is the cheap-water recommendation from the survey (WaltGD's
+// screen-space caustic water, quantised to the top of the view): the fetch
+// replaces three quarter-rate SFU ops on a fill-bound GPU.
+@if(full_hd)
+@fragment
+fn fs_background_shimmer(in: Screen) -> @location(0) vec4<f32> {
+    let s = in.ndc * g.view.x;
+    let local = normalize(vec3<f32>(s, 1.0));
+    let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
+    var col = water_at(dir);
+    let up = smooth01(0.05, 0.65, dir.y);
+    if (up > 0.0) {
+        let t = g.camera.w;
+        let shimmer = textureSampleLevel(
+            caustic_map,
+            caustic_sampler,
+            dir.xz * 1.2 + vec2<f32>(t * 0.010, t * -0.013),
+            0.0,
+        ).r;
+        let surface = mix(g.water.rgb, vec3<f32>(0.10, 0.32, 0.35), 0.55)
+            * (0.85 + 0.50 * shimmer)
+            + vec3<f32>(0.95, 0.88, 0.68) * (shimmer * shimmer) * (0.35 + g.sun.w * 0.8) * 0.6;
+        col = mix(col, surface, up * 0.88);
+    }
     return vec4<f32>(col * SEA_SCALE, 1.0);
 }
 
@@ -654,55 +715,17 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
 
 
 // ---------------------------------------------------------------------------
-// Terrain, as a geometry clipmap
+// Terrain, as a geometry clipmap from a streaming bake
 // ---------------------------------------------------------------------------
 //
-// The same lattice, tiles and skirts as `terrain.rs`, but the mesh is a fixed
-// block and the vertex shader finds the ground and its colour. Faithful to the
-// open-source clipmap pattern (fixed rings, heightmap in the vertex shader);
-// it replaces the CPU tile builder when `DIVE3D_CLIPMAP` is set.
+// The fixed block mesh and the instance list are the same as the first
+// clipmap attempt (`terrain::visible_blocks`); the ground height and the
+// floor's colour now come from a window of textures baked on the CPU and
+// streamed under the boat, so the vertex shader samples five small maps
+// instead of calling `ground` five times and five value noises. The bake
+// wraps every 128 units; the sampler repeats.
 
-@if(full_hd)
-struct Shaded {
-    albedo: vec3<f32>,
-    layer: i32,
-    shade: vec4<f32>,
-    glow: vec3<f32>,
-};
-
-// `terrain::shade`: the floor's colour and layer, the fine-detail strengths
-// and the cave's glow, all from where the vertex is.
-@if(full_hd)
-fn terrain_shade(x: f32, z: f32, n: vec3<f32>) -> Shaded {
-    let l = leg(voyage_x(x, z));
-    let base = floor_albedo(l);
-    var layers = array<i32, 8>(12, 12, 13, 12, 10, 13, 12, 13);
-    let flat = 1.0 - smooth01(0.12, 0.40, 1.0 - n.y);
-    let noise = 0.65 + 0.5 * vnoise(x * 14.0, z * 14.0, 9u);
-    let sand = presence(l, SHALLOWS) + 0.5 * presence(l, FOREST) + 0.5 * presence(l, ARCTIC);
-    var ripple = 0.0;
-    if (sand > 0.0) {
-        let r = sin((x * 0.8 + z) * 26.0 + vnoise(x * 3.0, z * 3.0, 5u) * 4.0);
-        ripple = 0.16 * sand * smooth01(0.3, 1.0, r);
-    }
-    let paving = presence(l, ATLANTIS);
-    var pave = 0.0;
-    if (paving > 0.0) {
-        let row = floor(z * 4.0);
-        let joint = min(abs(fract(x * 3.0 + row * 0.5) - 0.5), abs(fract(z * 4.0) - 0.5));
-        pave = 0.45 * paving * smooth01(0.45, 0.5, joint);
-    }
-    let cave = presence(l, CAVE);
-    var glow = vec3<f32>(0.0);
-    if (cave > 0.0) {
-        let veins = 1.0 - smooth01(0.0, 0.04, abs(vnoise(x * 1.4, z * 1.9, 6u) - 0.5));
-        let fine = 1.0 - smooth01(0.0, 0.03, abs(vnoise(x * 4.0, z * 5.0, 7u) - 0.5));
-        let pools = smooth01(0.66, 0.74, vnoise(x * 0.55 + 7.0, z * 0.55, 8u));
-        let k = (veins * 0.9 + fine * 0.5 + pools * 1.4) * cave * flat;
-        glow = vec3<f32>(k, 0.36 * k, 0.07 * k);
-    }
-    return Shaded(base, layers[l.a], vec4<f32>(noise, flat, ripple, pave), glow);
-}
+const BAKE_WINDOW: f32 = 256.0;
 
 @if(full_hd)
 @vertex
@@ -713,31 +736,29 @@ fn vs_clipmap(
     @location(3) spacing: f32,
 ) -> Ground {
     let xz = origin + local * spacing;
-    let x = xz.x;
-    let z = xz.y;
-    // The normal from the same central differences, a spacing either way, as
-    // the tile builder's lattice.
-    let e = spacing;
-    let hx = ground(x + e, z) - ground(x - e, z);
-    let hz = ground(x, z + e) - ground(x, z - e);
-    let n = normalize(vec3<f32>(-hx, 2.0 * e, -hz));
-    var world = vec3<f32>(x, ground(x, z), z);
+    let uv = xz / BAKE_WINDOW;
+    let h16 = textureSampleLevel(bake_height, bake_sampler, uv, 0.0).r;
+    let height = -16.0 + h16 * 24.0;
+    let n = normalize(textureSampleLevel(bake_normal, bake_sampler, uv, 0.0).rgb * 2.0 - 1.0);
+    let baked = textureSampleLevel(bake_albedo, bake_sampler, uv, 0.0);
+    let shade = textureSampleLevel(bake_shade, bake_sampler, uv, 0.0);
+    let glow = textureSampleLevel(bake_glow, bake_sampler, uv, 0.0);
+    var world = vec3<f32>(xz.x, height, xz.y);
     if (skirt > 0.5) {
         world.y = world.y - 4.0 * spacing;
     }
-    let baked = terrain_shade(x, z, n);
     var out: Ground;
     out.position = project(world);
     out.fog = fog_at(world);
     out.uv = world.xz * 1.3;
-    out.layer = baked.layer;
+    out.layer = i32(baked.a * 16.0 + 0.5);
     out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
     let detail = exp(-length(world - g.camera.xyz) * 0.25);
-    var scale = mix(1.0, baked.shade.x, detail * baked.shade.y);
-    scale *= 1.0 - baked.shade.z * detail;
-    scale *= 1.0 - baked.shade.w * detail;
+    var scale = mix(1.0, shade.x * 2.0, detail * shade.y);
+    scale *= 1.0 - shade.z * detail;
+    scale *= 1.0 - shade.w * detail;
     let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + world.x * 3.0) * sin(g.camera.w * 2.9 + world.z * 2.0);
-    out.albedo = baked.albedo * scale + baked.glow * (flicker * 0.35);
+    out.albedo = baked.rgb * scale + glow.rgb * 4.0 * (flicker * 0.35);
     if (switched(8u)) {
         let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
         out.light = g.tint.rgb * (

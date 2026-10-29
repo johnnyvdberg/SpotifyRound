@@ -159,19 +159,277 @@ struct Globals {
 /// The test-only geometry-clipmap terrain: one fixed block mesh drawn as one
 /// instance per visible tile, with the ground and its colour found in the
 /// vertex shader instead of built on the CPU.
-#[cfg(all(test, feature = "full-hd"))]
 struct Clipmap {
     vertices: wgpu::Buffer,
     instances: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline,
     data: Vec<[f32; 4]>,
     count: u32,
+    bake: Bake,
+}
+
+/// The streaming height/normal/shading bake under the clipmap. It is a ring of
+/// textures covering `WINDOW` units, so the shader samples `world / WINDOW`
+/// and repeats; the CPU keeps the window under the camera, baking a whole
+/// window on the first frame and only the leading strips as the boat moves.
+struct Bake {
+    height: wgpu::Texture,
+    normal: wgpu::Texture,
+    albedo: wgpu::Texture,
+    shade: wgpu::Texture,
+    glow: wgpu::Texture,
+    res: u32,
+    scale: f32,
+    on: bool,
+    /// The camera's texel at the last bake, and the visit it was for.
+    centre: Option<[i32; 2]>,
+    visit: Option<u64>,
+}
+
+const BAKE_WINDOW: f32 = 256.0;
+const BAKE_RES: u32 = 2048;
+
+impl Bake {
+    fn new(device: &wgpu::Device, on: bool) -> (Self, [wgpu::TextureView; 5]) {
+        let res = if on { BAKE_RES } else { 1 };
+        let texture = |label, format| {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: res,
+                    height: res,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+            (t, v)
+        };
+        let (height, height_view) = texture("Dive3d bake height", wgpu::TextureFormat::R16Float);
+        let (normal, normal_view) = texture("Dive3d bake normal", wgpu::TextureFormat::Rgba8Unorm);
+        let (albedo, albedo_view) = texture("Dive3d bake albedo", wgpu::TextureFormat::Rgba16Float);
+        let (shade, shade_view) = texture("Dive3d bake shade", wgpu::TextureFormat::Rgba16Float);
+        let (glow, glow_view) = texture("Dive3d bake glow", wgpu::TextureFormat::Rgba16Float);
+        (
+            Self {
+                height,
+                normal,
+                albedo,
+                shade,
+                glow,
+                res,
+                scale: res as f32 / BAKE_WINDOW,
+                on,
+                centre: None,
+                visit: None,
+            },
+            [height_view, normal_view, albedo_view, shade_view, glow_view],
+        )
+    }
+
+    /// Bake the whole window around `camera` (the first frame of a visit).
+    fn initial(&mut self, gpu: &Graphics, world: &World, camera: [f32; 2], visit: u64) {
+        if !self.on {
+            return;
+        }
+        let res = self.res;
+        let half = res as i32 / 2;
+        let ci = (camera[0] * self.scale).floor() as i32;
+        let cj = (camera[1] * self.scale).floor() as i32;
+        let ox = ci - half;
+        let oz = cj - half;
+        let kx = (camera[0] / BAKE_WINDOW).floor();
+        let kz = (camera[1] / BAKE_WINDOW).floor();
+        let x0 = (ox as f32 + 0.5) / self.scale + BAKE_WINDOW * kx;
+        let z0 = (oz as f32 + 0.5) / self.scale + BAKE_WINDOW * kz;
+        let data = terrain::bake_rect(world, x0, z0, res, res, 1.0 / self.scale);
+        let rx = ox.rem_euclid(res as i32) as u32;
+        let rz = oz.rem_euclid(res as i32) as u32;
+        let height = rotate(&data.height, res, res, rx, rz, res);
+        put_bake(gpu, &self.height, bytemuck::cast_slice(&height), 2, res, res, 0, 0, res);
+        let normal = rotate_rgba(&data.normal, res, res, rx, rz, res, 4);
+        put_bake(gpu, &self.normal, &normal, 4, res, res, 0, 0, res);
+        let albedo = rotate_rgba(&data.albedo, res, res, rx, rz, res, 4);
+        put_bake(gpu, &self.albedo, bytemuck::cast_slice(&albedo), 8, res, res, 0, 0, res);
+        let shade = rotate_rgba(&data.shade, res, res, rx, rz, res, 4);
+        put_bake(gpu, &self.shade, bytemuck::cast_slice(&shade), 8, res, res, 0, 0, res);
+        let glow = rotate_rgba(&data.glow, res, res, rx, rz, res, 4);
+        put_bake(gpu, &self.glow, bytemuck::cast_slice(&glow), 8, res, res, 0, 0, res);
+        self.centre = Some([ci, cj]);
+        self.visit = Some(visit);
+    }
+
+    /// Bake only the strips that entered the window since the last bake.
+    fn stream(&mut self, gpu: &Graphics, world: &World, camera: [f32; 2]) {
+        if !self.on {
+            return;
+        }
+        let ci = (camera[0] * self.scale).floor() as i32;
+        let cj = (camera[1] * self.scale).floor() as i32;
+        let Some([oi, oj]) = self.centre else {
+            return;
+        };
+        if ci == oi && cj == oj {
+            return;
+        }
+        let res = self.res;
+        let half = res as i32 / 2;
+        let old_ox = oi - half;
+        let old_oz = oj - half;
+        let new_ox = ci - half;
+        let new_oz = cj - half;
+        let kx = (camera[0] / BAKE_WINDOW).floor();
+        let kz = (camera[1] / BAKE_WINDOW).floor();
+        let mut strip = |sx: i32, sz: i32, w: u32, h: u32| {
+            bake_strip(gpu, self, world, sx, sz, w, h, kx, kz);
+        };
+        if ci > oi {
+            strip(old_ox + res as i32, new_oz, (ci - oi) as u32, res);
+        }
+        if ci < oi {
+            strip(new_ox, new_oz, (oi - ci) as u32, res);
+        }
+        if cj > oj {
+            strip(new_ox, old_oz + res as i32, res, (cj - oj) as u32);
+        }
+        if cj < oj {
+            strip(new_ox, new_oz, res, (oj - cj) as u32);
+        }
+        self.centre = Some([ci, cj]);
+    }
+}
+
+fn rotate<T: bytemuck::Pod + Default + Copy>(
+    src: &[T],
+    w: u32,
+    h: u32,
+    ox: u32,
+    oy: u32,
+    res: u32,
+) -> Vec<T> {
+    let mut out = vec![T::default(); (res * res) as usize];
+    for j in 0..h {
+        for i in 0..w {
+            out[(((oy + j) % res) * res + ((ox + i) % res)) as usize] = src[(j * w + i) as usize];
+        }
+    }
+    out
+}
+
+/// The same for data with several channels per texel (the normal's four
+/// bytes, the colour maps' four 16-bit channels).
+fn rotate_rgba<T: bytemuck::Pod + Default + Copy>(
+    src: &[T],
+    w: u32,
+    h: u32,
+    ox: u32,
+    oy: u32,
+    res: u32,
+    channels: usize,
+) -> Vec<T> {
+    let mut out = vec![T::default(); (res * res) as usize * channels];
+    for j in 0..h {
+        for i in 0..w {
+            let d = ((((oy + j) % res) * res + ((ox + i) % res)) as usize) * channels;
+            let s = ((j * w + i) as usize) * channels;
+            out[d..d + channels].copy_from_slice(&src[s..s + channels]);
+        }
+    }
+    out
+}
+
+/// Write `w` x `h` texels of `bytes` at the ring position `(ox, oy)`, split
+/// wherever the rectangle crosses the texture's wrap.
+#[allow(clippy::too_many_arguments)]
+fn put_bake(
+    gpu: &Graphics,
+    texture: &wgpu::Texture,
+    bytes: &[u8],
+    texel: u32,
+    w: u32,
+    h: u32,
+    ox: u32,
+    oy: u32,
+    res: u32,
+) {
+    let mut x = 0;
+    while x < w {
+        let mx = (res - (ox + x) % res).min(w - x);
+        let mut y = 0;
+        while y < h {
+            let my = (res - (oy + y) % res).min(h - y);
+            let stride = (mx * texel).div_ceil(256) * 256;
+            let mut buf = vec![0u8; (stride * my) as usize];
+            for j in 0..my {
+                let src = (((y + j) * w + x) * texel) as usize;
+                let dst = (j * stride) as usize;
+                buf[dst..dst + (mx * texel) as usize]
+                    .copy_from_slice(&bytes[src..src + (mx * texel) as usize]);
+            }
+            gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: (ox + x) % res,
+                        y: (oy + y) % res,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &buf,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(my),
+                },
+                wgpu::Extent3d {
+                    width: mx,
+                    height: my,
+                    depth_or_array_layers: 1,
+                },
+            );
+            y += my;
+        }
+        x += mx;
+    }
+}
+
+fn bake_strip(
+    gpu: &Graphics,
+    bake: &Bake,
+    world: &World,
+    sx: i32,
+    sz: i32,
+    w: u32,
+    h: u32,
+    kx: f32,
+    kz: f32,
+) {
+    let res = bake.res;
+    let x0 = (sx as f32 + 0.5) / bake.scale + BAKE_WINDOW * kx;
+    let z0 = (sz as f32 + 0.5) / bake.scale + BAKE_WINDOW * kz;
+    let data = terrain::bake_rect(world, x0, z0, w, h, 1.0 / bake.scale);
+    let ox = sx.rem_euclid(res as i32) as u32;
+    let oz = sz.rem_euclid(res as i32) as u32;
+    put_bake(gpu, &bake.height, bytemuck::cast_slice(&data.height), 2, w, h, ox, oz, res);
+    put_bake(gpu, &bake.normal, &data.normal, 4, w, h, ox, oz, res);
+    put_bake(gpu, &bake.albedo, bytemuck::cast_slice(&data.albedo), 8, w, h, ox, oz, res);
+    put_bake(gpu, &bake.shade, bytemuck::cast_slice(&data.shade), 8, w, h, ox, oz, res);
+    put_bake(gpu, &bake.glow, bytemuck::cast_slice(&data.glow), 8, w, h, ox, oz, res);
 }
 
 pub(crate) struct Nautilus {
     background: wgpu::RenderPipeline,
     /// The mobile-style water, selected by `part::CHEAP_WATER`.
     background_cheap: wgpu::RenderPipeline,
+    /// The caustic-shimmer surface, selected by `part::SHIMMER_WATER`.
+    background_shimmer: wgpu::RenderPipeline,
     terrain_pipeline: wgpu::RenderPipeline,
     /// Solid models: one pipeline per entry of [`MATERIALS`] and grounded
     /// flag.
@@ -201,7 +459,6 @@ pub(crate) struct Nautilus {
     ground_indices: wgpu::Buffer,
     ground_count: u32,
     terrain: Terrain,
-    #[cfg(all(test, feature = "full-hd"))]
     clipmap: Option<Clipmap>,
     /// The tunnel through the cave's massif, and which of its builds
     /// ([`world::Frame::tunnel_version`]) the buffers hold.
@@ -375,6 +632,8 @@ mod part {
     pub const TERRAIN_FIRST: u64 = 1 << 27;
     /// Not a part: the mobile-style water shader instead of the full one.
     pub const CHEAP_WATER: u64 = 1 << 28;
+    /// Not a part: the caustic-shimmer surface (one fetch, no sines).
+    pub const SHIMMER_WATER: u64 = 1 << 29;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -721,6 +980,21 @@ impl Nautilus {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // The clipmap's streaming bake. When the clipmap is off the group
+        // still needs the bindings, so they are one-texel dummies.
+        let clipmap_on = std::env::var_os("DIVE3D_CLIPMAP").is_some()
+            && cfg!(feature = "full-hd");
+        let (bake, [bake_height_view, bake_normal_view, bake_albedo_view, bake_shade_view, bake_glow_view]) =
+            Bake::new(device, clipmap_on);
+        let bake_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Dive3d bake"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Dive3d globals"),
             entries: &[
@@ -773,6 +1047,62 @@ impl Nautilus {
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -893,6 +1223,30 @@ impl Nautilus {
                     wgpu::BindGroupEntry {
                         binding: 5,
                         resource: wgpu::BindingResource::Sampler(&caustic_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&bake_height_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(&bake_normal_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(&bake_albedo_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::TextureView(&bake_shade_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: wgpu::BindingResource::TextureView(&bake_glow_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: wgpu::BindingResource::Sampler(&bake_sampler),
                     },
                 ],
             })
@@ -1116,6 +1470,19 @@ impl Nautilus {
             &[],
             None,
         );
+        let background_shimmer = pipeline(
+            "Dive3d water, shimmer",
+            "vs_background",
+            "fs_background_shimmer",
+            &[],
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            false,
+            true,
+            &[],
+            None,
+        );
         let terrain = pipeline(
             "Dive3d seabed",
             "vs_terrain",
@@ -1129,8 +1496,7 @@ impl Nautilus {
             &[],
             None,
         );
-        #[cfg(all(test, feature = "full-hd"))]
-        let clipmap = if std::env::var_os("DIVE3D_CLIPMAP").is_some() {
+        let clipmap = if clipmap_on {
             let block_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32];
             let block_layout = wgpu::VertexBufferLayout {
                 array_stride: 12,
@@ -1171,6 +1537,7 @@ impl Nautilus {
                 pipeline,
                 data: Vec::with_capacity(512),
                 count: 0,
+                bake,
             })
         } else {
             None
@@ -1357,8 +1724,8 @@ impl Nautilus {
         Ok(Self {
             background,
             background_cheap,
+            background_shimmer,
             terrain_pipeline: terrain,
-            #[cfg(all(test, feature = "full-hd"))]
             clipmap,
             models,
             sealed,
@@ -1463,10 +1830,15 @@ impl Nautilus {
         world::build(&world, &mut self.frame);
         #[cfg(test)]
         let build_done = clock.elapsed();
-        #[cfg(all(test, feature = "full-hd"))]
         let clipmap_on = self.clipmap.is_some();
-        #[cfg(not(all(test, feature = "full-hd")))]
-        let clipmap_on = false;
+        if let Some(clipmap) = &mut self.clipmap {
+            let camera = [pose.pos[0], pose.pos[2]];
+            if clipmap.bake.visit != Some(visit) || clipmap.bake.centre.is_none() {
+                clipmap.bake.initial(gpu, &world, camera, visit);
+            } else {
+                clipmap.bake.stream(gpu, &world, camera);
+            }
+        }
         let ground = &self.ground;
         let tiles = if clipmap_on {
             Vec::new()
@@ -1478,7 +1850,6 @@ impl Nautilus {
                     .write_buffer(ground, at as u64, bytemuck::cast_slice(points));
             })
         };
-        #[cfg(all(test, feature = "full-hd"))]
         if let Some(clipmap) = &mut self.clipmap {
             clipmap.data.clear();
             for (level, i, j) in terrain::visible_blocks(&world) {
@@ -1885,7 +2256,6 @@ impl Nautilus {
                     }
                 };
                 let draw_clipmap = |pass: &mut wgpu::RenderPass| {
-                    #[cfg(all(test, feature = "full-hd"))]
                     if let Some(clipmap) = &this.clipmap {
                         pass.set_pipeline(&clipmap.pipeline);
                         pass.set_vertex_buffer(0, clipmap.vertices.slice(..));
@@ -1965,6 +2335,8 @@ impl Nautilus {
                 if !this.skips(part::BACKGROUND) {
                     pass.set_pipeline(if this.skips(part::CHEAP_WATER) {
                         &this.background_cheap
+                    } else if this.skips(part::SHIMMER_WATER) {
+                        &this.background_shimmer
                     } else {
                         &this.background
                     });
@@ -2707,6 +3079,7 @@ mod tests {
             ("pass: glass models", part::GLASS),
             ("pass: fading models", part::FADING),
             ("pass: cheap water", part::CHEAP_WATER),
+            ("pass: shimmer water", part::SHIMMER_WATER),
             ("pass: fading ice", part::FADING_ICE),
             ("pass: fading props", part::FADING_PROPS),
             ("probe: depth-first draws", part::DEPTH_FIRST_DRAWS),
