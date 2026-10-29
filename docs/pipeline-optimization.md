@@ -2097,3 +2097,27 @@ not a free win. It stays as is.
 The queue of real work is unchanged: the chunk cache (the nine placers'
 per-cell lists), the packing/attribute subsets, the UI posts/notifier, and
 resolution.
+
+## 51. Chunk cache: the blocking detail is the placers' private cell params
+
+A start at §49's lazy per-cell cache made the mechanism concrete: `cells()`
+gained a one-cell mode and `StaticCache` a `(placer, cell) -> contents` map.
+It did not fit, for one specific reason:
+
+- the frame cannot ask a placer for its visible cells from outside. Each of
+  the nine placers chooses its own `cells(size, near, far, salt)` inside its
+  body; `cells()` is generic but the parameters are private to the placer.
+- the workaround — run the placer normally and capture what it emits — is the
+  per-frame cost the cache exists to avoid. The workaround — a thread-local
+  that records the visible list during a normal run — gives the list and the
+  instances, again the full cost.
+
+So the chunk cache needs a small refactor first: give each static placer a
+`fn cells_for(world) -> (size, near, far, salt)` (or a `PlacerSpec` table) so
+the frame can enumerate the visible cells, build each missing one with
+`CELL`/`cache_mode`, and copy the rest. That table is 9 rows and is the
+mechanical prerequisite; it was not done this round, and the partial patch was
+reverted rather than kept.
+
+The tree is at the §47/§48 state: the nine-placer per-camera-cell cache,
+pixel-identical, -0.52 ms Pi.
