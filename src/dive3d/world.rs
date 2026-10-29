@@ -147,6 +147,33 @@ pub fn vnoise(x: f32, z: f32, salt: u32) -> f32 {
     top + (bottom - top) * uz
 }
 
+/// The ice sheet's three noise fields and its arctic coverage, baked into one
+/// RGBA8 tile over a world region around the camera: the fragment shader
+/// sampled three `vnoise` stacks per pixel before, which was the ice's whole
+/// 1.1 ms. The values are exactly the ones `fs_model`'s ICE case uses.
+pub fn ice_bake(w: &World, origin: [f32; 2], size: f32, res: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (res * res * 4) as usize];
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    for j in 0..res {
+        for i in 0..res {
+            let u = (i as f32 + 0.5) / res as f32;
+            let v = (j as f32 + 0.5) / res as f32;
+            let x = origin[0] + u * size;
+            let z = origin[1] + v * size;
+            let coverage = smooth(0.35, 0.65, w.share(x, z, ARCTIC));
+            let floes = vnoise(x * 0.9, z * 1.3, 14);
+            let lead = 1.0 - smooth(0.02, 0.06, (vnoise(x * 0.35 + 3.0, z * 0.08, 15) - 0.5).abs());
+            let bumps = vnoise(x * 6.0, z * 6.0, 16);
+            let k = ((j * res + i) * 4) as usize;
+            out[k] = q(floes);
+            out[k + 1] = q(lead);
+            out[k + 2] = q(bumps);
+            out[k + 3] = q(coverage);
+        }
+    }
+    out
+}
+
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)

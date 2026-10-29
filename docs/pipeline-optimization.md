@@ -1135,3 +1135,81 @@ draw cost is ~0.1 ms anyway. Skip the multi-draw/indirect path.
 4. **CPU build** (0.53 desktop / 1.4 Pi): caches, broadphase, projected-area
    reject.
 5. **UI**: the notifier window-clear pass (kiosk), and the KMS overlay plane.
+
+## 18. The model audit lands: what actually grows, and the ice bake
+
+The model audit (final) corrected three assumptions from §17 and gave the
+geometry picture. The fade-opaque branch had already changed the model path
+more than the old tables show.
+
+### The fade branch's side effect: draws collapsed
+
+At `4f56173` the model draws are **18–34 per leg** (forest 29, shallows 26,
+atlantis 29), against 96–242 at `371ff5c`. The old forest 242 was ~200 fading
+props each depth-sorted into its own run, not model/LOD groups. Draw-call cost
+is now ~0.02 ms. That removes draw batching, multi-draw and (mostly) the static
+merge from the plan: V3DV has `VK_EXT_multi_draw` but not `multiDrawIndirect`,
+and merging static props leaves the vertex count unchanged, so it cannot touch
+the 3.2 ms geometry. A static *pipeline* (ANIM=0, baked transform) is worth
+~0.08 ms, not 0.5–1.5.
+
+### Where the 3.2 ms geometry is
+
+Every heavy model is at **LOD0**, and the small repeated props are the vertex
+count: at a forest frame Fish is 198 inst / 53.1k verts (**35%**), Sphere 709 /
+31.0k, Cone 701 / 25.2k, Kelp 295 / 17.1k; at shallows Fish is 299 / 80.0k
+(**55%**). Fish are 268 verts each (12×10 loft + fins), Kelp 58, Cone 36,
+Sphere ~44; the whole frame's LOD1/2 geometry is only 18% of triangles.
+Rounding the fish loft to 8×7 (~140 verts, −45%) is **0.5–0.8 ms Pi** at
+22.6 ns/vertex, and a Kelp LOD1 for its far half another 0.1–0.2 ms. That is
+the next branch.
+
+The plain `vs_model` remains 503 instructions / 51 temps / **2 threads**
+(binning 215/32/4); the surface pipeline proves the way across the register
+cliff (275/32/4 when the fragment stops reading albedo/normal/local/floor).
+A distance-gated `FLAT` variant is the only model change that *scales* with
+count, but it must be gated on the shaderdb: ≤~330 instructions and 32
+temps/4 threads, else it is a rounding error.
+
+### The ice bake
+
+The ice was the only remaining fading draw, and its 1.12 ms was fragment ALU,
+not blending: 342 instructions, 27 of them three `vnoise` stacks plus
+`leg`/`presence`, for a single plane. `world::ice_bake` now evaluates floes,
+leads, bumps and the arctic coverage once into a 512² RGBA8 tile over a
+64-unit square around the camera (8 texels/unit, above the 6/unit bumps); the
+fragment samples it once and keeps the surface fetch and sun term. The bake is
+re-done when the camera has moved 16 units (an ~0.5–1 ms M1 / 2–3 ms Pi hitch
+every ~5 minutes of voyage).
+
+- **Visual gate**: [branch-ice-bake.png](branch-ice-bake.png) — mean
+  **0.001/255, max 3**; the ice is pixel-identical on all four legs.
+- **Pi effect table (paired, same run)**: `pass: fading ice` is now **0.37 ms**
+  (was 1.12), `model: planes` 0.44, `everything` 9.31, sea 7.28. The 0.7 ms
+  mean / 0.6–0.8 arctic is the ice bake's share; the per-leg frame means in
+  that run (8.72 overall, 6.84 arctic, 10.26 forest control) also carry the
+  day's run drift, so the paired table is the number to trust.
+
+![ice-bake: current / baked / amplified difference](branch-ice-bake.png)
+
+Ice-opaque is the one-line orthogonal follow-up (0.1–0.2 ms): after the bake
+the fragment is cheap enough that the blend is a small share.
+
+### The revised order
+
+1. **Fish (£0.5–0.8 ms) and Kelp (0.1–0.2 ms) vertex count/LOD** — the
+   geometry is 50–62% of the frame's vertices and all LOD0.
+2. **Ice bake — done.** Ice-opaque as a small follow-up.
+3. **Flat/static VS for the small-instance tail** (0.2–0.5 ms now, scales with
+   count) — shaderdb-gated at 32 temps/4 threads.
+4. **Instance/vertex packing + per-pipeline attribute subsets** (0.1–0.3 ms,
+   not the 2→4-thread lever; the light path holds the temps).
+5. **CPU/culling** (0.1–0.2 ms now, headroom at count): fold grounding into
+   placement, `cells` scratch, cap before sorting.
+6. **UI**: notifier window clear (kiosk), the 1–1.5 ms Slint composite via a
+   KMS overlay plane, merge the three per-frame event-loop posts, reuse the
+   `mark`.
+7. **Resolution** remains the largest single lever (1.0–1.8 ms), orthogonal.
+
+Not to do: static chunk merge for frame time, draw batching, multi-draw,
+per-instance culling (already at placement), deeper LOD alone (LOD2 is 2.4%).

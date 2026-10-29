@@ -34,6 +34,12 @@ use world::{Frame, Instance, Seabed, Sprite, World};
 pub const SIZE: u32 = 1080;
 
 
+/// The ice bake: a 64-unit square around the camera, 512 texels across, at
+/// the highest ice frequency's Nyquist and a bit over.
+const ICE_BAKE_SIZE: f32 = 64.0;
+const ICE_BAKE_RES: u32 = 512;
+const ICE_BAKE_HALF: f32 = ICE_BAKE_SIZE * 0.5;
+
 /// The size the sea is rendered at before Slint scales it to the panel. The
 /// low-spec references all expose this (URP's Render Scale, Godot's
 /// `scaling_3d/scale`); one draws it whole by default and a benchmark can ask
@@ -152,6 +158,8 @@ struct Globals {
     world: [f32; 4],
     counts: [f32; 4],
     tint: [f32; 4],
+    /// The bake's world origin x/z, and 1/size.
+    ice: [f32; 4],
     lights: [[f32; 4]; 8],
     light_colours: [[f32; 4]; 8],
 }
@@ -215,6 +223,10 @@ pub(crate) struct Nautilus {
     depth: wgpu::TextureView,
     resolved: wgpu::TextureView,
     relief: wgpu::Texture,
+    ice_bake: wgpu::Texture,
+    ice_origin: [f32; 2],
+    ice_centre: Option<[f32; 2]>,
+    ice_visit: Option<u64>,
     voyage: Voyage,
     helm: Helm,
     /// The seabed of the current visit, and the visit it was made for.
@@ -778,9 +790,33 @@ impl Nautilus {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         // The seabed's relief, replaced on every visit; and the surfaces, painted once.
+        let ice_bake = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Dive3d ice bake"),
+            size: wgpu::Extent3d {
+                width: ICE_BAKE_RES,
+                height: ICE_BAKE_RES,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
         let relief = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Dive3d relief"),
             size: wgpu::Extent3d {
@@ -853,6 +889,7 @@ impl Nautilus {
             ..Default::default()
         });
         let relief_view = relief.create_view(&wgpu::TextureViewDescriptor::default());
+        let ice_bake_view = ice_bake.create_view(&wgpu::TextureViewDescriptor::default());
         let surfaces_view = surfaces.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -895,6 +932,10 @@ impl Nautilus {
                     wgpu::BindGroupEntry {
                         binding: 5,
                         resource: wgpu::BindingResource::Sampler(&caustic_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::TextureView(&ice_bake_view),
                     },
                 ],
             })
@@ -1370,6 +1411,10 @@ impl Nautilus {
             depth,
             resolved,
             relief,
+            ice_bake,
+            ice_origin: [0.0; 2],
+            ice_centre: None,
+            ice_visit: None,
             voyage: Voyage::default(),
             helm: Helm::default(),
             seabed: Seabed {
@@ -1440,6 +1485,41 @@ impl Nautilus {
             t,
         };
         world::build(&world, &mut self.frame);
+        // Bake the ice sheet's noise for the region around the camera, and
+        // re-bake only when the camera has moved far enough that the margin
+        // is gone (16 of the 64 units).
+        let camera = [pose.pos[0], pose.pos[2]];
+        let stale = self.ice_visit != Some(visit)
+            || match self.ice_centre {
+                None => true,
+                Some(c) => (camera[0] - c[0]).hypot(camera[1] - c[1]) > 16.0,
+            };
+        if stale {
+            let origin = [camera[0] - ICE_BAKE_HALF, camera[1] - ICE_BAKE_HALF];
+            let data = world::ice_bake(&world, origin, ICE_BAKE_SIZE, ICE_BAKE_RES);
+            gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.ice_bake,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(ICE_BAKE_RES * 4),
+                    rows_per_image: Some(ICE_BAKE_RES),
+                },
+                wgpu::Extent3d {
+                    width: ICE_BAKE_RES,
+                    height: ICE_BAKE_RES,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.ice_origin = origin;
+            self.ice_centre = Some(camera);
+            self.ice_visit = Some(visit);
+        }
         #[cfg(test)]
         let build_done = clock.elapsed();
         let ground = &self.ground;
@@ -1451,6 +1531,12 @@ impl Nautilus {
         #[cfg(test)]
         let terrain_done = clock.elapsed();
         let mut uniforms = globals(&world, &self.frame);
+        uniforms.ice = [
+            self.ice_origin[0],
+            self.ice_origin[1],
+            1.0 / ICE_BAKE_SIZE,
+            0.0,
+        ];
         if self.skips(part::LIGHTS) {
             uniforms.counts[0] = 0.0;
         }
@@ -2246,6 +2332,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         ],
         counts: [lights.len().min(8) as f32, 0.0, 0.0, 0.0],
         tint: v4(tint),
+        ice: [0.0; 4],
         lights: [[0.0; 4]; 8],
         light_colours: [[0.0; 4]; 8],
     };

@@ -43,6 +43,8 @@ struct Globals {
     // rgb: what the water above the window leaves of daylight's colours,
     // having taken its red first, then its green.
     tint: vec4<f32>,
+    // xy: the ice bake's world origin; z: 1 / its size.
+    ice: vec4<f32>,
     lights: array<vec4<f32>, 8>,
     light_colours: array<vec4<f32>, 8>,
 };
@@ -56,6 +58,8 @@ struct Globals {
 // Caustics precomputed on the CPU once, instead of a sin/pow every vertex.
 @group(0) @binding(4) var caustic_map: texture_2d<f32>;
 @group(0) @binding(5) var caustic_sampler: sampler;
+// The ice sheet's baked floes/leads/bumps/coverage, one sample per pixel.
+@group(0) @binding(12) var ice_bake: texture_2d<f32>;
 const RELIEF_SIZE: i32 = 512;
 // The lava cave's tunnel and the massif it runs through, as in `world.rs`.
 const TUNNEL: f32 = 1.05;
@@ -1002,12 +1006,19 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             colour = (vec3<f32>(0.45, 0.78, 0.74) * (0.78 + 0.22 * ripple) + vec3<f32>(0.35, 0.45, 0.40) * bright) * g.sun.w * 1.3;
         }
         // The pack ice from below: floes glowing with daylight, open leads.
+        // Its three noise fields and its arctic coverage come baked into one
+        // texture instead of three `vnoise` stacks per pixel.
         case 6u: {
-            let l = leg(voyage_x(p.x, p.z));
-            coverage = smooth01(0.35, 0.65, presence(l, ARCTIC));
-            let floes = vnoise(p.x * 0.9, p.z * 1.3, 14u);
-            let lead = 1.0 - smooth01(0.02, 0.06, abs(vnoise(p.x * 0.35 + 3.0, p.z * 0.08, 15u) - 0.5));
-            let bumps = vnoise(p.x * 6.0, p.z * 6.0, 16u);
+            let baked = textureSampleLevel(
+                ice_bake,
+                surface_sampler,
+                (p.xz - g.ice.xy) * g.ice.z,
+                0.0,
+            );
+            coverage = baked.a;
+            let floes = baked.r;
+            let lead = baked.g;
+            let bumps = baked.b;
             colour = vec3<f32>(0.30, 0.56, 0.64) * (0.65 + 0.35 * bumps + 0.45 * floes);
             colour = mix(colour * texture, vec3<f32>(0.70, 0.95, 1.00), lead) * (0.70 + 0.9 * g.sun.w);
         }
@@ -1140,12 +1151,19 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
         }
         // The pack ice from below: floes glowing with daylight, open leads.
+        // Its three noise fields and its arctic coverage come baked into one
+        // texture instead of three `vnoise` stacks per pixel.
         case 6u: {
-            let l = leg(voyage_x(p.x, p.z));
-            coverage = smooth01(0.35, 0.65, presence(l, ARCTIC));
-            let floes = vnoise(p.x * 0.9, p.z * 1.3, 14u);
-            let lead = 1.0 - smooth01(0.02, 0.06, abs(vnoise(p.x * 0.35 + 3.0, p.z * 0.08, 15u) - 0.5));
-            let bumps = vnoise(p.x * 6.0, p.z * 6.0, 16u);
+            let baked = textureSampleLevel(
+                ice_bake,
+                surface_sampler,
+                (p.xz - g.ice.xy) * g.ice.z,
+                0.0,
+            );
+            coverage = baked.a;
+            let floes = baked.r;
+            let lead = baked.g;
+            let bumps = baked.b;
             colour = vec3<f32>(0.30, 0.56, 0.64) * (0.65 + 0.35 * bumps + 0.45 * floes);
             colour = mix(colour * texture, vec3<f32>(0.70, 0.95, 1.00), lead) * (0.70 + 0.9 * g.sun.w);
         }
