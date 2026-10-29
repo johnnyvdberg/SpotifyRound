@@ -1801,3 +1801,29 @@ max 5.
 Next: implement option 1 for the four placers, verify pixel-identical with
 them still per-frame, then add them to the cell cache (the §37 scaffold is
 ready and exact) and measure the full set on the Pi.
+
+## 39. Sprite phase: the exact field and shader shape
+
+The `Sprite` already has an unused vec4: `stretch` (only `.x` is the
+passage streak). The phase channel needs no new attribute: `stretch.y` = the
+sprite's phase, `stretch.z` = its amplitude, `stretch.w` = its frequency
+(0 = static). `vs_sprite` reads them, and the four animated kinds become:
+
+- **MOTE** (trench sediment, snow): `place.y += amp * sin(g.camera.w * freq +
+  phase)`, alpha from `fract` of the phase for the lifetime fade.
+- **GLOW** (sea pens, ruins craters, cave pools): brightness
+  `1 + amp * sin(...)`; the crater's two-sine approximation is the §31 one.
+- **EMBER** (cave): `place.y += amp * fract(g.camera.w * freq + phase)`, the
+  colour scaled by `1 - rise`.
+- **BUBBLE** (polar trail, hull): the existing `bubble()` age/fade replaced by
+  the same closed form in the shader.
+
+The placers then emit anchors (position, base size, base colour, kind, phase/
+amp/freq) and no longer call `bubble(w.t)` or bake the flicker into the
+colour; the four placers' instance sides are already shader-static, so they
+can join the §37 cell cache in the same pass.
+
+This is one field meaning change (the unused `stretch.yzw`) + one shader
+branch set. Next round: implement for the polar trail first (the smallest,
+1 call), verify pixel-identical with the placer per-frame, then cave/ruins/
+trench, then the full cache measurement on the Pi.
