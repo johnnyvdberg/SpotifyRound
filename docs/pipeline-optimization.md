@@ -2172,3 +2172,27 @@ Concrete next step: read `world::build` end to end, replace it in one edit
 with the per-cell version (the struct, `CELL` mode, build, copy, polar move),
 compile, gate against `previews-nine`, then Pi. The rest of the queue is
 packing/attribute subsets, UI, resolution.
+
+## 54. Chunk cache: built, measured, and wrong for two structural reasons
+
+The whole-build per-cell implementation compiled and ran. The gate rejected it
+hard:
+
+- **Pixels: mean 3.13/255, max 202.** The one-cell `CELL` mode gives every
+  grid of a placer the same `(ix, iz)`, so a multi-grid placer (trench 2,
+  ruins 3, cave 3) places its other grids' cells at the wrong world points.
+- **Cost: the test suite went from 6s to 190s.** A cell build runs the whole
+  placer, so building V visible cells costs V x the placer. The design cached
+  one cell at a time but paid the placer per cell; the union of 19 grids over
+  the visible footprint is thousands of cells, and the bill is enormous.
+
+So the per-cell split as implemented is not the right shape. The lesson is
+that cell granularity must match the placer's loop granularity: a placer that
+emits several grids per iteration cannot be rebuilt per cell without either
+(a) splitting each placer's body per grid (so one build covers one grid's one
+cell), or (b) building chunks much larger than a cell and culling their
+contents per frame — the audit's "chunk arrays with a bounding radius".
+
+The working cache (§47, nine placers per camera cell, pixel-identical, -0.52
+ms Pi) is restored; the chunk design stays in §49/§51/§52 as the target, now
+with this cost/position verdict attached.
