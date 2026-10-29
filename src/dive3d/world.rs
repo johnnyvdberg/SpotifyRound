@@ -158,6 +158,31 @@ fn smooth_rate(a: f32, b: f32, v: f32) -> f32 {
     6.0 * t * (1.0 - t) / (b - a)
 }
 
+/// One bubble of a stream that sheds one every `life / stream` seconds: how
+/// far through its life it is, which cohort it came from (for its size and
+/// spread), and how bright it is. The brightness reaches nothing at both ends
+/// of its life, so a bubble is never seen to pop when the stream recycles it.
+struct Bubble {
+    age: f32,
+    cohort: i32,
+    fade: f32,
+}
+
+/// The `index`th bubble of `stream`, at time `t`, each living `life`
+/// seconds: a fixed age for every (t, index), a continuous life, and no
+/// per-frame reconsideration of where it was born. It rises and drifts from
+/// where it was shed, so its own stream's spacing follows its emitter's way.
+fn bubble(index: i32, stream: i32, t: f32, life: f32) -> Bubble {
+    let cycle = t / life + index as f32 / stream as f32;
+    let cohort = cycle.floor() as i32;
+    let age = (cycle - cohort as f32) * life;
+    Bubble {
+        age,
+        cohort,
+        fade: smooth(0.0, 0.08 * life, age) * smooth(life, 0.86 * life, age),
+    }
+}
+
 /// The line the voyage follows across the seabed: a gentle meander in z.
 /// Everything — the biome borders, the far mountains, the cave's tunnel and
 /// the lanes the swimmers keep to — is laid out about it.
@@ -638,6 +663,26 @@ impl World<'_> {
         let (x, y) = (dot(right), dot(up));
         x * x + y * y < reach * reach
     }
+}
+
+/// How much of a bubble at `p` is inside the window: one well within it, easing
+/// to nothing just before the cone's side or the near plane, so a bubble that
+/// drifts across the brass fades rather than blinking out of the sprite list.
+fn window_fade(w: &World, p: [f32; 3], radius: f32) -> f32 {
+    let d = [
+        p[0] - w.pose.pos[0],
+        p[1] - w.pose.pos[1],
+        p[2] - w.pose.pos[2],
+    ];
+    let dot = |a: [f32; 3]| a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
+    let [right, up, out] = w.pose.basis;
+    let z = dot(out);
+    if z + radius < 0.08 {
+        return 0.0;
+    }
+    let reach = VIEW * z.max(0.0) * 1.08 + radius * 1.1;
+    let lateral = dot(right).hypot(dot(up));
+    smooth(reach, 0.9 * reach, lateral) * smooth(0.08, 0.16, z + radius)
 }
 
 /// The lengths of a frame's lists at one moment.
@@ -2662,7 +2707,7 @@ fn divers(w: &World, f: &mut Frame) {
         // Feet stay planted: a full stride covers twice a step of the legs.
         let stride = x / (size * 0.56) * TAU + fd * 1.9;
         let mark = f.mark();
-        diver(f, feet, size, stride, d == 0, w.t);
+        diver(w, f, feet, size, stride, d == 0);
         f.turn_since(&mark, feet, heading);
     }
 }
@@ -2725,7 +2770,7 @@ fn detour(o: (f32, f32, f32), x: f32, base: f32) -> f32 {
     away * clearance * (0.5 + 0.5 * (PI * u).cos())
 }
 
-fn diver(f: &mut Frame, feet: [f32; 3], s: f32, stride: f32, lamp: bool, t: f32) {
+fn diver(w: &World, f: &mut Frame, feet: [f32; 3], s: f32, stride: f32, lamp: bool) {
     let at = |dx: f32, dy: f32, dz: f32| [feet[0] + dx * s, feet[1] + dy * s, feet[2] + dz * s];
     let bob = 0.012 * stride.cos().abs();
     let hip = at(0.0, 0.44 + bob, 0.0);
@@ -2840,16 +2885,27 @@ fn diver(f: &mut Frame, feet: [f32; 3], s: f32, stride: f32, lamp: bool, t: f32)
             [0.16, 0.15, 0.14],
         );
     }
-    // A trail of bubbles from the helmet's exhaust.
+    // A trail of bubbles from the helmet's exhaust: each is let go where it
+    // was, rises and fades in and out through its own life, so the trail
+    // never snaps back to the helmet.
     let exhaust = at(-0.056, 0.918 + bob, 0.044);
-    for b in 0..4 {
-        let rise = (t * 0.35 + b as f32 / 4.0 + feet[0]).fract();
-        f.sprite(
-            add(exhaust, [-0.05 * rise, 0.1 * s + rise * 0.35, 0.01 * rise]),
-            0.008 + rise * 0.006,
-            [0.40, 0.62, 0.62],
-            BUBBLE,
+    let life = 2.2;
+    for b in 0..5 {
+        let bubble = bubble(b, 5, w.t + feet[0] * 0.37, life);
+        let rise = bubble.age / life;
+        let q = add(
+            exhaust,
+            [-0.05 * rise, 0.1 * s + rise * 0.35, 0.01 * rise],
         );
+        let fade = bubble.fade * window_fade(w, q, 0.012);
+        if fade > 0.001 {
+            f.sprite(
+                q,
+                0.008 + rise * 0.006,
+                [0.40 * fade, 0.62 * fade, 0.62 * fade],
+                BUBBLE,
+            );
+        }
     }
 }
 
@@ -3440,14 +3496,28 @@ fn polar(w: &World, f: &mut Frame) {
                     [0.06, 0.07, 0.08],
                 );
             }
+            // Bubbles shed off her flippers: each is left where it was let go
+            // and rises there while she flies on, so the trail keeps the
+            // spacing of her way instead of snapping back to her.
             for b in 0..5 {
-                let back = (b as f32 + (w.t * 0.24 / 0.05).fract()) * 0.05 + 0.04;
-                f.sprite(
-                    [p[0] - back, p[1] - slope * back, p[2]],
-                    0.005 + 0.0015 * b as f32,
-                    [0.45, 0.65, 0.70],
-                    BUBBLE,
-                );
+                let shed = bubble(b, 5, w.t, 1.05);
+                let was = px - 0.04 - 0.24 * shed.age;
+                let q = [
+                    was,
+                    top - 0.25 - hash(k, d + 6, 360) * 0.45
+                        + 0.06 * (was * 3.5 + phase).sin()
+                        + 0.015 * shed.age,
+                    p[2],
+                ];
+                let fade = shed.fade * window_fade(w, q, 0.01);
+                if fade > 0.001 {
+                    f.sprite(
+                        q,
+                        0.005 + 0.0015 * b as f32,
+                        [0.45 * fade, 0.65 * fade, 0.70 * fade],
+                        BUBBLE,
+                    );
+                }
             }
         }
     }
@@ -3905,6 +3975,10 @@ fn submarines(w: &World, f: &mut Frame) {
         [x, y, corridor(x) + out]
     };
     let mut p = at(t, true);
+    // Where her track has her now, before her depth spring eases her to it:
+    // the wake's positions are all relative to this, so they are pure in `t`
+    // and a preview or a seek to this second sees the same trail.
+    let head = p;
     // She keeps clear of the ground under her and over the next few
     // seconds' way, climbing for a shelf before she reaches it rather than
     // being lifted when she does.
@@ -4079,26 +4153,44 @@ fn submarines(w: &World, f: &mut Frame) {
             .glowing(glow);
         }
         // The bubbles her screw throws off, left behind in the water as she
-        // goes on, rising as they drift.
+        // goes on, rising as they drift. Where a bubble was let go is read
+        // back along her own track, sampled a few seconds apart: spacing is
+        // her speed through the water, the trail bends as she turns, and if
+        // she loses her way the bubbles gather and rise instead of trailing.
         let screw = to_world(mesh::SUB_SCREW);
-        let aft = turned([-1.0, 0.0, 0.0]);
+        let track = [
+            head,
+            at(t - 2.0, true),
+            at(t - 4.0, true),
+            at(t - 6.0, true),
+        ];
+        let was_at = |age: f32| -> [f32; 3] {
+            let s = (age * 0.5).clamp(0.0, 3.0);
+            let step = (s.floor() as usize).min(2);
+            let part = s - step as f32;
+            let (a, b) = (track[step], track[step + 1]);
+            [0, 1, 2].map(|r| a[r] + (b[r] - a[r]) * part)
+        };
+        let churn = smooth(0.02, 0.25, water_speed);
         for k in 0..28 {
             let life = 6.0;
-            let cycle = (t + k as f32 * life / 28.0) / life;
-            let age = cycle.fract() * life;
-            let n = cycle.floor() as i32;
-            let spread = 0.015 + 0.02 * age;
-            let behind = water_speed * age;
+            let shed = bubble(k, 28, t, life);
+            let age = shed.age;
+            let n = shed.cohort;
+            let was = was_at(age);
+            let spread = (0.015 + 0.02 * age) * (0.7 + 0.6 * churn);
             let q = [
-                screw[0] + aft[0] * behind + (hash(n, k, 510) - 0.5) * spread,
-                screw[1] + aft[1] * behind + 0.05 * age + (hash(n, k, 511) - 0.5) * spread,
-                screw[2] + aft[2] * behind + (hash(n, k, 512) - 0.5) * spread,
+                screw[0] + was[0] - head[0] + (hash(n, k, 510) - 0.5) * spread,
+                screw[1] + was[1] - head[1]
+                    + (0.045 + 0.02 * churn) * age
+                    + (hash(n, k, 511) - 0.5) * spread,
+                screw[2] + was[2] - head[2] + (hash(n, k, 512) - 0.5) * spread,
             ];
-            let alpha = smooth(0.0, 0.4, age) * smooth(life, life - 2.0, age) * fading;
-            if alpha > 0.0 && w.visible(q, 0.02) {
+            let alpha = shed.fade * fading * window_fade(w, q, 0.02);
+            if alpha > 0.001 {
                 f.sprite(
                     q,
-                    0.005 + 0.007 * hash(k, n, 513),
+                    0.005 + 0.007 * hash(k, n, 513) + 0.002 * churn,
                     [0.32 * alpha, 0.62 * alpha, 0.65 * alpha],
                     BUBBLE,
                 );
@@ -4311,18 +4403,20 @@ fn particles(w: &World, f: &mut Frame) {
     };
     for k in 0..24 {
         let life = 7.0;
-        let cycle = (w.t + k as f32 * life / 24.0) / life;
-        let age = cycle.fract() * life;
-        let n = cycle.floor() as i32;
+        let shed = bubble(k, 24, w.t, life);
+        let age = shed.age;
+        let n = shed.cohort;
         let d = 0.45 + hash(n, k, 411) * 0.5;
         let start = in_boat((hash(n, k, 410) - 0.4) * 1.2 * d, -VIEW * d - 0.06, d);
+        // Left where the hull was when it let go: the boat's way carries the
+        // start away from the bubble while it rises.
         let p = [
             start[0] - v[0] * age,
             start[1] + age * 0.06 - v[1] * age,
             start[2] - v[2] * age,
         ];
-        let alpha = smooth(0.0, 0.8, age) * smooth(life, life - 1.5, age);
-        if alpha > 0.0 && w.visible(p, 0.02) {
+        let alpha = shed.fade * window_fade(w, p, 0.02);
+        if alpha > 0.001 {
             f.sprite(
                 p,
                 0.004 + 0.006 * hash(k, 0, 412),
@@ -4332,16 +4426,19 @@ fn particles(w: &World, f: &mut Frame) {
         }
     }
     // In a fast passage the hull throws off a rush of bubbles that streak past
-    // the glass, and hides the sea rushing by behind them.
+    // the glass, and hides the sea rushing by behind them. The stream keeps a
+    // fixed shape as its strength grows and ebbs: no bubble is re-phased by
+    // the count changing, and the cut-off end only ever fades in or out.
     let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     let rush = smooth(0.08, 0.5, speed);
     if rush > 0.0 {
-        let count = (rush * 220.0) as i32;
+        let life = 0.9;
+        let stream = 220;
+        let count = (rush * stream as f32) as i32;
         for k in 0..count {
-            let life = 0.9;
-            let cycle = (w.t * 1.7 + k as f32 / count.max(1) as f32) / life;
-            let age = cycle.fract() * life;
-            let n = cycle.floor() as i32;
+            let shed = bubble(k, stream, w.t * 1.7, life);
+            let age = shed.age;
+            let n = shed.cohort;
             let d = 0.25 + hash(n, k, 420) * 0.7;
             let start = in_boat(
                 (hash(n, k, 421) - 0.3) * 1.6 * d,
@@ -4353,7 +4450,8 @@ fn particles(w: &World, f: &mut Frame) {
                 start[1] + age * 0.1,
                 start[2] - v[2] * age,
             ];
-            let alpha = rush * smooth(0.0, 0.15, age) * smooth(life, life * 0.5, age);
+            let edge = smooth(count as f32, (count - 24).max(1) as f32, k as f32);
+            let alpha = rush * edge * shed.fade * window_fade(w, p, 0.01);
             f.streak(
                 p,
                 0.006 + 0.01 * hash(k, n, 423),
@@ -4810,4 +4908,82 @@ mod tests {
             assert!(seen > 100, "only {seen} frames with a sister in view");
             assert!(blades > 100, "only {blades} kelp blades in view with one");
         }
+
+    /// Bubbles never pop in or out of view. Over a few seconds of the divers'
+    /// helmet trails, a flight of penguins' flipper trails and a submarine's
+    /// screw wake, every bright bubble has a bright bubble of the frame before
+    /// within its own drift: a lifecycle that recycled a visible bubble, a
+    /// trail snapping back to its emitter, or a sprite cut off at the brass
+    /// would leave a bright bubble with no neighbour.
+    #[test]
+    fn bubbles_never_pop() {
+        let span = crate::voyage::LEG / crate::voyage::SPEED;
+        // The forest has the divers' exhaust; 7.55 legs in, a flight of
+        // penguins crosses the arctic window; 200 s into visit 0, a sister
+        // submarine is shedding from her screw.
+        let scenes = [
+            ("submarine wake", 200.0),
+            ("diver helmets", span * 1.45),
+            ("penguin flight", span * 7.55),
+        ];
+        for (name, start) in scenes {
+            let seed = 0.0f32;
+            let seabed = Seabed::new(0, seed);
+            let mut voyage = Voyage::default();
+            let mut helm = super::super::helm::Helm::default();
+            let mut frame = Frame::new();
+            // Settle the helm as the previews do.
+            for i in 0..600 {
+                let at = start - 20.0 + f64::from(i) / 30.0;
+                let position = voyage.advance(at, seed);
+                helm.steer(&seabed, position, at);
+            }
+            let mut last: Vec<[f32; 3]> = Vec::new();
+            let (mut pops, mut worst, mut seen) = (0, 0.0f32, 0);
+            for i in 0..360 {
+                let at = start + f64::from(i) / 60.0;
+                let position = voyage.advance(at, seed);
+                let pose = helm.steer(&seabed, position, at);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: at as f32,
+                };
+                build(&world, &mut frame);
+                let now: Vec<([f32; 3], f32)> = frame
+                    .sprites
+                    .iter()
+                    .filter(|s| (s.tint[3] - BUBBLE).abs() < 0.5)
+                    .map(|s| {
+                        (
+                            [s.place[0], s.place[1], s.place[2]],
+                            s.tint[0].max(s.tint[1]).max(s.tint[2]),
+                        )
+                    })
+                    .collect();
+                seen += now.len();
+                if i > 0 {
+                    for &(p, _bright) in now.iter().filter(|(_, bright)| *bright > 0.15) {
+                        let d = last
+                            .iter()
+                            .map(|q| {
+                                ((p[0] - q[0]).powi(2)
+                                    + (p[1] - q[1]).powi(2)
+                                    + (p[2] - q[2]).powi(2))
+                                .sqrt()
+                            })
+                            .fold(f32::MAX, f32::min);
+                        if d > 0.03 {
+                            pops += 1;
+                            worst = worst.max(d);
+                            println!("{name} at {at:.2} s: a bright bubble jumped {d:.3}");
+                        }
+                    }
+                }
+                last = now.into_iter().map(|(p, _)| p).collect();
+            }
+            assert!(seen > 100, "{name}: only {seen} bubbles in the whole sample");
+            assert_eq!(pops, 0, "{name}: {pops} bubbles popped, worst {worst:.3}");
+        }
+    }
 }
