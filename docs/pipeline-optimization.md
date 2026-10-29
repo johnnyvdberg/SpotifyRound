@@ -1626,3 +1626,32 @@ edits:
    and is where the cache can actually pay.
 
 The 109 tests and the current visuals are green at the pre-round state.
+
+## 33. The wide placements cache cannot pay at these counts
+
+The coherent §32 patch was built: `Library::bounds` gives each model's exact
+full-mesh radius; the static set is the three fully clean placers (rocks,
+gardens, wrecks); `build(world, frame, cache, bounds)` caches their wide
+placements (12-unit margin) and the frame pass culls with
+`axes * bounds[model]` and copies only the visible.
+
+- Pixels: **mean 0.3569/255, max 92** — the exact bound is larger than the
+  placers' own cull radius, so a few edge instances the placers dropped are
+  drawn; they are visible pixels at the frame edge.
+- Pi: **10.251 ms** vs 9.011; **2083 vs 1463** instances; scene building
+  **2.13 vs 1.43**.
+
+The arithmetic kills the wide design at this scale: the per-frame cull over
+~2000 wide placements plus the copy and the extra staging/draw cost ~1.2 ms,
+while the three placers' placement is ~0.18 ms. The wide set is 40% larger
+than the visible one, and the fixed cull/copy is proportional to the wide
+size, not the visible size. §26's subset lesson and this are the same fact
+seen from two sides.
+
+The audit's own design is the fix: cache **per visible cell/chunk**, not one
+wide margin. Each static cell's instances (with an exact bound) are built
+once; the frame iterates only the cells whose chunk is in view and copies
+them, with no per-frame cull over a 40% surplus. That is a chunked cache, not
+a wider one; it is the next attempt.
+
+Not kept; image `branch-cache-exact.png`.
