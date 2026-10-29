@@ -1765,3 +1765,39 @@ cell-step copy stays proportional to the visible set.
 Kept: the scaffold, the pixel-exactness, the scaling shape.
 
 ![cell cache: current / cell-cached / difference](branch-cell-cache.png)
+
+## 38. Sprite/light split: the exact shape
+
+The four placers that still keep the cache out (trench, ruins, cave, polar)
+mix two things in one loop: instance placement (cacheable; all the placement
+`w.t` is now shader-side) and per-frame sprite/light lists (not cacheable as
+they are). The sprite/light calls are:
+
+| placer | sprites/lights | time dependence |
+|---|---|---|
+| trench | 3: sediment motes, two sea-pen glows | `w.t` drift/age, `w.t` blink |
+| ruins | 4: crater glow x2, lava thread, ember | crater flicker (now light phase), sprite colours |
+| cave | 3: ember rise, pool light, ember | `w.t` rise, `w.t` flicker (light phase) |
+| polar | 1: the penguins' bubble trail | `bubble(b, 5, w.t, ...)` |
+
+Two viable splits, both small in code but each needing a decision:
+
+1. **Phase channel** (the §31 pattern): give `Sprite` a phase like `Light`,
+   let `vs_sprite`/`fs_sprite` apply the drift/rise/flicker from
+   `g.camera.w`. The placers then produce the static anchors (position, base
+   colour, lifetime) and sprite motion is shader-side. This is the clean one:
+   it keeps the sprite pipeline's per-sprite data small and makes all four
+   placers fully cacheable in one move.
+2. **Two-phase loop**: extract each placer's sprite block into a per-frame
+   `*_sprites(w, f)` called after the instance copy, and cache only the
+   instance part. Works, but re-walks the cells for the sprite anchors and
+   leaves more code in two places.
+
+The sprite pipeline today is a single vertex/fragment pair over
+`Sprite { pos, size, tint, kind }`; option 1 adds one float and a shader
+branch, which is comparable to the light-phase change that measured 0.0619
+max 5.
+
+Next: implement option 1 for the four placers, verify pixel-identical with
+them still per-frame, then add them to the cell cache (the §37 scaffold is
+ready and exact) and measure the full set on the Pi.
