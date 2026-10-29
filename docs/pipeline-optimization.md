@@ -1922,3 +1922,19 @@ the same mode so it tracks the flicker as before.
 
 Remaining: the sea pens' blink (GLOW mode 0) and the trench's MOTE sediment.
 Then the four placers join the cell cache and the full set gets measured.
+
+## 44. Sea-pen blink: the GLOW mode 0, pixel-identical
+
+The trench's sea pens emitted the blink from `w.t` with the biome's share
+folded into the colour. The anchor now bakes the share and carries
+`stretch.yzw = (phase, rate, 0)`; the GLOW branch's low mode computes
+`max(sin(t * rate + phase), 0)` and fades the colour. The crater mode is
+distinguished by `stretch.w > 0.5`, so both live in the same kind.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: no change expected.
+
+![sea-pen blink: current / shader blink / difference](branch-sea-pen-blink.png)
+
+Only the trench's **MOTE** sediment remains before all four placers are
+camera-static; then they join the §37 cell cache and the full set is measured.

@@ -1894,18 +1894,19 @@ fn trench(w: &World, f: &mut Frame) {
         if !w.visible(p, 0.1) {
             continue;
         }
-        let blink = (t * (0.5 + hash(ix, iz, 533)) + hash(ix, iz, 534) * TAU)
-            .sin()
-            .max(0.0);
-        let a = blink * smooth(0.5, 0.8, share);
+        // The blink is the shader's (GLOW mode 0); the anchor keeps the
+        // biome's share as a colour scale.
+        let a = smooth(0.5, 0.8, share);
         let hue = if hash(ix, iz, 535) < 0.7 {
             [0.10, 0.70, 0.95]
         } else {
             [0.40, 0.95, 0.55]
         };
-        f.sprite(p, 0.025, [hue[0] * a, hue[1] * a, hue[2] * a], GLOW);
+        let rate = 0.5 + hash(ix, iz, 533);
+        let phase = hash(ix, iz, 534) * TAU;
+        f.glow_sprite(p, 0.025, [hue[0] * a, hue[1] * a, hue[2] * a], phase, rate, 0.0);
         let halo = a * 0.12;
-        f.sprite(p, 0.14, [hue[0] * halo, hue[1] * halo, hue[2] * halo], GLOW);
+        f.glow_sprite(p, 0.14, [hue[0] * halo, hue[1] * halo, hue[2] * halo], phase, rate, 0.0);
     }
 }
 

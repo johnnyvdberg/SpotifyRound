@@ -1278,9 +1278,14 @@ fn vs_sprite(
     var bubble_fade = 1.0;
     if (stretch.z > 0.0) {
         if (kind == 2u) {
-            // GLOW: the crater's two-sine flicker.
             let t = g.camera.w;
-            bubble_fade = 0.85 + 0.15 * sin(t * 2.3 + stretch.y) * sin(t * 1.3);
+            if (stretch.w > 0.5) {
+                // A crater's two-sine flicker.
+                bubble_fade = 0.85 + 0.15 * sin(t * 2.3 + stretch.y) * sin(t * 1.3);
+            } else {
+                // A sea pen's blink: a half-wave gated by the biome's share.
+                bubble_fade = max(sin(t * stretch.z + stretch.y), 0.0);
+            }
         } else if (kind == 3u) {
             // EMBER: rise from the floor, fade out as it rises.
             let rise = fract(g.camera.w * stretch.z + stretch.y);
