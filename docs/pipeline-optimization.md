@@ -1675,3 +1675,29 @@ The UI-side items with real milliseconds are still the three per-frame
 `invoke_from_event_loop` posts and the notifier's extra window-clear pass (a
 kiosk-only lever), plus the ~1-1.5 ms Slint composite that would need a KMS
 overlay plane. Those and the chunked static cache are the remaining branches.
+
+## 35. UI handoff: what is left, and why it is small
+
+The audit's UI items, checked against the code:
+
+- **`mark` allocation**: fixed in §34 (pooled slots). The `wait_for` 250 us
+  poll stays on purpose: it keeps the UI thread free to make its own
+  submissions, which is what the audit's "blocking wait" alternative would
+  take away.
+- **Three event-loop posts**: `Graphics::on_ui_thread` is the single
+  `invoke_from_event_loop`; the `submit` and the `mark`'s `when_done` each post
+  one, and the third is the UI's own `tick`. Merging them saves one closure
+  dispatch per frame (tens of microseconds), not milliseconds.
+- **Notifier clear**: `watch_rendering_if_asked` already returns unless
+  `SPOTIFY_ROUND_FULL_SPEED` is set or the stats panel is shown. The kiosk's
+  extra window-clear pass is the **systemd environment** forcing that variable
+  (needs sudo to edit; not an app change). The app-side default is already
+  off.
+- **Composite (~1-1.5 ms Pi)**: Slint's full-window clear plus texture import
+  plus submit. The only app-level removal is a KMS overlay plane for the Slint
+  window over the dive; that is a compositor-level change, not this branch.
+
+So the UI's remaining app work is worth tens of microseconds, and the real
+remaining millisecond-scale work is the **chunked static cache** (§33: cache
+per visible cell, not a wide margin) and, for the Pi's composite, the KMS
+overlay. Packing/attribute subsets and resolution remain after those.
