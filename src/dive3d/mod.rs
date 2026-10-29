@@ -208,7 +208,11 @@ pub(crate) struct Nautilus {
     seconds: f64,
     /// Parts of the scene a benchmark leaves out, to see what each costs.
     #[cfg(test)]
-    skip: u32,
+    skip: u64,
+    /// The individual model groups and sprite kinds a benchmark leaves out
+    /// (`DIVE3D_SKIP_EFFECTS`); see [`effect`].
+    #[cfg(test)]
+    skip_effects: u64,
 }
 
 /// The materials models get a pipeline of their own for, as `MATERIAL` in
@@ -281,43 +285,304 @@ struct Draw {
     nearest: f32,
 }
 
-/// The parts of the scene `frame_cost` can leave out, as bits of `skip`.
+/// The parts of the scene a benchmark can leave out, as bits of `skip`
+/// (`DIVE3D_SKIP` in `frame_time`). The bits are the ones `frame_cost` has
+/// always used; the mask is a `u64` now, so the pass-level switches added for
+/// `effect_cost` get bits of their own without renumbering these.
 #[cfg_attr(not(test), allow(dead_code))]
 mod part {
-    pub const SEA: u32 = 1;
-    pub const TERRAIN: u32 = 2;
-    pub const MODELS: u32 = 4;
-    pub const GLASS: u32 = 8;
-    pub const SPRITES: u32 = 16;
-    pub const LIGHTS: u32 = 32;
+    pub const SEA: u64 = 1;
+    pub const TERRAIN: u64 = 2;
+    pub const MODELS: u64 = 4;
+    pub const GLASS: u64 = 8;
+    pub const SPRITES: u64 = 16;
+    pub const LIGHTS: u64 = 32;
     /// Not a part: draw into a quarter of the pixels, the geometry unchanged,
     /// to tell what the fragments cost from what the vertices do.
-    pub const QUARTER: u32 = 64;
+    pub const QUARTER: u64 = 64;
     /// Not parts either: every texture lookup a flat grey (only in a scene
     /// built [`Nautilus::with_plain_textures`]); no procedural noise;
     /// trilinear instead of anisotropic filtering.
-    pub const PLAIN_TEXTURES: u32 = 128;
-    pub const NO_NOISE: u32 = 256;
-    pub const ANISOTROPY: u32 = 512;
+    pub const PLAIN_TEXTURES: u64 = 128;
+    pub const NO_NOISE: u64 = 256;
+    pub const ANISOTROPY: u64 = 512;
     /// Every model at its full detail.
-    pub const FULL_DETAIL: u32 = 1024;
-    pub const SHAFTS: u32 = 2048;
+    pub const FULL_DETAIL: u64 = 1024;
+    /// Both sun shafts and searchlight beams, as it always has. The two can
+    /// also be left out one at a time with [`SUN_SHAFTS`] and [`BEAMS`].
+    pub const SHAFTS: u64 = 2048;
     /// Not parts: the cheaper lighting/material paths the shader can switch
     /// to at run time, so a benchmark can price a feature without rebuilding.
-    pub const CHEAP_MODELS: u32 = 4096;
-    pub const CHEAP_TERRAIN: u32 = 8192;
-    pub const CHEAP_BACKGROUND: u32 = 16384;
+    pub const CHEAP_MODELS: u64 = 4096;
+    pub const CHEAP_TERRAIN: u64 = 8192;
+    pub const CHEAP_BACKGROUND: u64 = 16384;
     /// Every model at its coarsest level: what the geometry would cost if LOD
     /// could take everything, without touching the selection itself.
-    pub const COARSE_DETAIL: u32 = 32768;
+    pub const COARSE_DETAIL: u64 = 32768;
     /// Not a part: every model draw still bound and issued, with no instance
     /// in it, so the draws' own cost is left alone and the geometry is gone.
-    pub const DRAW_CALLS: u32 = 65536;
+    pub const DRAW_CALLS: u64 = 65536;
     /// Not a part: draw the models into a quarter of the pixels, everything
     /// else unchanged, to price the models' fragments against their geometry.
-    pub const QUARTER_MODELS: u32 = 1 << 17;
+    pub const QUARTER_MODELS: u64 = 1 << 17;
     /// Not a part: leave the open water out, to price its full-screen pass.
-    pub const BACKGROUND: u32 = 1 << 18;
+    pub const BACKGROUND: u64 = 1 << 18;
+    /// The corner mask the shader draws over everything.
+    pub const MASK: u64 = 1 << 19;
+    /// Models that fade in or out, anywhere in the scene.
+    pub const FADING: u64 = 1 << 20;
+    /// The shafts of sunlight only (see [`SHAFTS`] for both).
+    pub const SUN_SHAFTS: u64 = 1 << 21;
+    /// The searchlight beams only (see [`SHAFTS`] for both).
+    pub const BEAMS: u64 = 1 << 22;
+    /// The tunnel through the cave's massif.
+    pub const TUNNEL: u64 = 1 << 23;
+}
+
+/// The individual effects a benchmark can leave out, as bits of
+/// `skip_effects` (`DIVE3D_SKIP_EFFECTS` in `frame_time`): one bit for every
+/// group of models that can be told apart by [`mesh::Model`], and one for
+/// every sprite kind. These are test-only by construction: no production code
+/// reads the mask, and the filtering below is all under `cfg(test)`.
+///
+/// A group is a family of meshes, not a placer: `RUINS` is the four ruin
+/// meshes wherever they are drawn. Where one mesh serves several features
+/// (`CONES` are forest trunks, stalactites, crinoid arms and the volcano) the
+/// group cannot split them, and the table says so.
+#[cfg(test)]
+mod effect {
+    pub const FISH: u64 = 1 << 0;
+    /// Kelp beds and the trench's sea pens (both use `Model::Kelp`).
+    pub const KELP: u64 = 1 << 1;
+    pub const ROCK0: u64 = 1 << 2;
+    pub const ROCK1: u64 = 1 << 3;
+    pub const ROCK2: u64 = 1 << 4;
+    /// Columns, capitals, broken columns and temple pediments: `Shaft`,
+    /// `Capital`, `Break` and `Prism`.
+    pub const RUINS: u64 = 1 << 5;
+    /// `Hull` and `Sail`.
+    pub const WRECK: u64 = 1 << 6;
+    /// `Cylinder`: wreck masts and yards, fallen ruin drums, trench crinoids
+    /// and tube worms.
+    pub const CYLINDERS: u64 = 1 << 7;
+    /// `Box`: wreck castles and chests, ruin blocks and lintels, penguin
+    /// wings, the passage doorway.
+    pub const BOXES: u64 = 1 << 8;
+    /// `Sphere`: coral and pearl buds, gold, squid eyes, submarine ports and
+    /// lanterns, anglerfish bodies.
+    pub const SPHERES: u64 = 1 << 9;
+    /// `Hex`: the cave's basalt columns and its glass crystals.
+    pub const CAVE_HEX: u64 = 1 << 10;
+    /// `Cone`: forest trunks and branches, cave stalactites, trench crinoid
+    /// arms, the volcano.
+    pub const CONES: u64 = 1 << 11;
+    /// `Diver`, `DiverHelmet`, `DiverLimb` and `DiverBoot`.
+    pub const DIVERS: u64 = 1 << 12;
+    pub const SHARKS: u64 = 1 << 13;
+    pub const WHALES: u64 = 1 << 14;
+    pub const DOLPHINS: u64 = 1 << 15;
+    pub const NARWHALS: u64 = 1 << 16;
+    pub const PENGUINS: u64 = 1 << 17;
+    pub const MANTAS: u64 = 1 << 18;
+    pub const TURTLES: u64 = 1 << 19;
+    /// The squid's body (`Mantle`); its tentacles are [`TUBES`].
+    pub const SQUID: u64 = 1 << 20;
+    /// `Tube`: squid tentacles and jellyfish tentacles.
+    pub const TUBES: u64 = 1 << 21;
+    /// The jellyfish's bell (`Bell`); its tentacles are [`TUBES`].
+    pub const JELLYFISH: u64 = 1 << 22;
+    pub const SHELLS: u64 = 1 << 23;
+    pub const FANS: u64 = 1 << 24;
+    pub const STARS: u64 = 1 << 25;
+    pub const SPONGES: u64 = 1 << 26;
+    /// `Plane`: the sea's surface and the arctic ice sheet.
+    pub const PLANES: u64 = 1 << 27;
+    /// `Keel`: the arctic ice keels.
+    pub const ICE_KEELS: u64 = 1 << 28;
+    /// `Submarine` and its `Screw`.
+    pub const SUBMARINE: u64 = 1 << 29;
+    /// `Capsule`, which no placer currently places.
+    pub const CAPSULES: u64 = 1 << 30;
+    /// Sprite kind `MOTE`: marine snow and sediment.
+    pub const MOTES: u64 = 1 << 31;
+    /// Sprite kind `BUBBLE`: hull, screw and penguin bubbles.
+    pub const BUBBLES: u64 = 1 << 32;
+    /// Sprite kind `GLOW`: light halos, lures, bioluminescence and the like.
+    pub const GLOWS: u64 = 1 << 33;
+    /// Sprite kind `EMBER`: cave embers, arctic flecks, abyss blinks.
+    pub const EMBERS: u64 = 1 << 34;
+
+    pub const MODEL_BITS: u64 = (1 << 31) - 1;
+    pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
+    pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
+
+    /// Every model group, named for the `effect_cost` table: what the bit
+    /// covers, the models it is made of, and what those models are used for.
+    pub const MODEL_GROUPS: &[(&str, u64, &str, &str)] = &[
+        ("fish", FISH, "Fish", "shoals"),
+        ("kelp", KELP, "Kelp", "kelp beds, sea pens"),
+        ("rock 0", ROCK0, "Rock0", "boulders, stones, trench lips"),
+        ("rock 1", ROCK1, "Rock1", "boulders, stones, trench lips"),
+        ("rock 2", ROCK2, "Rock2", "boulders, stones, trench lips"),
+        (
+            "ruins",
+            RUINS,
+            "Shaft, Capital, Break, Prism",
+            "columns, capitals, broken columns, temple pediments",
+        ),
+        ("wreck", WRECK, "Hull, Sail", "galleon hulls and sails"),
+        (
+            "cylinders",
+            CYLINDERS,
+            "Cylinder",
+            "masts and yards, fallen drums, crinoids, tube worms",
+        ),
+        (
+            "boxes",
+            BOXES,
+            "Box",
+            "wreck castles and chests, ruins, penguin wings, doorway",
+        ),
+        (
+            "spheres",
+            SPHERES,
+            "Sphere",
+            "coral buds, pearls, gold, eyes, ports, lanterns, anglerfish",
+        ),
+        (
+            "cave hexes",
+            CAVE_HEX,
+            "Hex",
+            "basalt columns, glass crystals",
+        ),
+        (
+            "cones",
+            CONES,
+            "Cone",
+            "forest trunks and branches, stalactites, crinoid arms, volcano",
+        ),
+        (
+            "divers",
+            DIVERS,
+            "Diver, DiverHelmet, DiverLimb, DiverBoot",
+            "the walking party",
+        ),
+        ("sharks", SHARKS, "Shark", "wrecks"),
+        ("whales", WHALES, "Whale", "shallows"),
+        ("dolphins", DOLPHINS, "Dolphin", "shallows pods"),
+        ("narwhals", NARWHALS, "Narwhal", "arctic pods"),
+        ("penguins", PENGUINS, "Penguin", "arctic flight"),
+        ("mantas", MANTAS, "Manta", "shallows, wrecks, Atlantis"),
+        ("turtles", TURTLES, "Turtle", "shallows, forest"),
+        ("squid", SQUID, "Mantle", "the abyss's squid body"),
+        ("tubes", TUBES, "Tube", "squid and jellyfish tentacles"),
+        ("jellyfish", JELLYFISH, "Bell", "drifting jellyfish bells"),
+        ("shells", SHELLS, "Shell", "clams and pearls"),
+        ("fans", FANS, "Fan", "sea fans"),
+        ("stars", STARS, "Star", "starfish"),
+        ("sponges", SPONGES, "Sponge", "sponges"),
+        ("planes", PLANES, "Plane", "sea surface, ice sheet"),
+        ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
+        (
+            "submarine",
+            SUBMARINE,
+            "Submarine, Screw",
+            "the sister boat",
+        ),
+        ("capsules", CAPSULES, "Capsule", "unplaced"),
+    ];
+
+    /// Every sprite kind, named for the `effect_cost` table.
+    pub const SPRITE_GROUPS: &[(&str, u64, &str)] = &[
+        (
+            "motes",
+            MOTES,
+            "sprite kind 0 (MOTE): marine snow, sediment",
+        ),
+        (
+            "bubbles",
+            BUBBLES,
+            "sprite kind 1 (BUBBLE): hull, screw, penguins",
+        ),
+        (
+            "glows",
+            GLOWS,
+            "sprite kind 2 (GLOW): halos, lures, bioluminescence",
+        ),
+        (
+            "embers",
+            EMBERS,
+            "sprite kind 3 (EMBER): cave, arctic, abyss",
+        ),
+    ];
+}
+
+/// The bit of [`effect`] that leaves `model` out, by [`mesh::Model`] variant.
+/// Every variant is listed, so adding a model without a group is a build
+/// error rather than a silently unmeasurable effect.
+#[cfg(test)]
+fn model_bit(model: usize) -> u64 {
+    use mesh::Model;
+    match Model::ALL[model] {
+        Model::Fish => effect::FISH,
+        Model::Kelp => effect::KELP,
+        Model::Rock0 => effect::ROCK0,
+        Model::Rock1 => effect::ROCK1,
+        Model::Rock2 => effect::ROCK2,
+        Model::Shaft | Model::Capital | Model::Break | Model::Prism => effect::RUINS,
+        Model::Hull | Model::Sail => effect::WRECK,
+        Model::Cylinder => effect::CYLINDERS,
+        Model::Box => effect::BOXES,
+        Model::Sphere => effect::SPHERES,
+        Model::Hex => effect::CAVE_HEX,
+        Model::Cone => effect::CONES,
+        Model::Diver | Model::DiverHelmet | Model::DiverLimb | Model::DiverBoot => effect::DIVERS,
+        Model::Shark => effect::SHARKS,
+        Model::Whale => effect::WHALES,
+        Model::Dolphin => effect::DOLPHINS,
+        Model::Narwhal => effect::NARWHALS,
+        Model::Penguin => effect::PENGUINS,
+        Model::Manta => effect::MANTAS,
+        Model::Turtle => effect::TURTLES,
+        Model::Mantle => effect::SQUID,
+        Model::Tube => effect::TUBES,
+        Model::Bell => effect::JELLYFISH,
+        Model::Shell => effect::SHELLS,
+        Model::Fan => effect::FANS,
+        Model::Star => effect::STARS,
+        Model::Sponge => effect::SPONGES,
+        Model::Plane => effect::PLANES,
+        Model::Keel => effect::ICE_KEELS,
+        Model::Submarine | Model::Screw => effect::SUBMARINE,
+        Model::Capsule => effect::CAPSULES,
+    }
+}
+
+/// The bit of [`effect`] that leaves a sprite out, by the kind `world` writes
+/// into the fourth component of its tint (0 mote, 1 bubble, 2 glow, 3 ember).
+/// An unknown kind gets no bit, so it is never hidden by accident.
+#[cfg(test)]
+fn sprite_bit(kind: f32) -> u64 {
+    match kind.round() as i32 {
+        0 => effect::MOTES,
+        1 => effect::BUBBLES,
+        2 => effect::GLOWS,
+        3 => effect::EMBERS,
+        _ => 0,
+    }
+}
+
+/// Whether an effect bit hides `model` from staging. A constant `false`
+/// outside the tests, so the filter it feeds disappears in production.
+#[cfg(test)]
+fn hides_model(mask: u64, model: usize) -> bool {
+    mask & model_bit(model) != 0
+}
+
+#[inline]
+#[cfg(not(test))]
+fn hides_model(_mask: u64, _model: usize) -> bool {
+    false
 }
 
 /// Shader switches for the benchmark, as `counts.y` bits (see `debug` in
@@ -1024,17 +1289,19 @@ impl Nautilus {
             seconds: 0.0,
             #[cfg(test)]
             skip: 0,
+            #[cfg(test)]
+            skip_effects: 0,
         })
     }
 
     /// Whether a benchmark asked to leave `part` out. Never, outside the tests.
     #[cfg(test)]
-    fn skips(&self, part: u32) -> bool {
+    fn skips(&self, part: u64) -> bool {
         self.skip & part != 0
     }
 
     #[cfg(not(test))]
-    fn skips(&self, _part: u32) -> bool {
+    fn skips(&self, _part: u64) -> bool {
         false
     }
 
@@ -1154,28 +1421,44 @@ impl Nautilus {
                 .map(|r| (i.rows[r][3] - pose.pos[r]) * out[r])
                 .sum::<f32>()
         };
+        // A benchmark may hide a whole model group before it is staged, so
+        // sorting and uploading skip it too; in production this is always 0.
+        #[cfg(test)]
+        let hides = self.skip_effects;
+        #[cfg(not(test))]
+        let hides = 0u64;
         let order = &mut self.order;
         order.clear();
         for (model, list) in self.frame.solid.iter().enumerate() {
-            order.extend(list.iter().enumerate().map(|(index, i)| Staged {
-                kind: kind_of(model, i),
-                slot: pipeline_slot(i) as u32,
-                model: model as u32,
-                lod: level_of(model, i) as u32,
-                depth: depth(i),
-                index: index as u32,
-            }));
+            order.extend(
+                list.iter()
+                    .enumerate()
+                    .filter(|_| !hides_model(hides, model))
+                    .map(|(index, i)| Staged {
+                        kind: kind_of(model, i),
+                        slot: pipeline_slot(i) as u32,
+                        model: model as u32,
+                        lod: level_of(model, i) as u32,
+                        depth: depth(i),
+                        index: index as u32,
+                    }),
+            );
         }
         // Glass has one shader for every material.
         for (model, list) in self.frame.glass.iter().enumerate() {
-            order.extend(list.iter().enumerate().map(|(index, i)| Staged {
-                kind: Kind::Glass,
-                slot: 0,
-                model: model as u32,
-                lod: level_of(model, i) as u32,
-                depth: 0.0,
-                index: index as u32,
-            }));
+            order.extend(
+                list.iter()
+                    .enumerate()
+                    .filter(|_| !hides_model(hides, model))
+                    .map(|(index, i)| Staged {
+                        kind: Kind::Glass,
+                        slot: 0,
+                        model: model as u32,
+                        lod: level_of(model, i) as u32,
+                        depth: 0.0,
+                        index: index as u32,
+                    }),
+            );
         }
         #[cfg(test)]
         let order_done = clock.elapsed();
@@ -1277,11 +1560,32 @@ impl Nautilus {
             );
             self.tunnel_uploaded = Some(self.frame.tunnel_version);
         }
+        // A benchmark may filter whole sprite kinds out; production takes the
+        // frame's list as it is. The filtered list is a local so the rest of
+        // the draw keeps borrowing `self` immutably.
+        #[cfg(test)]
+        let filtered_sprites: Vec<Sprite>;
+        #[cfg(test)]
+        let sprites: &[Sprite] = {
+            let limit = self.frame.sprites.len().min(MAX_SPRITES);
+            let hidden = self.skip_effects & effect::SPRITE_BITS;
+            if hidden == 0 {
+                &self.frame.sprites[..limit]
+            } else {
+                filtered_sprites = self.frame.sprites[..limit]
+                    .iter()
+                    .copied()
+                    .filter(|s| hidden & sprite_bit(s.tint[3]) == 0)
+                    .collect();
+                &filtered_sprites
+            }
+        };
+        #[cfg(not(test))]
+        let sprites = &self.frame.sprites[..self.frame.sprites.len().min(MAX_SPRITES)];
         let all = &self.staged;
         gpu.queue
             .write_buffer(&self.instances, 0, bytemuck::cast_slice(all));
         // The shafts of sunlight follow the sprites in the same buffer.
-        let sprites = &self.frame.sprites[..self.frame.sprites.len().min(MAX_SPRITES)];
         let shafts = &self.frame.shafts[..self.frame.shafts.len().min(MAX_SPRITES - sprites.len())];
         gpu.queue
             .write_buffer(&self.sprite_buffer, 0, bytemuck::cast_slice(sprites));
@@ -1417,8 +1721,10 @@ impl Nautilus {
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
                 }
 
-                pass.set_pipeline(&this.mask);
-                pass.draw(0..MASK_VERTICES, 0..1);
+                if !this.skips(part::MASK) {
+                    pass.set_pipeline(&this.mask);
+                    pass.draw(0..MASK_VERTICES, 0..1);
+                }
                 // What is fully there goes first, so the seabed behind it, and
                 // every other model, can be skipped before it is shaded.
                 pass.set_vertex_buffer(1, this.instances.slice(..));
@@ -1426,7 +1732,7 @@ impl Nautilus {
                     let half = SEA as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
                 }
-                if tunnel_drawn && !this.skips(part::MODELS) {
+                if tunnel_drawn && !this.skips(part::MODELS) && !this.skips(part::TUNNEL) {
                     pass.set_pipeline(&this.models[pipeline_slot(&all[tunnel_instance as usize])]);
                     pass.set_vertex_buffer(0, this.tunnel.slice(..));
                     pass.set_index_buffer(this.tunnel_indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -1486,7 +1792,7 @@ impl Nautilus {
                     let half = SEA as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
                 }
-                if !this.skips(part::MODELS) {
+                if !this.skips(part::MODELS) && !this.skips(part::FADING) {
                     models(&mut pass, Kind::Fading);
                 }
                 if !this.skips(part::GLASS) {
@@ -1501,13 +1807,14 @@ impl Nautilus {
                     pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
                     pass.draw(0..6, 0..sprites.len() as u32);
                 }
-                if !shafts.is_empty() && !this.skips(part::SHAFTS) {
+                if !shafts.is_empty() && !this.skips(part::SHAFTS) && !this.skips(part::SUN_SHAFTS)
+                {
                     let first = sprites.len() as u32;
                     pass.set_pipeline(&this.shafts);
                     pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
                     pass.draw(0..6, first..first + shafts.len() as u32);
                 }
-                if !beams.is_empty() && !this.skips(part::SHAFTS) {
+                if !beams.is_empty() && !this.skips(part::SHAFTS) && !this.skips(part::BEAMS) {
                     let first = (sprites.len() + shafts.len()) as u32;
                     pass.set_pipeline(&this.beams);
                     pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
@@ -1831,6 +2138,29 @@ mod tests {
         crate::voyage::LEG / crate::voyage::SPEED * (n + 0.35)
     }
 
+    /// A skip mask from the environment: decimal, or hexadecimal after `0x`.
+    /// Unreadable text reads as 0, as `DIVE3D_SKIP` always has.
+    fn mask(text: &str) -> u64 {
+        let text = text.trim();
+        text.strip_prefix("0x").map_or_else(
+            || text.parse().unwrap_or(0),
+            |hex| u64::from_str_radix(hex, 16).unwrap_or(0),
+        )
+    }
+
+    /// The middle of a set of frame times or paired deltas. A desktop doing
+    /// other work throws the occasional multi-millisecond spike; the median
+    /// reports the typical frame, where the mean reports the interference.
+    fn median(values: &mut [f64]) -> f64 {
+        values.sort_by(f64::total_cmp);
+        let middle = values.len() / 2;
+        if values.len() % 2 == 0 {
+            (values[middle - 1] + values[middle]) / 2.0
+        } else {
+            values[middle]
+        }
+    }
+
     /// Write a frame of every place in [`places::all`] to `DIVE3D_SHOTS_DIR`,
     /// with a contact sheet of them all and an `index.html` naming each.
     #[test]
@@ -2103,6 +2433,316 @@ mod tests {
         }
     }
 
+    /// Price every switch the renderer has, in one build and one process: each
+    /// pass-level part (`DIVE3D_SKIP`) and each model group or sprite kind
+    /// (`DIVE3D_SKIP_EFFECTS`) is left out in turn, over every leg, and the
+    /// table prints the typical frame, the delta against everything and the
+    /// share of the frame it accounts for. `seen` is how many instances or
+    /// sprites of that group the measured frames held: a near-zero delta with
+    /// a small `seen` means the effect was barely in view, not that it is free.
+    ///
+    /// Times and deltas are medians, not means: a desktop doing other work
+    /// throws the occasional multi-millisecond spike, and the median reports
+    /// the frame rather than the interference.
+    ///
+    /// Variants are interleaved round-robin, in a fresh order each round, so
+    /// they all see the same frames. Each variant frame is paired with an
+    /// `everything` frame drawn immediately before or after it (alternating),
+    /// and the delta is the pair's difference, so drift cancels. The two
+    /// `check:` rows repeat `everything` and `capsules` (which draws nothing)
+    /// to show the noise floor: on a desktop they are the resolution limit,
+    /// not a result.
+    #[test]
+    #[ignore = "a benchmark; needs a working GPU adapter"]
+    fn effect_cost() {
+        use std::collections::HashMap;
+
+        let started = std::time::Instant::now();
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        println!("adapter: {}, profiler: {}", gpu.adapter, gpu.profiling());
+        println!(
+            "pass/probe/light rows are bits of DIVE3D_SKIP; model/sprite rows are bits of \
+             DIVE3D_SKIP_EFFECTS (see dive3d::part and dive3d::effect)"
+        );
+        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        let mut plain = Nautilus::with_plain_textures(&gpu).expect("a 3D dive");
+
+        // The grouping is the measurement's foundation: every model has
+        // exactly one group, every group has at least one model, and the four
+        // sprite kinds are all named.
+        let mut from_models = 0u64;
+        for model in 0..mesh::Model::ALL.len() {
+            let bit = model_bit(model);
+            assert!(
+                effect::MODEL_GROUPS.iter().any(|&(_, b, _, _)| b == bit),
+                "model {model} ({:?}) has no group",
+                mesh::Model::ALL[model]
+            );
+            from_models |= bit;
+        }
+        assert_eq!(from_models, effect::MODEL_BITS, "every group has a model");
+        for &(name, bit, _, _) in effect::MODEL_GROUPS {
+            let models = (0..mesh::Model::ALL.len())
+                .filter(|&m| model_bit(m) == bit)
+                .count();
+            assert!(models > 0, "model group {name} is empty");
+        }
+        let mut from_kinds = 0u64;
+        for (kind, bit) in [
+            (0.0, effect::MOTES),
+            (1.0, effect::BUBBLES),
+            (2.0, effect::GLOWS),
+            (3.0, effect::EMBERS),
+        ] {
+            assert_eq!(sprite_bit(kind), bit, "sprite kind {kind} moved");
+            from_kinds |= bit;
+        }
+        assert_eq!(from_kinds, effect::SPRITE_BITS, "every sprite kind named");
+        assert_eq!(
+            from_models | from_kinds,
+            effect::ALL,
+            "every effect bit is covered"
+        );
+
+        // Every flag: pass-level parts first, then the model groups and sprite
+        // kinds. Names keep the two masks apart.
+        let mut variants: Vec<(String, u64, u64, bool)> = [
+            // Variant 0 is the reference every other row is a delta against.
+            ("everything", 0),
+            ("pass: sea", part::SEA),
+            ("pass: terrain", part::TERRAIN),
+            ("pass: opaque models", part::MODELS),
+            ("pass: glass models", part::GLASS),
+            ("pass: fading models", part::FADING),
+            ("pass: sprites", part::SPRITES),
+            ("pass: point lights", part::LIGHTS),
+            ("pass: sun shafts", part::SUN_SHAFTS),
+            ("pass: searchlight beams", part::BEAMS),
+            ("pass: shafts and beams", part::SHAFTS),
+            ("pass: corner mask", part::MASK),
+            ("pass: cave tunnel", part::TUNNEL),
+            ("pass: open water", part::BACKGROUND),
+            ("pass: model geometry", part::DRAW_CALLS),
+            ("probe: full detail", part::FULL_DETAIL),
+            ("probe: coarsest detail", part::COARSE_DETAIL),
+            ("probe: quarter pixels", part::QUARTER),
+            ("probe: quarter model pixels", part::QUARTER_MODELS),
+            ("probe: no noise", part::NO_NOISE),
+            ("probe: trilinear only", part::ANISOTROPY),
+            ("light: cheap models", part::CHEAP_MODELS),
+            ("light: cheap terrain", part::CHEAP_TERRAIN),
+            ("light: cheap background", part::CHEAP_BACKGROUND),
+            (
+                "light: all cheap",
+                part::CHEAP_MODELS | part::CHEAP_TERRAIN | part::CHEAP_BACKGROUND,
+            ),
+        ]
+        .into_iter()
+        .map(|(name, part)| (name.to_string(), part, 0, false))
+        .collect();
+        variants.extend(
+            effect::MODEL_GROUPS
+                .iter()
+                .map(|&(name, bit, _, _)| (format!("model: {name}"), 0, bit, false)),
+        );
+        variants.extend(
+            effect::SPRITE_GROUPS
+                .iter()
+                .map(|&(name, bit, _)| (format!("sprite: {name}"), 0, bit, false)),
+        );
+        // `plain` is a separately built scene, not a mask bit: its row is the
+        // old flat-grey-texture comparison, interleaved like the rest.
+        variants.push((
+            "scene: plain textures".to_string(),
+            part::PLAIN_TEXTURES,
+            0,
+            true,
+        ));
+        // Two rows that should read zero: the noise floor and any bias the
+        // comparison itself has, printed rather than assumed away.
+        variants.push(("check: everything again".to_string(), 0, 0, false));
+        variants.push((
+            "check: capsules again".to_string(),
+            0,
+            effect::CAPSULES,
+            false,
+        ));
+
+        // Warm every leg and every pipeline, so no variant pays a one-off the
+        // others do not.
+        let legs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        let frames = 8;
+        let span = crate::voyage::LEG / crate::voyage::SPEED;
+        let warm = |scene: &mut Nautilus| {
+            for n in 0..legs.len() {
+                for i in 0..3 {
+                    scene
+                        .draw(&gpu, leg(n as f64) + f64::from(i) * 0.75, 0, 0)
+                        .expect("a warm frame");
+                    gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                }
+            }
+        };
+        warm(&mut scene);
+        warm(&mut plain);
+
+        // The moments every variant will be measured at, spread through each
+        // leg rather than through its first second, so effects that come and
+        // go along the voyage are all in the sample.
+        let rounds = legs.len() * frames;
+        let at = |round: usize| {
+            let n = round / frames;
+            let i = round % frames;
+            let seconds = leg(n as f64) + (i as f64 + 0.5) * span * 0.65 / frames as f64;
+            (seconds, i)
+        };
+
+        // What the measured frames hold, from the same moments with
+        // everything on, drawn once uncounted: `seen` is only a guide to
+        // whether an effect was in view at all.
+        let mut model_seen: HashMap<u64, usize> = HashMap::new();
+        let mut sprite_seen: HashMap<u64, usize> = HashMap::new();
+        let mut unknown = 0usize;
+        scene.skip = 0;
+        scene.skip_effects = 0;
+        for round in 0..rounds {
+            let (seconds, i) = at(round);
+            scene
+                .draw(&gpu, seconds, 0, i % crate::visuals::SLOTS)
+                .expect("a counting frame");
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+            for lists in [&scene.frame.solid, &scene.frame.glass] {
+                for (model, list) in lists.iter().enumerate() {
+                    *model_seen.entry(model_bit(model)).or_default() += list.len();
+                }
+            }
+            for sprite in &scene.frame.sprites {
+                let bit = sprite_bit(sprite.tint[3]);
+                if bit == 0 {
+                    unknown += 1;
+                } else {
+                    *sprite_seen.entry(bit).or_default() += 1;
+                }
+            }
+        }
+        assert_eq!(unknown, 0, "a sprite kind outside the four named ones");
+
+        // Paired round-robin: each round draws every variant once at the same
+        // moment of the voyage, in a fresh random order. Each variant frame is
+        // paired with an "everything" frame immediately before or after it,
+        // alternating by round, and the delta is the pair's difference: drift
+        // and the machine's mood cancel instead of reading as an effect.
+        let mut times: Vec<Vec<f64>> = (0..variants.len())
+            .map(|_| Vec::with_capacity(rounds))
+            .collect();
+        let mut deltas: Vec<Vec<f64>> = (0..variants.len())
+            .map(|_| Vec::with_capacity(rounds))
+            .collect();
+        let mut baseline_times: Vec<f64> = Vec::with_capacity(rounds * variants.len());
+        let run = |scene: &mut Nautilus, seconds: f64, slot: usize, part: u64, effects: u64| {
+            scene.skip = part;
+            scene.skip_effects = effects;
+            let begun = std::time::Instant::now();
+            scene.draw(&gpu, seconds, 0, slot).expect("a frame");
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+            begun.elapsed().as_secs_f64()
+        };
+        let mut order: Vec<usize> = (0..variants.len()).collect();
+        let mut shuffle = 0x9e37_79b9_7f4a_7c15u64;
+        for round in 0..rounds {
+            let (seconds, i) = at(round);
+            let slot = i % crate::visuals::SLOTS;
+            // The first draw at a new moment builds the seabed's tiles (and
+            // the tunnel, when it has moved on): do one untimed frame in each
+            // scene first, so whichever pair happens to run first does not
+            // absorb that one-off cost.
+            for settled in [&mut scene, &mut plain] {
+                settled.skip = 0;
+                settled.skip_effects = 0;
+                settled
+                    .draw(&gpu, seconds, 0, slot)
+                    .expect("a settling frame");
+                gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+            }
+            for k in (1..order.len()).rev() {
+                shuffle ^= shuffle << 13;
+                shuffle ^= shuffle >> 7;
+                shuffle ^= shuffle << 17;
+                order.swap(k, (shuffle % (k as u64 + 1)) as usize);
+            }
+            for &v in &order {
+                let (_, part_skip, effect_skip, is_plain) = &variants[v];
+                let (baseline, taken) = if (round + v) % 2 == 0 {
+                    let baseline = run(&mut scene, seconds, slot, 0, 0);
+                    let target = if *is_plain { &mut plain } else { &mut scene };
+                    let taken = run(target, seconds, slot, *part_skip, *effect_skip);
+                    (baseline, taken)
+                } else {
+                    let target = if *is_plain { &mut plain } else { &mut scene };
+                    let taken = run(target, seconds, slot, *part_skip, *effect_skip);
+                    let baseline = run(&mut scene, seconds, slot, 0, 0);
+                    (baseline, taken)
+                };
+                times[v].push(taken);
+                deltas[v].push(taken - baseline);
+                baseline_times.push(baseline);
+            }
+        }
+        let everything = median(&mut baseline_times) * 1e3;
+
+        let mut rows: Vec<(String, f64, f64, Option<usize>)> = variants
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(v, (name, _, effect_skip, _))| {
+                let seen = if *effect_skip != 0 {
+                    Some(
+                        model_seen.get(effect_skip).copied().unwrap_or(0)
+                            + sprite_seen.get(effect_skip).copied().unwrap_or(0),
+                    )
+                } else {
+                    None
+                };
+                (
+                    name.clone(),
+                    median(&mut times[v]) * 1e3,
+                    median(&mut deltas[v]) * 1e3,
+                    seen,
+                )
+            })
+            .collect();
+        rows.sort_by(|a, b| a.2.total_cmp(&b.2));
+        println!();
+        println!(
+            "{:<38} {:>9} {:>9} {:>8} {:>7}",
+            "effect left out", "ms", "delta ms", "share", "seen"
+        );
+        println!("{}", "-".repeat(76));
+        println!(
+            "{:<38} {:>9.2} {:>+9.2} {:>7.1}% {:>7}",
+            "everything", everything, 0.0, 0.0, "-"
+        );
+        for (name, ms, delta, seen) in &rows {
+            let seen = seen.map_or_else(|| "-".to_string(), |n| n.to_string());
+            println!(
+                "{:<38} {:>9.2} {:>+9.2} {:>7.1}% {:>7}",
+                name,
+                ms,
+                delta,
+                -delta / everything * 100.0,
+                seen
+            );
+        }
+        println!("{}", "-".repeat(76));
+        println!(
+            "everything: {everything:.2} ms; {} variants x {rounds} paired frames over {} legs, \
+             round-robin; {:.1} s",
+            variants.len(),
+            legs.len(),
+            started.elapsed().as_secs_f64()
+        );
+    }
+
     /// How much of the panel each part of the frame actually covers: with the
     /// part left out, the difference is the pixels it was shading.
     #[test]
@@ -2111,7 +2751,7 @@ mod tests {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
         let at = leg(1.0) + 2.0;
-        let shot = |scene: &mut Nautilus, skip: u32| -> Vec<u8> {
+        let shot = |scene: &mut Nautilus, skip: u64| -> Vec<u8> {
             scene.skip = skip;
             for i in 0..8 {
                 scene
@@ -2152,9 +2792,18 @@ mod tests {
         println!("adapter: {}, profiler: {}", gpu.adapter, gpu.profiling());
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
         // Same binary, different feature set: useful without rebuilding.
+        // `DIVE3D_SKIP` is the pass-level mask, `DIVE3D_SKIP_EFFECTS` the
+        // model-group/sprite-kind mask; both take decimal or 0x hexadecimal.
         if let Ok(skip) = std::env::var("DIVE3D_SKIP") {
-            scene.skip = skip.parse().unwrap_or(0);
+            scene.skip = mask(&skip);
         }
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP_EFFECTS") {
+            scene.skip_effects = mask(&skip);
+        }
+        println!(
+            "skip {:#x} (DIVE3D_SKIP), effects {:#x} (DIVE3D_SKIP_EFFECTS)",
+            scene.skip, scene.skip_effects
+        );
         scene.draw(&gpu, 0.0, 0, 0).expect("a frame");
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let names = [
@@ -2417,7 +3066,7 @@ mod tests {
                     .unwrap(),
             ),
         ];
-        let variants: [(&str, u32); 4] = [
+        let variants: [(&str, u64); 4] = [
             ("rich", 0),
             ("cheap model light", part::CHEAP_MODELS),
             ("cheap terrain light", part::CHEAP_TERRAIN),
