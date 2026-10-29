@@ -208,7 +208,7 @@ pub(crate) struct Nautilus {
     seconds: f64,
     /// Parts of the scene a benchmark leaves out, to see what each costs.
     #[cfg(test)]
-    skip: u16,
+    skip: u32,
 }
 
 /// The materials models get a pipeline of their own for, as `MATERIAL` in
@@ -284,29 +284,38 @@ struct Draw {
 /// The parts of the scene `frame_cost` can leave out, as bits of `skip`.
 #[cfg_attr(not(test), allow(dead_code))]
 mod part {
-    pub const SEA: u16 = 1;
-    pub const TERRAIN: u16 = 2;
-    pub const MODELS: u16 = 4;
-    pub const GLASS: u16 = 8;
-    pub const SPRITES: u16 = 16;
-    pub const LIGHTS: u16 = 32;
+    pub const SEA: u32 = 1;
+    pub const TERRAIN: u32 = 2;
+    pub const MODELS: u32 = 4;
+    pub const GLASS: u32 = 8;
+    pub const SPRITES: u32 = 16;
+    pub const LIGHTS: u32 = 32;
     /// Not a part: draw into a quarter of the pixels, the geometry unchanged,
     /// to tell what the fragments cost from what the vertices do.
-    pub const QUARTER: u16 = 64;
+    pub const QUARTER: u32 = 64;
     /// Not parts either: every texture lookup a flat grey (only in a scene
     /// built [`Nautilus::with_plain_textures`]); no procedural noise;
     /// trilinear instead of anisotropic filtering.
-    pub const PLAIN_TEXTURES: u16 = 128;
-    pub const NO_NOISE: u16 = 256;
-    pub const ANISOTROPY: u16 = 512;
+    pub const PLAIN_TEXTURES: u32 = 128;
+    pub const NO_NOISE: u32 = 256;
+    pub const ANISOTROPY: u32 = 512;
     /// Every model at its full detail.
-    pub const FULL_DETAIL: u16 = 1024;
-    pub const SHAFTS: u16 = 2048;
+    pub const FULL_DETAIL: u32 = 1024;
+    pub const SHAFTS: u32 = 2048;
     /// Not parts: the cheaper lighting/material paths the shader can switch
     /// to at run time, so a benchmark can price a feature without rebuilding.
-    pub const CHEAP_MODELS: u16 = 4096;
-    pub const CHEAP_TERRAIN: u16 = 8192;
-    pub const CHEAP_BACKGROUND: u16 = 16384;
+    pub const CHEAP_MODELS: u32 = 4096;
+    pub const CHEAP_TERRAIN: u32 = 8192;
+    pub const CHEAP_BACKGROUND: u32 = 16384;
+    /// Every model at its coarsest level: what the geometry would cost if LOD
+    /// could take everything, without touching the selection itself.
+    pub const COARSE_DETAIL: u32 = 32768;
+    /// Not a part: every model draw still bound and issued, with no instance
+    /// in it, so the draws' own cost is left alone and the geometry is gone.
+    pub const DRAW_CALLS: u32 = 65536;
+    /// Not a part: draw the models into a quarter of the pixels, everything
+    /// else unchanged, to price the models' fragments against their geometry.
+    pub const QUARTER_MODELS: u32 = 1 << 17;
 }
 
 /// Shader switches for the benchmark, as `counts.y` bits (see `debug` in
@@ -1018,16 +1027,18 @@ impl Nautilus {
 
     /// Whether a benchmark asked to leave `part` out. Never, outside the tests.
     #[cfg(test)]
-    fn skips(&self, part: u16) -> bool {
+    fn skips(&self, part: u32) -> bool {
         self.skip & part != 0
     }
 
     #[cfg(not(test))]
-    fn skips(&self, _part: u16) -> bool {
+    fn skips(&self, _part: u32) -> bool {
         false
     }
 
     fn draw(&mut self, gpu: &Graphics, seconds: f64, visit: u64, _frame: usize) -> Result<()> {
+        #[cfg(test)]
+        let clock = std::time::Instant::now();
         let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
         if self.visit != Some(visit) {
             // A new visit: a new seabed, and the boat settles onto it afresh.
@@ -1066,12 +1077,16 @@ impl Nautilus {
             t,
         };
         world::build(&world, &mut self.frame);
+        #[cfg(test)]
+        let build_done = clock.elapsed();
         let ground = &self.ground;
         let tiles = self.terrain.update(&world, |slot, points| {
             let at = slot as usize * terrain::VERTICES * std::mem::size_of::<terrain::Point>();
             gpu.queue
                 .write_buffer(ground, at as u64, bytemuck::cast_slice(points));
         });
+        #[cfg(test)]
+        let terrain_done = clock.elapsed();
         let mut uniforms = globals(&world, &self.frame);
         if self.skips(part::LIGHTS) {
             uniforms.counts[0] = 0.0;
@@ -1121,9 +1136,12 @@ impl Nautilus {
         };
         let lods = &self.lods;
         let full = self.skips(part::FULL_DETAIL);
+        let coarse = self.skips(part::COARSE_DETAIL);
         let level_of = |model: usize, i: &Instance| {
             if full {
                 0
+            } else if coarse {
+                lods[model].len() - 1
             } else {
                 level_of(&lods[model], i, &pose)
             }
@@ -1157,6 +1175,8 @@ impl Nautilus {
                 index: index as u32,
             }));
         }
+        #[cfg(test)]
+        let order_done = clock.elapsed();
         order.sort_unstable_by(|a, b| {
             let kind = a.kind.cmp(&b.kind);
             if kind != std::cmp::Ordering::Equal {
@@ -1181,6 +1201,8 @@ impl Nautilus {
                     .then(a.index.cmp(&b.index))
             }
         });
+        #[cfg(test)]
+        let sort_done = clock.elapsed();
         let all = &mut self.staged;
         let draws = &mut self.draws;
         all.clear();
@@ -1221,6 +1243,8 @@ impl Nautilus {
                 _ => a.slot.cmp(&b.slot).then(a.nearest.total_cmp(&b.nearest)),
             }
         });
+        #[cfg(test)]
+        let stage_done = clock.elapsed();
         // The tunnel is in world space already: one instance that moves nothing.
         let tunnel_count = self.frame.tunnel_indices.len().min(MAX_TUNNEL_INDICES) as u32;
         let tunnel_fits = tunnel_count > 0 && self.frame.tunnel.len() <= MAX_TUNNEL_VERTICES;
@@ -1276,6 +1300,8 @@ impl Nautilus {
             bytemuck::cast_slice(beams),
         );
 
+        #[cfg(test)]
+        let upload_done = clock.elapsed();
         if std::env::var_os("DIVE3D_STATS").is_some() {
             let tris: u64 = draws
                 .iter()
@@ -1301,6 +1327,24 @@ impl Nautilus {
                 tiles.len(),
                 sprites.len() + shafts.len() + beams.len()
             );
+            // Which models pay for the frame, the heaviest first.
+            let mut per_model = vec![[0u64; 3]; lods.len()];
+            for d in draws.iter() {
+                let e = &mut per_model[d.model];
+                e[0] += 1;
+                e[1] += u64::from(d.count);
+                e[2] += u64::from(lods[d.model][d.lod].vertices) * u64::from(d.count);
+            }
+            let mut top: Vec<_> = per_model.into_iter().enumerate().collect();
+            top.sort_by(|a, b| b.1[2].cmp(&a.1[2]));
+            let mut line = String::new();
+            for (model, [draws, instances, verts]) in top.into_iter().take(10) {
+                line += &format!(
+                    " {:?}: {draws}d/{instances}i/{verts}v",
+                    mesh::Model::ALL[model]
+                );
+            }
+            eprintln!("dive3d models:{line}");
         }
 
         let mut encoder = gpu
@@ -1366,6 +1410,10 @@ impl Nautilus {
                 // What is fully there goes first, so the seabed behind it, and
                 // every other model, can be skipped before it is shaded.
                 pass.set_vertex_buffer(1, this.instances.slice(..));
+                if this.skips(part::QUARTER_MODELS) {
+                    let half = SEA as f32 / 2.0;
+                    pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
+                }
                 if tunnel_drawn && !this.skips(part::MODELS) {
                     pass.set_pipeline(&this.models[pipeline_slot(&all[tunnel_instance as usize])]);
                     pass.set_vertex_buffer(0, this.tunnel.slice(..));
@@ -1387,16 +1435,24 @@ impl Nautilus {
                             bound = Some(d.slot);
                         }
                         let l = this.lods[d.model][d.lod];
+                        let count = if this.skips(part::DRAW_CALLS) {
+                            0
+                        } else {
+                            d.count
+                        };
                         pass.draw_indexed(
                             l.first..l.first + l.count,
                             l.base,
-                            d.first..d.first + d.count,
+                            d.first..d.first + count,
                         );
                     }
                 };
                 if !this.skips(part::MODELS) {
                     models(&mut pass, Kind::Sealed);
                     models(&mut pass, Kind::Solid);
+                }
+                if this.skips(part::QUARTER_MODELS) {
+                    pass.set_viewport(0.0, 0.0, SEA as f32, SEA as f32, 0.0, 1.0);
                 }
                 if !this.skips(part::TERRAIN) {
                     pass.set_pipeline(&this.terrain_pipeline);
@@ -1412,11 +1468,18 @@ impl Nautilus {
                 // fading models blend over it.
                 pass.set_pipeline(&this.background);
                 pass.draw(0..3, 0..1);
+                if this.skips(part::QUARTER_MODELS) {
+                    let half = SEA as f32 / 2.0;
+                    pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
+                }
                 if !this.skips(part::MODELS) {
                     models(&mut pass, Kind::Fading);
                 }
                 if !this.skips(part::GLASS) {
                     models(&mut pass, Kind::Glass);
+                }
+                if this.skips(part::QUARTER_MODELS) {
+                    pass.set_viewport(0.0, 0.0, SEA as f32, SEA as f32, 0.0, 1.0);
                 }
 
                 if !sprites.is_empty() && !this.skips(part::SPRITES) {
@@ -1440,7 +1503,23 @@ impl Nautilus {
             Ok(())
         });
         result?;
+        #[cfg(test)]
+        let encode_done = clock.elapsed();
         gpu.submit(encoder.finish());
+        #[cfg(test)]
+        if std::env::var_os("DIVE3D_PHASES").is_some() {
+            let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+            eprintln!(
+                "dive3d phases: build {:.3} terrain {:.3} order {:.3} sort {:.3} stage {:.3} upload {:.3} encode {:.3}",
+                ms(build_done),
+                ms(terrain_done - build_done),
+                ms(order_done - terrain_done),
+                ms(sort_done - order_done),
+                ms(stage_done - sort_done),
+                ms(upload_done - stage_done),
+                ms(encode_done - upload_done),
+            );
+        }
         Ok(())
     }
 
@@ -1518,6 +1597,31 @@ impl Visual for Nautilus {
     }
 }
 
+/// The pixel limits [`level_of`] picks a coarser model under. Test builds can
+/// override them with `DIVE3D_LOD=error,edge` to price a looser selection
+/// without a rebuild.
+fn lod_limits() -> (f32, f32) {
+    #[cfg(test)]
+    {
+        use std::sync::OnceLock;
+        static LIMITS: OnceLock<(f32, f32)> = OnceLock::new();
+        *LIMITS.get_or_init(|| {
+            let mut limits = (LOD_ERROR, LOD_EDGE);
+            if let Ok(text) = std::env::var("DIVE3D_LOD")
+                && let Some((error, edge)) = text.split_once(',')
+            {
+                limits.0 = error.trim().parse().unwrap_or(limits.0);
+                limits.1 = edge.trim().parse().unwrap_or(limits.1);
+            }
+            limits
+        })
+    }
+    #[cfg(not(test))]
+    {
+        (LOD_ERROR, LOD_EDGE)
+    }
+}
+
 /// The coarsest of a model's levels of detail that looks the same as the
 /// full one for this instance, at its distance through the window.
 fn level_of(lods: &[Lod], i: &Instance, pose: &Pose) -> usize {
@@ -1540,12 +1644,13 @@ fn level_of(lods: &[Lod], i: &Instance, pose: &Pose) -> usize {
         return 0;
     }
     let pixels = scale * (SEA as f32 * 0.5) / (world::VIEW * near);
+    let (error_limit, edge_limit) = lod_limits();
     (1..lods.len())
         .rev()
         .find(|&l| {
             let lod = &lods[l];
-            lod.error * pixels < LOD_ERROR
-                && (lod.stray < LOD_STRAY || lod.edge * pixels < LOD_EDGE)
+            lod.error * pixels < error_limit
+                && (lod.stray < LOD_STRAY || lod.edge * pixels < edge_limit)
         })
         .unwrap_or(0)
 }
@@ -1777,6 +1882,116 @@ mod tests {
         }
     }
 
+    /// What a frame costs when there is nothing in it, split into the parts
+    /// `draw` runs before it submits: the scene build, the seabed's tiles, the
+    /// staging and the submission. The Pi has no timer queries, so the parts
+    /// are timed on the CPU around one another.
+    #[test]
+    #[ignore = "a benchmark; needs a working GPU adapter"]
+    fn fixed_cost() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        let seconds = leg(1.0) + 2.0;
+        for _ in 0..20 {
+            scene.draw(&gpu, seconds, 0, 0).expect("a frame");
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        }
+        const FRAMES: usize = 200;
+        let wait = |gpu: &crate::gpu::Graphics| {
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        };
+        let bench = |name: &str, f: &mut dyn FnMut()| {
+            let begun = std::time::Instant::now();
+            for _ in 0..FRAMES {
+                f();
+            }
+            println!(
+                "  {name:>20}: {:6.3} ms",
+                begun.elapsed().as_secs_f64() * 1e3 / FRAMES as f64
+            );
+        };
+        println!("adapter: {}, profiler: {}", gpu.adapter, gpu.profiling());
+        // The whole draw with the pass left out: build, staging, uploads and
+        // the submission of an empty command buffer.
+        scene.skip = part::SEA;
+        bench("empty sea", &mut || {
+            scene.draw(&gpu, seconds, 0, 0).expect("a frame");
+            wait(&gpu);
+        });
+        // The command buffer alone.
+        bench("submit only", &mut || {
+            let encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Empty"),
+                });
+            gpu.submit(encoder.finish());
+            wait(&gpu);
+        });
+        // A pass that only clears, to price the pass itself.
+        bench("clear pass", &mut || {
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Clear"),
+                });
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &scene.resolved,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &scene.depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            }
+            gpu.submit(encoder.finish());
+            wait(&gpu);
+        });
+        // The scene build on its own, with the voyage and helm held still.
+        let at = scene.voyage.advance(seconds, 0.0);
+        let pose = scene.helm.steer(&scene.seabed, at, seconds);
+        let world = World {
+            seabed: &scene.seabed,
+            pose,
+            t: seconds as f32,
+        };
+        bench("world::build", &mut || {
+            world::build(&world, &mut scene.frame)
+        });
+        // The seabed's tiles, as the draw asks for them: all in place after the
+        // warmup, so this is the steady-state cost.
+        let ground = &scene.ground;
+        bench("terrain::update", &mut || {
+            scene.terrain.update(&world, |slot, points| {
+                let at = slot as usize * terrain::VERTICES * std::mem::size_of::<terrain::Point>();
+                gpu.queue
+                    .write_buffer(ground, at as u64, bytemuck::cast_slice(points));
+            });
+        });
+        // And the whole frame, for reference.
+        scene.skip = 0;
+        bench("everything", &mut || {
+            scene.draw(&gpu, seconds, 0, 0).expect("a frame");
+            wait(&gpu);
+        });
+    }
+
     #[test]
     #[ignore = "a benchmark; needs a working GPU adapter"]
     fn frame_cost() {
@@ -1802,6 +2017,9 @@ mod tests {
             ("trilinear only", part::ANISOTROPY),
             ("no noise", part::NO_NOISE),
             ("full detail", part::FULL_DETAIL),
+            ("coarsest detail", part::COARSE_DETAIL),
+            ("empty model draws", part::DRAW_CALLS),
+            ("quarter model pixels", part::QUARTER_MODELS),
             ("cheap models", part::CHEAP_MODELS),
             ("cheap terrain", part::CHEAP_TERRAIN),
             ("cheap background", part::CHEAP_BACKGROUND),
@@ -1863,7 +2081,7 @@ mod tests {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
         let at = leg(1.0) + 2.0;
-        let shot = |scene: &mut Nautilus, skip: u16| -> Vec<u8> {
+        let shot = |scene: &mut Nautilus, skip: u32| -> Vec<u8> {
             scene.skip = skip;
             for i in 0..8 {
                 scene
@@ -2169,7 +2387,7 @@ mod tests {
                     .unwrap(),
             ),
         ];
-        let variants: [(&str, u16); 4] = [
+        let variants: [(&str, u32); 4] = [
             ("rich", 0),
             ("cheap model light", part::CHEAP_MODELS),
             ("cheap terrain light", part::CHEAP_TERRAIN),

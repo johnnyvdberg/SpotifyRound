@@ -1026,6 +1026,8 @@ fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Vec<(i32, i32,
 type Placer = fn(&World, &mut Frame);
 
 pub fn build(world: &World, frame: &mut Frame) {
+    #[cfg(test)]
+    let begun = std::time::Instant::now();
     frame.clear();
     let wood = carried(Surface::Wood, 1.5);
     let marble = fixed(Surface::Marble, 3.0);
@@ -1058,6 +1060,47 @@ pub fn build(world: &World, frame: &mut Frame) {
         (shafts, None),
         (particles, None),
     ];
+    #[cfg(test)]
+    const STEP_NAMES: [&str; 22] = [
+        "planes",
+        "rocks",
+        "kelp",
+        "forest",
+        "gardens",
+        "trench",
+        "wrecks",
+        "ruins",
+        "cave",
+        "tunnel",
+        "vents",
+        "ice",
+        "divers",
+        "shoals",
+        "great_swimmers",
+        "gliders",
+        "squid",
+        "drifters",
+        "polar",
+        "submarines",
+        "shafts",
+        "particles",
+    ];
+    #[cfg(test)]
+    let show_steps = std::env::var_os("DIVE3D_BUILD_STEPS").is_some();
+    #[cfg(test)]
+    for (i, (step, skin)) in steps.into_iter().enumerate() {
+        frame.style(skin);
+        let started = std::time::Instant::now();
+        step(world, frame);
+        if show_steps {
+            eprintln!(
+                "dive3d build step: {} {:.3}",
+                STEP_NAMES[i],
+                started.elapsed().as_secs_f64() * 1e3
+            );
+        }
+    }
+    #[cfg(not(test))]
     for (step, skin) in steps {
         frame.style(skin);
         step(world, frame);
@@ -1068,6 +1111,8 @@ pub fn build(world: &World, frame: &mut Frame) {
     // lookups and noise out of every vertex of every model. The sand's colour
     // comes from the same place, so no pixel has to look up which biome it is
     // in to blend the foot in.
+    #[cfg(test)]
+    let placed = begun.elapsed();
     for list in frame.solid.iter_mut().chain(frame.glass.iter_mut()) {
         for instance in list.iter_mut() {
             let r = instance.rows;
@@ -1078,6 +1123,15 @@ pub fn build(world: &World, frame: &mut Frame) {
                 instance.floor = [c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, 0.0];
             }
         }
+    }
+    #[cfg(test)]
+    if std::env::var_os("DIVE3D_STATS").is_some() {
+        let total = begun.elapsed();
+        eprintln!(
+            "dive3d build: placers {:.3} ms, grounding {:.3} ms",
+            placed.as_secs_f64() * 1e3,
+            (total - placed).as_secs_f64() * 1e3
+        );
     }
 }
 
@@ -1272,11 +1326,17 @@ fn gardens(w: &World, f: &mut Frame) {
         let green = (b.weight(SHALLOWS) + b.weight(FOREST)) as f32;
         let polar = b.weight(ARCTIC) as f32;
         let roll = hash(ix, iz, 41);
+        let needs = roll * 0.8 + 0.2;
+        // Most of the grid is turned away; the seabed under it need not be
+        // looked up for those.
+        if green < needs && polar < needs {
+            continue;
+        }
         let y = w.ground(x, z);
         if !w.visible([x, y + 0.1, z], 0.2) {
             continue;
         }
-        f.fade = fade(green.max(polar), roll * 0.8 + 0.2);
+        f.fade = fade(green.max(polar), needs);
         let yaw = hash(ix, iz, 42) * TAU;
         if green > roll * 0.8 + 0.2 {
             if b.weight(FOREST) > 0.5 && hash(ix, iz, 43) < 0.25 {
