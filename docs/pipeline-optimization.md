@@ -1527,3 +1527,26 @@ same applies to the ruins' craters and the cave's pools/embers.
 Static-cache path: shell hinge, rocks sway, crinoid wave done; remaining are
 the sprite/light split for the trench/ruins/cave and the polar phases; then
 the full instance cache with exact bounds.
+
+## 29. Polar penguins: the flipper beat moves to the shader
+
+The penguins' flippers baked `0.9 sin(w.t * TAU * 2.2 + phase)` into their roll
+before `place`. The fixed side and the body's pitch stay; the beat is now
+`anim::FLAP` (kind 8), a shader roll about the forward axis from the camera
+clock.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: no change expected.
+
+![penguin flap: current / shader flap / difference](branch-penguin-flap.png)
+
+The polar still has the narwhals' body bob/yaw and the penguins' bubble trail
+(sprites) on `w.t`. The narwhals' body motion shares the instance's `anim`
+with the fluke, so it needs either a second channel or to stay out of the
+cache; the bubbles belong to the sprite/light two-phase split. The instance
+matrices for the penguins are now static.
+
+Static-cache path: shell hinge, rocks sway, crinoid wave, penguin flap done;
+remaining are the narwhals' body motion, the sprite/light split (trench
+sediment/blink, ruin craters, cave pools/embers, polar bubbles), then the full
+cache with exact bounds.

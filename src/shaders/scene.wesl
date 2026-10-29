@@ -832,6 +832,12 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
         let x = p.x * c + p.z * s;
         p.z = -p.x * s + p.z * c;
         p.x = x;
+    } else if (kind == 8u) {
+        // A flipper beating about the forward axis: the polar penguins.
+        let a = anim.z * sin(t);
+        let y = p.y * cos(a) - p.z * sin(a);
+        p.z = p.y * sin(a) + p.z * cos(a);
+        p.y = y;
     }
     return p;
 }

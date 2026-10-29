@@ -109,6 +109,8 @@ pub mod anim {
     pub const SHELL: f32 = 6.0;
     /// An arm waving about the vertical: the trench crinoids.
     pub const WAVE: f32 = 7.0;
+    /// A flipper beating about the forward axis: the polar penguins.
+    pub const FLAP: f32 = 8.0;
 }
 
 /// Materials, as the fragment shader knows them.
@@ -3579,7 +3581,8 @@ fn polar(w: &World, f: &mut Frame) {
                 place(p, 0.0, pitch, 0.0, [s * 2.0; 3]),
                 [0.12, 0.12, 0.13],
             );
-            let flap = 0.9 * (w.t * TAU * 2.2 + phase).sin();
+            // The flippers' beat is the shader's (anim::FLAP); the placement
+            // keeps only the fixed side and the body's pitch.
             for side in [-1.0f32, 1.0] {
                 let root = add(p, [0.01, 0.0, side * 0.012]);
                 f.put(
@@ -3588,11 +3591,12 @@ fn polar(w: &World, f: &mut Frame) {
                         add(root, [-0.02, 0.0, side * 0.02]),
                         0.0,
                         pitch,
-                        side * flap,
+                        0.0,
                         [0.03, 0.004, 0.022],
                     ),
                     [0.06, 0.07, 0.08],
-                );
+                )
+                .moving(anim::FLAP, phase, side * 0.9, TAU * 2.2);
             }
             // Bubbles shed off her flippers: each is left where it was let go
             // and rises there while she flies on, so the trail keeps the
