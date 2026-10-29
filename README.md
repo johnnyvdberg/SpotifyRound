@@ -444,9 +444,9 @@ the Pi 5's V3D; run it before trusting a Pi measurement. So:
   shades the seabed with one texture lookup and full sun/lamp/four-point-light/caustic lighting at
   the vertices, with fine floor detail; the models use the same vertex light and material effects.
   The 3D sea texture is handed to Slint directly, filling the panel. On the Pi 5 the dive measures
-  **12.6 ms on average and 17.0 ms on its heaviest leg** (cave 11.3 ms); the live kiosk held
-  61 fps for a full 60-second sample. There is no smaller profile: the sea is always the panel's
-  1080 pixels.
+  **10.4 ms on average and 13.5 ms on its heaviest leg** (shallows; forest 13.0 ms), and the kiosk
+  holds 61 fps. There is no smaller profile: the sea is always the panel's 1080 pixels, and what
+  the frame spends its time on is in [docs/pipeline-optimization.md](docs/pipeline-optimization.md).
 - What can be drawn together is: the player's glow, vignette and rim are one opaque texture from
   `ring.rs`, and the globe paints the space behind itself, so those screens are one full-screen layer
   for Slint. The Nautilus is one full-panel sea texture.
@@ -700,7 +700,7 @@ making; her depth answers its planes the same way. `cargo test --release
 dive3d::world::tests::submarines` holds the motion to those rates.
 It renders at 1080 × 1080 with one sample and a reversed depth buffer, then goes through the
 the full-panel sea: the 3D sea is handed to Slint directly, with no bezel or other overlay. On the
-Pi 5 a full-HD frame costs 12.6 ms on average and 17.0 ms on its heaviest leg; on a desktop GPU
+Pi 5 a full-HD frame costs 10.4 ms on average and 13.5 ms on its heaviest leg; on a desktop GPU
 about 2 ms, with the scene built in about 0.4 ms of CPU. `cargo test --release
 dive3d::tests::frame_time -- --ignored --nocapture` times it and `DIVE3D_PREVIEW_DIR=<dir> cargo
 test --release dive3d::tests::previews -- --ignored` writes a frame from each leg.

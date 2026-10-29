@@ -241,3 +241,148 @@ kill -CONT <spotify-round pid>          # 12.997 ms mean while it is frozen
 Absolute numbers are not directly comparable to the README's 12.3 ms: the
 recovered scene still differs from the lost one on shallows, forest and cave
 (kelp placement and the cave glow), and those are the heavier legs.
+
+**Corrected in §7.** The "not fill-bound" reading does not survive a closer
+measurement: the draw calls are free, and the models' pixels cost as much as
+their vertices. The 3.63 ms is CPU scene construction, which the app overlaps
+with the GPU and which does not enter the frame.
+
+## 7. The Pi, second pass: the fixed cost is the CPU, and the dive makes 60 fps
+
+Measured at 1b22e1e, kiosk frozen, V3D 7.1.7.0 at 960 MHz, ARM at 1.7 GHz,
+`throttled=0x0`, 60–67 °C. Within one session `frame_cost` repeats to ±0.1 ms;
+between sessions absolute numbers move (the 13.44 in §6 is not reproducible
+now: the same tree reads 11.2, and the kiosk binary §6 measured was built at
+16:09, before `world.rs` was recovered at 17:10). Compare deltas measured in one
+session, or alternate binaries.
+
+**`frame_cost`** (legs 1, 3, 4; 20 frames each; two runs, 11.21 and 11.19 ms):
+
+| variant | Δ |
+|---|---|
+| no solid models | −3.66 ms |
+| quarter pixels | −3.50 ms |
+| no terrain | −1.43 ms |
+| empty sea | −8.98 ms |
+| full detail | +1.88 ms |
+
+**`frame_time`** (serial submit and wait, 60 frames a leg): shallows **13.49**,
+forest **12.96**, atlantis 10.49, cave 10.43, wrecks 9.01, abyss 8.96, arctic
+9.86, trench 8.25; mean **10.43 ms**. The dive is under the 16.7 ms budget on
+every leg with 3.2 ms to spare on the heaviest.
+
+**The kiosk**, `SPOTIFY_ROUND_FULL_SPEED=1`, Nautilus forced: window **61 fps
+for a full 60-second sample**, scene 60–61 fps, gpu 11.6–16.7 ms. The gpu
+reading is quantised by the 60 Hz present (a frame that makes the vblank reads
+16.7, one that misses it reads ~12 or less), so it is not a frame time.
+
+The kiosk had been running a binary from 16:09 — before `world.rs` was
+recovered at 17:10. At the same point after a restart (the shallows leg) its
+scene thread took **4.0–4.2 ms** a frame; the current tree takes **1.7–1.8**.
+Later in the voyage (the forest) the current tree's scene thread reads
+3.1–3.8 ms, so the whole leg range is about 1.7–3.8 ms; the old binary was two
+milliseconds behind it where they can be compared.
+
+### 7.1 The "fixed overhead" is the CPU, not the submission
+
+The new `fixed_cost` test splits the empty frame, and the new `DIVE3D_PHASES`
+prints the draw's own phases:
+
+| part | ms |
+|---|---|
+| `world::build` | **1.35** |
+| `terrain::update` (boat still) | 0.02 |
+| submit (empty encoder) | 0.05 |
+| empty sea | 1.94 |
+| order + sort + stage + upload | 0.03 + 0.07 + 0.03 + 0.02 |
+| encode | 0.015 |
+| clear pass (GPU) | 0.46 |
+
+With the boat moving, `terrain::update` builds the new tiles as it goes and
+rises to 0.17 ms. So roughly 70% of the time outside drawing is **building the
+scene**: the 22 placers, then the per-instance ground and sand lookup. Staging
+is 0.15 ms, submission 0.05 ms, and the texture handoff to Slint costs nothing
+because it is an import: Slint samples the same texture, nothing is copied or
+re-uploaded. The 0.46 ms clear is inside the pass, not in "empty sea".
+
+In the app `world::build` runs on the visualizer thread while the GPU draws the
+previous frame (two in flight), so it does not add its 1.35 ms to the frame.
+It is why the old kiosk binary's scene thread sat at 4 ms; that is a CPU
+problem, not the 3.63 ms mystery.
+
+Per placer (`DIVE3D_BUILD_STEPS`, means over eight legs): kelp 0.24, cave 0.23,
+particles 0.11, shoals 0.10 (0.17–0.24 in the rich legs), rocks 0.08, trench
+0.07 (0.29 in the trench), ruins 0.06, forest 0.06, gardens 0.03; the rest
+under 0.05. The per-instance grounding is 0.03–0.15. There is no single
+dominant placer to rewrite.
+
+### 7.2 Models: the draws are free, the pixels are not
+
+Three new probes:
+
+- `DRAW_CALLS` issues every model draw with an empty instance range: all 260
+  draws and their pipeline binds stay, the geometry goes. It saves 2.7–3.6 of
+  the models' 3.67 ms, so **draw calls and batching are worth about 0.1 ms**,
+  not 3.7. There is nothing to win by merging draws.
+- `COARSE_DETAIL` draws every instance at its coarsest level: forest falls from
+  150 k to 65 k vertices and 203 k to 56 k triangles, and the leg loses 1.87 ms
+  (shallows 1.21, mean 0.4–1.4 depending on the run). Geometry is worth
+  **1–2 ms**.
+- `QUARTER_MODELS` draws only the models into a quarter of the pixels (the
+  water and seabed refill the other three quarters, so this is net): forest
+  loses 1.54 ms, shallows 2.93, cave 3.99, abyss 2.36. Model **pixels** are
+  worth at least as much as model vertices.
+
+That makes §6.2 wrong on both counts. The model cost is roughly half geometry
+and half pixels, and the geometry half is only small because the LOD chain is
+shallow: a fish is 272 → 102 → 76 triangles, and LOD 1/2 only qualify below
+about 14/11 px on screen because `LOD_STRAY` is above the simplification stray
+on most models, so the `edge × px < 6` clause is the one that binds.
+
+### 7.3 Loosening LOD is a poor trade from here
+
+`DIVE3D_LOD=error,edge` overrides the selection in test builds. Mean over the
+eight legs and forest leg, against the preview frames (mean Δ/255, and pixels
+changed by more than 2/255):
+
+| error,edge | mean | forest | worst leg Δ | pixels > 2 |
+|---|---|---|---|---|
+| 2,6 (current) | 10.35 | 12.78 | — | — |
+| 2,18 | 10.21 | 12.55 | 0.13 (shallows) | 1.3% |
+| 4,12 | 10.04 | 12.16 | 0.12 (shallows) | 2.2% |
+| 6,18 | 9.97 | 11.94 | 0.23 (forest) | 4.0% |
+
+Even the most aggressive is worth 0.4–0.8 ms of the 13, for a visible change
+on model edges, and the selection has no hysteresis, so looser thresholds pop
+more. The current 2, 6 was kept.
+
+### 7.4 Tried and reverted
+
+- **Depth-first across materials** (so early-Z can reject more): +1.46 ms. It
+  turns 260 draws into ~2100 and V3D charges ~0.7 µs a draw.
+- **Keeping the colour target instead of clearing it**: +1.58 ms. On a
+  tile-based GPU a load is a full read of the panel; a clear is not.
+- **Biome early-outs in the placers** (skip the cell grid when the cave or the
+  kelp is nowhere near): removed. The window looks out of the hull's *side*, so
+  the visible x span is ±0.72 × depth, two to three legs wide; a corridor
+  sample that missed the negative-x side skipped a visible garden on the arctic
+  leg (one instance, twelve sprites). Sampling the whole span leaves nothing to
+  skip. Biome gating does not work for this camera.
+- **`gardens`**: the seabed lookup and visibility test moved after the
+  per-cell biome rejection. Exact (previews pixel-identical) and saves ~0.03 ms
+  of the build. Kept.
+
+### 7.5 Where the frame goes, and what is left
+
+Forest, serial: 12.96 = ~1.5 build (overlapped in the app) + 1.43 terrain +
+3.67 models (half pixels, half geometry) + 0.46 clear + the rest water,
+sprites, shafts, glass and the corner mask. The only remaining levers are look
+changes: texture sampling in the model fragments (plain textures save 1.57 ms),
+model geometry, and terrain triangles. Submission, pass setup and the handoff
+have nothing left to give.
+
+The 16.7 ms target is met: 10.43 ms mean, 13.49 ms on the worst leg, and 61 fps
+on the kiosk. The useful next step is not more micro-optimisation but keeping
+the deployed binary current — the kiosk had been running a pre-recovery build
+with a 4 ms scene thread.
+
