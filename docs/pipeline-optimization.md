@@ -1701,3 +1701,39 @@ So the UI's remaining app work is worth tens of microseconds, and the real
 remaining millisecond-scale work is the **chunked static cache** (§33: cache
 per visible cell, not a wide margin) and, for the Pi's composite, the KMS
 overlay. Packing/attribute subsets and resolution remain after those.
+
+## 36. Chunked static cache: the design that can actually pay
+
+The wide cache lost twice (§25-26, §33) for one reason: the frame paid for the
+**wide** set. The audit's design is per **visible cell**, not per wide margin.
+Concretely:
+
+1. **Cache the placements per cell.** Each static placer already iterates
+   `cells(w, size, near, far, salt)`, which returns `(ix, iz, x, z)`. The cache
+   key is `(placer, size, salt, ix, iz)`; the value is the instances that cell
+   produced, with the placer's exact per-instance bound.
+2. **The cell grid is fixed in the world.** The same rock is always in the same
+   cell, so a cell's instance list only depends on the visit (the seabed seed)
+   and the placer's parameters, not on the camera. That is why this caches
+   across the whole voyage, unlike the wide margin.
+3. **The frame iterates the visible cells only.** `cells()` already computes
+   the visible set from the camera's footprint — that is its job. For each
+   visible cell, copy its cached instances. No per-frame cull over a surplus,
+   no wide copy: the copy size equals the visible size.
+4. **The fade is per instance.** `f.fade` at placement already bakes the
+   biome's fade into `extra[2]`; it is camera-independent, so the cached copy
+   is correct as-is.
+5. **Sprites/lights stay per frame.** The garden/wreck/rock set has none; the
+   trench/ruin/cave/polar still need their sprite/light lists rebuilt per
+   frame (or a phase channel like the lights, §31). The cache should start
+   with the three clean placers and grow as the sprite split lands.
+
+The restructure is mechanical but touches each placer's loop body: set the
+current cell on the frame (or pass it to `put`), so the instance lands in the
+cell's cache list. The savings at current counts are small (the three clean
+placers are ~0.07 ms M1 / ~0.18 Pi), but unlike the wide cache this design
+scales: at 10k instances the static placement is the audit's 2-2.5 ms and the
+visible-cell copy stays proportional to what is visible, not to a surplus.
+
+Until this lands, the frame remains at the §33 baseline (the wide attempts
+are reverted; the shader-animation prereqs are in).
