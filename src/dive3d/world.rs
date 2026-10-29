@@ -881,6 +881,25 @@ impl Frame {
         });
     }
 
+    /// A bubble anchored where it was shed: the shader owns its age from the
+    /// camera clock (`phase`/`life`), so the placer emits a camera-static
+    /// anchor and the placer can enter the cache.
+    fn bubble_sprite(
+        &mut self,
+        p: [f32; 3],
+        size: f32,
+        colour: [f32; 3],
+        phase: f32,
+        life: f32,
+        wave: f32,
+    ) {
+        self.sprites.push(Sprite {
+            place: [p[0], p[1], p[2], size],
+            tint: [colour[0], colour[1], colour[2], BUBBLE],
+            stretch: [1.0, phase, life, wave],
+        });
+    }
+
     fn streak(&mut self, p: [f32; 3], size: f32, colour: [f32; 3], stretch: f32) {
         self.sprites.push(Sprite {
             place: [p[0], p[1], p[2], size],
@@ -3688,28 +3707,21 @@ fn polar(w: &World, f: &mut Frame) {
                 )
                 .moving(anim::FLAP, phase, side * 0.9, TAU * 2.2);
             }
-            // Bubbles shed off her flippers: each is left where it was let go
-            // and rises there while she flies on, so the trail keeps the
-            // spacing of her way instead of snapping back to her.
+            // Bubbles shed off her flippers: the anchor is where it was let
+            // go, and the shader ages the bubble from the camera clock
+            // (bubble_sprite), so the trail is camera-static and cacheable.
+            let was0 = px - 0.04;
+            let y0 = top - 0.25 - hash(k, d + 6, 360) * 0.45
+                + 0.06 * (was0 * 3.5 + phase).sin();
             for b in 0..5 {
-                let shed = bubble(b, 5, w.t, 1.05);
-                let was = px - 0.04 - 0.24 * shed.age;
-                let q = [
-                    was,
-                    top - 0.25 - hash(k, d + 6, 360) * 0.45
-                        + 0.06 * (was * 3.5 + phase).sin()
-                        + 0.015 * shed.age,
-                    p[2],
-                ];
-                let fade = shed.fade * window_fade(w, q, 0.01);
-                if fade > 0.001 {
-                    f.sprite(
-                        q,
-                        0.005 + 0.0015 * b as f32,
-                        [0.45 * fade, 0.65 * fade, 0.70 * fade],
-                        BUBBLE,
-                    );
-                }
+                f.bubble_sprite(
+                    [was0, y0, p[2]],
+                    0.005 + 0.0015 * b as f32,
+                    [0.45, 0.65, 0.70],
+                    b as f32 / 5.0,
+                    1.05,
+                    phase,
+                );
             }
         }
     }

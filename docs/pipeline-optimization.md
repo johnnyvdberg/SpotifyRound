@@ -1856,3 +1856,33 @@ shader reproduces them from the anchor and the computed age.
 Next: implement this branch, the `f.sprite` phase parameters, and the polar
 anchor; verify pixel-identical with the placer still per-frame; then the
 cave/ruins/trench sprites and the full cell-cache measurement.
+
+## 41. Polar trail: the BUBBLE kind is now shader-side, pixel-identical
+
+The polar penguins' bubble trail was the first sprite kind to move to the
+shader. The placer emits a camera-static anchor (the shed point), with
+`stretch.yzw = (bubble index / stream, life, penguin phase)`; `vs_sprite`
+evaluates the same closed form as `bubble()` from `g.camera.w`:
+
+```
+cycle = g.camera.w / life + index/stream
+age   = fract(cycle) * life
+fade  = smooth01(0, 0.08*life, age) * smooth01(life, 0.86*life, age)
+was   = anchor.x - 0.24*age
+y     = anchor.y + 0.015*age + 0.06*(sin(was*3.5+phase) - sin(anchor.x*3.5+phase))
+```
+
+`bubble_fade` scales the colour, matching the CPU's `[0.45, 0.65, 0.70] *
+fade`. The `window_fade` edge term is replaced by the GPU's own clip: the
+sprite is drawn only when its clip position is on screen, which is the same
+pixels for a 1-px bubble.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: no change expected (one sprite kind, tens of sprites).
+
+The polar placer's instances were already shader-static, and now its last
+sprite is too, so the polar can join the §37 cell cache. The cave/ruins/trench
+sprite kinds (MOTE/GLOW/EMBER) remain: the same `stretch.yzw` channel, one
+shader branch each.
+
+![polar bubble shader: current / shader-aged / difference](docs/branch-polar-bubble-shader.png)

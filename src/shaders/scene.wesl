@@ -1271,7 +1271,21 @@ fn vs_sprite(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
     );
     let corner = corners[index];
-    var clip = project(place.xyz);
+    // Bubbles age from the camera clock: the anchor is the shed point, and
+    // the shader reproduces the trail's offset/fade so the placer can cache.
+    var p = place.xyz;
+    var bubble_fade = 1.0;
+    if (stretch.z > 0.0) {
+        let cycle = g.camera.w / stretch.z + stretch.y;
+        let age = (cycle - floor(cycle)) * stretch.z;
+        bubble_fade = smooth01(0.0, 0.08 * stretch.z, age)
+            * smooth01(stretch.z, 0.86 * stretch.z, age);
+        let was0 = p.x;
+        let was = was0 - 0.24 * age;
+        p.x = was;
+        p.y += 0.015 * age + 0.06 * (sin(was * 3.5 + stretch.w) - sin(was0 * 3.5 + stretch.w));
+    }
+    var clip = project(p);
     // Grown in view space, so the sprite always faces the window.
     // Drawn out along the view's horizontal for bubbles streaking past.
     clip.x += corner.x * place.w * stretch.x / g.view.x;
@@ -1288,7 +1302,7 @@ fn vs_sprite(
         let cone = smooth01(0.80, 0.95, dot(normalize(to), g.lamp.xyz));
         lit = 0.25 + 2.5 * cone * g.lamp.w / (1.0 + dot(to, to) * 0.08) + g.sun.w * 0.6;
     }
-    out.colour = tint.rgb * lit * (1.0 - fog_of(d));
+    out.colour = tint.rgb * lit * (1.0 - fog_of(d)) * bubble_fade;
     out.kind = kind;
     return out;
 }
