@@ -402,6 +402,29 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     return vec4<f32>(water_at(dir) * SEA_SCALE, 1.0);
 }
 
+@if(!full_hd)
+@fragment
+fn fs_background_cheap(in: Screen) -> @location(0) vec4<f32> {
+    let s = in.ndc * g.view.x;
+    let local = normalize(vec3<f32>(s, 1.0));
+    let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
+    let col = mix(g.deep.rgb, g.water.rgb, smooth01(-0.6, 0.5, dir.y)) * g.tint.rgb;
+    return vec4<f32>(col * SEA_SCALE, 1.0);
+}
+
+
+// The mobile-style sea: one depth/height mix and the water's tint, no wave,
+// glint or panel-sized arithmetic. Its own pipeline, so the expensive path is
+// not merely branched around but absent from the shader's register budget.
+@if(full_hd)
+@fragment
+fn fs_background_cheap(in: Screen) -> @location(0) vec4<f32> {
+    let s = in.ndc * g.view.x;
+    let local = normalize(vec3<f32>(s, 1.0));
+    let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
+    let col = mix(g.deep.rgb, g.water.rgb, smooth01(-0.6, 0.5, dir.y)) * g.tint.rgb;
+    return vec4<f32>(col * SEA_SCALE, 1.0);
+}
 
 @if(full_hd)
 @fragment
@@ -627,6 +650,104 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     var colour = albedo * in.light;
 
     return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 1.0);
+}
+
+
+// ---------------------------------------------------------------------------
+// Terrain, as a geometry clipmap
+// ---------------------------------------------------------------------------
+//
+// The same lattice, tiles and skirts as `terrain.rs`, but the mesh is a fixed
+// block and the vertex shader finds the ground and its colour. Faithful to the
+// open-source clipmap pattern (fixed rings, heightmap in the vertex shader);
+// it replaces the CPU tile builder when `DIVE3D_CLIPMAP` is set.
+
+@if(full_hd)
+struct Shaded {
+    albedo: vec3<f32>,
+    layer: i32,
+    shade: vec4<f32>,
+    glow: vec3<f32>,
+};
+
+// `terrain::shade`: the floor's colour and layer, the fine-detail strengths
+// and the cave's glow, all from where the vertex is.
+@if(full_hd)
+fn terrain_shade(x: f32, z: f32, n: vec3<f32>) -> Shaded {
+    let l = leg(voyage_x(x, z));
+    let base = floor_albedo(l);
+    var layers = array<i32, 8>(12, 12, 13, 12, 10, 13, 12, 13);
+    let flat = 1.0 - smooth01(0.12, 0.40, 1.0 - n.y);
+    let noise = 0.65 + 0.5 * vnoise(x * 14.0, z * 14.0, 9u);
+    let sand = presence(l, SHALLOWS) + 0.5 * presence(l, FOREST) + 0.5 * presence(l, ARCTIC);
+    var ripple = 0.0;
+    if (sand > 0.0) {
+        let r = sin((x * 0.8 + z) * 26.0 + vnoise(x * 3.0, z * 3.0, 5u) * 4.0);
+        ripple = 0.16 * sand * smooth01(0.3, 1.0, r);
+    }
+    let paving = presence(l, ATLANTIS);
+    var pave = 0.0;
+    if (paving > 0.0) {
+        let row = floor(z * 4.0);
+        let joint = min(abs(fract(x * 3.0 + row * 0.5) - 0.5), abs(fract(z * 4.0) - 0.5));
+        pave = 0.45 * paving * smooth01(0.45, 0.5, joint);
+    }
+    let cave = presence(l, CAVE);
+    var glow = vec3<f32>(0.0);
+    if (cave > 0.0) {
+        let veins = 1.0 - smooth01(0.0, 0.04, abs(vnoise(x * 1.4, z * 1.9, 6u) - 0.5));
+        let fine = 1.0 - smooth01(0.0, 0.03, abs(vnoise(x * 4.0, z * 5.0, 7u) - 0.5));
+        let pools = smooth01(0.66, 0.74, vnoise(x * 0.55 + 7.0, z * 0.55, 8u));
+        let k = (veins * 0.9 + fine * 0.5 + pools * 1.4) * cave * flat;
+        glow = vec3<f32>(k, 0.36 * k, 0.07 * k);
+    }
+    return Shaded(base, layers[l.a], vec4<f32>(noise, flat, ripple, pave), glow);
+}
+
+@if(full_hd)
+@vertex
+fn vs_clipmap(
+    @location(0) local: vec2<f32>,
+    @location(1) skirt: f32,
+    @location(2) origin: vec2<f32>,
+    @location(3) spacing: f32,
+) -> Ground {
+    let xz = origin + local * spacing;
+    let x = xz.x;
+    let z = xz.y;
+    // The normal from the same central differences, a spacing either way, as
+    // the tile builder's lattice.
+    let e = spacing;
+    let hx = ground(x + e, z) - ground(x - e, z);
+    let hz = ground(x, z + e) - ground(x, z - e);
+    let n = normalize(vec3<f32>(-hx, 2.0 * e, -hz));
+    var world = vec3<f32>(x, ground(x, z), z);
+    if (skirt > 0.5) {
+        world.y = world.y - 4.0 * spacing;
+    }
+    let baked = terrain_shade(x, z, n);
+    var out: Ground;
+    out.position = project(world);
+    out.fog = fog_at(world);
+    out.uv = world.xz * 1.3;
+    out.layer = baked.layer;
+    out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
+    let detail = exp(-length(world - g.camera.xyz) * 0.25);
+    var scale = mix(1.0, baked.shade.x, detail * baked.shade.y);
+    scale *= 1.0 - baked.shade.z * detail;
+    scale *= 1.0 - baked.shade.w * detail;
+    let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + world.x * 3.0) * sin(g.camera.w * 2.9 + world.z * 2.0);
+    out.albedo = baked.albedo * scale + baked.glow * (flicker * 0.35);
+    if (switched(8u)) {
+        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
+        out.light = g.tint.rgb * (
+            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
+            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
+        );
+    } else {
+        out.light = light_at(world, n);
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -33,8 +33,20 @@ use world::{Frame, Instance, Seabed, Sprite, World};
 /// Edge of the panel-sized sea.
 pub const SIZE: u32 = 1080;
 
-/// The sea is the panel's own pixels; there is no smaller profile.
-const SEA: u32 = SIZE;
+
+/// The size the sea is rendered at before Slint scales it to the panel. The
+/// low-spec references all expose this (URP's Render Scale, Godot's
+/// `scaling_3d/scale`); one draws it whole by default and a benchmark can ask
+/// for less with `SPOTIFY_ROUND_RENDER_SCALE`.
+fn render_size() -> u32 {
+    let scale = std::env::var("SPOTIFY_ROUND_RENDER_SCALE")
+        .or_else(|_| std::env::var("DIVE3D_RENDER_SCALE"))
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .unwrap_or(1.0)
+        .clamp(0.5, 1.0);
+    ((SIZE as f32 * scale).round() as u32).max(2)
+}
 /// Samples per pixel. Multisampling quarters the pixels each of the Pi GPU's
 /// tiles holds, and the tiles' fixed costs outweighed the smoother edges, which
 /// the upscale softens anyway; the one sample keeps the fading models smooth by
@@ -43,7 +55,7 @@ const SAMPLES: u32 = 1;
 const MULTISAMPLED: bool = SAMPLES > 1;
 /// A coarser level of detail is drawn only where its surface strays from the
 /// full model's by less than `LOD_ERROR`, in pixels of the sea, which is
-/// drawn at `SEA` and no finer, so no difference smaller can be drawn; and, unless
+/// drawn at the panel's `SIZE` and no finer, so no difference smaller can be drawn; and, unless
 /// its colours and normals stray by less than `LOD_STRAY` too, where the
 /// triangles it changed are under `LOD_EDGE` pixels, so whatever shading it
 /// dropped was finer than a couple of pixels.
@@ -144,8 +156,22 @@ struct Globals {
     light_colours: [[f32; 4]; 8],
 }
 
+/// The test-only geometry-clipmap terrain: one fixed block mesh drawn as one
+/// instance per visible tile, with the ground and its colour found in the
+/// vertex shader instead of built on the CPU.
+#[cfg(all(test, feature = "full-hd"))]
+struct Clipmap {
+    vertices: wgpu::Buffer,
+    instances: wgpu::Buffer,
+    pipeline: wgpu::RenderPipeline,
+    data: Vec<[f32; 4]>,
+    count: u32,
+}
+
 pub(crate) struct Nautilus {
     background: wgpu::RenderPipeline,
+    /// The mobile-style water, selected by `part::CHEAP_WATER`.
+    background_cheap: wgpu::RenderPipeline,
     terrain_pipeline: wgpu::RenderPipeline,
     /// Solid models: one pipeline per entry of [`MATERIALS`] and grounded
     /// flag.
@@ -175,6 +201,8 @@ pub(crate) struct Nautilus {
     ground_indices: wgpu::Buffer,
     ground_count: u32,
     terrain: Terrain,
+    #[cfg(all(test, feature = "full-hd"))]
+    clipmap: Option<Clipmap>,
     /// The tunnel through the cave's massif, and which of its builds
     /// ([`world::Frame::tunnel_version`]) the buffers hold.
     tunnel: wgpu::Buffer,
@@ -192,6 +220,8 @@ pub(crate) struct Nautilus {
     /// the same texture when multisampling is off.
     #[allow(dead_code)]
     sea_texture: wgpu::Texture,
+    /// The size `sea_texture` and the depth buffer are; `SIZE` is the panel.
+    render: u32,
     #[allow(dead_code)]
     caustic: wgpu::Texture,
     depth: wgpu::TextureView,
@@ -343,6 +373,8 @@ mod part {
     /// The seabed before the opaque models, so the depth test can reject the
     /// models the ground hides.
     pub const TERRAIN_FIRST: u64 = 1 << 27;
+    /// Not a part: the mobile-style water shader instead of the full one.
+    pub const CHEAP_WATER: u64 = 1 << 28;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -867,13 +899,14 @@ impl Nautilus {
         };
         let group = group_with(&sampler);
 
+        let render = render_size();
         let target = |label, format, samples, usage| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d {
-                        width: SEA,
-                        height: SEA,
+                        width: render,
+                        height: render,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -888,8 +921,8 @@ impl Nautilus {
         let sea_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Dive3d sea"),
             size: wgpu::Extent3d {
-                width: SEA,
-                height: SEA,
+                width: render,
+                height: render,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -1070,6 +1103,19 @@ impl Nautilus {
             &[],
             None,
         );
+        let background_cheap = pipeline(
+            "Dive3d water, cheap",
+            "vs_background",
+            "fs_background_cheap",
+            &[],
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            false,
+            true,
+            &[],
+            None,
+        );
         let terrain = pipeline(
             "Dive3d seabed",
             "vs_terrain",
@@ -1083,6 +1129,52 @@ impl Nautilus {
             &[],
             None,
         );
+        #[cfg(all(test, feature = "full-hd"))]
+        let clipmap = if std::env::var_os("DIVE3D_CLIPMAP").is_some() {
+            let block_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32];
+            let block_layout = wgpu::VertexBufferLayout {
+                array_stride: 12,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &block_attributes,
+            };
+            let instance_attributes = wgpu::vertex_attr_array![2 => Float32x2, 3 => Float32];
+            let instance_layout = wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &instance_attributes,
+            };
+            let mesh = terrain::block_mesh();
+            let vertices =
+                buffer("Dive3d clipmap", bytemuck::cast_slice(&mesh), wgpu::BufferUsages::VERTEX);
+            let instances = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Dive3d clipmap instances"),
+                size: (2048 * std::mem::size_of::<[f32; 4]>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let pipeline = pipeline(
+                "Dive3d clipmap",
+                "vs_clipmap",
+                "fs_terrain",
+                &[Some(block_layout), Some(instance_layout)],
+                None,
+                true,
+                nearer,
+                false,
+                true,
+                &[],
+                None,
+            );
+            Some(Clipmap {
+                vertices,
+                instances,
+                pipeline,
+                data: Vec::with_capacity(512),
+                count: 0,
+            })
+        } else {
+            None
+        };
         // Models that are fully there, compiled without the discard so the GPU
         // can skip whatever is hidden before shading it; and those fading in or
         // out, which are blended over what is behind them, back to front.
@@ -1264,7 +1356,10 @@ impl Nautilus {
         );
         Ok(Self {
             background,
+            background_cheap,
             terrain_pipeline: terrain,
+            #[cfg(all(test, feature = "full-hd"))]
+            clipmap,
             models,
             sealed,
             mask,
@@ -1293,6 +1388,7 @@ impl Nautilus {
             sprite_buffer,
             colour: colour_target,
             sea_texture,
+            render,
             caustic,
             depth,
             resolved,
@@ -1367,12 +1463,35 @@ impl Nautilus {
         world::build(&world, &mut self.frame);
         #[cfg(test)]
         let build_done = clock.elapsed();
+        #[cfg(all(test, feature = "full-hd"))]
+        let clipmap_on = self.clipmap.is_some();
+        #[cfg(not(all(test, feature = "full-hd")))]
+        let clipmap_on = false;
         let ground = &self.ground;
-        let tiles = self.terrain.update(&world, |slot, points| {
-            let at = slot as usize * terrain::VERTICES * std::mem::size_of::<terrain::Point>();
-            gpu.queue
-                .write_buffer(ground, at as u64, bytemuck::cast_slice(points));
-        });
+        let tiles = if clipmap_on {
+            Vec::new()
+        } else {
+            self.terrain.update(&world, |slot, points| {
+                let at =
+                    slot as usize * terrain::VERTICES * std::mem::size_of::<terrain::Point>();
+                gpu.queue
+                    .write_buffer(ground, at as u64, bytemuck::cast_slice(points));
+            })
+        };
+        #[cfg(all(test, feature = "full-hd"))]
+        if let Some(clipmap) = &mut self.clipmap {
+            clipmap.data.clear();
+            for (level, i, j) in terrain::visible_blocks(&world) {
+                let ([x, z], s) = terrain::block_origin(level, i, j);
+                clipmap.data.push([x, z, s, 0.0]);
+            }
+            clipmap.count = clipmap.data.len().min(2048) as u32;
+            gpu.queue.write_buffer(
+                &clipmap.instances,
+                0,
+                bytemuck::cast_slice(&clipmap.data[..clipmap.count as usize]),
+            );
+        }
         #[cfg(test)]
         let terrain_done = clock.elapsed();
         let mut uniforms = globals(&world, &self.frame);
@@ -1423,6 +1542,7 @@ impl Nautilus {
             }
         };
         let lods = &self.lods;
+        let sea = self.render as f32;
         let full = self.skips(part::FULL_DETAIL);
         let coarse = self.skips(part::COARSE_DETAIL);
         let level_of = |model: usize, i: &Instance| {
@@ -1431,7 +1551,7 @@ impl Nautilus {
             } else if coarse {
                 lods[model].len() - 1
             } else {
-                level_of(&lods[model], i, &pose)
+                level_of(&lods[model], i, &pose, sea)
             }
         };
         let out = pose.basis[2];
@@ -1739,12 +1859,12 @@ impl Nautilus {
                 let scale = draw_scale();
                 #[cfg(not(test))]
                 let scale = 1.0f32;
-                let wide = SEA as f32 * scale;
+                let wide = this.render as f32 * scale;
                 if scale < 1.0 {
                     pass.set_viewport(0.0, 0.0, wide, wide, 0.0, 1.0);
                 }
                 if this.skips(part::QUARTER) {
-                    let half = SEA as f32 / 2.0;
+                    let half = this.render as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
                 }
 
@@ -1764,11 +1884,26 @@ impl Nautilus {
                         pass.draw_indexed(0..this.ground_count, base, 0..1);
                     }
                 };
+                let draw_clipmap = |pass: &mut wgpu::RenderPass| {
+                    #[cfg(all(test, feature = "full-hd"))]
+                    if let Some(clipmap) = &this.clipmap {
+                        pass.set_pipeline(&clipmap.pipeline);
+                        pass.set_vertex_buffer(0, clipmap.vertices.slice(..));
+                        pass.set_vertex_buffer(1, clipmap.instances.slice(..));
+                        pass.set_index_buffer(
+                            this.ground_indices.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        pass.draw_indexed(0..this.ground_count, 0, 0..clipmap.count);
+                        return;
+                    }
+                    draw_terrain(pass);
+                };
                 if !this.skips(part::TERRAIN) && this.skips(part::TERRAIN_FIRST) {
-                    draw_terrain(&mut pass);
+                    draw_clipmap(&mut pass);
                 }
                 if this.skips(part::QUARTER_MODELS) {
-                    let half = SEA as f32 / 2.0;
+                    let half = this.render as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
                 }
                 if tunnel_drawn && !this.skips(part::MODELS) && !this.skips(part::TUNNEL) {
@@ -1779,6 +1914,8 @@ impl Nautilus {
                 }
                 let models = |pass: &mut wgpu::RenderPass, wanted: Kind| {
                     pass.set_vertex_buffer(0, this.vertices.slice(..));
+                    // The clipmap may have left its own instance buffer bound.
+                    pass.set_vertex_buffer(1, this.instances.slice(..));
                     pass.set_index_buffer(this.indices.slice(..), wgpu::IndexFormat::Uint32);
                     let mut bound = None;
                     for d in this.draws.iter().filter(|d| d.kind == wanted) {
@@ -1817,20 +1954,24 @@ impl Nautilus {
                     models(&mut pass, Kind::Solid);
                 }
                 if this.skips(part::QUARTER_MODELS) {
-                    pass.set_viewport(0.0, 0.0, SEA as f32, SEA as f32, 0.0, 1.0);
+                    pass.set_viewport(0.0, 0.0, this.render as f32, this.render as f32, 0.0, 1.0);
                 }
                 if !this.skips(part::TERRAIN) && !this.skips(part::TERRAIN_FIRST) {
-                    draw_terrain(&mut pass);
+                    draw_clipmap(&mut pass);
                 }
                 // The open water, before the things that fade into it: it
                 // shades only the pixels nothing solid has covered, and the
                 // fading models blend over it.
                 if !this.skips(part::BACKGROUND) {
-                    pass.set_pipeline(&this.background);
+                    pass.set_pipeline(if this.skips(part::CHEAP_WATER) {
+                        &this.background_cheap
+                    } else {
+                        &this.background
+                    });
                     pass.draw(0..3, 0..1);
                 }
                 if this.skips(part::QUARTER_MODELS) {
-                    let half = SEA as f32 / 2.0;
+                    let half = this.render as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
                 }
                 if !this.skips(part::MODELS) && !this.skips(part::FADING) {
@@ -1840,7 +1981,7 @@ impl Nautilus {
                     models(&mut pass, Kind::Glass);
                 }
                 if this.skips(part::QUARTER_MODELS) {
-                    pass.set_viewport(0.0, 0.0, SEA as f32, SEA as f32, 0.0, 1.0);
+                    pass.set_viewport(0.0, 0.0, this.render as f32, this.render as f32, 0.0, 1.0);
                 }
 
                 if !sprites.is_empty() && !this.skips(part::SPRITES) {
@@ -1925,7 +2066,7 @@ impl Nautilus {
         if swiped.is_some() {
             self.voyage = Voyage::default();
         }
-        crate::gpu::read_texture(gpu, &self.sea_texture, SIZE)
+        crate::gpu::read_texture(gpu, &self.sea_texture, self.render)
     }
 
     /// A quick reference frame: a few draws to settle pipelines and the helm,
@@ -1941,7 +2082,7 @@ impl Nautilus {
             self.draw(gpu, at, seed, i % crate::visuals::SLOTS)
                 .expect("a 3D dive frame");
         }
-        crate::gpu::read_texture(gpu, &self.sea_texture, SIZE)
+        crate::gpu::read_texture(gpu, &self.sea_texture, self.render)
     }
 }
 
@@ -2001,7 +2142,7 @@ fn lod_limits() -> (f32, f32) {
 
 /// The coarsest of a model's levels of detail that looks the same as the
 /// full one for this instance, at its distance through the window.
-fn level_of(lods: &[Lod], i: &Instance, pose: &Pose) -> usize {
+fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32) -> usize {
     let d = [
         i.rows[0][3] - pose.pos[0],
         i.rows[1][3] - pose.pos[1],
@@ -2020,7 +2161,7 @@ fn level_of(lods: &[Lod], i: &Instance, pose: &Pose) -> usize {
     if near <= NEAR {
         return 0;
     }
-    let pixels = scale * (SEA as f32 * 0.5) / (world::VIEW * near);
+    let pixels = scale * (sea * 0.5) / (world::VIEW * near);
     let (error_limit, edge_limit) = lod_limits();
     (1..lods.len())
         .rev()
@@ -2219,6 +2360,7 @@ mod tests {
             .collect();
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        let render = scene.render;
         const THUMB: u32 = 360;
         const ACROSS: u32 = 4;
         let rows = (places.len() as u32).div_ceil(ACROSS).max(1);
@@ -2230,7 +2372,7 @@ mod tests {
         );
         for (i, place) in places.iter().enumerate() {
             let pixels = scene.read_back_fast(&gpu, place.seconds(), place.seed);
-            let frame = image::RgbaImage::from_raw(SIZE, SIZE, pixels).expect("a whole frame");
+            let frame = image::RgbaImage::from_raw(render, render, pixels).expect("a whole frame");
             let file = format!("{}.png", place.name);
             frame.save(dir.join(&file)).expect("a screenshot");
             let thumb = image::imageops::resize(
@@ -2261,6 +2403,10 @@ mod tests {
         };
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP") {
+            scene.skip = skip.parse().unwrap_or(0);
+        }
+        let render = scene.render;
         let names = [
             "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
         ];
@@ -2276,8 +2422,14 @@ mod tests {
             for (k, offset) in offsets.iter().enumerate() {
                 let pixels = scene.read_back(&gpu, leg(n as f64) + offset, 0);
                 let path = std::path::Path::new(&dir).join(format!("{n}-{name}-{k}.png"));
-                image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
-                    .expect("a preview image");
+                let image = image::RgbaImage::from_raw(render, render, pixels)
+                    .expect("a whole frame");
+                let image = if render == SIZE {
+                    image
+                } else {
+                    image::imageops::resize(&image, SIZE, SIZE, image::imageops::FilterType::Triangle)
+                };
+                image.save(&path).expect("a preview image");
             }
         }
     }
@@ -2554,6 +2706,7 @@ mod tests {
             ("pass: opaque models", part::MODELS),
             ("pass: glass models", part::GLASS),
             ("pass: fading models", part::FADING),
+            ("pass: cheap water", part::CHEAP_WATER),
             ("pass: fading ice", part::FADING_ICE),
             ("pass: fading props", part::FADING_PROPS),
             ("probe: depth-first draws", part::DEPTH_FIRST_DRAWS),
@@ -2805,6 +2958,7 @@ mod tests {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
         let at = leg(1.0) + 2.0;
+        let render = scene.render;
         let shot = |scene: &mut Nautilus, skip: u64| -> Vec<u8> {
             scene.skip = skip;
             for i in 0..8 {
@@ -2813,10 +2967,10 @@ mod tests {
                     .expect("a frame");
             }
             scene.draw(&gpu, at, 0, 0).expect("a frame");
-            crate::gpu::read_texture(&gpu, &scene.sea_texture, SIZE)
+            crate::gpu::read_texture(&gpu, &scene.sea_texture, render)
         };
         let all = shot(&mut scene, 0);
-        println!("coverage of {} pixels", SIZE * SIZE);
+        println!("coverage of {} pixels", render * render);
         for (name, skip) in [
             ("terrain", part::TERRAIN),
             ("models", part::MODELS),
@@ -2832,7 +2986,7 @@ mod tests {
                 .count();
             println!(
                 "coverage {name:>10}: {differing:>7} px ({:.1}%)",
-                differing as f64 * 100.0 / f64::from(SIZE * SIZE)
+                differing as f64 * 100.0 / f64::from(render * render)
             );
         }
         scene.skip = 0;
@@ -3097,6 +3251,7 @@ mod tests {
         };
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        let render = scene.render;
         let places = [
             (
                 "shallows",
@@ -3133,7 +3288,7 @@ mod tests {
             scene.skip = *skip;
             for (col, (_, place)) in places.iter().enumerate() {
                 let pixels = scene.read_back_fast(&gpu, place.seconds(), place.seed);
-                let frame = image::RgbaImage::from_raw(SIZE, SIZE, pixels).expect("a frame");
+                let frame = image::RgbaImage::from_raw(render, render, pixels).expect("a frame");
                 let thumb = image::imageops::resize(
                     &frame,
                     tile,

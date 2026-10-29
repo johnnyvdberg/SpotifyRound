@@ -319,6 +319,117 @@ fn edges() -> [[usize; SIDE]; 4] {
     ]
 }
 
+#[cfg(all(test, feature = "full-hd"))]
+#[cfg(all(test, feature = "full-hd"))]
+#[cfg(all(test, feature = "full-hd"))]
+/// One tile's vertices in its own block, for a geometry clipmap: `x` and `z`
+/// in tiles of the level's spacing, and a flag for the skirt vertices (which
+/// the vertex shader lowers by `SKIRT`). The grid is the same lattice and in
+/// the same order as [`build`] writes, so [`indices`] fits.
+pub fn block_mesh() -> Vec<[f32; 3]> {
+    let mut out = Vec::with_capacity(VERTICES);
+    for b in 0..SIDE {
+        for a in 0..SIDE {
+            out.push([a as f32, b as f32, 0.0]);
+        }
+    }
+    for edge in edges() {
+        for k in 0..SIDE {
+            let i = edge[k];
+            out.push([(i % SIDE) as f32, (i / SIDE) as f32, 1.0]);
+        }
+    }
+    out
+}
+
+/// A block's world corner and vertex spacing, for the clipmap's instances.
+#[cfg(all(test, feature = "full-hd"))]
+pub fn block_origin(level: usize, i: i32, j: i32) -> ([f32; 2], f32) {
+    let s = SPACING[level];
+    let size = s * QUADS as f32;
+    ([i as f32 * size, j as f32 * size], s)
+}
+
+/// The tiles a clipmap would draw this frame: level and tile index, nearest
+/// first. The same squares, holes and culling as [`Terrain::update`], without
+/// building any geometry.
+#[cfg(all(test, feature = "full-hd"))]
+pub fn visible_blocks(w: &World) -> Vec<(usize, i32, i32)> {
+    let c = w.pose.pos;
+    let tile = |level: usize| SPACING[level] * QUADS as f32;
+    let at = |level: usize| {
+        [
+            (c[0] / tile(level)).floor() as i32,
+            (c[2] / tile(level)).floor() as i32,
+        ]
+    };
+    let top = SPACING.len() - 1;
+    let square = |level: usize| -> [[i32; 2]; 2] {
+        if level == top {
+            at(top).map(|b| [b - REACH, b + REACH])
+        } else {
+            at(level + 1).map(|b| [(b - NEST) * RATIO, (b + NEST + 1) * RATIO - 1])
+        }
+    };
+    let squares: Vec<_> = (0..SPACING.len()).map(square).collect();
+    let wanted = |level: usize, i: i32, j: i32| {
+        let [x, z] = squares[level];
+        let inside = x[0] <= i && i <= x[1] && z[0] <= j && j <= z[1];
+        let finer = level > 0 && {
+            let b = at(level);
+            (i - b[0]).abs() <= NEST && (j - b[1]).abs() <= NEST
+        };
+        inside && !finer
+    };
+    let mut out = Vec::new();
+    for level in 0..SPACING.len() {
+        let size = tile(level);
+        let [x, z] = squares[level];
+        for j in z[0]..=z[1] {
+            for i in x[0]..=x[1] {
+                if !wanted(level, i, j) {
+                    continue;
+                }
+                // The block's own height range, not the seabed's: the same
+                // cull the tile builder gets from its vertices, from nine
+                // samples. The four corners include the skirt, which hangs
+                // `SKIRT` spacings below the ground.
+                let mut low = f32::MAX;
+                let mut high = f32::MIN;
+                for b in 0..3 {
+                    for a in 0..3 {
+                        let x = (i as f32 + a as f32 * 0.5) * size;
+                        let z = (j as f32 + b as f32 * 0.5) * size;
+                        let h = w.seabed.ground(x, z);
+                        low = low.min(h);
+                        high = high.max(h);
+                    }
+                }
+                for (a, b) in [(0, 0), (2, 0), (0, 2), (2, 2)] {
+                    let x = (i as f32 + a as f32 * 0.5) * size;
+                    let z = (j as f32 + b as f32 * 0.5) * size;
+                    low = low.min(w.seabed.ground(x, z) - SKIRT * SPACING[level]);
+                }
+                let middle = [
+                    (i as f32 + 0.5) * size,
+                    (low + high) * 0.5,
+                    (j as f32 + 0.5) * size,
+                ];
+                let rise = (high - low) * 0.5;
+                let radius = (size * size * 0.5 + rise * rise).sqrt();
+                if !w.visible(middle, radius) {
+                    continue;
+                }
+                let d = [middle[0] - c[0], middle[1] - c[1], middle[2] - c[2]];
+                let reach = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - radius;
+                out.push((reach, level, i, j));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.into_iter().map(|(_, l, i, j)| (l, i, j)).collect()
+}
+
 /// The triangles of one tile, the same for every tile: the grid, split
 /// corner to corner as the old rings were, then the skirts.
 pub fn indices() -> Vec<u32> {

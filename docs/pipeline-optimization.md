@@ -638,3 +638,99 @@ shallows** serial, from 10.49 / 12.96 / 13.61 at 1dd12b6. The fade pass is
 2.07 ms (ice 0.91–1.12, props 0.65); the pass's remaining cost is fragments
 (quarter pixels 3.70 ms), the model geometry (~3.2 ms) and the terrain
 (1.03 ms). The only large lever left is resolution (§8).
+
+## 13. The two rewrites: a clipmap and a render-scale sea pass
+
+Two low-spec patterns were built as prototypes against the current renderer,
+which stayed the default, and measured on the same Pi. Both previews were
+compared per leg against it.
+
+### The sea pass: a real render scale
+
+The pass now has a **render target smaller than the panel**: the sea texture
+and its depth buffer are created at `SIZE * scale` and Slint stretches the
+result to the window; the UI, the camera and the projection are unchanged, and
+the model LODs use the smaller target's pixels. `SPOTIFY_ROUND_RENDER_SCALE`
+(or `DIVE3D_RENDER_SCALE`) sets it, 0.5..1.0, default 1.0.
+
+`frame_time` per leg, serial milliseconds:
+
+| scale | px | mean | shallows | forest | abyss |
+|---|---|---|---|---|---|
+| 1.0 | 1080² | 9.66 | 12.74 | 11.17 | 8.29 |
+| 0.9 | 972² | 8.59 | 11.29 | 10.27 | 6.83 |
+| 0.833 | 900² | **7.90** | **10.39** | 9.68 | 6.25 |
+| 0.75 | 810² | 7.05 | 9.22 | 8.99 | 5.42 |
+
+The smaller target is worth more than the old viewport probe (§8) because the
+clear and the store shrink too; the 90 fps budget of 11.1 ms is met at 0.833
+on every leg sampled, with the 60 Hz panel at 1.0 already whole.
+
+The look, against the 1.0 previews (after the UI's bilinear upscale):
+
+| scale | mean diff | worst leg | >2/255 | max |
+|---|---|---|---|---|
+| 0.9 | 0.27/255 | 0.64 | ~1–2% | 174 |
+| 0.833 | 0.30/255 | 0.69 | ~2–3% | 174 |
+| 0.75 | 0.34/255 | 0.78 | 8.3% on shallows | 174 |
+
+The cost is softness, not a changed image: the arctic's fine ripple and the
+shallows' sand are where it shows, as aliasing at the high frequencies; 0.9 is
+the subtle setting, 0.833 the 90 fps one, 0.75 the soft one. It stays opt-in
+because the brief is not to change the look.
+
+### The cheap water
+
+`fs_background_cheap` is a mobile-style sea in its own pipeline: one
+depth/height mix and the tint, no wave/glint and no panel-sized arithmetic.
+It is nearly invisible — mean **0.019/255** against the rich water, worst leg
+0.066 (abyss), max 12 — and worth almost nothing: `frame_time` mean
+**9.606 vs 9.656 ms**, abyss 7.99 vs 8.20. The full water is already cheap
+(0.32 ms of open water, §9); there is no win to take here. It stays as a test
+probe (`part::CHEAP_WATER`).
+
+### The clipmap
+
+The test-only clipmap (`DIVE3D_CLIPMAP=1`, full-HD builds) replaces the CPU
+tile builder: one fixed 17×17 block mesh (with the same skirts and indices)
+is drawn once per visible tile as an instance, the tiles' squares/holes/cull
+are the same as `Terrain::update`, and `vs_clipmap` finds the ground height
+and the floor's colour per vertex. The block cull samples each block's own
+height range (13 ground samples) so it draws the same 65 tiles the tile
+builder's 67 draw; the previews are **pixel-identical** (mean 0.000/255; one
+cave pixel 44, from the normal's finite differences at a seam).
+
+Per-leg `frame_time`, serial milliseconds:
+
+| terrain | mean | shallows | forest | cave | abyss | arctic |
+|---|---|---|---|---|---|---|
+| tiles, CPU-baked | **9.65** | **12.74** | **11.17** | 10.02 | 8.20 | 9.15 |
+| clipmap, VS-computed | 21.50 | 25.38 | 23.93 | 20.42 | 15.91 | 16.53 |
+
+It is **2.2× slower**, and the fair cull did not help (215 blocks → 65 blocks
+changed nothing in the ratio). The reason is the vertex shader: `vs_clipmap`
+calls `ground` five times (a centre and four neighbours for the normal) and
+`terrain_shade` (five value noises) per vertex, plus the rich `light_at`, on
+both passes, where the tile vertex shader reads the same numbers from 72 bytes
+of baked attributes and runs 345 instructions. The V3D has plenty of vertex
+shader power but not enough to recompute five procedural noises per vertex
+twice a frame; the CPU already paid that once per tile and amortises it
+(0.17 ms/frame, 7.8 ms per visit). The CPU saving (the tile build) is smaller
+than the GPU cost it adds.
+
+This is the open-source clipmap's real constraint: the pattern assumes a
+**static heightmap texture** (GPU Gems 2, vterrain, and the mobile heightmap
+terranes all sample one), or a cache of the height and shading. Our seabed is
+procedural and follows the boat, so the height and the shading must be baked
+somewhere; the current tile builder is exactly that cache, and its fixed
+per-tile mesh is the CPU half of the same idea. A texture-baked clipmap (a
+streaming height/shading texture plus the fixed rings) is the version that
+could compete, but it is the tile cache with a different mesh, not a cheaper
+one. The prototype is kept as the test-only `DIVE3D_CLIPMAP`; the tile
+terrain remains the default.
+
+**Where it stands.** Nothing from the rewrites is on by default: the tile
+terrain and the full water are unchanged, and the render scale is an opt-in
+setting (1.0), with 0.9/0.833 the measured look/90 fps trade. The frame is
+**9.65 ms mean** at 1.0 and **7.90 ms** at 0.833. The clipmap's 2.2× loss is
+recorded here so the same ground is not worked twice.
