@@ -786,8 +786,8 @@ fn fish() -> Mesh {
     let mut m = loft(
         -0.75,
         1.0,
-        12,
-        10,
+        8,
+        7,
         |x| {
             let t = (x + 0.75) / 1.75;
             let h = 0.26 * (t * PI).sin().powf(0.7) + 0.02;

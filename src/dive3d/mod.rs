@@ -1604,7 +1604,10 @@ impl Nautilus {
             } else if coarse {
                 lods[model].len() - 1
             } else {
-                level_of(&lods[model], i, &pose, sea)
+                // The kelp is the one model whose coarse LOD holds up at
+                // distance: bias its LOD choice so the far half uses it.
+                let bias = if model == mesh::Model::Kelp as usize { 2.0 } else { 1.0 };
+                level_of(&lods[model], i, &pose, sea, bias)
             }
         };
         let out = pose.basis[2];
@@ -2180,7 +2183,7 @@ fn lod_limits() -> (f32, f32) {
 
 /// The coarsest of a model's levels of detail that looks the same as the
 /// full one for this instance, at its distance through the window.
-fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32) -> usize {
+fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32, bias: f32) -> usize {
     let d = [
         i.rows[0][3] - pose.pos[0],
         i.rows[1][3] - pose.pos[1],
@@ -2205,8 +2208,8 @@ fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32) -> usize {
         .rev()
         .find(|&l| {
             let lod = &lods[l];
-            lod.error * pixels < error_limit
-                && (lod.stray < LOD_STRAY || lod.edge * pixels < edge_limit)
+            lod.error * pixels < error_limit * bias
+                && (lod.stray < LOD_STRAY || lod.edge * pixels < edge_limit * bias)
         })
         .unwrap_or(0)
 }

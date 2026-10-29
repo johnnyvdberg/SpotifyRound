@@ -1213,3 +1213,37 @@ the fragment is cheap enough that the blend is a small share.
 
 Not to do: static chunk merge for frame time, draw batching, multi-draw,
 per-instance culling (already at placement), deeper LOD alone (LOD2 is 2.4%).
+
+## 19. Fish and kelp geometry: the vertex count falls, the frame barely moves
+
+The audit's cleanest geometry win: the fish loft was 12 segments × 10 rings
+(268 verts each, 35–55% of a heavy frame's vertices) and all LOD0. The fish is
+now an 8×7 loft (~140 verts, −45%), and the kelp gets a 2× LOD bias so its
+coarse 30-vertex LOD is chosen for the far half.
+
+- **Visual gate**: [branch-fish-kelp.png](branch-fish-kelp.png) — mean
+  **0.016/255**, max 199 at the nearest fish outline. The school reads the
+  same; the kelp's far blades are the subtle part.
+- **Vertex count**: a mid frame drops from ~150k model verts (the audit's
+  forest number) to **78k** in the same measurement method — about −47%.
+- **Pi**: **8.686 ms mean** vs 8.723 before; the fish-heavy legs are
+  shallows 10.18 vs 10.42 and forest 10.05 vs 10.26 (−0.2 each); the arctic
+  went 6.84 → 7.26 (run noise/ice re-bake). The mean is within the ±0.5 drift.
+- **Desktop**: mean 2.91 before; the branch's own frame_time is not separable
+  from the desktop's thermal drift, so the Pi fish legs are the signal.
+
+So the vertex count halved without the 0.5–0.8 ms the vertex-cost model
+predicted: the fish legs only lose ~0.2 ms. The geometry was not the frame's
+limiter at this count — the fill/other passes are — but the leaner mesh is
+what makes the model-count growth cheaper, and it is kept.
+
+![fish-kelp: current / branch / amplified difference](branch-fish-kelp.png)
+
+Next: the **flat/static vertex shader** for the small-instance tail is the
+only remaining model change that scales with count. It must be gated on the
+shaderdb: plain `vs_model` is 503 instructions / 51 temps / 2 threads, and
+the surface pipeline proves 275/32/4 is reachable when the fragment stops
+reading albedo/normal/local/floor. If the flat variant lands above 32 temps
+the occupancy does not move and it is not worth the look change. Then the
+packing/attribute subsets, the CPU/culling work, and the UI notifier/KMS
+overlay; resolution remains the largest single lever.
