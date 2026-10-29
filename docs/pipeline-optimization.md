@@ -1100,8 +1100,12 @@ blended path, because its coverage is per pixel.
 
 - **Desktop visual gate**: [branch-fade-opaque.png](branch-fade-opaque.png) —
   mean **0.41/255**, max 201 at the deepest fades; the image shows current /
-  branch / amplified difference. The mean is small, the max is a real local
-  look change at the props that are nearly gone.
+  branch / amplified difference. An audit caught that the first cut also put
+  the coverage in the sea texture's alpha: the solid pipelines write alpha,
+  and Slint composites that texture over the UI, so a c-faded prop would have
+  shown the UI background through it. The shader now returns alpha 1.0 when
+  `FADE_OPAQUE`; the previews' alpha is 255 in both the control and the branch.
+  The 0.41/201 is therefore the colour-to-fog itself, not the alpha.
 - **Desktop frame**: 2.91 vs 2.96 (−0.05).
 - **Pi**: **9.99 ms mean** against 10.20 for the same tree before the branch
   (facet run); the forest leg is the win — **10.27 vs 11.73** — while the cave
@@ -1112,8 +1116,12 @@ The branch image:
 
 ![fade-opaque: current / opaque / amplified difference](branch-fade-opaque.png)
 
-The branch is kept; the deepest fades can be hybridised later (keep the blend
-below ~0.5 coverage) if the 201/255 local change reads too strongly.
+The branch is kept. The deepest fades can still be hybridised (keep the blend
+below ~0.5 coverage) if the 201/255 local colour change reads too strongly.
+
+One thing not to build: V3DV exposes `VK_EXT_multi_draw` but not
+`multiDrawIndirect`, so wgpu's indirect multi-draw is unavailable; the model
+draw cost is ~0.1 ms anyway. Skip the multi-draw/indirect path.
 
 ### Next branches, in order
 

@@ -1028,7 +1028,9 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     if (FADE_OPAQUE) {
         shaded = mix(shaded, in.fog.rgb, 1.0 - coverage);
     }
-    return vec4<f32>(shaded * SEA_SCALE, coverage);
+    // The sea texture is opaquely composited by Slint; the fade lives in the
+    // colour, never in the alpha.
+    return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FADE_OPAQUE));
 }
 
 // Translucent models — jellyfish bells and tentacles — add light, brightest at
@@ -1164,7 +1166,9 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     if (FADE_OPAQUE) {
         shaded = mix(shaded, in.fog.rgb, 1.0 - coverage);
     }
-    return vec4<f32>(shaded * SEA_SCALE, coverage);
+    // The sea texture is opaquely composited by Slint; the fade lives in the
+    // colour, never in the alpha.
+    return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FADE_OPAQUE));
 }
 
 @if(full_hd)
