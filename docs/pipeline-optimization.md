@@ -1655,3 +1655,23 @@ them, with no per-frame cull over a 40% surplus. That is a chunked cache, not
 a wider one; it is the next attempt.
 
 Not kept; image `branch-cache-exact.png`.
+
+## 34. Reusable `Mark` slots
+
+The UI's per-frame GPU-handoff path allocated a fresh
+`Arc<Mutex<Option<Duration>>>` for every `Graphics::mark` (and `wait`), and the
+UI thread's `wait_for` polls the device every 250 us. The `Mark` now borrows a
+slot from a pool on `Graphics` and returns it on `Drop`; the 250 us poll is
+unchanged because it exists to avoid blocking the UI thread on a submission it
+may need to make itself.
+
+- Visual: **0.0000/255, max 0** — identical.
+- Pi: the mark itself is microseconds; the app-level win is the post/notifier
+  work below, not this pool.
+
+![mark pool: current / pooled / difference](branch-mark-pool.png)
+
+The UI-side items with real milliseconds are still the three per-frame
+`invoke_from_event_loop` posts and the notifier's extra window-clear pass (a
+kiosk-only lever), plus the ~1-1.5 ms Slint composite that would need a KMS
+overlay plane. Those and the chunked static cache are the remaining branches.

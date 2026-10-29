@@ -29,11 +29,25 @@ pub struct Graphics {
     /// Set by [`Graphics::profiled`] so [`Graphics::submit`] knows to close the
     /// profiler frame after the command buffer has actually been submitted.
     profile_pending: Arc<AtomicBool>,
+    /// The `Mark` slots, reused instead of allocating an `Arc` per frame.
+    marks: Arc<Mutex<Vec<Arc<Mutex<Option<Duration>>>>>>,
 }
 
 /// A point in the queue, made by [`Graphics::mark`]: set to the time the GPU
 /// took once everything submitted before it is done.
-pub struct Mark(Arc<std::sync::Mutex<Option<Duration>>>);
+pub struct Mark {
+    slot: Arc<std::sync::Mutex<Option<Duration>>>,
+    pool: Arc<Mutex<Vec<Arc<Mutex<Option<Duration>>>>>>,
+}
+
+impl Drop for Mark {
+    fn drop(&mut self) {
+        self.pool
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(self.slot.clone());
+    }
+}
 
 impl Graphics {
     /// Submit work recorded on a thread other than the UI thread.
@@ -85,14 +99,25 @@ impl Graphics {
     /// A marker after everything submitted so far, to wait for later with
     /// [`Graphics::wait_for`].
     pub fn mark(&self) -> Mark {
-        let mark = Mark(Arc::new(std::sync::Mutex::new(None)));
-        let report = mark.0.clone();
+        let slot = self
+            .marks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop()
+            .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(None)));
+        *slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let report = slot.clone();
         self.when_done(move |took| {
             *report
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(took)
         });
-        mark
+        Mark {
+            slot,
+            pool: self.marks.clone(),
+        }
     }
 
     /// Wait until the GPU has finished everything submitted so far.
@@ -108,7 +133,7 @@ impl Graphics {
         let until = Instant::now() + timeout;
         loop {
             let took = *mark
-                .0
+                .slot
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if took.is_some() || Instant::now() >= until {
@@ -281,6 +306,7 @@ fn open(adapter: &wgpu::Adapter, label: &str, headless: bool) -> Result<Graphics
         adapter: adapter.get_info().name,
         profiler,
         profile_pending: Arc::new(AtomicBool::new(false)),
+        marks: Arc::new(Mutex::new(Vec::new())),
     })
 }
 
