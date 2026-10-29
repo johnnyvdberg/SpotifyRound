@@ -1827,3 +1827,32 @@ This is one field meaning change (the unused `stretch.yzw`) + one shader
 branch set. Next round: implement for the polar trail first (the smallest,
 1 call), verify pixel-identical with the placer per-frame, then cave/ruins/
 trench, then the full cache measurement on the Pi.
+
+## 40. Polar trail: the exact shader closed form
+
+`bubble(index, stream, t, life)` is already a pure function of its arguments:
+
+```
+cycle = t/life + index/stream
+cohort = floor(cycle)
+age = (cycle - cohort) * life
+fade = smooth(0, 0.08*life, age) * smooth(life, 0.86*life, age)
+```
+
+The trail's `q` is the shed point: `was = px - 0.04 - 0.24*age`, the y is
+`top - 0.25 - hash*0.45 + 0.06*sin(...) + 0.015*age`, and the size grows with
+`0.005 + 0.0015*b`. Given the sprite's anchor (the shed point at age 0), the
+shader can evaluate the same closed form from `g.camera.w` with
+`stretch.yzw = (index/stream, life, 0)` and a BUBBLE branch in `vs_sprite`:
+`cycle`, `cohort`, `age`, `fade`, then offset the clip position and scale the
+colour by `fade` exactly as the CPU does.
+
+The anchor for each bubble is then camera-independent (the penguin's line),
+which is what lets the polar placer join the cell cache once the same branch
+exists for its four companions. The one subtlety is that the CPU's `q`
+depends on `shed.age` in its x and y; both terms are linear in age, so the
+shader reproduces them from the anchor and the computed age.
+
+Next: implement this branch, the `f.sprite` phase parameters, and the polar
+anchor; verify pixel-identical with the placer still per-frame; then the
+cave/ruins/trench sprites and the full cell-cache measurement.
