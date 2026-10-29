@@ -420,7 +420,10 @@ comes out — borderline once the UI is added. At 810² the worst is 10.5 serial
 about 9.1 GPU, which leaves the ~1.5 ms the UI may need. 720² is comfortable.
 The cost is softness: 900² is a 17% linear drop from the panel, 810² is 25%,
 720² is 33%; only the sea is scaled, the UI stays native. The design had no
-smaller profile on purpose, so this is a product decision.
+smaller profile on purpose, so this is a product decision. It is also the
+standard mobile lever: Unity's URP exposes it as **Render Scale** with a
+bilinear or FSR upscaler, scaling the 3D render but not the UI
+([URP Asset](https://docs.unity3d.com/Packages/com.unity.render-pipelines.universal@15.0/manual/universalrp-asset.html)).
 
 **The other levers, for margin or to avoid scaling.** None is free; the
 measured ones are small:
@@ -449,3 +452,131 @@ flight give it 22 ms).
 full panel is out of reach without giving up per-pixel point lighting or
 terrain detail. The practical path is **810², `TARGET_FPS` from the panel, a
 90 Hz mode**, and then 720² if the composite eats the margin.
+
+## 9. Every effect, measured in one build
+
+`effect_cost` (new, ignored test) turns every draw-level effect off one at a time
+from **one binary** and prints one table. Two masks:
+
+- `DIVE3D_SKIP` (pass bits, now a `u64`): the old bits keep their values, and
+  `MASK`, `FADING`, `SUN_SHAFTS`, `BEAMS` and `TUNNEL` are new.
+- `DIVE3D_SKIP_EFFECTS` (test only): one bit per model group and per sprite
+  kind. Models are filtered before staging, so their sorting and upload go too;
+  sprite kinds are filtered before the upload; passes are skipped at draw time.
+  The model groups are by mesh — `Cone` is forest trunks, stalactites, crinoid
+  arms and the volcano together; `Box` is wreck castles, ruin blocks and penguin
+  wings; `Sphere` is coral, pearls, eyes, ports and lanterns — so a shared mesh
+  cannot be split per feature.
+
+The test measures 63 variants over all eight legs, round-robin on paired
+frames with a settling frame, and reports ms, delta, share, and how many
+instances or sprites it saw. 92 s on the Pi; 24 s on the desktop, where the
+1.5 ms frame makes most rows noise.
+
+**Pi 5, kiosk frozen, everything 10.83 ms** (top of the table; rows below
+±0.05 ms are noise):
+
+| effect left out | Δ ms | share | what it was |
+|---|---|---|---|
+| the whole sea pass | −8.81 | 81% | every draw |
+| quarter pixels | −4.36 | 40% | all fragments and depth |
+| opaque models (with fading) | −3.94 | 36% | `MODELS` |
+| model geometry | −3.39 | 31% | `DRAW_CALLS`: every model draw, no instances |
+| **fading models** | **−2.62** | **24%** | `FADING`: blended after the water |
+| quarter model pixels | −1.85 | 17% | models into a quarter of the pixels, rest full |
+| planes | −1.38 | 13% | sea surface + ice sheet |
+| terrain | −1.21 | 11% | |
+| plain textures | −1.06 | 10% | |
+| coarsest detail | −0.90 | 8% | |
+| no noise | −0.60 | 6% | |
+| trilinear only | −0.49 | 5% | |
+| all cheap lights | −0.36 | 3% | |
+| fish | −0.35 | 3% | 7 750 instances |
+| sprites | −0.33 | 3% | |
+| open water | −0.32 | 3% | |
+| motes | −0.21 | 2% | 36 265 sprites |
+| shafts + beams | −0.20 | 2% | |
+| rocks 0–2 | 0.15–0.19 | each | ~2 100 each |
+| point lights | −0.16 | 1% | |
+| cave tunnel | −0.08 | 1% | |
+| glass | −0.06 | 1% | |
+
+**The fading models are the surprise.** They cost 2.62 ms — twice the opaque
+models' 1.32 ms — and the old part bits could not see them: `MODELS` removed
+both, so the blend pass hid inside the 3.7 ms "models". They are the ice and
+the props inside a biome's fade band, drawn after the water, back to front,
+with a `discard`; the window looks across several legs, so some props are
+always mid-fade. That is the largest single effect after the pass, and the
+first place to look after resolution for 90 fps.
+
+Everything else is small and overlaps: the planes row (1.38) covers both the
+solid sea surface and the fading ice sheet, so it straddles the opaque and the
+fading rows; fish, sprites, water, motes and shafts are a few tenths each; the
+per-model rows outside the fish, the three rocks and the planes are ≤0.05 ms on
+the Pi. The shared-mesh groups
+cannot be split, and the per-model deltas are net of the water and terrain
+uncovered behind them, so they are not additive.
+
+## 10. Bubbles: no pops, and a wake that follows the submarine
+
+Four emitters shed `BUBBLE` sprites: the diver's helmet exhaust, the penguins'
+flippers, the sister submarine's screw, and the Nautilus' hull. A frame-matching
+diagnostic (`debug_bubble_jumps`, ignored) found three real pops and one
+velocity flaw:
+
+- **Diver helmet**: `rise = fract(t*0.35 + b/4 + feet[0])` with constant alpha.
+  Each of four bubbles teleported 0.35 units from the top of its column back to
+  the exhaust every 2.86 s, one every 0.71 s: 39 bright jumps in six seconds,
+  worst 0.364 units at full brightness.
+- **Penguin trail**: `back = (b + fract(t*4.8))*0.05 + 0.04` shared one phase,
+  so the whole five-bubble trail snapped 0.25 units forward at 4.8 Hz.
+- **Hull and wake**: aged and faded, but hard-culled by `visible()` at the view
+  cone: 15 bright edge appearances in six seconds in the 200 s encounter.
+- **Wake**: `screw(t) + aft(t)*water_speed*age`, a straight line locked to the
+  current heading and rescaled around the current screw every frame — no lag
+  under acceleration, no curvature in a turn.
+
+The fix adds one lifecycle helper (`world.rs`): `cycle = t/life + k/N`,
+`age = frac(cycle)*life`, `cohort = floor(cycle)`, and
+`fade = smooth(0, 0.08 life, age) · smooth(life, 0.86 life, age)`; the cohort's
+hash changes only where the fade is zero. Diver and penguin bubbles are now
+left where they were shed and rise there. The hull bubbles keep
+`start(t) − v·age`.
+
+The wake is read from her own track, sampled from the existing analytic
+`at(τ)` path — no stored history, so previews and seeks are deterministic:
+
+```
+q = screw(t) + S(t−age) − S(t) + spread·hash + (0.045 + 0.02·churn)·age·ŷ
+churn = smooth(0.02, 0.25, water_speed)
+spacing along the track = |Ṡ| · life / 28
+```
+
+Spacing and length grow with speed, the trail curves through a turn, and with
+no way on the bubbles collapse to the screw and rise. A `churn` term widens and
+spreads them with speed. All four emitters now fade over the last 10% of the
+view cone (`window_fade`) instead of being culled, and the swipe rush uses a
+fixed 220-bubble stream with the count only fading its tail in and out, so a
+change in speed no longer re-phases the field.
+
+`bubbles_never_pop` runs six seconds of the diver, the penguin and the 200 s
+encounter at 60 fps and asserts no bubble above 0.15 brightness jumps more than
+0.03 units: **0** now, where the diver had 0.364-unit pops. All eight leg
+previews are byte-identical between two renders, and the before/after mean
+pixel difference is ≤0.01/255. The frame is unchanged: 10.49 ms mean, 12.96 ms
+forest.
+
+## 11. Lighting: already the low-spec reference
+
+The references are in
+[pipeline-comparison.md §6](pipeline-comparison.md#6-low-spec-lighting-the-references-already-do-what-this-renderer-does):
+URP keeps its main light per pixel and its additional lights per vertex; Godot
+4.4 forces vertex shading on mobile; Filament has no per-vertex path and spends
+precision instead; PowerVR's rule is to move work to where there are fewer
+instances. The Pi build (`full-hd`) already computes the whole light at the
+vertex — sun, sky, caustics, searchlight and four point lights — and its
+fragment shader has no `light_at` at all (53–165 instructions). So there is no
+lighting solution to import: the remaining fragment cost is texture sampling,
+and the remaining vertex cost is the 503-instruction `vs_model`, which a
+runtime switch cannot reduce below the register cliff. The `!full_hd` build
+still lights twice (vertex and fragment); it is not the kiosk.

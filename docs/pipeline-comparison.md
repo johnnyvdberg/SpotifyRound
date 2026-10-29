@@ -193,3 +193,58 @@ And two places we are simply behind:
    single indirect draw is the pattern bevy_terrain uses. It is not worth it at
    29–86 tiles today, and vange-rs's raymarch trades vertex work for pixel work,
    which is the wrong trade on a GPU that is already fill-bound.
+
+## 6. Low-spec lighting: the references already do what this renderer does
+
+The nine engines above all keep lighting on the GPU, but they split it between
+the vertex and pixel stages very differently, and the mobile/low-end setting is
+consistent across the two engines that expose one:
+
+| engine | main/directional light | additional or local lights |
+|---|---|---|
+| **Unity URP** | **per pixel** (or None) | **Per Vertex**, Per Pixel or Disabled, with a per-object limit ([URP Asset](https://docs.unity3d.com/Packages/com.unity.render-pipelines.universal@15.0/manual/universalrp-asset.html); [`shadeAdditionalLightsPerVertex`](https://docs.unity3d.com/Packages/com.unity.render-pipelines.universal@15.0/api/UnityEngine.Rendering.Universal.LightData.html)) |
+| **Godot 4.4+** | per vertex with "force vertex shading", pixel shadows from the first directional light only | **per vertex**, a simplified light model "like 3.x"; omni/spot shadows are not available on vertex-shaded materials ([PR #83360](https://github.com/godotengine/godot/pull/83360)) |
+| **Filament** | per pixel, clustered | per pixel, up to 256; no per-vertex mode at all — mobile is won with `mediump`/fp16 and approximations ([Filament](https://google.github.io/filament/Filament.md.html)) |
+| **PowerVR** | — | the Golden Rules' answer: "reduce the overall number of calculations by moving them earlier in the pipeline where there are fewer instances to process" ([PDF](http://cdn.imgtec.com/sdk-documentation/PowerVR%20Performance%20Recommendations.The%20Golden%20Rules.pdf)) |
+
+So there are two low-end strategies in the wild:
+
+- **Per-vertex lighting** (URP's additional lights, Godot's forced vertex
+  shading, the PowerVR rule): keep the light count off the pixels. The cost is
+  that shadows and specular falloff disappear between vertices.
+- **Per-pixel with reduced precision** (Filament): keep the lighting per pixel,
+  but run it in `mediump` and simplify the BRDF. This needs fp16, which the
+  Pi's V3D only partly has, and it is the strategy that has already been ruled
+  out here (WGSL has no precision qualifiers).
+
+**Nautilus is already on the first strategy, and further than either
+reference.** The `full-hd` build — the one the kiosk runs — computes the whole
+light at the vertex in `vs_model`: sun, sky, caustics, the searchlight and the
+four point lights (503–543 instructions), and the fragment shader only samples
+the surface texture and adds the material effects (53–165 instructions, no
+`light_at` at all). URP still evaluates its main light per pixel; Godot keeps
+pixel shadows for the first directional light. The seabed is vertex-lit and
+baked the same way. So there is no low-spec lighting solution left to import
+for the kiosk's path.
+
+Two things follow:
+
+1. The remaining per-pixel cost is **texture sampling and material effects**,
+   not lighting. `plain textures` saves 1.57 ms (§7.5 of
+   [pipeline-optimization.md](pipeline-optimization.md)), while the whole
+   `fs_model` is already 53–165 instructions. A different lighting model would
+   not touch it.
+2. The remaining *vertex* cost is the 503-instruction `vs_model` (plus the
+   215-instruction binning variant). Our shader is three to ten times the
+   50–150-instruction vertex shaders those engines use for vertex lighting,
+   because it carries five lights and the caustic fetch. Godot's simplified
+   model exists for exactly that. Our `CHEAP_MODELS` switch is a runtime
+   uniform branch, so it does not reduce the register pressure that keeps
+   `vs_model` at two threads; a compile-time simplified variant would be the
+   only way to test whether it can reach the 32-register cliff and four
+   threads. Untested.
+
+The `!full_hd` variant (the half-resolution build, not the kiosk) still calls
+`light_at` in the fragment *and* multiplies in the vertex light, so that path
+does apply every light twice. It is not what the Pi runs, but it is a latent
+inconsistency if that build is ever brought back.
