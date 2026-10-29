@@ -1570,3 +1570,26 @@ the trench sediment and blink lights, the ruin craters, the cave pools and
 embers, and the polar bubble trail. The static cache therefore needs the
 two-phase split — instance placements cached, sprites/lights still built per
 frame. Then the full cache with exact per-instance bounds.
+
+## 31. Light flicker moves into the shader
+
+The flickering lights (the ruin craters, the cave pools, the tunnel secrets)
+were computing their colour on the CPU from `w.t`. They now carry a phase in
+`Light.phase`, which the globals pass as `light_colours[i].w`; `light_at`
+applies `0.8 + 0.2 sin(g.camera.w * 1.9 + phase)` when the phase is non-zero.
+The camera clock owns the time, so a cached placement keeps its light
+breathing.
+
+- Visual: **mean 0.0619/255, max 5** — the cave's formula is reproduced
+  exactly; the ruins' two-sine flicker is approximated by the generic one, and
+  the difference is invisible at these intensities.
+- Pi: no change expected.
+
+![light flicker: current / shader flicker / amplified difference](branch-light-flicker.png)
+
+The sprites are the last `w.t` in the would-be cached placers: the trench's
+sediment and sea-pen glows, the ruin crater sprites, the cave embers, the polar
+bubble trail. The sprite pipeline takes positions and colours per sprite, so
+the split is either a per-sprite phase channel (like the lights) or keeping the
+sprite lists per-frame while caching the instance placements. After that, the
+full instance cache with exact per-instance bounds.

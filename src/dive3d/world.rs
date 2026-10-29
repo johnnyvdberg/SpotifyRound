@@ -96,6 +96,8 @@ pub struct Light {
     pub pos: [f32; 3],
     pub range: f32,
     pub colour: [f32; 3],
+    /// The shader's flicker phase; zero means steady.
+    pub phase: f32,
 }
 
 /// Animations, as the vertex shader knows them.
@@ -888,7 +890,23 @@ impl Frame {
     }
 
     fn light(&mut self, pos: [f32; 3], range: f32, colour: [f32; 3]) {
-        self.lights.push(Light { pos, range, colour });
+        self.lights.push(Light {
+            pos,
+            range,
+            colour,
+            phase: 0.0,
+        });
+    }
+
+    /// A light whose brightness flickers: the shader does the flicker from the
+    /// camera clock and this phase, so a cached placement keeps breathing.
+    fn light_flicker(&mut self, pos: [f32; 3], range: f32, colour: [f32; 3], phase: f32) {
+        self.lights.push(Light {
+            pos,
+            range,
+            colour,
+            phase,
+        });
     }
 }
 
@@ -2068,7 +2086,7 @@ fn ruins(w: &World, f: &mut Frame) {
         let crater = [x, y + h * 0.97, z];
         f.sprite(crater, 2.2, [0.9 * flicker, 0.30 * flicker, 0.06], GLOW);
         f.sprite(crater, 0.6, [1.0, 0.55, 0.15], GLOW);
-        f.light(crater, 10.0, [0.7 * flicker, 0.24 * flicker, 0.07]);
+        f.light_flicker(crater, 10.0, [0.7, 0.24, 0.07], ix as f32 + 0.5);
         // A thread of lava down one flank.
         for k in 0..10 {
             let t = k as f32 / 10.0;
@@ -2168,8 +2186,7 @@ fn cave(w: &World, f: &mut Frame) {
             continue;
         }
         let y = w.ground(x, z);
-        let flicker = 0.8 + 0.2 * (w.t * 1.9 + ix as f32 * 1.7).sin();
-        f.light([x, y + 0.15, z], 1.6, [1.4 * flicker, 0.42 * flicker, 0.09]);
+        f.light_flicker([x, y + 0.15, z], 1.6, [1.4, 0.42, 0.09], ix as f32 * 1.7);
         for k in 0..4 {
             let rise = (w.t * 0.12 + hash(ix * 4 + k, iz, 122)).fract();
             let p = [
@@ -2582,7 +2599,7 @@ fn passages(w: &World, f: &mut Frame) {
             Secret::Ember => {
                 let flicker = 0.8 + 0.2 * (t * 2.3 + o.x).sin() * (t * 3.7).sin();
                 f.sprite(p.centre(0.85), 0.6, tint(0.5 * flicker), GLOW);
-                f.light(p.centre(0.45), 0.55, tint(0.8 * flicker));
+                f.light_flicker(p.centre(0.45), 0.55, tint(1.0), 0.0);
                 // Embers drifting out on the warm water, rising as they go.
                 for k in 0..12 {
                     let along = (t * 0.06 + h(k, 801)).fract();

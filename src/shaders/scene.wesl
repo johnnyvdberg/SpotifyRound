@@ -341,7 +341,13 @@ fn light_at(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
             continue;
         }
         let fall = 1.0 / (1.0 + d2 / (r * r)) * (1.0 - smooth01(r * 2.0, r * 4.0, sqrt(d2)));
-        light += g.light_colours[i].rgb * fall * (max(dot(n, lv * inverseSqrt(max(d2, 1e-6))), 0.0) * 0.8 + 0.2);
+        // A non-zero phase is a flickering light; the shader owns the time so
+        // a cached placement keeps breathing.
+        var flicker = 1.0;
+        if (g.light_colours[i].w > 0.0001) {
+            flicker = 0.8 + 0.2 * sin(g.camera.w * 1.9 + g.light_colours[i].w);
+        }
+        light += g.light_colours[i].rgb * fall * flicker * (max(dot(n, lv * inverseSqrt(max(d2, 1e-6))), 0.0) * 0.8 + 0.2);
     }
     return light;
 }

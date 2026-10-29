@@ -2344,7 +2344,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     };
     for (i, l) in lights.iter().take(8).enumerate() {
         g.lights[i] = [l.pos[0], l.pos[1], l.pos[2], l.range];
-        g.light_colours[i] = [l.colour[0], l.colour[1], l.colour[2], 0.0];
+        g.light_colours[i] = [l.colour[0], l.colour[1], l.colour[2], l.phase];
     }
     g
 }
