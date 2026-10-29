@@ -2228,3 +2228,41 @@ audit's bigger numbers are: **instance/vertex packing** (0.1-0.3), the **UI**
 
 The chunk work is archived in §49/§51/§52/§54 with the cost/position verdict;
 it is not on the critical path.
+
+## 56. Packing: the exact field layout and the safe first slice
+
+The two formats the audit priced:
+
+**Vertex** (44 B): `pos [f32;3]`, `normal [f32;3]`, `colour [f32;3]`, `aux
+[f32;2]`. The V3D supports f16 vertex attributes; 22 B (pos f16x3 + normal
+i8x3 (normalized) + colour u8x3 + aux u8x2, padded to 24) is visually free
+at these distances and cuts the model vertex fetch ~45%. The shader reads
+f16/i8/u8 decoded exactly as today's f32s; the risk is only in the mesh
+upload path (one conversion in `Library::build`), and the gate is the
+previews' pixel diff (the quantisation shows first on the fish/kelp
+silhouettes, where §19 already accepted a 0.016 mean).
+
+**Instance** (128 B, 8 x vec4): `m0/m1/m2` (12 floats), `colour` (4),
+`extra` (4: material/grounded/fade/floor_y), `anim` (4), `surface` (4:
+layer/repeats/carried/-), `floor` (4). The static decor and the dynamic
+instances all carry the same record because the model pipeline reads all of
+it. The packable parts are the `extra` (material u8, grounded bit, fade u8,
+floor_y f16) and the `colour` (u8x4), with `m0/m1/m2` the irreducible f32s.
+That is 64 B without touching the matrices; the audit's 64-80 B is the
+realistic floor.
+
+**Per-pipeline attribute subsets** are the orthogonal win and the safer one:
+the surface/ice/glass pipelines' fragments do not read `floor`/`local`/
+`local_normal`, so their pipelines can declare fewer instance attributes and
+let the vertex fetch less. The shaderdb is not needed for this (it is an
+attribute-count change), but the wgpu pipeline layout must match the shader
+module's expectations; the gate is again the previews.
+
+First slice: the **per-pipeline instance attribute subsets** for the surface
+pipeline (the one whose fragment already drops albedo/normal/local/floor in
+the shaderdb, 275/4/32), because it is the smallest diff and the proof that
+the pipeline table can carry different instance layouts. Then the vertex
+format (the bigger win, 0.1-0.2 ms Pi).
+
+No code this round; the tree stays at the §47 state. Packing is the next
+branch, with the previews as its gate and the Pi as its measure.
