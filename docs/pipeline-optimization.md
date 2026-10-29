@@ -1396,3 +1396,32 @@ polar swim phases. The rocks' seaweed sway already runs through `animate`
 (`anim::SWAY`), so it is cache-ready. Once the flicker is a `g.camera.w` term
 in the fragment (or the light) and the polar phases are in `anim`, the static
 cache can be retried against this pixel gate; then chunk streaming.
+
+## 24. The cache subset fails on the cull, not just the animation
+
+With the shell hinge in the shader, a subset cache was tried on the two placers
+that no longer read `w.t`: the gardens and the wrecks. The matrices are static,
+so the animation freeze is gone — but the visual gate still shows
+**0.26/255, max 102**, and the Pi is **8.793 ms** vs 8.706 (+0.09; scene
+building 1.497 vs 1.457).
+
+Two separate causes:
+
+1. **The cull and fade are camera-time, not placement-time.** `w.visible` and
+   `f.fade` choose which instances and how strongly at the moment the placer
+   runs; caching the lists freezes that at the cache camera. The visible sets
+   moved: 1463 → 1470 instances (shallows), 192 → 174 (abyss), 380 → 396
+   (arctic), which is the 0.26 diff at the edges.
+2. **The subset is too small to pay for the cache's own copy and re-ground.**
+   The gardens + wrecks are ~0.02 ms M1; the rebuild's `ground` and the 128-byte
+   copy per instance offset it at these counts.
+
+So the cache design needs one more change before it can be retried: cache the
+**placements** (the cells, positions, models, colours) and still run the
+**per-frame cull/fade** on them — the audit's "iterate only visible chunks,
+cull, patch extra[2], and copy". Caching the already-culled lists cannot be
+pixel-equivalent. The animation work is still a prerequisite for the full set;
+the shell hinge is done, the rocks' sway is already in the shader, and the
+trench light / wreck-ruin flicker / polar phases remain.
+
+The branch is **not kept**; the image is `branch-cache-subset.png`.
