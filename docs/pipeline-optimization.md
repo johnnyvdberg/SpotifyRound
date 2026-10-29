@@ -155,3 +155,41 @@ needs the Pi.
 2. `fs_background` (266 instructions, ~13% of pixels) — worth ~0.2 ms if cut.
 3. Delete the unused fallback pipelines, or give the remaining materials their
    own slot.
+
+## 5. Recovered tree, and one experiment that failed
+
+`world.rs` was lost to a scripting mistake and rebuilt from the harness session
+transcripts: 49 `edit` calls replayed, two test functions extracted from
+payloads whose anchors no longer matched, two duplicate blocks removed. 4770
+lines, 108 tests, all passing once the diver test's missed `rem_euclid(BIOMES)`
+was restored.
+
+Visual check against the pre-loss frames:
+
+| leg | mean Δ |
+|---|---|
+| trench, wrecks, atlantis, abyss | 0.000 |
+| arctic | 0.090 |
+| forest | 0.438 |
+| shallows | 5.454 |
+| cave | 2.844 |
+
+The three that differ are the kelp-heavy legs and the cave: the tuning payloads
+that rewrote `kelp_here`/`kelp` and the lava glow did not replay.
+
+**The cofactor hoist failed its measurement.** Replacing three crosses per
+vertex with three prefetched instance attributes took `vs_model` from 503 to 502
+instructions but from **51 to 60 temps** and 222 to 230 uniforms. It was
+reverted. Verified afterwards that the whole table matches the last good state:
+
+| shader | instructions | temps | threads |
+|---|---|---|---|
+| `vs_terrain` | 345 | 46 | 2 |
+| `vs_model` | 503 / 543 | 51 / 55 | 2 |
+| `vs_model` binning | 215 | 32 | 4 |
+| `fs_model`, rock grounded | 77 | 23 | 4 |
+| `fs_model`, lava grounded | 164 | 28 | 4 |
+| `fs_background` | 266 | 20 | 4 |
+
+Three of the four throughput changes survived measurement; the fourth did not
+and is gone.
