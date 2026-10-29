@@ -838,6 +838,18 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
         let y = p.y * cos(a) - p.z * sin(a);
         p.z = p.y * sin(a) + p.z * cos(a);
         p.y = y;
+    } else if (kind == 9u) {
+        // A narwhal's whole body: a slow bob and yaw around the pod's
+        // formation, with the fluke's beat. The placement used to bake the
+        // first two from w.t.
+        let clock = g.camera.w;
+        p.y += 0.03 * sin(clock * 0.3 + anim.y);
+        let yaw = 0.05 * sin(clock * 0.2 + anim.y);
+        let x = p.x * cos(yaw) + p.z * sin(yaw);
+        p.z = -p.x * sin(yaw) + p.z * cos(yaw);
+        p.x = x;
+        let back = (1.0 - aux.x) * 0.5;
+        p.y += anim.z * back * back * sin(t - back * 4.4);
     }
     return p;
 }

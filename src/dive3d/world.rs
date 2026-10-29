@@ -111,6 +111,8 @@ pub mod anim {
     pub const WAVE: f32 = 7.0;
     /// A flipper beating about the forward axis: the polar penguins.
     pub const FLAP: f32 = 8.0;
+    /// A narwhal's body: a slow bob and yaw, with the fluke's beat.
+    pub const NARWHAL: f32 = 9.0;
 }
 
 /// Materials, as the fragment shader knows them.
@@ -3635,19 +3637,21 @@ fn polar(w: &World, f: &mut Frame) {
             let size = 0.42 * (0.85 + 0.3 * hash(k, d + 8, 370));
             let p = [
                 x + 0.6 - fd * 0.55,
-                top - 0.35 - hash(k, d + 12, 370) * 0.5 + 0.03 * (w.t * 0.3 + phase).sin(),
+                top - 0.35 - hash(k, d + 12, 370) * 0.5,
                 pod + side(k, 370) * fd * 0.3,
             ];
             if !w.visible(p, size) {
                 continue;
             }
             let beat = 0.07 / (0.5 * size) * TAU;
+            // The bob and yaw are the shader's (anim::NARWHAL), with the
+            // fluke's beat; the placement keeps only the pod's formation.
             f.put(
                 Model::Narwhal,
-                place(p, 0.05 * (w.t * 0.2 + phase).sin(), 0.0, 0.0, [size; 3]),
+                place(p, 0.0, 0.0, 0.0, [size; 3]),
                 [0.30, 0.32, 0.33],
             )
-            .moving(anim::FLUKE, phase, 0.04, beat);
+            .moving(anim::NARWHAL, phase, 0.04, beat);
         }
     }
 }

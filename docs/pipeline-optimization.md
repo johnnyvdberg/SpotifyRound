@@ -1550,3 +1550,23 @@ Static-cache path: shell hinge, rocks sway, crinoid wave, penguin flap done;
 remaining are the narwhals' body motion, the sprite/light split (trench
 sediment/blink, ruin craters, cave pools/embers, polar bubbles), then the full
 cache with exact bounds.
+
+## 30. Polar narwhals: the body bob and yaw move to the shader
+
+The narwhals baked two placement-time motions from `w.t`: the body bob
+(`0.03 sin(w.t*0.3 + phase)`) and the yaw (`0.05 sin(w.t*0.2 + phase)`),
+while the fluke beat already ran through `anim::FLUKE`. The body motion is
+now `anim::NARWHAL` (kind 9), a shader bob + yaw from `g.camera.w` around the
+pod's formation, with the fluke's beat folded into the same kind.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: no change expected.
+
+![narwhal body: current / shader body / difference](branch-narwhal-body.png)
+
+All the instance-side placement-time `w.t` is now shader-driven. The only
+remaining `w.t` in the would-be cache set is in the **sprite/light lists**:
+the trench sediment and blink lights, the ruin craters, the cave pools and
+embers, and the polar bubble trail. The static cache therefore needs the
+two-phase split — instance placements cached, sprites/lights still built per
+frame. Then the full cache with exact per-instance bounds.
