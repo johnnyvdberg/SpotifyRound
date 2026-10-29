@@ -1938,3 +1938,23 @@ distinguished by `stretch.w > 0.5`, so both live in the same kind.
 
 Only the trench's **MOTE** sediment remains before all four placers are
 camera-static; then they join the §37 cell cache and the full set is measured.
+
+## 45. Trench sediment: the MOTE kind is shader-side, and the animation set is complete
+
+The sediment spilling from the trench lips was the last animated sprite kind.
+The anchor is the lip and the shader owns the fall: `stretch = (n, h, fall)`,
+with `age = fract(g.camera.w*0.07 + n/18 + h*7)`, the spreading drift, the
+drop, and `smooth01(0,0.1,age)*(1-age)` as the fade.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: no change expected.
+
+![sediment mote: current / shader fall / difference](branch-sediment-mote.png)
+
+**All four sprite kinds (MOTE, GLOW, EMBER, BUBBLE) are now shader-timed.**
+Every instance-side and sprite-side placement `w.t` in the four remaining
+static placers is gone, so the trench, ruins, cave and polar are camera-static
+and can join the §37 cell cache. That, and the full-set Pi measurement, is the
+next branch. The cache's own cost is the cell-boundary rebuild plus the copy;
+the four placers are the audit's ~0.3 ms M1 / ~0.8 Pi of static placement,
+which is the first measurement where the cache should actually pay.

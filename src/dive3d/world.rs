@@ -881,6 +881,24 @@ impl Frame {
         });
     }
 
+    /// Sediment spilling from a lip: the shader owns the fall and the fade,
+    /// so the anchor is the lip and the placer stays cacheable.
+    fn mote_sprite(
+        &mut self,
+        p: [f32; 3],
+        size: f32,
+        colour: [f32; 3],
+        n: f32,
+        h: f32,
+        fall: f32,
+    ) {
+        self.sprites.push(Sprite {
+            place: [p[0], p[1], p[2], size],
+            tint: [colour[0], colour[1], colour[2], MOTE],
+            stretch: [1.0, n, h, fall],
+        });
+    }
+
     /// A glow whose pulse is the shader's: `mode` 0 is a sea-pen blink
     /// (`max(sin(rate*t + phase), 0)`), 1 the crater flicker
     /// (`0.85 + 0.15 sin(2.3t + phase) sin(1.3t)`).
@@ -1866,16 +1884,17 @@ fn trench(w: &World, f: &mut Frame) {
             // Now and then sediment spills from the lip and drifts down.
             if hash(ix, k, 526) < 0.3 {
                 let fall = 1.4 + 0.6 * hash(ix, k, 527);
+                // The fall and fade are the shader's (mote_sprite); the anchor
+                // is the lip at the particle's n.
+                let a = 0.45 * f.fade;
                 for n in 0..18 {
-                    let age = (t * 0.07 + n as f32 / 18.0 + h * 7.0).fract();
-                    let spread = 0.03 + 0.25 * age;
+                    let nf = n as f32;
                     let q = [
-                        x + spread * (n as f32 * 2.4 + t * 0.3).sin(),
-                        p[1] - 0.05 - age * fall,
-                        p[2] + out * (0.15 + 0.35 * age) + spread * 0.5 * (n as f32 * 1.7).cos(),
+                        x,
+                        p[1] - 0.05,
+                        p[2] + out * 0.15,
                     ];
-                    let a = smooth(0.0, 0.1, age) * (1.0 - age) * 0.45 * f.fade;
-                    f.sprite(q, 0.03 + 0.09 * age, [0.55 * a, 0.50 * a, 0.40 * a], MOTE);
+                    f.mote_sprite(q, 0.03, [0.55 * a, 0.50 * a, 0.40 * a], nf, h, fall);
                 }
             }
         }

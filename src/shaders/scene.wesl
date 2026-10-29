@@ -1286,6 +1286,14 @@ fn vs_sprite(
                 // A sea pen's blink: a half-wave gated by the biome's share.
                 bubble_fade = max(sin(t * stretch.z + stretch.y), 0.0);
             }
+        } else if (kind == 0u && stretch.z > 0.0) {
+            // MOTE: sediment falling from a lip, fading as it goes.
+            let age = fract(g.camera.w * 0.07 + stretch.y / 18.0 + stretch.z * 7.0);
+            let spread = 0.03 + 0.25 * age;
+            p.x += spread * sin(stretch.y * 2.4 + g.camera.w * 0.3);
+            p.y -= age * stretch.w;
+            p.z += 0.35 * age + spread * 0.5 * cos(stretch.y * 1.7);
+            bubble_fade = smooth01(0.0, 0.1, age) * (1.0 - age);
         } else if (kind == 3u) {
             // EMBER: rise from the floor, fade out as it rises.
             let rise = fract(g.camera.w * stretch.z + stretch.y);
