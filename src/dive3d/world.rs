@@ -107,6 +107,8 @@ pub mod anim {
     pub const PULSE: f32 = 5.0;
     /// A tridacna shell hinged at its base, opening and closing.
     pub const SHELL: f32 = 6.0;
+    /// An arm waving about the vertical: the trench crinoids.
+    pub const WAVE: f32 = 7.0;
 }
 
 /// Materials, as the fragment shader knows them.
@@ -1657,13 +1659,16 @@ fn trench(w: &World, f: &mut Frame) {
                 )
                 .grounded();
                 for k in 0..5 {
-                    let a = k as f32 / 5.0 * TAU + yaw + 0.15 * (t * 0.6 + k as f32).sin();
+                    // The wave is the shader's (anim::WAVE); the placement
+                    // keeps only the arm's fixed bearing.
+                    let a = k as f32 / 5.0 * TAU + yaw;
                     let tip = [
                         top[0] + a.cos() * 0.07,
                         top[1] + 0.05,
                         top[2] + a.sin() * 0.07,
                     ];
-                    f.put(Model::Cone, between(top, tip, 0.008), hue);
+                    f.put(Model::Cone, between(top, tip, 0.008), hue)
+                        .moving(anim::WAVE, k as f32, 0.15, 0.6);
                 }
             }
         }

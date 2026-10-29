@@ -1505,3 +1505,25 @@ The rocks now have no placement-time `w.t` (the fans were already
 `anim::SWAY`), so they can join the static cache together with the gardens and
 wrecks. The next moves are the trench light (`t = w.t`), the ruins' flicker
 and rise, and the polar phases; then the full static cache with exact bounds.
+
+## 28. Trench crinoids: the arm wave moves to the shader
+
+The trench's crinoid arms baked a wave into their bearing:
+`k/5 * TAU + yaw + 0.15 sin(t*0.6 + k)`. The bearing stays; the wave is now
+`anim::WAVE` (kind 7), a shader rotation about the vertical driven by the
+camera clock.
+
+- Visual: **mean 0.0000/255, max 5** — indistinguishable.
+- Pi: no change expected; this is another prerequisite for the cache.
+
+![crinoid wave: current / shader wave / amplified difference](branch-crinoid.png)
+
+The trench still has two `w.t` uses that are not instance matrices: the
+sediment sprites and the deep blink lights. Those are the CPU sprite/light
+lists — the static cache will have to keep running the sprites/lights per
+frame while caching only the instance placements (the two-phase split). The
+same applies to the ruins' craters and the cave's pools/embers.
+
+Static-cache path: shell hinge, rocks sway, crinoid wave done; remaining are
+the sprite/light split for the trench/ruins/cave and the polar phases; then
+the full instance cache with exact bounds.

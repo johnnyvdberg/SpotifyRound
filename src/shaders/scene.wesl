@@ -823,6 +823,15 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
         let y = p.y * cos(a) - p.z * sin(a);
         p.z = p.y * sin(a) + p.z * cos(a);
         p.y = y;
+    } else if (kind == 7u) {
+        // An arm waving about the vertical: the trench crinoids, which used
+        // to bake the wave into the placement's bearing.
+        let a = anim.z * sin(t);
+        let c = cos(a);
+        let s = sin(a);
+        let x = p.x * c + p.z * s;
+        p.z = -p.x * s + p.z * c;
+        p.x = x;
     }
     return p;
 }
