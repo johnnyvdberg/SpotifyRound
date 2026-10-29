@@ -79,6 +79,9 @@ override FADING: bool = true;
 // instead of blending them over what is behind. Same depth writes as any
 // solid model, so the deferred/water pass sees them as a surface.
 override FADE_OPAQUE: bool = false;
+// The flat/static variant: per-object light has been baked into the instance
+// colour on the CPU, so the vertex stage skips the cofactor normal and the
+// whole light path. For the small, distant instances only.
 // Whether this models pipeline draws things that stand on the seabed. Only
 // those need the ground under their foot, so the swimmers' pipelines leave it
 // out.

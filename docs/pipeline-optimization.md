@@ -1247,3 +1247,61 @@ reading albedo/normal/local/floor. If the flat variant lands above 32 temps
 the occupancy does not move and it is not worth the look change. Then the
 packing/attribute subsets, the CPU/culling work, and the UI notifier/KMS
 overlay; resolution remains the largest single lever.
+
+## 20. The flat-VS gate fails, and the honest cap
+
+### The occupancy cliff: 46 temps, 2 threads
+
+The audit's condition for the flat/static vertex shader was explicit: only
+worth it if the V3D compiler puts it at 32 temps / 4 threads. A prototype
+`FLAT` variant was built — the cofactor normal replaced by one instance
+normal, the light path removed, the per-object colour in place of `light_at` —
+and compiled through the shaderdb (Mesa v3dv, V3D 7.1):
+
+| pipeline | stage | instr | threads | temps | uniforms |
+|---|---|---:|---:|---:|---:|
+| `Dive3d models` plain | VS | 503 | **2** | 51 | 222 |
+| `Dive3d flat models` | VS | **278** | **2** | **46** | 143 |
+| `Dive3d flat models` binning | VS-bin | 215 | 4 | 32 | 93 |
+| `Dive3d flat models` | FS | 78 | 4 | 19 | 20 |
+
+The instruction count drops 45%, but the render VS stays at **46 temps / 2
+threads** — above the 32-temp cliff. The render pass still pays the 2-thread
+occupancy, so the predicted saving collapses to the instruction count alone
+(~0.1–0.2 ms), which is not worth flat shading on the small props. The
+prototype and its pipeline were reverted; the shaderdb rows are in
+`target/shaderdb-flat-raw.txt`.
+
+This is the same cliff the surface pipeline crossed (275/4/32) and the plain
+pipeline does not (503/2/51): the light path holds the temps, and removing the
+cofactor light is not enough. A future flat variant would need the light and
+the local/floor outputs removed together (a distinct fragment too), not just a
+vertex branch.
+
+### The honest cap and the cached stats
+
+Two contained CPU changes were kept:
+
+- **The 24,576-instance cap now truncates the sorted list before the sort and
+  staging** (`order.truncate`), instead of dropping the overflow at the stage.
+  At today's 200–2,100 instances nothing changes; at count growth the work
+  above the cap is no longer paid for and then thrown away. This is the
+  difference between a cap that bounds the frame and one that only bounds the
+  draw.
+- **`DIVE3D_STATS` is read once** through a `OnceLock` rather than on every
+  produced draw.
+
+Desktop visual A/B: `branch-cpu-lean.png`, **mean 0.0000/255, max 0** — the
+frame is identical. Pi: **8.687 ms** vs 8.686 before; nothing to measure at
+current counts, which is the expected result for the cap and the env cache.
+
+![cpu-lean: current / branch / amplified difference](branch-cpu-lean.png)
+
+### Next
+
+The remaining count-scaling work is the CPU build (the `cells` scratch, the
+grounding pass folded into placement, the per-instance LOD scale cached), the
+instance/vertex packing with per-pipeline attribute subsets, and the UI
+(merge the three event-loop posts, reuse the `mark`, notifier off unless
+measuring, KMS overlay for the composite). Resolution remains the largest
+single lever for the frame.

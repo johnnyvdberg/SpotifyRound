@@ -1665,6 +1665,9 @@ impl Nautilus {
         }
         #[cfg(test)]
         let order_done = clock.elapsed();
+        // The cap is honest: drop the overflow before sorting and staging, so
+        // the work above it is not paid for and then thrown away.
+        order.truncate(MAX_INSTANCES);
         order.sort_unstable_by(|a, b| {
             let kind = a.kind.cmp(&b.kind);
             if kind != std::cmp::Ordering::Equal {
@@ -1819,7 +1822,7 @@ impl Nautilus {
 
         #[cfg(test)]
         let upload_done = clock.elapsed();
-        if std::env::var_os("DIVE3D_STATS").is_some() {
+        if stats() {
             let tris: u64 = draws
                 .iter()
                 .map(|d| u64::from(lods[d.model][d.lod].count) * u64::from(d.count))
@@ -2344,6 +2347,12 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         g.light_colours[i] = [l.colour[0], l.colour[1], l.colour[2], 0.0];
     }
     g
+}
+
+/// `DIVE3D_STATS`, read once instead of on every produced draw.
+fn stats() -> bool {
+    static STATS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STATS.get_or_init(|| std::env::var_os("DIVE3D_STATS").is_some())
 }
 
 /// Render a single frame synchronously, for the design previews.
