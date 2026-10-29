@@ -1271,19 +1271,27 @@ fn vs_sprite(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
     );
     let corner = corners[index];
+    let kind = u32(tint.w + 0.5);
     // Bubbles age from the camera clock: the anchor is the shed point, and
     // the shader reproduces the trail's offset/fade so the placer can cache.
     var p = place.xyz;
     var bubble_fade = 1.0;
     if (stretch.z > 0.0) {
-        let cycle = g.camera.w / stretch.z + stretch.y;
-        let age = (cycle - floor(cycle)) * stretch.z;
-        bubble_fade = smooth01(0.0, 0.08 * stretch.z, age)
-            * smooth01(stretch.z, 0.86 * stretch.z, age);
-        let was0 = p.x;
-        let was = was0 - 0.24 * age;
-        p.x = was;
-        p.y += 0.015 * age + 0.06 * (sin(was * 3.5 + stretch.w) - sin(was0 * 3.5 + stretch.w));
+        if (kind == 3u) {
+            // EMBER: rise from the floor, fade out as it rises.
+            let rise = fract(g.camera.w * stretch.z + stretch.y);
+            p.y += rise * stretch.w;
+            bubble_fade = (1.0 - rise) * smooth01(0.0, 0.1, rise);
+        } else {
+            let cycle = g.camera.w / stretch.z + stretch.y;
+            let age = (cycle - floor(cycle)) * stretch.z;
+            bubble_fade = smooth01(0.0, 0.08 * stretch.z, age)
+                * smooth01(stretch.z, 0.86 * stretch.z, age);
+            let was0 = p.x;
+            let was = was0 - 0.24 * age;
+            p.x = was;
+            p.y += 0.015 * age + 0.06 * (sin(was * 3.5 + stretch.w) - sin(was0 * 3.5 + stretch.w));
+        }
     }
     var clip = project(p);
     // Grown in view space, so the sprite always faces the window.
@@ -1296,7 +1304,6 @@ fn vs_sprite(
     let d = length(place.xyz - g.camera.xyz);
     // Snow and the like show where the searchlight catches them.
     var lit = 1.0;
-    let kind = u32(tint.w + 0.5);
     if (kind == 0u) {
         let to = place.xyz - lamp_origin();
         let cone = smooth01(0.80, 0.95, dot(normalize(to), g.lamp.xyz));

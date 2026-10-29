@@ -1886,3 +1886,23 @@ sprite kinds (MOTE/GLOW/EMBER) remain: the same `stretch.yzw` channel, one
 shader branch each.
 
 ![polar bubble shader: current / shader-aged / difference](docs/branch-polar-bubble-shader.png)
+
+## 42. Cave embers: the EMBER kind is shader-side, pixel-identical
+
+The cave's embers were the second sprite kind moved. The placer now emits an
+anchor at the pool floor with `stretch.yzw = (phase, rate 0.12, rise 1.0)`;
+`vs_sprite` computes `rise = fract(g.camera.w * rate + phase)`, lifts the
+position by `rise * rise_height`, and fades the colour by
+`(1 - rise) * smooth01(0, 0.1, rise)`. The first shader attempt failed
+validation because `kind` was read before its declaration; the declaration
+moved ahead of the animation block.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: no change expected.
+
+![cave ember shader: current / shader-risen / difference](branch-cave-ember-shader.png)
+
+Remaining sprite kinds: the trench's MOTE sediment and the GLOW pulses (sea
+pens, ruins craters, cave pools). Both fit the same `stretch.yzw` channel; the
+GLOW needs only a brightness term, the MOTE the drift/lifetime. After those,
+the four placers join the §37 cell cache and the full set gets measured.

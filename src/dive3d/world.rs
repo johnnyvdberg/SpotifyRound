@@ -881,6 +881,24 @@ impl Frame {
         });
     }
 
+    /// An ember anchored at its source: the shader owns the rise and the fade
+    /// from the camera clock, so the placer emits a camera-static anchor.
+    fn ember_sprite(
+        &mut self,
+        p: [f32; 3],
+        size: f32,
+        colour: [f32; 3],
+        phase: f32,
+        rate: f32,
+        rise: f32,
+    ) {
+        self.sprites.push(Sprite {
+            place: [p[0], p[1], p[2], size],
+            tint: [colour[0], colour[1], colour[2], EMBER],
+            stretch: [1.0, phase, rate, rise],
+        });
+    }
+
     /// A bubble anchored where it was shed: the shader owns its age from the
     /// camera clock (`phase`/`life`), so the placer emits a camera-static
     /// anchor and the placer can enter the cache.
@@ -2278,14 +2296,14 @@ fn cave(w: &World, f: &mut Frame) {
         let y = w.ground(x, z);
         f.light_flicker([x, y + 0.15, z], 1.6, [1.4, 0.42, 0.09], ix as f32 * 1.7);
         for k in 0..4 {
-            let rise = (w.t * 0.12 + hash(ix * 4 + k, iz, 122)).fract();
+            // The ember's rise/fade is the shader's (ember_sprite); the
+            // anchor is the pool floor.
             let p = [
                 x + (hash(ix, iz * 4 + k, 123) - 0.5) * 0.6,
-                y + rise * 1.0,
+                y,
                 z + (hash(ix + k, iz, 124) - 0.5) * 0.6,
             ];
-            let glow = (1.0 - rise) * smooth(0.0, 0.1, rise);
-            f.sprite(p, 0.012, [1.0 * glow, 0.45 * glow, 0.1 * glow], EMBER);
+            f.ember_sprite(p, 0.012, [1.0, 0.45, 0.1], hash(ix * 4 + k, iz, 122), 0.12, 1.0);
         }
     }
 }
