@@ -528,7 +528,7 @@ impl Seabed {
         let cave = smooth(TUNNEL_SHARE - 0.35, TUNNEL_SHARE, b.weight(CAVE) as f32);
         if cave > 0.0 {
             let floor = self.tunnel_floor(x);
-            let arch = floor + 0.25 * TUNNEL + 0.85 * TUNNEL * 0.91 - 0.35;
+            let arch = floor + 0.25 * TUNNEL + 0.85 * TUNNEL * 0.91 - 0.25;
             ceiling += (arch.min(ceiling) - ceiling) * cave;
         }
         ceiling
@@ -3609,6 +3609,16 @@ fn submarines(w: &World, f: &mut Frame) {
         [x, y, corridor(x) + out]
     };
     let mut p = at(t, true);
+    // She keeps clear of the ground under her and over the next few
+    // seconds' way, climbing for a shelf before she reaches it rather than
+    // being lifted when she does.
+    let clear = [2.0, 4.0, 6.0]
+        .iter()
+        .fold(w.ground(p[0], p[2]), |high, &ahead| {
+            let q = at(t + ahead, false);
+            high.max(w.ground(q[0], q[2]))
+        });
+    p[1] = p[1].max(clear + 0.36);
     // She answers her planes slowly: her depth follows the height she
     // wants on a critically damped spring, so a ridge or a shelf never
     // jerks her up or down.
@@ -3617,7 +3627,9 @@ fn submarines(w: &World, f: &mut Frame) {
             let dt = t - last;
             let omega = 0.6;
             let accel = omega * omega * (p[1] - y) - 2.0 * omega * rate;
-            let rate = (rate + accel * dt).clamp(-0.12, 0.12);
+            // Faster up when a shelf rises under her, her tanks blown.
+            let blown = 0.12 + 0.13 * smooth(0.2, 0.6, clear + 0.36 - y);
+            let rate = (rate + accel * dt).clamp(-0.12, blown);
             (y + rate * dt, rate)
         }
         _ => (p[1], 0.0),
@@ -3775,7 +3787,8 @@ fn submarines(w: &World, f: &mut Frame) {
         let dir = turned([dip.cos() * sweep.cos(), dip.sin(), -dip.cos() * sweep.sin()]);
         let reach = 3.2;
         let run = [dir[0] * reach, dir[1] * reach, dir[2] * reach];
-        let k = 0.8 * lamp;
+        // Twice what it shows: the sea is stored at half its brightness.
+        let k = 1.6 * lamp;
         let middle = add(o, [run[0] * 0.5, run[1] * 0.5, run[2] * 0.5]);
         if w.visible(middle, reach * 0.5 + 0.5) {
             f.beams.push(Sprite {
@@ -3880,7 +3893,7 @@ fn shafts(w: &World, f: &mut Frame) {
         };
         let breathe = 0.45 + 0.55 * (w.t * (0.25 + 0.2 * h) + h * 70.0).sin().max(0.0);
         let k =
-            bright.min(1.0) * breathe * smooth(far, far - 2.0, depth) * 0.65 / (0.5 + width * 6.0);
+            bright.min(1.0) * breathe * smooth(far, far - 2.0, depth) * 1.3 / (0.5 + width * 6.0);
         f.shafts.push(Sprite {
             place: [start[0], start[1], start[2], width],
             tint: [0.30 * k, 0.75 * k, 0.70 * k, 0.0],

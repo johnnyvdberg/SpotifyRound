@@ -97,8 +97,8 @@ const BRISK: f32 = 3.0;
 pub const LOOK: f32 = 0.55;
 const CRAB_RATE: f32 = 0.008;
 /// How far the boat heels to port along the trench's rim, so the window
-/// looks down over its edge.
-pub const PEER: f32 = 0.2;
+/// looks down over its edge: a few degrees, all a heavy hull will give.
+pub const PEER: f32 = 0.07;
 
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
@@ -333,18 +333,18 @@ impl Helm {
             // more than its planes can make in time, it blows its tanks;
             // never to climb into a roof it must stay under.
             let blow = smooth(0.4, 1.2, rise.min(roof) - self.height.value);
-            let pace = (
-                CLIMB * (1.0 + (BLOWN - 1.0) * blow),
-                LIFT * (1.0 + blow),
-            );
+            let pace = (CLIMB * (1.0 + (BLOWN - 1.0) * blow), LIFT * (1.0 + blow));
+            let before = self.height.value;
             for _ in 0..steps as i32 {
                 self.height
                     .heave_to(target, self.drift, room, pace, voyage_dt / steps);
             }
+            // Caught by a hard limit, the boat goes as the limit goes, the
+            // ground under it or the vault over it, rather than stopping dead.
             let held = self.height.value.clamp(lowest, highest);
             if held != self.height.value {
                 self.height.value = held;
-                self.height.rate = 0.0;
+                self.height.rate = ((held - before) / voyage_dt).clamp(-pace.0, pace.0);
             }
 
             // Nose up into a climb, down into a dive, with the rest on the

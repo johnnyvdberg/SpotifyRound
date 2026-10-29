@@ -372,7 +372,8 @@ fn the_hull_moves_like_a_heavy_boat() {
         assert!(s.climb < 1.2, "{name}: climbing at {:.2} m/s", s.climb);
         assert!(s.heave < 0.3, "{name}: heaving at {:.2} m/s²", s.heave);
         assert!(
-            s.pitch < 6.5 && s.roll < 2.5,
+            // Banking under 2.5°, and the heel over the trench on top.
+            s.pitch < 6.5 && s.roll < 2.5 + super::PEER.to_degrees(),
             "{name}: pitched or rolled too far"
         );
         assert!(
