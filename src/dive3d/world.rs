@@ -881,6 +881,25 @@ impl Frame {
         });
     }
 
+    /// A glow whose pulse is the shader's: `mode` 0 is a sea-pen blink
+    /// (`max(sin(rate*t + phase), 0)`), 1 the crater flicker
+    /// (`0.85 + 0.15 sin(2.3t + phase) sin(1.3t)`).
+    fn glow_sprite(
+        &mut self,
+        p: [f32; 3],
+        size: f32,
+        colour: [f32; 3],
+        phase: f32,
+        rate: f32,
+        mode: f32,
+    ) {
+        self.sprites.push(Sprite {
+            place: [p[0], p[1], p[2], size],
+            tint: [colour[0], colour[1], colour[2], GLOW],
+            stretch: [1.0, phase, rate, mode],
+        });
+    }
+
     /// An ember anchored at its source: the shader owns the rise and the fade
     /// from the camera clock, so the placer emits a camera-static anchor.
     fn ember_sprite(
@@ -2190,10 +2209,9 @@ fn ruins(w: &World, f: &mut Frame) {
             place([x, y, z], 0.0, 0.0, 0.0, [4.5, h, 4.5]),
             [0.05, 0.04, 0.04],
         );
-        let flicker = 0.85 + 0.15 * (w.t * 2.3 + ix as f32).sin() * (w.t * 1.3).sin();
         let crater = [x, y + h * 0.97, z];
-        f.sprite(crater, 2.2, [0.9 * flicker, 0.30 * flicker, 0.06], GLOW);
-        f.sprite(crater, 0.6, [1.0, 0.55, 0.15], GLOW);
+        f.glow_sprite(crater, 2.2, [0.9, 0.30, 0.06], ix as f32, 2.3, 1.0);
+        f.glow_sprite(crater, 0.6, [1.0, 0.55, 0.15], ix as f32, 2.3, 1.0);
         f.light_flicker(crater, 10.0, [0.7, 0.24, 0.07], ix as f32 + 0.5);
         // A thread of lava down one flank.
         for k in 0..10 {
@@ -2203,7 +2221,7 @@ fn ruins(w: &World, f: &mut Frame) {
                 y + h * (0.95 - t * 0.9),
                 z - 0.5,
             ];
-            f.sprite(p, 0.18, [0.7 * flicker, 0.20, 0.04], GLOW);
+            f.glow_sprite(p, 0.18, [0.7, 0.20, 0.04], ix as f32, 2.3, 1.0);
         }
     }
 }

@@ -1906,3 +1906,19 @@ Remaining sprite kinds: the trench's MOTE sediment and the GLOW pulses (sea
 pens, ruins craters, cave pools). Both fit the same `stretch.yzw` channel; the
 GLOW needs only a brightness term, the MOTE the drift/lifetime. After those,
 the four placers join the §37 cell cache and the full set gets measured.
+
+## 43. Ruin craters: the GLOW kind is shader-side, pixel-identical
+
+The crater glows and the lava thread emitted `flicker`-scaled colours from
+`w.t`. They now emit anchors with `stretch.yzw = (phase, 2.3, mode)`; the
+GLOW branch computes `0.85 + 0.15 sin(2.3t + phase) sin(1.3t)` and scales the
+colour. The static second crater sprite (`0.6`, `[1,0.55,0.15]`) also carries
+the same mode so it tracks the flicker as before.
+
+- Visual: **mean 0.0000/255, max 1** — pixel-identical (one rounding unit).
+- Pi: no change expected.
+
+![crater glow: current / shader flicker / difference](branch-crater-glow-shader.png)
+
+Remaining: the sea pens' blink (GLOW mode 0) and the trench's MOTE sediment.
+Then the four placers join the cell cache and the full set gets measured.
