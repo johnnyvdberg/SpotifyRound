@@ -2014,3 +2014,21 @@ larger static set can be cached for the voyage rather than one cell), and the
 packing/UI/resolution items.
 
 ![nine-placer cache: seven / nine / difference](branch-nine-placer-cache.png)
+
+## 48. Cache cell size: 0.5 is neutral; keep the finer 0.2
+
+The cell step trades rebuild frequency against cull staleness. At 0.5 units
+the static frame is rebuilt every ~36 frames instead of ~14, and the preview
+stays pixel-identical — the four legs' cameras land inside the cells. But the
+Pi is neutral: **8.485 ms vs 8.489** at 0.2, with 1431 vs 1463 instances
+(the coarser cell's cull drops a few more at the edges) and scene building
+1.639 vs 1.582 (the run's drift).
+
+So the rebuild's ~0.8 Pi spread over 36 vs 14 frames is not a measurable
+difference at these counts; the win is the cache itself (§47), not the step.
+Kept at 0.2, because the finer cull is closer to the per-frame baseline and
+the difference will matter more as the static set grows.
+
+Chunk streaming — caching the same cells across the voyage rather than one
+cell at a time — remains the next meaningful cache step; the cell-grid design
+in §36 is what it needs.
