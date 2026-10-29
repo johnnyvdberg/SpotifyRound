@@ -2149,3 +2149,26 @@ same id, which is why the spec must be per grid).
 
 Next: wire the chunk cache to this table, gate pixels against
 `previews-nine`, and measure. The table adds no frame cost by itself.
+
+## 53. Chunk cache: two aborted wiring attempts, and the lesson
+
+Two rounds tried to wire the per-cell chunk cache to the §52 `PLACER_CELLS`
+table with targeted patch anchors; both left the build and `StaticCache`
+disagreeing (the second: the struct replacement missed its anchor while the
+build body applied), and both were reverted rather than patched around.
+
+The lesson is about method, not design: the cache struct, the one-cell mode,
+the build, the copy and the polar's move to the per-frame set are one
+interdependent change. It needs a single coherent implementation written
+against the whole `build` function, not five `str.replace` anchors against a
+file whose comments and line order have changed many times in this session.
+
+The design itself remains sound and recorded: §49 (per-world-cell lists),
+§51 (why the table is needed), §52 (the table, in the tree). The working
+cache is §47's nine-placer per-camera-cell version, pixel-identical, -0.52 ms
+Pi, and it stays.
+
+Concrete next step: read `world::build` end to end, replace it in one edit
+with the per-cell version (the struct, `CELL` mode, build, copy, polar move),
+compile, gate against `previews-nine`, then Pi. The rest of the queue is
+packing/attribute subsets, UI, resolution.
