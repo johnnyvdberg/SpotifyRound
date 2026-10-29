@@ -1338,3 +1338,35 @@ shader (`animate` already supports the plants' kind; the flicker needs a
 `g.camera.w` term in the instance colour or the light), verify it is
 pixel-identical with the placers still per-frame, and only then cache the
 matrices. Chunk streaming and the persistent static pool come after that.
+
+## 22. Pooling the cell lists: free by construction, but not measurable here
+
+The build calls `cells()` nineteen times a frame, each returning a fresh
+`Vec` of the visible grid cells (~11k cells total). The audit priced a
+caller-provided scratch/arena at 0.05–0.1 ms. The lists now come from a small
+thread-local pool: `cells()` pops a vector, clears and refills it, returns a
+guard that derefs to the list, and the guard's `Drop` returns the vector with
+its capacity. The loop sites take `&cells(...)`, so the guard lives for the
+iteration.
+
+- Visual: **0.0000/255, max 0** — identical.
+- Pi: **8.732 ms** vs 8.687 before; scene building 1.455 vs 1.424 (shallows),
+  1.471 vs 1.445 (forest). The +0.03–0.05 is the run's drift, not a win: on
+  this allocator the 19 small `Vec`s are cheap and the cell fill dominates, so
+  the audit's 0.05–0.1 is not realized at the current counts.
+
+It is kept because it is free, visually exact, and scales the right way — at
+larger counts the lists are longer and the 19 allocations per frame grow with
+them. It does not solve the frame.
+
+![cell-pool: current / pooled / amplified difference](branch-cell-pool.png)
+
+### Next
+
+The static cache remains blocked on the animation rework: the tridacna shell's
+opening, the trench light, the wreck/ruin flicker and the polar swim phases all
+drive from `w.t` in placement. Moving those to the shader (`animate` already
+has the plants' and fish's kinds; the flicker needs a `g.camera.w` term) and
+proving pixel-identical is the next branch, then the cache. After that: chunk
+streaming, the instance/vertex packing with per-pipeline attribute subsets, the
+UI notifier/KMS overlay, and resolution.

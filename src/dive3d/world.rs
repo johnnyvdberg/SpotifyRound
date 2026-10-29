@@ -1068,14 +1068,48 @@ fn cell_point(ix: i32, iz: i32, size: f32, salt: u32) -> (f32, f32) {
     )
 }
 
+thread_local! {
+    /// The visible-cell lists, one vector per caller in flight; the build calls
+    /// `cells` nineteen times a frame and the lists are short.
+    static CELLS: std::cell::RefCell<Vec<Vec<(i32, i32, f32, f32)>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A cell list borrowed from the pool. Dropping it returns the vector, so the
+/// next frame reuses the capacity instead of allocating nineteen times.
+struct Cells(Vec<(i32, i32, f32, f32)>);
+
+impl std::ops::Deref for Cells {
+    type Target = Vec<(i32, i32, f32, f32)>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for Cells {
+    fn drop(&mut self) {
+        let list = std::mem::take(&mut self.0);
+        CELLS.with(|pool| pool.borrow_mut().push(list));
+    }
+}
+
+impl<'a> IntoIterator for &'a Cells {
+    type Item = &'a (i32, i32, f32, f32);
+    type IntoIter = std::slice::Iter<'a, (i32, i32, f32, f32)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 /// The cells of a grid of `size` that can be in view between `near` and
 /// `far` from the window, as (column, row, x, z) with the point jittered
 /// within its cell. The grid is fixed in the world, so the same rock is
 /// always in the same place however the boat turns.
-fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Vec<(i32, i32, f32, f32)> {
+fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
     let ([x0, x1, z0, z1], o, r) = footprint(w, near, far);
     let c = w.pose.pos;
-    let mut out = Vec::new();
+    let mut out = CELLS.with(|pool| pool.borrow_mut().pop()).unwrap_or_default();
+    out.clear();
     for iz in ((z0 - size) / size).floor() as i32..=((z1 + size) / size).ceil() as i32 {
         for ix in ((x0 - size) / size).floor() as i32..=((x1 + size) / size).ceil() as i32 {
             let (x, z) = cell_point(ix, iz, size, salt);
@@ -1090,7 +1124,7 @@ fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Vec<(i32, i32,
             out.push((ix, iz, x, z));
         }
     }
-    out
+    Cells(out)
 }
 
 /// Build the frame.
@@ -1261,7 +1295,7 @@ fn planes(w: &World, f: &mut Frame) {
 }
 
 fn rocks(w: &World, f: &mut Frame) {
-    for (ix, iz, x, z) in cells(w, 0.55, 0.6, 14.0, 10) {
+    for &(ix, iz, x, z) in &cells(w, 0.55, 0.6, 14.0, 10) {
         if hash(ix, iz, 12) < 0.55 {
             continue;
         }
@@ -1326,7 +1360,7 @@ fn kelp_here(w: &World, ix: i32, iz: i32) -> Option<(f32, f32)> {
 }
 
 fn kelp(w: &World, f: &mut Frame) {
-    for (ix, iz, x, z) in cells(w, KELP_CELL, 0.8, 15.0, KELP_SALT) {
+    for &(ix, iz, x, z) in &cells(w, KELP_CELL, 0.8, 15.0, KELP_SALT) {
         let Some((height, fade_in)) = kelp_here(w, ix, iz) else {
             continue;
         };
@@ -1354,7 +1388,7 @@ fn kelp(w: &World, f: &mut Frame) {
 
 /// The submarine forest of Crespo: tall algae branching like trees.
 fn forest(w: &World, f: &mut Frame) {
-    for (ix, iz, x, z) in cells(w, 0.75, 1.0, 17.0, 30) {
+    for &(ix, iz, x, z) in &cells(w, 0.75, 1.0, 17.0, 30) {
         if w.share(x, z, FOREST) < hash(ix, iz, 31) * 0.7 + 0.2 {
             continue;
         }
@@ -1419,7 +1453,7 @@ fn forest(w: &World, f: &mut Frame) {
 /// Sea fans in the shallows and the forest, giant clams with their pearls,
 /// and on the polar seabed sponges and starfish.
 fn gardens(w: &World, f: &mut Frame) {
-    for (ix, iz, x, z) in cells(w, 0.6, 0.8, 7.0, 40) {
+    for &(ix, iz, x, z) in &cells(w, 0.6, 0.8, 7.0, 40) {
         let b = w.biome(x, z);
         let green = (b.weight(SHALLOWS) + b.weight(FOREST)) as f32;
         let polar = b.weight(ARCTIC) as f32;
@@ -1517,7 +1551,7 @@ fn trench(w: &World, f: &mut Frame) {
     let rim = -SEABED[TRENCH];
     let t = w.t;
     // Life on the terraces and the far wall.
-    for (ix, iz, x, z) in cells(w, 0.3, 0.6, 9.0, 500) {
+    for &(ix, iz, x, z) in &cells(w, 0.3, 0.6, 9.0, 500) {
         let share = w.share(x, z, TRENCH);
         let needs = hash(ix, iz, 501) * 0.5 + 0.35;
         if share < needs {
@@ -1687,7 +1721,7 @@ fn trench(w: &World, f: &mut Frame) {
         }
     }
     // Lights blinking deep in the trench, where the daylight never reaches.
-    for (ix, iz, x, z) in cells(w, 0.4, 1.5, 10.0, 530) {
+    for &(ix, iz, x, z) in &cells(w, 0.4, 1.5, 10.0, 530) {
         let share = w.share(x, z, TRENCH);
         if share < 0.5 || hash(ix, iz, 531) < 0.5 {
             continue;
@@ -1718,7 +1752,7 @@ fn trench(w: &World, f: &mut Frame) {
 /// The galleons of Vigo Bay, half buried, their treasure spilling out.
 fn wrecks(w: &World, f: &mut Frame) {
     // A graveyard of ships: several in view at once, near and far.
-    for (ix, iz, x, z) in cells(w, 2.4, 1.6, 10.0, 60) {
+    for &(ix, iz, x, z) in &cells(w, 2.4, 1.6, 10.0, 60) {
         if w.share(x, z, WRECKS) < 0.5 || hash(ix, iz, 61) < 0.35 {
             continue;
         }
@@ -1843,7 +1877,7 @@ fn wrecks(w: &World, f: &mut Frame) {
 /// whose fire lights the drowned city.
 fn ruins(w: &World, f: &mut Frame) {
     let marble = [0.48, 0.46, 0.42];
-    for (ix, iz, x, z) in cells(w, 0.55, 1.0, 16.0, 70) {
+    for &(ix, iz, x, z) in &cells(w, 0.55, 1.0, 16.0, 70) {
         // Colonnades stand in rows: whole rows of cells, and gaps between.
         if hash(0, iz, 71) < 0.45 || w.share(x, z, ATLANTIS) < hash(ix, iz, 72) * 0.5 + 0.4 {
             continue;
@@ -1924,7 +1958,7 @@ fn ruins(w: &World, f: &mut Frame) {
             );
         }
     }
-    for (ix, iz, x, z) in cells(w, 5.0, 6.0, 22.0, 80) {
+    for &(ix, iz, x, z) in &cells(w, 5.0, 6.0, 22.0, 80) {
         if w.share(x, z, ATLANTIS) < 0.5 || hash(ix, iz, 81) < 0.3 {
             continue;
         }
@@ -2000,7 +2034,7 @@ fn ruins(w: &World, f: &mut Frame) {
     }
     // The volcano, far off across the city.
     f.style(fixed(Surface::Basalt, 0.6));
-    for (ix, iz, x, z) in cells(w, 14.0, 18.0, 30.0, 90) {
+    for &(ix, iz, x, z) in &cells(w, 14.0, 18.0, 30.0, 90) {
         if w.share(x, z, ATLANTIS) < 0.4 || hash(ix, iz, 91) < 0.3 {
             continue;
         }
@@ -2037,7 +2071,7 @@ fn ruins(w: &World, f: &mut Frame) {
 /// glow of the pools.
 fn cave(w: &World, f: &mut Frame) {
     // Basalt columns stand against the tunnel's walls, clear of the boat's way.
-    for (ix, iz, x, z) in cells(w, 0.16, 0.5, 9.0, 100) {
+    for &(ix, iz, x, z) in &cells(w, 0.16, 0.5, 9.0, 100) {
         let off = (z - corridor(x)).abs();
         if !(0.35..TUNNEL * 0.9).contains(&off) {
             continue;
@@ -2072,7 +2106,7 @@ fn cave(w: &World, f: &mut Frame) {
         .grounded();
     }
     // Stalactites hang from the tunnel's arch, some dripping molten rock.
-    for (ix, iz, x, z) in cells(w, 0.2, 0.5, 12.0, 110) {
+    for &(ix, iz, x, z) in &cells(w, 0.2, 0.5, 12.0, 110) {
         let off = z - corridor(x);
         if off.abs() > TUNNEL * 0.75 || hash(ix, iz, 111) < 0.3 {
             continue;
@@ -2111,7 +2145,7 @@ fn cave(w: &World, f: &mut Frame) {
         }
     }
     // The pools that light the tunnel: a light over each of the nearest.
-    for (ix, iz, x, z) in cells(w, 1.0, 0.5, 9.0, 120) {
+    for &(ix, iz, x, z) in &cells(w, 1.0, 0.5, 9.0, 120) {
         if (z - corridor(x)).abs() > TUNNEL * 0.8
             || w.share(x, z, CAVE) < 0.5
             || hash(ix, iz, 121) < 0.25
@@ -2655,7 +2689,7 @@ fn passages(w: &World, f: &mut Frame) {
 
 /// Black smokers in the abyss, steaming vents in the lava cave.
 fn vents(w: &World, f: &mut Frame) {
-    for (ix, iz, x, z) in cells(w, 2.2, 1.0, 14.0, 130) {
+    for &(ix, iz, x, z) in &cells(w, 2.2, 1.0, 14.0, 130) {
         let b = w.biome(x, z);
         if (b.weight(ABYSS) + b.weight(CAVE)) < 0.5 || hash(ix, iz, 131) < 0.4 {
             continue;
@@ -2696,7 +2730,7 @@ fn ice(w: &World, f: &mut Frame) {
     if top <= w.eye() {
         return;
     }
-    for (ix, iz, x, z) in cells(w, 1.8, 1.5, 16.0, 140) {
+    for &(ix, iz, x, z) in &cells(w, 1.8, 1.5, 16.0, 140) {
         if w.share(x, z, ARCTIC) < 0.65 || hash(ix, iz, 141) < 0.3 {
             continue;
         }
@@ -3429,7 +3463,7 @@ fn squid(w: &World, f: &mut Frame) {
         }
     }
     // Anglerfish, lit only by their lures.
-    for (ix, iz, x, z) in cells(w, 1.4, 1.0, 6.0, 340) {
+    for &(ix, iz, x, z) in &cells(w, 1.4, 1.0, 6.0, 340) {
         if w.share(x, z, ABYSS) < 0.5 || hash(ix, iz, 341) < 0.5 {
             continue;
         }
@@ -3465,7 +3499,7 @@ fn squid(w: &World, f: &mut Frame) {
 
 /// Jellyfish drifting where the water carries them.
 fn drifters(w: &World, f: &mut Frame) {
-    for (ix, iz, x, z) in cells(w, 0.9, 1.0, 8.0, 350) {
+    for &(ix, iz, x, z) in &cells(w, 0.9, 1.0, 8.0, 350) {
         let b = w.biome(x, z);
         let here = (b.weight(ABYSS) + 0.6 * b.weight(WRECKS) + 0.5 * b.weight(ARCTIC)) as f32;
         if here < hash(ix, iz, 351) * 0.8 + 0.2 {
@@ -4335,7 +4369,7 @@ fn shafts(w: &World, f: &mut Frame) {
     let sun = norm(SUN);
     let far = 7.0;
     let top = w.surface();
-    for (ix, iz, x, z) in cells(w, 0.75, 0.3, far, 450) {
+    for &(ix, iz, x, z) in &cells(w, 0.75, 0.3, far, 450) {
         let h = hash(ix, iz, 451);
         let b = w.biome(x, z);
         let bright = (b.weight(SHALLOWS)
