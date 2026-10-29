@@ -1412,18 +1412,20 @@ fn forest(w: &World, f: &mut Frame) {
             red[2] + (olive[2] - red[2]) * t,
         ];
         let lean = (hash(ix, iz, 34) - 0.5) * 0.15;
-        let sway = (w.t * 0.35 + ix as f32).sin() * 0.02;
-        let top = [x + (lean + sway) * h, y + h, z];
+        // The sway is the shader's (anim::SWAY), not the placement's: the
+        // tube worms' stalks were the last placement-time `w.t` here.
+        let top = [x + lean * h, y + h, z];
         f.put(
             Model::Cone,
             between([x, y - 0.02, z], top, 0.025),
             [tint[0] * 0.6, tint[1] * 0.6, tint[2] * 0.6],
         )
+        .moving(anim::SWAY, ix as f32, 0.02, 0.35)
         .grounded();
         for k in 0..4 {
             let fk = k as f32;
             let by = 0.34 + 0.16 * fk;
-            let root = [x + (lean + sway) * h * by, y + h * by, z];
+            let root = [x + lean * h * by, y + h * by, z];
             let a = hash(ix, iz, 35 + k) * TAU;
             let len = (0.24 - fk * 0.03) * h;
             let tip = [

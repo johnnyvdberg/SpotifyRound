@@ -1485,3 +1485,23 @@ So the next cache attempt needs both:
 Not kept; image `branch-placements-cull.png`. The static-cache path is now:
 shell hinge (done) -> remaining animation moves -> full placement cache with
 exact bounds -> chunk streaming -> packing -> UI -> resolution.
+
+## 27. Rocks: the tube worms' sway moves to the shader
+
+The rocks' last placement-time `w.t` was the tube worms' sway: the stalk and
+its branch roots leaned by `(w.t * 0.35 + ix).sin() * 0.02` before `between`
+built the cone. The lean stays in the placement; the sway is now the shader's
+`anim::SWAY` on the stalk, the same `animate` path the fans and kelp use.
+
+- Visual: **mean 0.26/255, max 52** — the shared kind's phase (`sin(t + aux.y
+  * 2.5)`, weighted by height squared) is not exactly the placement's
+  `sin(t)` weighted linearly, so the stalks move slightly differently.
+- Pi: expected flat; this is a prerequisite, and the static cache still needs
+  the trench light, the wreck/ruin flicker and the polar phases.
+
+![rocks sway: current / shader sway / amplified difference](branch-rocks-sway.png)
+
+The rocks now have no placement-time `w.t` (the fans were already
+`anim::SWAY`), so they can join the static cache together with the gardens and
+wrecks. The next moves are the trench light (`t = w.t`), the ruins' flicker
+and rise, and the polar phases; then the full static cache with exact bounds.
