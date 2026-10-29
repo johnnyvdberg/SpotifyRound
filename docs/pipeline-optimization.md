@@ -2121,3 +2121,31 @@ reverted rather than kept.
 
 The tree is at the §47/§48 state: the nine-placer per-camera-cell cache,
 pixel-identical, -0.52 ms Pi.
+
+## 52. The PlacerSpec table exists now
+
+`PLACER_CELLS` lists each static placer's cell grids `(size, near, far,
+salt)`, one row per `cells()` call in its body:
+
+| placer | grids |
+|---|---|
+| rocks | 0.55 / 0.6 / 14 / 10 |
+| gardens | 0.6 / 0.8 / 7 / 40 |
+| wrecks | 2.4 / 1.6 / 10 / 60 |
+| trench | 0.3 / 0.6 / 9 / 500, 0.4 / 1.5 / 10 / 530 |
+| ruins | 0.55 / 1 / 16 / 70, 5 / 6 / 22 / 80, 14 / 18 / 30 / 90 |
+| cave | 0.16 / 0.5 / 9 / 100, 0.2 / 0.5 / 12 / 110, 1 / 0.5 / 9 / 120 |
+| polar | none — it follows the lane, not the cell grid, and stays per-frame |
+| kelp | KELP_CELL / 0.8 / 15 / KELP_SALT |
+| forest | 0.75 / 1 / 17 / 30 |
+
+This is the prerequisite §51 identified: with the table the frame can call
+`cells()` per grid, union the visible `(ix, iz)`, and build a missing cell
+with a one-cell `CELL` mode. The multiple grids per placer matter: a cell
+id `(ix, iz)` means different world points in different grids, so the chunk
+key is `(placer, grid index, ix, iz)` and a cell build runs the placer once
+with `CELL` set to that cell (its other grids yield their own cell of the
+same id, which is why the spec must be per grid).
+
+Next: wire the chunk cache to this table, gate pixels against
+`previews-nine`, and measure. The table adds no frame cost by itself.

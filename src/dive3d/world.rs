@@ -1248,6 +1248,22 @@ impl Default for StaticCache {
 
 const CACHE_CELL: f32 = 0.2;
 
+/// Each static placer's cell grids: `(size, near, far, salt)`, one per
+/// `cells()` call in its body. The chunk cache uses these to enumerate the
+/// visible cells from outside the placer; the polar has none (it follows the
+/// lane rather than the cell grid) and stays in the per-frame set.
+const PLACER_CELLS: [&[(f32, f32, f32, u32)]; 9] = [
+    &[(0.55, 0.6, 14.0, 10)],                     // rocks
+    &[(0.6, 0.8, 7.0, 40)],                       // gardens
+    &[(2.4, 1.6, 10.0, 60)],                      // wrecks
+    &[(0.3, 0.6, 9.0, 500), (0.4, 1.5, 10.0, 530)], // trench
+    &[(0.55, 1.0, 16.0, 70), (5.0, 6.0, 22.0, 80), (14.0, 18.0, 30.0, 90)], // ruins
+    &[(0.16, 0.5, 9.0, 100), (0.2, 0.5, 12.0, 110), (1.0, 0.5, 9.0, 120)], // cave
+    &[],                                          // polar (lane, not cells)
+    &[(KELP_CELL, 0.8, 15.0, KELP_SALT)],         // kelp
+    &[(0.75, 1.0, 17.0, 30)],                     // forest
+];
+
 /// Build the frame.
 /// One kind of thing to place in the frame.
 type Placer = fn(&World, &mut Frame);
