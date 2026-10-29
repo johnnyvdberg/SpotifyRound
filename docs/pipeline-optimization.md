@@ -2073,3 +2073,27 @@ first-visit cost spread over the voyage, and the copy stays proportional to
 the visible set. That is the last CPU-placement term before packing.
 
 Not implemented this round; the tree stays at the §47/§48 state.
+
+## 50. Staging: the allocations are already gone; the sort is the cost
+
+Checked against the code: `order: Vec<Staged>`, `staged: Vec<Instance>` and
+`draws: Vec<Draw>` are `Nautilus` fields (`mod.rs:210-212`) and cleared each
+frame, so the audit's "per-frame order/sorted allocations" are already reused.
+The per-frame staging cost is therefore the **fill and the sort**, not
+allocation:
+
+- the order fill (~0.12 ms desktop in the audit) walks every solid/glass
+  instance and computes the 6-key tuple;
+- the sort (~0.035 ms) is already `sort_unstable_by`;
+- the stage/upload (~0.01/0.06 ms) copies the visible instances into the
+  contiguous buffer.
+
+So there is no allocation branch to take here. The remaining staging lever is
+the **sort key count** — the six keys (slot, model, lod, depth, index) are
+there to keep the draws grouped and the glass depth-ordered; a cheaper key
+would change the draw grouping or the blend order, so it is a visual decision,
+not a free win. It stays as is.
+
+The queue of real work is unchanged: the chunk cache (the nine placers'
+per-cell lists), the packing/attribute subsets, the UI posts/notifier, and
+resolution.
