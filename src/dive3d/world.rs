@@ -1246,7 +1246,7 @@ impl Default for StaticCache {
     }
 }
 
-const CACHE_CELL: f32 = 0.5;
+const CACHE_CELL: f32 = 0.2;
 
 /// Build the frame.
 /// One kind of thing to place in the frame.
@@ -1263,17 +1263,22 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     let algae = carried(Surface::Kelp, 2.0);
     let copper = carried(Surface::Copper, 1.0);
     let skin = carried(Surface::Skin, 3.0);
-    // The three placers with no placement-time `w.t` and no sprites: the
-    // shell is the shader's hinge and the tube worms' sway is the shader's.
-    let static_steps: [(Placer, Option<[f32; 4]>); 3] =
-        [(rocks, None), (gardens, None), (wrecks, wood)];
-    let steps: [(Placer, Option<[f32; 4]>); 19] = [
-        (planes, None),
-        (kelp, None),
-        (forest, algae),
+    // The placers whose every placement-time and sprite-time motion is now
+    // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
+    // the penguin flap, the narwhal body and the four sprite kinds.
+    let static_steps: [(Placer, Option<[f32; 4]>); 7] = [
+        (rocks, None),
+        (gardens, None),
+        (wrecks, wood),
         (trench, rock),
         (ruins, marble),
         (cave, rock),
+        (polar, None),
+    ];
+    let steps: [(Placer, Option<[f32; 4]>); 15] = [
+        (planes, None),
+        (kelp, None),
+        (forest, algae),
         (tunnel, None),
         (vents, basalt),
         (ice, None),
@@ -1283,21 +1288,18 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (gliders, None),
         (squid, skin),
         (drifters, None),
-        (polar, None),
         (submarines, None),
         (shafts, None),
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 3] = ["rocks", "gardens", "wrecks"];
+    const STATIC_NAMES: [&str; 7] =
+        ["rocks", "gardens", "wrecks", "trench", "ruins", "cave", "polar"];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 19] = [
+    const STEP_NAMES: [&str; 15] = [
         "planes",
         "kelp",
         "forest",
-        "trench",
-        "ruins",
-        "cave",
         "tunnel",
         "vents",
         "ice",
@@ -1307,7 +1309,6 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "gliders",
         "squid",
         "drifters",
-        "polar",
         "submarines",
         "shafts",
         "particles",

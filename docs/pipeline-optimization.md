@@ -1958,3 +1958,30 @@ and can join the §37 cell cache. That, and the full-set Pi measurement, is the
 next branch. The cache's own cost is the cell-boundary rebuild plus the copy;
 the four placers are the audit's ~0.3 ms M1 / ~0.8 Pi of static placement,
 which is the first measurement where the cache should actually pay.
+
+## 46. Full seven-placer cell cache: pixel-identical, and the first measurable win
+
+All four remaining placers joined the cell cache now that their sprite/light
+motion is shader-side: rocks, gardens, wrecks, trench, ruins, cave, polar are
+cached per 0.2-unit camera cell (the smallest cell in the set), and the 15
+dynamic placers (planes, kelp, forest, tunnel, vents, ice, divers, shoals,
+great_swimmers, gliders, squid, drifters, submarines, shafts, particles) run
+every frame.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: **8.788 ms** vs 9.011 (the previous cell-set run); shallows 10.261 vs
+  10.433, forest 10.158 vs 10.499, trench 7.717 vs 8.184; scene building
+  1.534 vs 1.510 (the rebuild's 7 placers plus the copy are ~0.02 against the
+  ~0.8 of cached placement).
+
+That is the first time the cache pays: **-0.22 ms mean / -0.47 trench** on
+this run, and the design does not regress. It is still the small set; the
+largest static placers (kelp and forest, which sway from `w.t` in placement)
+and the camera-following planes/ice are deliberately still per-frame.
+
+The next cache step is the kelp/forest sway → `anim::SWAY` in the shader so
+they can join; the planes/ice stay per-frame by nature. Then chunk streaming
+for the static cells beyond the camera cell, and the packing/UI/resolution
+items.
+
+![full cell cache: current / full cache / difference](branch-full-cell-cache.png)
