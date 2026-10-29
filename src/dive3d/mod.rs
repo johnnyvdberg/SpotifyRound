@@ -1169,6 +1169,7 @@ impl Nautilus {
                         fading == 0.0,
                         &[
                             ("FADING", fading),
+                            ("FADE_OPAQUE", f64::from(u8::from(blend.is_none() && write_depth))),
                             ("MATERIAL", f64::from(material)),
                             ("GROUNDED", grounded),
                         ],
@@ -1494,7 +1495,12 @@ impl Nautilus {
         };
         let closed = &self.closed;
         let kind_of = |model: usize, i: &Instance| {
-            if fades(i) {
+            // Only the ice keeps the blended path: its coverage is per pixel.
+            // Every other fading instance is drawn with the solid pipelines
+            // and fades its colour into the water, so it keeps its depth and
+            // costs no blend.
+            let ice = i.extra[0].round() as i32 == world::material::ICE as i32;
+            if fades(i) && ice {
                 Kind::Fading
             } else if closed[model] && !mirrored(i) {
                 Kind::Sealed

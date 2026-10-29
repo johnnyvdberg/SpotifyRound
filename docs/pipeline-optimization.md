@@ -1032,3 +1032,98 @@ and AO rather than added lighting. The survey's verdicts, with sources:
 [derivative maps](http://mmikkelsen3d.blogspot.com/2011/07/derivative-maps.html),
 [stylised mobile terrain](https://dev.to/tamtranngoc/why-mesh-terrain-is-often-a-better-choice-than-unity-terrain-for-stylized-mobile-projects-1hja),
 and [Mesa's V3D driver](https://docs.mesa3d.org/drivers/v3d.html).
+
+## 17. The lean-base audit and the first branch: fading props drawn opaque
+
+With the look open and model counts due to grow, the whole frame was audited on
+the desktop (M1 Max) and against the low-spec literature. This is the first
+implementation branch; the rest are listed at the end.
+
+### The desktop frame portrait
+
+| measurement | ms |
+|---|---|
+| dive frame, mean | **2.96** |
+| empty sea (build + staging + upload + empty submit) | 1.76 |
+| … `world::build` | 0.53 |
+| … submit only | 0.04 |
+| clear pass | 0.83 |
+| effect table, everything | 2.34 |
+
+Effect split on the desktop: sea pass 0.81 (41%), opaque models 0.36 (18%),
+model geometry 0.32 (16%), glass 0.23, fading 0.15, terrain 0.11. The
+desktop GPU has headroom; the CPU/fixed side is **~1.7 ms of 2.96** and scales
+with instance count, so the lean-base work is the CPU build, the per-instance
+data and the per-vertex fetch, not the draw count.
+
+The model placers already frustum-cull (`w.visible` in every placer), so the
+win is behind that: per-instance fetch, per-vertex fetch, fill, and the
+per-frame rebuild.
+
+### What the research ranks
+
+The full survey (session) and the frame-structure comparison in §5 give:
+
+1. **Fade → opaque** (colour to fog, depth, no blend): 0.5–1.5 ms of the 2.1
+   fading pass. This branch starts it.
+2. **Render scale 0.9–0.833**: 1.0–1.8 ms; already built.
+3. **Static vs dynamic split**: merge static props per material×tile, instance
+   only what animates; 0.5–1.5 ms and makes model-count growth nearly free.
+   Instancing is the wrong default for the static majority.
+4. **Pack instances (~128 → ~48 B) and model verts (44 → ~20 B)**, split the
+   position stream; 0.4–1.0 ms; the per-instance scaling term.
+5. **CPU build**: precompute at spawn, grid broadphase, projected-area reject,
+   counting sort, reused scratch; 0.5–1.5 ms CPU.
+6. **Impostor tier < ~10 px** + area-based LOD; 0.3–1.0 ms; caps fill growth.
+7. **Cut fragment fetches** (one atlas, no trilinear); 0.3–1.0 ms.
+8. **Pipeline-ordered draws**, drop unused pipelines; 0.1–0.3 ms.
+
+Pi-only: a **KMS overlay plane** for the dive texture would remove Slint's
+full-panel composite (~1–1.5 ms) and the surface load. The Slint rendering
+notifier (FPS readout) also forces a separate window-clear pass on the tile
+GPU; that is a separate, kiosk-only lever.
+
+Sources: [Vulkan TBR guide](https://docs.vulkan.org/guide/latest/tile_based_rendering_best_practices.html),
+[PowerVR recommendations](https://docs.imgtec.com/performance-guides/graphics-recommendations/html/index.html),
+[Mesa V3D](https://docs.mesa3d.org/drivers/v3d.html),
+[meshoptimizer](https://github.com/zeux/meshoptimizer),
+[Unity static batching](https://docs.unity3d.com/6000.0/Documentation/Manual/static-batching.html),
+[Godot mesh LOD](https://docs.godotengine.org/en/stable/tutorials/3d/mesh_lod.html),
+[Slint wgpu texture](https://github.com/slint-ui/slint/tree/master/examples/wgpu_texture).
+
+### Branch 1: fading props drawn opaque
+
+Every fading instance except the ice is now drawn with the solid pipelines:
+`FADE_OPAQUE` mixes its colour into the water by the coverage and keeps the
+depth write, instead of blending over what is behind. Only the ice keeps the
+blended path, because its coverage is per pixel.
+
+- **Desktop visual gate**: [branch-fade-opaque.png](branch-fade-opaque.png) —
+  mean **0.41/255**, max 201 at the deepest fades; the image shows current /
+  branch / amplified difference. The mean is small, the max is a real local
+  look change at the props that are nearly gone.
+- **Desktop frame**: 2.91 vs 2.96 (−0.05).
+- **Pi**: **9.99 ms mean** against 10.20 for the same tree before the branch
+  (facet run); the forest leg is the win — **10.27 vs 11.73** — while the cave
+  drifted +0.5 (run noise). Run-to-run drift is ±0.5, so the mean is within
+  noise; the forest is the signal.
+
+The branch image:
+
+![fade-opaque: current / opaque / amplified difference](branch-fade-opaque.png)
+
+The branch is kept; the deepest fades can be hybridised later (keep the blend
+below ~0.5 coverage) if the 201/255 local change reads too strongly.
+
+### Next branches, in order
+
+1. **Ice opaque** (the 1.12 ms of the fading pass): a pipeline with the discard
+   kept but no blend and depth on; the ice's per-pixel coverage mixed to the
+   fog. Visual gate first; the look at the ice edge is the risk.
+2. **Static merge + dynamic instancing** (the count-scaling step): static props
+   baked per material×tile; animated minority instanced.
+3. **Instance/vertex packing** (128 → ~48 B, 44 → ~20 B): the desktop shaderdb
+   temps/threads are the oracle.
+4. **CPU build** (0.53 desktop / 1.4 Pi): caches, broadphase, projected-area
+   reject.
+5. **UI**: the notifier window-clear pass (kiosk), and the KMS overlay plane.

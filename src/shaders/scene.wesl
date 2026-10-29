@@ -71,6 +71,10 @@ const SURFACE_LOD: f32 = 8.0;
 // fragments before shading them only when a shader cannot discard, so every
 // model that is fully there goes through a pipeline compiled without it.
 override FADING: bool = true;
+// Fading props drawn opaque: the coverage fades their colour into the water
+// instead of blending them over what is behind. Same depth writes as any
+// solid model, so the deferred/water pass sees them as a surface.
+override FADE_OPAQUE: bool = false;
 // Whether this models pipeline draws things that stand on the seabed. Only
 // those need the ground under their foot, so the swimmers' pipelines leave it
 // out.
@@ -1021,6 +1025,9 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
             + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
     }
+    if (FADE_OPAQUE) {
+        shaded = mix(shaded, in.fog.rgb, 1.0 - coverage);
+    }
     return vec4<f32>(shaded * SEA_SCALE, coverage);
 }
 
@@ -1153,6 +1160,9 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
         shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
             + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
+    }
+    if (FADE_OPAQUE) {
+        shaded = mix(shaded, in.fog.rgb, 1.0 - coverage);
     }
     return vec4<f32>(shaded * SEA_SCALE, coverage);
 }
