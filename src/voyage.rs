@@ -6,8 +6,8 @@
 //! depth follow a dive profile at a believable rate of climb, rather than jump
 //! with every change of biome.
 //!
-//! The biome sequence mirrors `leg` in `dive3d/scene.wgsl`; the two
-//! must agree, or the seabed would change character where the gauges say it
+//! The biome sequence mirrors `leg` in `dive3d/scene.wesl`; the two
+//! must agree, or the seabed would change character where the voyage says it
 //! does not.
 
 use std::f64::consts::TAU;
@@ -16,7 +16,7 @@ use std::f64::consts::TAU;
 pub const SPEED: f64 = 0.055;
 /// World units per leg of the voyage, and the share of a leg spent changing
 /// into the next biome.
-pub const LEG: f64 = 3.4;
+pub const LEG: f64 = 5.0;
 const BLEND: f64 = 0.32;
 pub const BIOMES: usize = 8;
 /// The order the legs come in, by biome: shallows, forest, the trench,
@@ -31,8 +31,9 @@ pub const ORDER: [usize; BIOMES] = [0, 1, 7, 2, 3, 4, 5, 6];
 const START: f64 = LEG * 0.12;
 /// Where a swipe lands within a leg, for the same reason.
 const LANDING: f64 = LEG * 0.15;
-/// Seconds a swipe takes to carry the Nautilus to the next leg.
-const PASSAGE: f64 = 3.5;
+/// Seconds a swipe takes to carry the Nautilus to the next leg. It scales with
+/// the leg, so a longer voyage keeps the same speed through a swipe.
+const PASSAGE: f64 = 5.15;
 
 /// Depth of the seabed below the surface in each biome, in world units:
 /// shallows, forest, wrecks, Atlantis, lava cave, abyss, polar ice, trench
@@ -211,7 +212,7 @@ pub struct Biome {
 }
 
 impl Biome {
-    /// The same sequence as `leg` in `dive3d/scene.wgsl`.
+    /// The same sequence as `leg` in `dive3d/scene.wesl`.
     pub fn at(x: f64, seed: f32) -> Self {
         let u = x / LEG;
         let k = u.floor();

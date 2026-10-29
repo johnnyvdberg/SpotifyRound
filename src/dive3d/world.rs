@@ -51,6 +51,37 @@ pub struct Instance {
     /// x: texture layer; y: repeats per unit; z: 1 to texture in the model's
     /// own space, so the pattern moves with a swimming body.
     pub surface: [f32; 4],
+    /// rgb: the seabed's colour under it, for the foot of a grounded model;
+    /// the same table as `floor_albedo` in `scene.wesl`, worked out once here
+    /// rather than looked up through a dynamic table in every pixel.
+    pub floor: [f32; 4],
+    /// The cofactor matrix's columns: what a normal has to be multiplied by
+    /// when the instance may be scaled unevenly. Three crosses per vertex on
+    /// the GPU became three multiplies here.
+    pub normal: [[f32; 4]; 3],
+}
+
+/// The floor's colour in each biome, as `floor_albedo` in `scene.wesl`.
+pub const FLOOR_ALBEDO: [[f32; 3]; 8] = [
+    [0.62, 0.56, 0.42],
+    [0.40, 0.36, 0.26],
+    [0.32, 0.30, 0.26],
+    [0.46, 0.44, 0.39],
+    [0.10, 0.09, 0.09],
+    [0.17, 0.16, 0.17],
+    [0.36, 0.37, 0.38],
+    [0.58, 0.55, 0.47],
+];
+
+/// The colour of the seabed where `b` is, blended across a biome border.
+pub fn floor_albedo(b: &Biome) -> [f32; 3] {
+    let t = b.w as f32;
+    let (a, c) = (FLOOR_ALBEDO[b.a], FLOOR_ALBEDO[b.b]);
+    [
+        a[0] + (c[0] - a[0]) * t,
+        a[1] + (c[1] - a[1]) * t,
+        a[2] + (c[2] - a[2]) * t,
+    ]
 }
 
 #[repr(C)]
@@ -1025,11 +1056,37 @@ pub fn build(world: &World, frame: &mut Frame) {
     // The vertex shader beds a model into the sand by comparing each vertex
     // with the ground under it. Once per instance is enough: a rock, a tree or
     // a diver stands on the height at its foot, and this keeps the texture
-    // lookups and noise out of every vertex of every model.
+    // lookups and noise out of every vertex of every model. The sand's colour
+    // comes from the same place, and so does the normal matrix, so no pixel has
+    // to look up which biome it is in and no vertex has to cross it.
     for list in frame.solid.iter_mut().chain(frame.glass.iter_mut()) {
         for instance in list.iter_mut() {
+            let r = instance.rows;
+            let c = [
+                [r[0][0], r[1][0], r[2][0]],
+                [r[0][1], r[1][1], r[2][1]],
+                [r[0][2], r[1][2], r[2][2]],
+            ];
+            let cross = |a: [f32; 3], b: [f32; 3]| {
+                [
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0],
+                ]
+            };
+            let n0 = cross(c[1], c[2]);
+            let n1 = cross(c[2], c[0]);
+            let n2 = cross(c[0], c[1]);
+            instance.normal = [
+                [n0[0], n0[1], n0[2], 0.0],
+                [n1[0], n1[1], n1[2], 0.0],
+                [n2[0], n2[1], n2[2], 0.0],
+            ];
             if instance.extra[1] > 0.5 {
-                instance.extra[3] = world.ground(instance.rows[0][3], instance.rows[2][3]);
+                let (x, z) = (r[0][3], r[2][3]);
+                instance.extra[3] = world.ground(x, z);
+                let c = floor_albedo(&world.seabed.biome(x, z));
+                instance.floor = [c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, 0.0];
             }
         }
     }

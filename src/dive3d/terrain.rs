@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use super::world::World;
+use super::world::{self, World};
 
 /// Quads along a tile's side.
 const QUADS: usize = 16;
@@ -38,13 +38,94 @@ pub const SLOTS: usize = {
     (SPACING.len() - 1) * nested * nested + top * top
 };
 
-/// A vertex of the seabed, in the layout `vs_terrain` reads.
+/// A vertex of the seabed, in the layout `vs_terrain` reads. Everything about
+/// how the floor looks that does not depend on the camera is worked out once,
+/// here, when the tile is built: the shader only applies how much of the fine
+/// detail the distance lets through.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Point {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    /// rgb: the floor's colour at full detail; a: its surface layer.
+    pub albedo: [f32; 4],
+    /// x: the fine noise at full strength; y: how flat the face is, so the
+    /// noise shows most on level ground; z: the sand ripples; w: the paving's
+    /// joints.
+    pub shade: [f32; 4],
+    /// The lava cave's glow, at full strength, rgb.
+    pub glow: [f32; 4],
 }
+
+/// The surface texture each biome's floor wears, as `surface_of` in
+/// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt.
+const LAYERS: [usize; 8] = [12, 12, 13, 12, 10, 13, 12, 13];
+/// Biome ids, as the shader's constants.
+const FOREST: usize = 1;
+const ATLANTIS: usize = 3;
+const CAVE: usize = 4;
+const ARCTIC: usize = 6;
+
+/// `smoothstep` as the shader writes it.
+fn smooth01(a: f32, b: f32, v: f32) -> f32 {
+    let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// What the vertex shader used to work out per vertex, every frame: the
+/// floor's colour and texture layer, how strongly its fine detail shows, and
+/// the lava cave's glow. All of it depends only on where the vertex is.
+fn shade(w: &World, x: f32, z: f32, normal: [f32; 3]) -> ([f32; 4], [f32; 4], [f32; 4]) {
+    let b = w.seabed.biome(x, z);
+    let t = b.w as f32;
+    let presence = |id: usize| {
+        if b.a == id {
+            1.0 - t
+        } else if b.b == id {
+            t
+        } else {
+            0.0
+        }
+    };
+    let base = world::floor_albedo(&b);
+    // The shader's `(1.0 - steep)`: how level this piece of floor is.
+    let flat = 1.0 - smooth01(0.12, 0.40, 1.0 - normal[1]);
+    let noise = 0.65 + 0.5 * world::vnoise(x * 14.0, z * 14.0, 9);
+    let sand = presence(0) + 0.5 * presence(FOREST) + 0.5 * presence(ARCTIC);
+    let ripple = if sand > 0.0 {
+        let r = ((x * 0.8 + z) * 26.0 + world::vnoise(x * 3.0, z * 3.0, 5) * 4.0).sin();
+        0.16 * sand * smooth01(0.3, 1.0, r)
+    } else {
+        0.0
+    };
+    let paving = presence(ATLANTIS);
+    let pave = if paving > 0.0 {
+        let frac = |v: f32| v - v.floor();
+        let row = (z * 4.0).floor();
+        let joint = (frac(x * 3.0 + row * 0.5) - 0.5)
+            .abs()
+            .min((frac(z * 4.0) - 0.5).abs());
+        0.45 * paving * smooth01(0.45, 0.5, joint)
+    } else {
+        0.0
+    };
+    let cave = presence(CAVE);
+    let mut glow = [0.0; 4];
+    if cave > 0.0 {
+        let veins =
+            1.0 - smooth01(0.0, 0.04, (world::vnoise(x * 1.4, z * 1.9, 6) - 0.5).abs());
+        let fine = 1.0 - smooth01(0.0, 0.03, (world::vnoise(x * 4.0, z * 5.0, 7) - 0.5).abs());
+        let pools = smooth01(0.66, 0.74, world::vnoise(x * 0.55 + 7.0, z * 0.55, 8));
+        let k = (veins * 0.9 + fine * 0.5 + pools * 1.4) * cave * flat;
+        glow = [k, 0.36 * k, 0.07 * k, 0.0];
+    }
+    (
+        [base[0], base[1], base[2], LAYERS[b.a] as f32],
+        [noise, flat, ripple, pave],
+        glow,
+    )
+}
+
 
 /// One tile, by level and column and row of that level's tiles.
 type Key = (usize, i32, i32);
@@ -191,13 +272,16 @@ fn build(w: &World, level: usize, i: i32, j: i32) -> (Vec<Point>, [f32; 3], f32)
             let dz = heights[(b + 2) * border + a + 1] - heights[b * border + a + 1];
             let n = [-dx, 2.0 * s, -dz];
             let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let normal = [n[0] / l, n[1] / l, n[2] / l];
+            let x = (x0 + a as i32) as f32 * s;
+            let z = (z0 + b as i32) as f32 * s;
+            let (albedo, shade, glow) = shade(w, x, z, normal);
             points.push(Point {
-                position: [
-                    (x0 + a as i32) as f32 * s,
-                    h(a, b),
-                    (z0 + b as i32) as f32 * s,
-                ],
-                normal: [n[0] / l, n[1] / l, n[2] / l],
+                position: [x, h(a, b), z],
+                normal,
+                albedo,
+                shade,
+                glow,
             });
         }
     }

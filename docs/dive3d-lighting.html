@@ -1,0 +1,10 @@
+<!doctype html><meta charset=utf-8><title>Dive3D lighting</title>
+<style>body{background:#111;color:#ddd;font:13px system-ui,sans-serif;margin:24px}table{border-collapse:collapse} td{padding:4px;vertical-align:top}.tile{width:360px;height:360px;background-image:url(dive3d-lighting.png);background-repeat:no-repeat}th{text-align:left;padding:4px} code{color:#9cf}</style>
+<h1>Nautilus lighting paths</h1>
+<p>Rich, then each cheaper path, over the same three places.Regenerate with <code>DIVE3D_QUALITY_SHEET=docs/dive3d-lighting.png cargo test --release dive3d::tests::quality_sheet -- --ignored</code>.</p>
+<table><tr><th></th><th>shallows</th><th>forest</th><th>atlantis</th></tr>
+<tr><th>rich</th><td><div class=tile style="background-position:-0px -0px"></div></td><td><div class=tile style="background-position:-360px -0px"></div></td><td><div class=tile style="background-position:-720px -0px"></div></td></tr>
+<tr><th>cheap model light</th><td><div class=tile style="background-position:-0px -360px"></div></td><td><div class=tile style="background-position:-360px -360px"></div></td><td><div class=tile style="background-position:-720px -360px"></div></td></tr>
+<tr><th>cheap terrain light</th><td><div class=tile style="background-position:-0px -720px"></div></td><td><div class=tile style="background-position:-360px -720px"></div></td><td><div class=tile style="background-position:-720px -720px"></div></td></tr>
+<tr><th>both cheap</th><td><div class=tile style="background-position:-0px -1080px"></div></td><td><div class=tile style="background-position:-360px -1080px"></div></td><td><div class=tile style="background-position:-720px -1080px"></div></td></tr>
+</table>

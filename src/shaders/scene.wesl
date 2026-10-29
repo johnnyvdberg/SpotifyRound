@@ -1,5 +1,8 @@
 // The 3D dive.
 //
+// WESL links the shared functions below at build time.
+import package::common::smooth01;
+//
 // The camera sits at the salon window looking out sideways (+z), level, with
 // the Nautilus travelling along +x; the sea's surface is at y = 0 and the boat
 // moves under it, turning the view with its pitch, roll and heading (see
@@ -7,8 +10,7 @@
 // geometry with a depth buffer: a background pass for the open water, the
 // seabed lifted from a grid in the vertex shader, instanced models placed and
 // animated by Rust, translucent jellyfish, and camera-facing sprites for snow,
-// bubbles and glows. The porthole, its gauges and the bending of the glass are
-// drawn by `dive.wgsl`'s bezel and composite passes, as for the procedural dive.
+// bubbles and glows.
 //
 // Biomes, terrain height and the noise behind them mirror `dive3d/world.rs`
 // exactly, so things Rust places on the seabed stand on it.
@@ -51,6 +53,9 @@ struct Globals {
 // The surfaces, one layer each, from `textures.rs`.
 @group(0) @binding(2) var surfaces: texture_2d_array<f32>;
 @group(0) @binding(3) var surface_sampler: sampler;
+// Caustics precomputed on the CPU once, instead of a sin/pow every vertex.
+@group(0) @binding(4) var caustic_map: texture_2d<f32>;
+@group(0) @binding(5) var caustic_sampler: sampler;
 
 const RELIEF_SIZE: i32 = 512;
 // The lava cave's tunnel and the massif it runs through, as in `world.rs`.
@@ -67,9 +72,6 @@ const SURFACE_LOD: f32 = 8.0;
 // fragments before shading them only when a shader cannot discard, so every
 // model that is fully there goes through a pipeline compiled without it.
 override FADING: bool = true;
-// Whether the sea is multisampled. With one sample a fading model is blended
-// into the water in the shader; with more, alpha-to-coverage does it.
-override MULTISAMPLED: bool = false;
 // Whether this models pipeline draws things that stand on the seabed. Only
 // those need the ground under their foot, so the swimmers' pipelines leave it
 // out.
@@ -83,13 +85,13 @@ override MATERIAL: i32 = -1;
 
 // What every colour is multiplied by as it is stored: the sea is kept in ten
 // bits a channel, which hold no more than 1, so it is stored at half its
-// brightness, to keep the highlights up to 2 that the porthole's grade and
+// brightness, to keep the highlights up to 2 that the old grade and
 // its bending of the glass blend from.
 override SEA_SCALE: f32 = 1.0;
 
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
-const LEG: f32 = 3.4;
+const LEG: f32 = 5.0;
 const BLEND: f32 = 0.32;
 const BIOMES: i32 = 8;
 const SHALLOWS: i32 = 0;
@@ -149,11 +151,6 @@ fn vnoise(x: f32, z: f32, salt: u32) -> f32 {
     let c = hash(ix, iz + 1, salt);
     let d = hash(ix + 1, iz + 1, salt);
     return mix(mix(a, b, ux), mix(c, d, ux), uz);
-}
-
-fn smooth01(a: f32, b: f32, v: f32) -> f32 {
-    let t = clamp((v - a) / (b - a), 0.0, 1.0);
-    return t * t * (3.0 - 2.0 * t);
 }
 
 // Where along the voyage a point at (x, z) belongs. Biomes change along the
@@ -275,9 +272,10 @@ fn project(world: vec3<f32>) -> vec4<f32> {
 }
 
 fn caustic(p: vec2<f32>, t: f32) -> f32 {
-    let a = sin(p.x + sin(p.y * 1.3 + t));
-    let b = sin(p.y * 1.1 + sin(p.x * 0.9 - t * 0.7));
-    return pow(max(1.0 - abs(a + b) * 0.5, 0.0), 7.0);
+    // A CPU-generated tile, scrolled slowly: one texture fetch in place of
+    // the two sines and a pow of the old procedural version.
+    let uv = p * 0.030 + vec2<f32>(t * 0.006, t * -0.004);
+    return textureSampleLevel(caustic_map, caustic_sampler, uv, 0.0).r;
 }
 
 // The searchlight, mounted above the window and thrown forward and down.
@@ -293,6 +291,10 @@ fn water_at(dir: vec3<f32>) -> vec3<f32> {
     let beam = smooth01(0.80, 0.98, dot(dir, g.lamp.xyz));
     c += vec3<f32>(0.55, 0.52, 0.42) * beam * g.lamp.w * 0.10;
     return c;
+}
+
+fn switched(bit: u32) -> bool {
+    return (u32(g.counts.y) & bit) != 0u;
 }
 
 fn fog_of(distance: f32) -> f32 {
@@ -314,8 +316,10 @@ fn light_at(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let d = length(to);
     let cone = smooth01(0.82, 0.95, dot(to / d, g.lamp.xyz));
     light += vec3<f32>(1.0, 0.92, 0.76) * g.lamp.w * cone * (max(dot(n, -to / d), 0.0) * 0.8 + 0.2) / (1.0 + d * d * 0.05) * 2.2;
-    let count = i32(g.counts.x);
-    for (var i = 0; i < 8; i = i + 1) {
+    // Four nearest-enough lights are enough for the window's scale: the
+    // fifth and beyond were mostly behind the camera or beyond their range.
+    let count = min(i32(g.counts.x), 4);
+    for (var i = 0; i < 4; i = i + 1) {
         if (i >= count) {
             break;
         }
@@ -362,8 +366,8 @@ fn vs_background(@builtin(vertex_index) index: u32) -> Screen {
 }
 
 // The corners of the square the sea is drawn into lie outside the round
-// window: the porthole samples no further out than the glass's edge, bent a
-// little outward (`porthole.wgsl`), just past the square's sides. A ring from
+// window: the mask samples no further out than the glass's edge, bent a
+// little outward (the static overlay), just past the square's sides. A ring from
 // there out past the corners, at the nearest depth, is drawn before anything
 // else, so nothing behind it is shaded.
 const MASK_SEGMENTS: u32 = 64u;
@@ -387,6 +391,7 @@ fn fs_mask() -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
+@if(!full_hd)
 @fragment
 fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     let s = in.ndc * g.view.x;
@@ -397,10 +402,37 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     return vec4<f32>(water_at(dir) * SEA_SCALE, 1.0);
 }
 
+
+@if(full_hd)
+@fragment
+fn fs_background(in: Screen) -> @location(0) vec4<f32> {
+    let s = in.ndc * g.view.x;
+    let local = normalize(vec3<f32>(s, 1.0));
+    let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
+    if (switched(16u)) {
+        let col = mix(g.deep.rgb, g.water.rgb, smooth01(-0.6, 0.5, dir.y)) * g.tint.rgb;
+        return vec4<f32>(col * SEA_SCALE, 1.0);
+    }
+    var col = water_at(dir);
+    let up = smooth01(0.05, 0.65, dir.y);
+    if (up > 0.0) {
+        let t = g.camera.w;
+        let wave = sin(dir.x * 13.0 + t * 0.8 + sin(dir.z * 9.0 - t * 0.5))
+            * sin(dir.z * 10.0 - t * 0.65 + sin(dir.x * 7.0 + t * 0.4));
+        let glint = pow(max(0.0, 0.5 + 0.5 * wave), 14.0);
+        let surface = vec3<f32>(0.10, 0.32, 0.35) * (0.72 + 0.28 * wave)
+            + vec3<f32>(0.95, 0.88, 0.68) * glint * (0.35 + g.sun.w * 0.8);
+        col = mix(col, surface, up * 0.88);
+    }
+    return vec4<f32>(col * SEA_SCALE, 1.0);
+
+}
+
 // ---------------------------------------------------------------------------
 // Seabed
 // ---------------------------------------------------------------------------
 
+@if(!full_hd)
 struct Ground {
     @builtin(position) position: vec4<f32>,
     @location(0) world: vec3<f32>,
@@ -410,8 +442,14 @@ struct Ground {
     // `voyage_x` at the vertex. It bends gently, so it is worked out per
     // vertex, and only which biome it falls in is found per pixel.
     @location(3) voyage: f32,
+    // Sun, lamp, point lights and caustics at the vertex, and the albedo
+    // modifier from the fine noise, sand ripples and paving.
+    @location(4) light_scale: vec4<f32>,
+    // The lava cave's glow at the vertex.
+    @location(5) emissive: vec3<f32>,
 };
 
+@if(!full_hd)
 @vertex
 fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> Ground {
     // Built on the CPU a tile at a time, already in the world (`terrain.rs`).
@@ -420,7 +458,54 @@ fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> 
     out.normal = normal;
     out.position = project(world);
     out.fog = fog_at(world);
-    out.voyage = voyage_x(world.x, world.z);
+    let voyage = voyage_x(world.x, world.z);
+    out.voyage = voyage;
+    let l = leg(voyage);
+    let n = normalize(normal);
+    let detail = exp(-length(world - g.camera.xyz) * 0.25);
+    let steep = smooth01(0.12, 0.40, 1.0 - n.y);
+    var scale = 1.0;
+    var emissive = vec3<f32>(0.0);
+    if (!switched(8u)) {
+        var scale = 1.0;
+        if (detail > 0.02) {
+            scale *= mix(1.0, 0.65 + 0.5 * vnoise(world.x * 14.0, world.z * 14.0, 9u), detail * (1.0 - steep));
+            let sand = presence(l, SHALLOWS) + 0.5 * presence(l, FOREST) + 0.5 * presence(l, ARCTIC);
+            if (sand > 0.0) {
+                let ripple = sin((world.x * 0.8 + world.z) * 26.0 + vnoise(world.x * 3.0, world.z * 3.0, 5u) * 4.0);
+                scale *= 1.0 - 0.16 * sand * detail * smooth01(0.3, 1.0, ripple);
+            }
+        }
+        let paving = presence(l, ATLANTIS);
+        if (paving > 0.0) {
+            let row = floor(world.z * 4.0);
+            let joint = min(abs(fract(world.x * 3.0 + row * 0.5) - 0.5), abs(fract(world.z * 4.0) - 0.5));
+            scale *= 1.0 - paving * 0.45 * smooth01(0.45, 0.5, joint) * detail;
+        }
+        var emissive = vec3<f32>(0.0);
+        let cave = presence(l, CAVE);
+        if (cave > 0.0) {
+            let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + world.x * 3.0) * sin(g.camera.w * 2.9 + world.z * 2.0);
+            let veins = 1.0 - smooth01(0.0, 0.04, abs(vnoise(world.x * 1.4, world.z * 1.9, 6u) - 0.5));
+            var fine = 0.0;
+            if (detail > 0.01) {
+                fine = (1.0 - smooth01(0.0, 0.03, abs(vnoise(world.x * 4.0, world.z * 5.0, 7u) - 0.5))) * detail;
+            }
+            let pools = smooth01(0.66, 0.74, vnoise(world.x * 0.55 + 7.0, world.z * 0.55, 8u));
+            emissive = vec3<f32>(1.0, 0.36, 0.07) * (veins * 0.9 + fine * 0.5 + pools * 1.4) * flicker * cave * (1.0 - steep);
+        }
+    }
+    if (switched(8u)) {
+        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
+        let cheap = g.tint.rgb * (
+            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
+            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
+        );
+        out.light_scale = vec4<f32>(cheap, 1.0);
+    } else {
+        out.light_scale = vec4<f32>(light_at(world, n), scale);
+    }
+    out.emissive = emissive;
     return out;
 }
 
@@ -444,6 +529,7 @@ fn surface_of(l: Leg) -> vec2<i32> {
     return vec2<i32>(layers[l.a], layers[l.b]);
 }
 
+@if(!full_hd)
 @fragment
 fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     let p = in.world;
@@ -467,40 +553,79 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     let texture = (flat_a + flat_b + side_x + side_z) * TEXTURE_RANGE;
     var albedo = floor_albedo(l) * mix(vec3<f32>(1.0), texture, 0.85);
     albedo = mix(albedo, vec3<f32>(0.22, 0.21, 0.20) * texture, steep * 0.6);
-    let distance = length(p - g.camera.xyz);
-    let detail = exp(-distance * 0.25);
-    // Fine detail fades out with distance, and the water all but hides the
-    // seabed by then: past about sixteen units it would change no pixel by
-    // so much as a step of the panel's, so its noise is left out there.
-    let near = detail > 0.02;
-    if (near) {
-        albedo *= mix(1.0, 0.65 + 0.5 * vnoise(p.x * 14.0, p.z * 14.0, 9u), detail * (1.0 - steep));
+    albedo *= in.light_scale.w;
+    let colour = albedo * in.light_scale.xyz + in.emissive;
+    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 1.0);
+}
+
+
+// The full-HD profile shades at 1080 × 1080, so the seabed gets a single
+// texture lookup and a light worked out per vertex: no triplanar projections,
+// no point-light loop, no lava noise. WESL leaves this out of the 448 build.
+@if(full_hd)
+struct Ground {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) light: vec3<f32>,
+    @location(2) albedo: vec3<f32>,
+    @location(3) fog: vec4<f32>,
+    @location(4) @interpolate(flat) layer: i32,
+    @location(5) lod: f32,
+};
+
+@if(full_hd)
+@vertex
+fn vs_terrain(
+    @location(0) world: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) baked: vec4<f32>,
+    @location(3) shade: vec4<f32>,
+    @location(4) glow: vec4<f32>,
+) -> Ground {
+    var out: Ground;
+    out.position = project(world);
+    out.fog = fog_at(world);
+    out.uv = world.xz * 1.3;
+    out.layer = i32(baked.w + 0.5);
+    out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
+    let n = normalize(normal);
+    // The tile carries its floor's colour, detail and veins at full strength
+    // (`terrain::build`); the distance only says how much of the fine detail
+    // shows, and the cave's glow still breathes with the clock.
+    let detail = exp(-length(world - g.camera.xyz) * 0.25);
+    var scale = mix(1.0, shade.x, detail * shade.y);
+    scale *= 1.0 - shade.z * detail;
+    scale *= 1.0 - shade.w * detail;
+    let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + world.x * 3.0) * sin(g.camera.w * 2.9 + world.z * 2.0);
+    out.albedo = baked.rgb * scale + glow.rgb * (flicker * 0.35);
+    if (switched(8u)) {
+        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
+        out.light = g.tint.rgb * (
+            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
+            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
+        );
+    } else {
+        out.light = light_at(world, n);
     }
-    let sand = presence(l, SHALLOWS) + 0.5 * presence(l, FOREST) + 0.5 * presence(l, ARCTIC);
-    if (sand > 0.0 && near) {
-        let ripple = sin((p.x * 0.8 + p.z) * 26.0 + vnoise(p.x * 3.0, p.z * 3.0, 5u) * 4.0);
-        albedo *= 1.0 - 0.16 * sand * detail * smooth01(0.3, 1.0, ripple);
+    return out;
+}
+
+@if(full_hd)
+@fragment
+fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
+    var texture = vec3<f32>(0.6);
+    if (!PLAIN_TEXTURES) {
+        texture = textureSampleLevel(
+            surfaces,
+            surface_sampler,
+            in.uv,
+            in.layer,
+            in.lod,
+        ).rgb * TEXTURE_RANGE;
     }
-    let paving = presence(l, ATLANTIS);
-    if (paving > 0.0) {
-        let row = floor(p.z * 4.0);
-        let joint = min(abs(fract(p.x * 3.0 + row * 0.5) - 0.5), abs(fract(p.z * 4.0) - 0.5));
-        albedo *= 1.0 - paving * 0.45 * smooth01(0.45, 0.5, joint) * detail;
-    }
-    var colour = albedo * light_at(p, n);
-    // The lava cave's floor: a crust of basalt over molten rock.
-    let cave = presence(l, CAVE);
-    if (cave > 0.0) {
-        let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + p.x * 3.0) * sin(g.camera.w * 2.9 + p.z * 2.0);
-        let veins = 1.0 - smooth01(0.0, 0.04, abs(vnoise(p.x * 1.4, p.z * 1.9, 6u) - 0.5));
-        var fine = 0.0;
-        if (detail > 0.01) {
-            fine = (1.0 - smooth01(0.0, 0.03, abs(vnoise(p.x * 4.0, p.z * 5.0, 7u) - 0.5))) * detail;
-        }
-        let pools = smooth01(0.66, 0.74, vnoise(p.x * 0.55 + 7.0, p.z * 0.55, 8u));
-        // Lava lies on the level; on a slope it would only smear.
-        colour += vec3<f32>(1.0, 0.36, 0.07) * (veins * 0.9 + fine * 0.5 + pools * 1.4) * flicker * cave * (1.0 - steep);
-    }
+    var albedo = in.albedo * mix(vec3<f32>(1.0), texture, 0.85);
+    var colour = albedo * in.light;
+
     return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 1.0);
 }
 
@@ -527,6 +652,13 @@ struct Instance {
     @location(9) extra: vec4<f32>,
     // x: texture layer; y: repeats per unit; z: 1 for the model's own space.
     @location(10) surface: vec4<f32>,
+    // rgb: the seabed's colour under the model, from the CPU.
+    @location(11) floor: vec4<f32>,
+    // The cofactor matrix's columns, from the CPU: a normal times this is the
+    // world normal, however the instance is scaled.
+    @location(12) nm0: vec4<f32>,
+    @location(13) nm1: vec4<f32>,
+    @location(14) nm2: vec4<f32>,
 };
 
 struct Lit {
@@ -540,9 +672,12 @@ struct Lit {
     @location(6) local_normal: vec3<f32>,
     @location(7) @interpolate(flat) surface: vec4<f32>,
     @location(8) @interpolate(flat) fade: f32,
-    // The seabed's height under a grounded model, for bedding its foot in the
-    // sand. `world::build` fills it in once per instance.
+    // The seabed's height under a grounded model, and the colour of the sand
+    // there. `world::build` finds both once per instance; the height is kept
+    // per pixel, because interpolating the burial across a tall triangle would
+    // spread the foot's blend all the way up it.
     @location(9) floor_y: f32,
+    @location(11) @interpolate(flat) floor: vec3<f32>,
     // `fog_at` the vertex.
     @location(10) fog: vec4<f32>,
 };
@@ -584,11 +719,8 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
 fn vs_model(v: Model, i: Instance) -> Lit {
     let p = animate(v.pos, v.aux, i.anim);
     let world = vec3<f32>(dot(i.m0, vec4<f32>(p, 1.0)), dot(i.m1, vec4<f32>(p, 1.0)), dot(i.m2, vec4<f32>(p, 1.0)));
-    // Normals by the cofactor matrix, which is right for any scale.
-    let c0 = vec3<f32>(i.m0.x, i.m1.x, i.m2.x);
-    let c1 = vec3<f32>(i.m0.y, i.m1.y, i.m2.y);
-    let c2 = vec3<f32>(i.m0.z, i.m1.z, i.m2.z);
-    let n = cross(c1, c2) * v.normal.x + cross(c2, c0) * v.normal.y + cross(c0, c1) * v.normal.z;
+    // Normals by the cofactor matrix, which the CPU crosses for the instance.
+    let n = i.nm0.xyz * v.normal.x + i.nm1.xyz * v.normal.y + i.nm2.xyz * v.normal.z;
     var out: Lit;
     out.position = project(world);
     out.world = world;
@@ -601,9 +733,23 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.surface = i.surface;
     out.fade = i.extra.z;
     out.fog = fog_at(world);
-    // `world::build` fills this in for models that stand on the seabed, so the
-    // vertex shader does not have to find the ground under every vertex.
+    // The GPU path: sun, lamp, point lights and caustics at the vertex.
+    var light = vec3<f32>(0.0);
+    if (switched(4u)) {
+        let light_n = normalize(n);
+        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
+        light = g.tint.rgb * (
+            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(light_n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
+            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (light_n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
+        );
+    } else {
+        light = light_at(world, normalize(n));
+    }
+    out.albedo *= light;
+    // `world::build` finds the ground and the sand's colour under the model,
+    // once per instance.
     out.floor_y = i.extra.w;
+    out.floor = i.floor.rgb;
     // The tunnel's vertices carry their height over its floor and how dark
     // their rock is in `aux`, and the light its passages throw on them as
     // their colour (`world::tunnel`).
@@ -657,6 +803,8 @@ fn triplanar(at: vec3<f32>, facing: vec3<f32>, layer: i32) -> vec3<f32> {
 // The lava cave's tunnel and its passages (`world::tunnel`), a material of
 // its own: its pipeline compiles only this, and no other pays for it.
 const VAULT: i32 = 5;
+// The sea's underside, at the surface plane (`world::planes`).
+const SURFACE: i32 = 4;
 
 // The tunnel's rock: basalt laid down flow on flow, wet where the
 // searchlight catches it, glowing red low down where the lava lights it and
@@ -695,6 +843,7 @@ fn vault(in: Lit) -> vec3<f32> {
     return colour;
 }
 
+@if(!full_hd)
 @fragment
 fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     if (MATERIAL == VAULT) {
@@ -718,18 +867,17 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // Only the foot: the rest of the model, most of its pixels, skips finding
     // the biome, which costs five sines a pixel.
     if (GROUNDED) {
-        let floor_y = in.floor_y;
-        let buried = 1.0 - smooth01(floor_y + 0.005, floor_y + 0.05, p.y);
+        let buried = 1.0 - smooth01(in.floor_y + 0.005, in.floor_y + 0.05, p.y);
         if (buried > 0.0) {
-            let l = leg(voyage_x(p.x, p.z));
-            albedo = mix(albedo, floor_albedo(l) * 0.9, buried * 0.85);
+            albedo = mix(albedo, in.floor, buried * 0.85);
         }
     }
     var colour = albedo * light_at(p, n);
     colour += in.albedo * in.glow;
     let t = g.camera.w;
-    // Fading things out as their biome passes: at one sample they melt into
-    // the water, at more the multisampling carries fractional coverage.
+    // Fading things out as their biome passes: the pipeline blends the
+    // coverage over the water when there is one sample, or alpha-to-coverage
+    // carries it when there are more.
     var coverage = in.fade;
     switch (select(in.material, u32(MATERIAL), MATERIAL >= 0)) {
         // Pillow lava, molten through its cracks.
@@ -769,19 +917,13 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         if (coverage <= 0.01) {
             discard;
         }
-        // One sample cannot carry fractional coverage: melt the model into the
-        // water it would have shown instead, which is what the eye sees through
-        // a partly covered pixel.
-        if (!MULTISAMPLED) {
-            colour = mix(in.fog.rgb, colour, coverage);
-            coverage = 1.0;
-        }
     }
     return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, coverage);
 }
 
 // Translucent models — jellyfish bells and tentacles — add light, brightest at
 // their rims, and fade with distance.
+@if(!full_hd)
 @fragment
 fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
     let p = in.world;
@@ -791,6 +933,133 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
     let lit = light_at(p, v) * 0.25 + vec3<f32>(0.3);
     let glow = in.albedo * (0.15 + 0.85 * rim * rim) * lit + in.albedo * in.glow;
     return vec4<f32>(glow * in.fade * (1.0 - fog_of(length(p - g.camera.xyz))) * SEA_SCALE, 0.0);
+}
+
+
+// The full-HD profile's models: one texture projection, a sun/ambient light
+// worked out per pixel, no point-light loop, caustics, triplanar blend or
+// per-material switch. Enough for the silhouette and colour; the 448 build
+// keeps the full shading.
+@if(full_hd)
+@fragment
+fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // The surface plane: a moving swell on the underside of the sea. The
+    // branch is a pipeline constant, so only the surface pipeline carries it.
+    if (MATERIAL == SURFACE) {
+        let p = in.world;
+        let t = g.camera.w;
+        let swell = sin(p.x * 3.4 + t * 0.55)
+            + 0.7 * sin(p.z * 2.9 - t * 0.47)
+            + 0.35 * sin((p.x + p.z) * 7.3 + t * 1.3);
+        let chop = sin(p.x * 9.0 - p.z * 6.5 - t * 1.1);
+        let slope = vec2<f32>(
+            cos(p.x * 3.4 + t * 0.55) * 3.4
+                + cos((p.x + p.z) * 7.3 + t * 1.3) * 2.6,
+            cos(p.z * 2.9 - t * 0.47) * 2.0
+                + cos((p.x + p.z) * 7.3 + t * 1.3) * 2.6,
+        );
+        let n = normalize(vec3<f32>(-slope.x * 0.012, 1.0, -slope.y * 0.012));
+        let sun = max(dot(n, g.sun.xyz), 0.0);
+        let glint = pow(max(0.0, 0.5 + 0.5 * chop), 18.0);
+        let base = mix(
+            vec3<f32>(0.08, 0.22, 0.24),
+            vec3<f32>(0.32, 0.62, 0.62),
+            0.5 + 0.25 * swell,
+        );
+        let colour = base * (0.35 + sun * 0.9 + g.sun.w * 0.35)
+            + vec3<f32>(1.0, 0.92, 0.72) * glint * (0.5 + g.sun.w);
+        return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 1.0);
+    }
+    let p = in.world;
+    let n = normalize(in.normal);
+    let carried = in.surface.z > 0.5;
+    let uv = select(p, in.local, carried) * in.surface.y;
+    let layer = i32(in.surface.x + 0.5);
+    let distance = length(p - g.camera.xyz);
+    let lod = clamp(log2(distance * 3.0), 0.0, 8.0);
+    var texture = vec3<f32>(0.6);
+    if (!PLAIN_TEXTURES) {
+        texture = textureSampleLevel(
+            surfaces,
+            surface_sampler,
+            uv.xz,
+            layer,
+            lod,
+        ).rgb * TEXTURE_RANGE;
+    }
+    var albedo = in.albedo * texture;
+    // Bedded in the sand: the foot of anything on the seabed takes its colour.
+    if (GROUNDED) {
+        let buried = 1.0 - smooth01(in.floor_y + 0.005, in.floor_y + 0.05, p.y);
+        if (buried > 0.0) {
+            albedo = mix(albedo, in.floor, buried * 0.85);
+        }
+    }
+    var colour = albedo + in.albedo * in.glow;
+    let t = g.camera.w;
+    if (MATERIAL == VAULT) {
+        // Cheap tunnel light: baked passage colour, a banded rock tone, a low
+        // lava glow and a wet searchlight glint. No extra texture taps or
+        // noise over the full-screen tunnel.
+        let above = in.local.x;
+        let band = 0.80 + 0.20 * sin(p.y * 21.0 + sin(p.x * 3.0) * 2.0);
+        let glow = (1.0 - smooth01(0.0, 1.2, above)) * (0.8 + 0.2 * sin(t * 1.9 + p.x));
+        colour *= band * 1.15;
+        colour += in.local_normal * 0.40;
+        colour += vec3<f32>(0.45, 0.10, 0.02) * glow * 0.8;
+        let h = normalize(normalize(g.camera.xyz - p) - g.lamp.xyz);
+        colour += vec3<f32>(0.85, 0.82, 0.75) * pow(max(dot(n, h), 0.0), 20.0) * g.lamp.w * 0.3;
+    }
+    var coverage = in.fade;
+    switch (select(in.material, u32(MATERIAL), MATERIAL >= 0)) {
+        // Pillow lava, molten through its cracks.
+        case 1u: {
+            let crack = 1.0 - smooth01(0.0, 0.05, abs(vnoise(in.local.x * 6.0 + in.local.y * 3.0, in.local.z * 6.0, 11u) - 0.5));
+            colour += vec3<f32>(1.0, 0.38, 0.08) * crack * smooth01(0.3, -0.5, in.local.y) * (0.8 + 0.2 * sin(t * 2.0));
+        }
+        // Copper and brass: a hot specular highlight from the searchlight.
+        case 2u: {
+            let h = normalize(normalize(g.camera.xyz - p) - g.lamp.xyz);
+            colour += vec3<f32>(1.0, 0.75, 0.45) * pow(max(dot(n, h), 0.0), 24.0) * (0.3 + g.lamp.w);
+        }
+        // Gold, glittering.
+        case 8u: {
+            let sparkle = pow(fract(sin(dot(floor(p * 140.0), vec3<f32>(12.9, 78.2, 37.7)) + floor(t * 3.0)) * 43758.5), 20.0);
+            colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
+        }
+        // The pack ice from below: floes glowing with daylight, open leads.
+        case 6u: {
+            let l = leg(voyage_x(p.x, p.z));
+            coverage = smooth01(0.35, 0.65, presence(l, ARCTIC));
+            let floes = vnoise(p.x * 0.9, p.z * 1.3, 14u);
+            let lead = 1.0 - smooth01(0.02, 0.06, abs(vnoise(p.x * 0.35 + 3.0, p.z * 0.08, 15u) - 0.5));
+            let bumps = vnoise(p.x * 6.0, p.z * 6.0, 16u);
+            colour = vec3<f32>(0.30, 0.56, 0.64) * (0.65 + 0.35 * bumps + 0.45 * floes);
+            colour = mix(colour * texture, vec3<f32>(0.70, 0.95, 1.00), lead) * (0.70 + 0.9 * g.sun.w);
+        }
+        default: {}
+    }
+    if (FADING) {
+        if (coverage <= 0.01) {
+            discard;
+        }
+    }
+    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, coverage);
+}
+
+@if(full_hd)
+@fragment
+fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
+    let p = in.world;
+    let n = normalize(in.normal);
+    let v = normalize(g.camera.xyz - p);
+    let rim = 1.0 - abs(dot(n, v));
+    let colour = in.albedo * (0.2 + 0.8 * rim * rim) * 1.25
+        + in.albedo * in.glow;
+    return vec4<f32>(
+        mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE,
+        0.0,
+    );
 }
 
 // ---------------------------------------------------------------------------

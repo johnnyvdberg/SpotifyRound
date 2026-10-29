@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libwayland-dev \
         libegl1-mesa-dev libgl1-mesa-dev \
         libseat-dev libinput-dev libudev-dev \
+        clang libclang-dev \
         libvulkan1 vulkan-tools libdrm2 libexpat1 zlib1g libzstd1 \
     && rm -rf /var/lib/apt/lists/*
 

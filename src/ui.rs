@@ -160,10 +160,6 @@ pub trait WindowExt: Sized {
     fn set_idle_frames(&self, textures: Vec<Option<slint::wgpu_30::wgpu::Texture>>);
     /// Show one of the frames installed by `set_idle_frames`.
     fn show_idle_frame(&self, index: usize);
-    /// Lay a scene's static full-resolution layer over its frame.
-    fn set_idle_overlay(&self, texture: Option<wgpu::Texture>);
-    /// Lay the two gauge needles over the frame and its overlay.
-    fn show_idle_needles(&self, textures: [Option<wgpu::Texture>; 2]);
     /// The visualizer's frames in the last second, the mean time its thread
     /// spent on each and the mean time each took on the GPU, in ms.
     fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32);
@@ -286,9 +282,6 @@ impl WindowExt for AppWindow {
         // the old one is never stretched to the new scene's size while the
         // renderer draws the first new frame.
         idle.set_frame(slint::Image::default());
-        idle.set_bezel(slint::Image::default());
-        idle.set_needle_depth(slint::Image::default());
-        idle.set_needle_log(slint::Image::default());
     }
 
     #[cfg(test)]
@@ -330,18 +323,6 @@ impl WindowExt for AppWindow {
         if let Some(frame) = idle.get_frames().row_data(index) {
             idle.set_frame(frame);
         }
-    }
-
-    fn set_idle_overlay(&self, texture: Option<wgpu::Texture>) {
-        self.global::<Idle>()
-            .set_bezel(texture.map_or_else(slint::Image::default, texture_image));
-    }
-
-    fn show_idle_needles(&self, textures: [Option<wgpu::Texture>; 2]) {
-        let [depth, log] = textures;
-        let idle = self.global::<Idle>();
-        idle.set_needle_depth(depth.map_or_else(slint::Image::default, texture_image));
-        idle.set_needle_log(log.map_or_else(slint::Image::default, texture_image));
     }
 
     fn set_pulse(&self, value: f32) {
@@ -505,18 +486,6 @@ impl WindowExt for AppWindow {
     }
 }
 
-/// Wrap a render target as a Slint image, warning once if the renderer cannot
-/// take it. Kept on the UI thread because `slint::Image` is not `Send`.
-fn texture_image(texture: wgpu::Texture) -> slint::Image {
-    match slint::Image::try_from(texture) {
-        Ok(image) => image,
-        Err(err) => {
-            tracing::warn!(%err, "cannot wrap a visualizer layer");
-            slint::Image::default()
-        }
-    }
-}
-
 /// Offscreen renderer for design review: `cargo test -- --ignored preview`.
 #[cfg(test)]
 mod preview {
@@ -582,9 +551,9 @@ mod preview {
             .unwrap()
     }
 
-    /// Paint out everything the round bezel hides, so the previews show exactly
+    /// Paint out everything outside the round panel, so the previews show exactly
     /// what the display can draw.
-    fn cover_round_bezel(image: &mut image::RgbaImage) {
+    fn cover_round_window(image: &mut image::RgbaImage) {
         let centre = SIZE as f32 / 2.0;
         for (x, y, pixel) in image.enumerate_pixels_mut() {
             let dx = x as f32 + 0.5 - centre;
@@ -616,7 +585,7 @@ mod preview {
             .flat_map(|pixel| [pixel.r, pixel.g, pixel.b, 255])
             .collect();
         let mut image = image::RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap();
-        cover_round_bezel(&mut image);
+        cover_round_window(&mut image);
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/preview");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{name}.png"));

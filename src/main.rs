@@ -1,3 +1,9 @@
+#[cfg(not(feature = "full-hd"))]
+compile_error!(
+    "The Nautilus dive is a 1080 x 1080-only profile now. Build with the \
+     `full-hd` feature (it is on by default)."
+);
+
 mod app;
 mod artwork;
 mod browser;
@@ -10,7 +16,6 @@ mod gpu;
 #[cfg(test)]
 mod gpu_cost;
 mod motion;
-mod porthole;
 mod ring;
 mod service;
 mod ui;
