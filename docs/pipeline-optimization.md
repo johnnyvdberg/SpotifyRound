@@ -1985,3 +1985,32 @@ for the static cells beyond the camera cell, and the packing/UI/resolution
 items.
 
 ![full cell cache: current / full cache / difference](branch-full-cell-cache.png)
+
+## 47. Nine placers cached: -0.52 ms mean on the Pi, pixel-identical
+
+The kelp and forest were already `anim::SWAY` at their placement — the last
+`w.t` sway moved to the shader in §27 was the rocks' — so they joined the
+cache with no code changes beyond the table:
+
+- static (per 0.2-unit cell): rocks, gardens, wrecks, trench, ruins, cave,
+  polar, kelp, forest;
+- per-frame dynamic: planes, tunnel, vents, ice, divers, shoals,
+  great_swimmers, gliders, squid, drifters, submarines, shafts, particles.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: **8.489 ms** vs 8.788 (seven-placer) and 9.011 (pre-cache); shallows
+  9.947 vs 10.261, forest 9.900 vs 10.158, trench 7.505 vs 7.717, abyss 6.322
+  vs 6.863; scene building 1.582 vs 1.534 (the rebuild's nine placers + the
+  copy).
+
+So the cache's total is **-0.52 ms mean** against the pre-cache baseline at
+these counts, with the pixels untouched, and it scales with the count: the
+nine static placers are the audit's bulk of the CPU placement, and the copy
+stays proportional to the visible set. The planes/ice follow the camera and
+stay per-frame; the tunnel has its own span cache.
+
+Next: chunk streaming for the static cells beyond the camera cell (so a
+larger static set can be cached for the voyage rather than one cell), and the
+packing/UI/resolution items.
+
+![nine-placer cache: seven / nine / difference](branch-nine-placer-cache.png)

@@ -1266,7 +1266,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // The placers whose every placement-time and sprite-time motion is now
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body and the four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 7] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 9] = [
         (rocks, None),
         (gardens, None),
         (wrecks, wood),
@@ -1274,11 +1274,11 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (ruins, marble),
         (cave, rock),
         (polar, None),
-    ];
-    let steps: [(Placer, Option<[f32; 4]>); 15] = [
-        (planes, None),
         (kelp, None),
         (forest, algae),
+    ];
+    let steps: [(Placer, Option<[f32; 4]>); 13] = [
+        (planes, None),
         (tunnel, None),
         (vents, basalt),
         (ice, None),
@@ -1293,13 +1293,12 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 7] =
-        ["rocks", "gardens", "wrecks", "trench", "ruins", "cave", "polar"];
+    const STATIC_NAMES: [&str; 9] = [
+        "rocks", "gardens", "wrecks", "trench", "ruins", "cave", "polar", "kelp", "forest",
+    ];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 15] = [
+    const STEP_NAMES: [&str; 13] = [
         "planes",
-        "kelp",
-        "forest",
         "tunnel",
         "vents",
         "ice",
