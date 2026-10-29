@@ -1425,3 +1425,32 @@ the shell hinge is done, the rocks' sway is already in the shader, and the
 trench light / wreck-ruin flicker / polar phases remain.
 
 The branch is **not kept**; the image is `branch-cache-subset.png`.
+
+## 25. Placements cache without the per-frame cull is a loss
+
+The revised design was tried: the static placers (gardens + wrecks) run in a
+cache pass with `visible` deferred and the cells widened by a 12-unit margin,
+and the cached placements are copied every frame without a frame cull, relying
+on the GPU to clip. The pixels move a little (**mean 0.19/255, max 92**) and
+the frame gets **worse**: **9.124 ms** vs 8.706 mean, with **2048** instances at
+the shallows vs 1463, scene building 1.695 vs 1.457.
+
+The arithmetic is the lesson:
+
+- the cache saves the gardens+wrecks placement (~0.02 ms M1 / ~0.05 Pi);
+- the 40% extra instances cost staging, draws and vertices — the Pi's ~0.4 ms
+  — because they are still staged and submitted; the GPU's clipping is not
+  free on this part.
+
+So the per-frame cull over the cached placements is not an optimization on top
+of the design; it is part of it. The next attempt keeps the wide placement
+cache but, per frame, tests each cached instance against the window (a
+conservative radius) and copies only those into the frame — the audit's
+"iterate only visible chunks, cull, patch extra[2], and copy". That was not
+built here; the branch is **not kept**, the image is
+`branch-placements-cache.png`.
+
+The static-cache path in short: shell hinge done, rocks' sway already shader;
+remaining animation moves are the trench light, wreck/ruin flicker, polar
+phases; then the placements cache with the per-frame cull; then chunk
+streaming.
