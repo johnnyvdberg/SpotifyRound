@@ -386,3 +386,66 @@ on the kiosk. The useful next step is not more micro-optimisation but keeping
 the deployed binary current — the kiosk had been running a pre-recovery build
 with a 4 ms scene thread.
 
+
+## 8. What 90 fps would take
+
+**The panel first.** The kiosk's EDID detailed timing is 85.5 MHz over
+1280 × 1112 totals for 1080 × 1080 active: **60.07 Hz**. `app::TARGET_FPS` is
+60 for that reason, and the tick, the globe and the progress ring all follow
+it. This display cannot present 90 fps; that needs a 90 Hz panel or mode, and
+the pacing constant has to follow it. Everything below is what the renderer
+would have to cost to be 90 Hz-capable.
+
+**Budget.** 90 Hz is 11.1 ms a frame, including Slint's composite of the sea
+texture. The V3D has no timer queries, so the composite is not measured
+separately; keep about 1–1.5 ms for it and aim the dive at **9.5–10 ms** of GPU
+work.
+
+**Resolution is the lever that reaches it.** `DIVE3D_SCALE` renders the pass
+into a fraction of the panel (`frame_time`, serial, `DIVE3D_SCALE=n`). The
+target and the clear stay 1080² in this probe, so a real smaller target saves a
+little more than these numbers show, and the ~1.4 ms CPU build is included but
+overlaps the GPU in the app:
+
+| scale | target | mean | forest | shallows |
+|---|---|---|---|---|
+| 1.0 | 1080² | 10.48 | 12.99 | 13.52 |
+| 0.9 | 972² | 9.38 | 12.02 | 12.03 |
+| 0.833 | 900² | 8.70 | 11.31 | 11.18 |
+| 0.75 | 810² | 7.80 | 10.46 | 9.99 |
+| 0.667 | 720² | 7.09 | 9.70 | 9.03 |
+
+At 900² the worst leg is 11.3 serial, or about 9.9 ms of GPU after the build
+comes out — borderline once the UI is added. At 810² the worst is 10.5 serial,
+about 9.1 GPU, which leaves the ~1.5 ms the UI may need. 720² is comfortable.
+The cost is softness: 900² is a 17% linear drop from the panel, 810² is 25%,
+720² is 33%; only the sea is scaled, the UI stays native. The design had no
+smaller profile on purpose, so this is a product decision.
+
+**The other levers, for margin or to avoid scaling.** None is free; the
+measured ones are small:
+- Model fragments re-light per pixel, four point lights included, although
+  `vs_model` already applies the same lights per vertex. A pipeline variant
+  that drops the point-light loop from the fragment `light_at` is the largest
+  fragment cut left; it changes how the four point lights fall across a model
+  (per-vertex instead of per-pixel), so measure it with a frame diff.
+- LOD `2,18` saves 0.14 mean / 0.25 forest, `4,12` 0.3 / 0.6, both with edge
+  changes and more popping.
+- The whole water pass is 0.35 ms, so cutting its 266 instructions saves at
+  most ~0.2.
+- Terrain is 1.43 ms. `vs_terrain` is 46 temps at 2 threads; fewer attributes
+  is the only way to 4 threads, worth perhaps 0.2–0.4. Coarser far tiles save
+  0.2–0.3 and show.
+- Sprites and sun shafts are ~0.5 ms together; dropping the shafts at 90 Hz is
+  ~0.15.
+- The 0.46 ms clear is not reducible: a load was measured slower.
+
+**What will not help:** batching the draws (~0.1 ms for all 260), submission
+(0.05 ms), the texture handoff (an import), and the CPU build (1.4 ms,
+overlapped; the app's 3.1–3.8 ms is contention, and at 90 Hz two frames in
+flight give it 22 ms).
+
+**At 1080²** the safe levers total well under a millisecond, so 90 fps on the
+full panel is out of reach without giving up per-pixel point lighting or
+terrain detail. The practical path is **810², `TARGET_FPS` from the panel, a
+90 Hz mode**, and then 720² if the composite eats the margin.

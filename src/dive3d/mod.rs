@@ -316,6 +316,8 @@ mod part {
     /// Not a part: draw the models into a quarter of the pixels, everything
     /// else unchanged, to price the models' fragments against their geometry.
     pub const QUARTER_MODELS: u32 = 1 << 17;
+    /// Not a part: leave the open water out, to price its full-screen pass.
+    pub const BACKGROUND: u32 = 1 << 18;
 }
 
 /// Shader switches for the benchmark, as `counts.y` bits (see `debug` in
@@ -1400,6 +1402,16 @@ impl Nautilus {
                 #[cfg(not(test))]
                 let group = &this.group;
                 pass.set_bind_group(0, group, &[]);
+                // Test builds can render the whole pass at a fraction of the
+                // panel, to price a resolution the way `DIVE3D_SCALE` asks.
+                #[cfg(test)]
+                let scale = draw_scale();
+                #[cfg(not(test))]
+                let scale = 1.0f32;
+                let wide = SEA as f32 * scale;
+                if scale < 1.0 {
+                    pass.set_viewport(0.0, 0.0, wide, wide, 0.0, 1.0);
+                }
                 if this.skips(part::QUARTER) {
                     let half = SEA as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
@@ -1466,8 +1478,10 @@ impl Nautilus {
                 // The open water, before the things that fade into it: it
                 // shades only the pixels nothing solid has covered, and the
                 // fading models blend over it.
-                pass.set_pipeline(&this.background);
-                pass.draw(0..3, 0..1);
+                if !this.skips(part::BACKGROUND) {
+                    pass.set_pipeline(&this.background);
+                    pass.draw(0..3, 0..1);
+                }
                 if this.skips(part::QUARTER_MODELS) {
                     let half = SEA as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
@@ -1600,6 +1614,21 @@ impl Visual for Nautilus {
 /// The pixel limits [`level_of`] picks a coarser model under. Test builds can
 /// override them with `DIVE3D_LOD=error,edge` to price a looser selection
 /// without a rebuild.
+/// The fraction of the panel a test build renders into (`DIVE3D_SCALE`), for
+/// pricing resolution without a rebuild. Production always draws it whole.
+#[cfg(test)]
+fn draw_scale() -> f32 {
+    use std::sync::OnceLock;
+    static SCALE: OnceLock<f32> = OnceLock::new();
+    *SCALE.get_or_init(|| {
+        std::env::var("DIVE3D_SCALE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .unwrap_or(1.0)
+            .clamp(0.25, 1.0)
+    })
+}
+
 fn lod_limits() -> (f32, f32) {
     #[cfg(test)]
     {
@@ -2019,6 +2048,7 @@ mod tests {
             ("full detail", part::FULL_DETAIL),
             ("coarsest detail", part::COARSE_DETAIL),
             ("empty model draws", part::DRAW_CALLS),
+            ("no water", part::BACKGROUND),
             ("quarter model pixels", part::QUARTER_MODELS),
             ("cheap models", part::CHEAP_MODELS),
             ("cheap terrain", part::CHEAP_TERRAIN),
