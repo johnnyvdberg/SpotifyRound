@@ -56,10 +56,6 @@ pub struct Instance {
     /// the same table as `floor_albedo` in `scene.wesl`, worked out once here
     /// rather than looked up through a dynamic table in every pixel.
     pub floor: [f32; 4],
-    /// The cofactor matrix's columns: what a normal has to be multiplied by
-    /// when the instance may be scaled unevenly. Three crosses per vertex on
-    /// the GPU became three multiplies here.
-    pub normal: [[f32; 4]; 3],
 }
 
 /// The floor's colour in each biome, as `floor_albedo` in `scene.wesl`.
@@ -1070,31 +1066,11 @@ pub fn build(world: &World, frame: &mut Frame) {
     // with the ground under it. Once per instance is enough: a rock, a tree or
     // a diver stands on the height at its foot, and this keeps the texture
     // lookups and noise out of every vertex of every model. The sand's colour
-    // comes from the same place, and so does the normal matrix, so no pixel has
-    // to look up which biome it is in and no vertex has to cross it.
+    // comes from the same place, so no pixel has to look up which biome it is
+    // in to blend the foot in.
     for list in frame.solid.iter_mut().chain(frame.glass.iter_mut()) {
         for instance in list.iter_mut() {
             let r = instance.rows;
-            let c = [
-                [r[0][0], r[1][0], r[2][0]],
-                [r[0][1], r[1][1], r[2][1]],
-                [r[0][2], r[1][2], r[2][2]],
-            ];
-            let cross = |a: [f32; 3], b: [f32; 3]| {
-                [
-                    a[1] * b[2] - a[2] * b[1],
-                    a[2] * b[0] - a[0] * b[2],
-                    a[0] * b[1] - a[1] * b[0],
-                ]
-            };
-            let n0 = cross(c[1], c[2]);
-            let n1 = cross(c[2], c[0]);
-            let n2 = cross(c[0], c[1]);
-            instance.normal = [
-                [n0[0], n0[1], n0[2], 0.0],
-                [n1[0], n1[1], n1[2], 0.0],
-                [n2[0], n2[1], n2[2], 0.0],
-            ];
             if instance.extra[1] > 0.5 {
                 let (x, z) = (r[0][3], r[2][3]);
                 instance.extra[3] = world.ground(x, z);

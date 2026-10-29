@@ -654,11 +654,6 @@ struct Instance {
     @location(10) surface: vec4<f32>,
     // rgb: the seabed's colour under the model, from the CPU.
     @location(11) floor: vec4<f32>,
-    // The cofactor matrix's columns, from the CPU: a normal times this is the
-    // world normal, however the instance is scaled.
-    @location(12) nm0: vec4<f32>,
-    @location(13) nm1: vec4<f32>,
-    @location(14) nm2: vec4<f32>,
 };
 
 struct Lit {
@@ -719,8 +714,11 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
 fn vs_model(v: Model, i: Instance) -> Lit {
     let p = animate(v.pos, v.aux, i.anim);
     let world = vec3<f32>(dot(i.m0, vec4<f32>(p, 1.0)), dot(i.m1, vec4<f32>(p, 1.0)), dot(i.m2, vec4<f32>(p, 1.0)));
-    // Normals by the cofactor matrix, which the CPU crosses for the instance.
-    let n = i.nm0.xyz * v.normal.x + i.nm1.xyz * v.normal.y + i.nm2.xyz * v.normal.z;
+    // Normals by the cofactor matrix, which is right for any scale.
+    let c0 = vec3<f32>(i.m0.x, i.m1.x, i.m2.x);
+    let c1 = vec3<f32>(i.m0.y, i.m1.y, i.m2.y);
+    let c2 = vec3<f32>(i.m0.z, i.m1.z, i.m2.z);
+    let n = cross(c1, c2) * v.normal.x + cross(c2, c0) * v.normal.y + cross(c0, c1) * v.normal.z;
     var out: Lit;
     out.position = project(world);
     out.world = world;

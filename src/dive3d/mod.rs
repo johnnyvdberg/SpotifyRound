@@ -666,7 +666,7 @@ impl Nautilus {
         ];
         let instance_attributes = wgpu::vertex_attr_array![
             4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
-            10 => Float32x4, 11 => Float32x4, 12 => Float32x4, 13 => Float32x4, 14 => Float32x4,
+            10 => Float32x4, 11 => Float32x4,
         ];
         let terrain_attributes = wgpu::vertex_attr_array![
             0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
@@ -1238,11 +1238,6 @@ impl Nautilus {
                 extra: [world::material::VAULT, 0.0, 1.0, 0.0],
                 surface: [textures::Surface::Basalt.layer(), 1.5, 0.0, 0.0],
                 floor: [0.0; 4],
-                normal: [
-                    [1.0, 0.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0, 0.0],
-                    [0.0, 0.0, 1.0, 0.0],
-                ],
             });
         }
         // It is only rebuilt when the boat has moved on by a ring of it.
