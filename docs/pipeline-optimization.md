@@ -1593,3 +1593,32 @@ bubble trail. The sprite pipeline takes positions and colours per sprite, so
 the split is either a per-sprite phase channel (like the lights) or keeping the
 sprite lists per-frame while caching the instance placements. After that, the
 full instance cache with exact per-instance bounds.
+
+## 32. Static cache: the scaffolding state, and the next attempt properly
+
+The exact-bound idea was started: `Library::bounds` (per model, the radius of
+its full mesh about its origin) exists to replace the 1.5x longest-axis radius
+that made the §26 cull admit 25% extra instances. The partial patch that wired
+it through `world::build` did not line up with the reverted cache scaffolding
+(the build was still the two-argument version from §25/§26's revert), so the
+tree was left inconsistent and the round's changes were reverted rather than
+kept half-applied. `origin/main` is at the previous green state.
+
+The next attempt should be one coherent patch, not a sequence of in-place
+edits:
+
+1. `world::build(world, frame, cache, bounds)` with `StaticCache` holding the
+   wide placements; `CACHE_MODE`/`cells` wide/cull deferred during the cache
+   pass (the machinery from §25/§26 is known to compile in isolation).
+2. The static set that is now shader-clean: gardens, wrecks, rocks, trench,
+   ruins, cave, polar (the shell, sway, crinoid, penguin, narwhal and light
+   flicker moves are all in).
+3. The frame pass culls with `axes(rows) * bounds[model]` — the exact radius —
+   and copies only the passing instances, so the §26 0.19 pixel diff must go
+   to zero.
+4. The sprite lists still carry `w.t`; either give sprites a phase channel
+   like the lights or keep their lists per-frame while caching instances.
+   The garden+wreck subset was too small (§26); the full set is ~0.3 ms M1
+   and is where the cache can actually pay.
+
+The 109 tests and the current visuals are green at the pre-round state.
