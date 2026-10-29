@@ -2196,3 +2196,35 @@ contents per frame — the audit's "chunk arrays with a bounding radius".
 The working cache (§47, nine placers per camera cell, pixel-identical, -0.52
 ms Pi) is restored; the chunk design stays in §49/§51/§52 as the target, now
 with this cost/position verdict attached.
+
+## 55. Static-cache conclusion: what the measurements settled
+
+Four attempts, four measurements:
+
+| attempt | design | verdict |
+|---|---|---|
+| §25 | whole static frame, 8-unit camera cell | **worse** (wide placements + stale cull) |
+| §26 | + per-frame cull at 1.5x radius | worse (25% extra staged) |
+| §33/§34 | wide 12-unit margin + exact bounds | worse (+0.7 scene, 25% extra) |
+| §37/§46/§47 | nine placers per 0.2-unit camera cell | **-0.52 ms Pi, pixel-identical** |
+| §54 | per-world-cell chunk | wrong (multi-grid ids; 190s O(cells x placer)) |
+
+The stable point is §47: a whole static frame per small camera cell, built at
+the cell boundary, copied per frame. It is pixel-exact, -0.52 ms on the Pi,
+and it scales at the camera-cell frequency, not per instance. Every attempt to
+go coarser (wide margins) lost on staging, and every attempt to go finer
+(per-world-cell) lost on grain.
+
+The audit's own design - per-cell lists with a bounding radius and a
+per-frame cull - needs the per-frame cull to reproduce each placer's **own**
+radius and centre exactly, because the exact model bound is *larger* than the
+placers' conservative radius and changes the pixels (§34's 0.36). That is not
+a knob; it is a per-placer cull spec. Given the returns (-0.52 ms is already
+banked and the remaining static placement is ~0.3 ms M1), the right call is to
+stop here for the static cache and spend the remaining effort where the
+audit's bigger numbers are: **instance/vertex packing** (0.1-0.3), the **UI**
+(items are small; the Pi composite needs the KMS overlay), and **resolution**
+(the largest single lever, already built).
+
+The chunk work is archived in §49/§51/§52/§54 with the cost/position verdict;
+it is not on the critical path.
