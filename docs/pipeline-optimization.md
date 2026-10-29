@@ -2266,3 +2266,32 @@ format (the bigger win, 0.1-0.2 ms Pi).
 
 No code this round; the tree stays at the §47 state. Packing is the next
 branch, with the previews as its gate and the Pi as its measure.
+
+## 57. Surface pipeline subset: the exact field set
+
+The surface pipeline's fragment (`fs_model` under `MATERIAL == SURFACE`)
+returns from its own branch before touching the general model path, so its
+vertex shader is the one that can carry fewer instance attributes. From
+`vs_model`'s actual uses:
+
+| field | used by the surface VS | keep? |
+|---|---|---|
+| `m0/m1/m2` | the world position | yes |
+| `anim` | `animate()` (the plane has none but the same VS) | yes |
+| `colour` | `out.albedo`/`glow` | yes |
+| `extra` | material, fade | yes |
+| `surface` | `out.surface` (the layer/repeats/carried) | yes |
+| `floor` | `out.floor` only, and the surface FS never reads it | **drop** |
+
+So the subset is 6 of the 8 attribute slots (96 B instead of 128 B) and the
+only real work is a second `InstanceSurface` struct + a `vs_model_surface`
+entry (the same body minus `floor`) and a pipeline whose `vertex_attr_array`
+lists the 6. The `Lit.floor` field stays (the other pipelines supply it); the
+surface VS writes zero.
+
+This is the smallest possible packing diff and it proves the pipeline table
+can carry a second instance layout. The vertex-format change (§56, 44 -> 24 B)
+follows the same shape at a larger scale: one struct, one conversion in
+`Library::build`, the previews gate.
+
+Not implemented this round (tree at §47 state); the next branch.
