@@ -1737,3 +1737,31 @@ visible-cell copy stays proportional to what is visible, not to a surplus.
 
 Until this lands, the frame remains at the §33 baseline (the wide attempts
 are reverted; the shader-animation prereqs are in).
+
+## 37. Cell-step static cache: pixel-identical, no measurable win yet
+
+The §36 design was built in its simplest form that still scales: the three
+clean placers (rocks, gardens, wrecks) are cached as one static frame per
+**0.5-unit camera cell** — the smallest cell the placers use. When the camera
+crosses a cell boundary the three placers rerun into the cache; each frame
+copies the cached visible set (the placers culled it for that cell). No wide
+margin: the copy size equals the visible size, which was §33's failure point.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical. The cache is the same
+  placers at the same camera cell, so there is nothing to differ.
+- Pi: **9.060 ms** vs 9.011; shallows 10.433 vs 10.504, forest 10.499 vs
+  10.560; scene building 1.510 vs 1.426. The +0.05 mean is the run's drift
+  (the same day's ±0.3-0.5); the cache's own cost is the rebuild every ~36
+  frames plus the 0.02 copy, against the three placers' ~0.18 Pi.
+
+So the mechanism is correct and the pixels are exact, but the three clean
+placers are too small to show a win at 1463-2112 instances — the same
+arithmetic as §26 and §33, now with a design that does not regress. It is the
+scaffold the full set needs: once the sprite/light split lets the trench,
+ruins, cave and polar into the cache (and the kelp/forest sway is already in
+the shader), the cached placement is the audit's ~0.3 ms M1 / ~0.8 Pi and the
+cell-step copy stays proportional to the visible set.
+
+Kept: the scaffold, the pixel-exactness, the scaling shape.
+
+![cell cache: current / cell-cached / difference](branch-cell-cache.png)

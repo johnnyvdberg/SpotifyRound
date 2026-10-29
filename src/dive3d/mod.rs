@@ -28,7 +28,7 @@ use crate::voyage::{Biome, Voyage};
 use helm::{Helm, Pose};
 use mesh::{Library, Lod, Vertex};
 use terrain::Terrain;
-use world::{Frame, Instance, Seabed, Sprite, World};
+use world::{Frame, Instance, Seabed, Sprite, StaticCache, World};
 
 /// Edge of the panel-sized sea.
 pub const SIZE: u32 = 1080;
@@ -223,6 +223,8 @@ pub(crate) struct Nautilus {
     depth: wgpu::TextureView,
     resolved: wgpu::TextureView,
     relief: wgpu::Texture,
+    /// The static decor's placements, rebuilt when the camera crosses a cell.
+    static_cache: StaticCache,
     ice_bake: wgpu::Texture,
     ice_origin: [f32; 2],
     ice_centre: Option<[f32; 2]>,
@@ -1411,6 +1413,7 @@ impl Nautilus {
             depth,
             resolved,
             relief,
+            static_cache: StaticCache::default(),
             ice_bake,
             ice_origin: [0.0; 2],
             ice_centre: None,
@@ -1484,7 +1487,7 @@ impl Nautilus {
             pose,
             t,
         };
-        world::build(&world, &mut self.frame);
+        world::build(&world, &mut self.frame, &mut self.static_cache);
         // Bake the ice sheet's noise for the region around the camera, and
         // re-bake only when the camera has moved far enough that the margin
         // is gone (16 of the 64 units).
@@ -2575,7 +2578,7 @@ mod tests {
             t: seconds as f32,
         };
         bench("world::build", &mut || {
-            world::build(&world, &mut scene.frame)
+            world::build(&world, &mut scene.frame, &mut StaticCache::default())
         });
         // The seabed's tiles, as the draw asks for them: all in place after the
         // warmup, so this is the steady-state cost.
@@ -3085,7 +3088,7 @@ mod tests {
                     pose,
                     t: seconds as f32,
                 };
-                world::build(&world, &mut scene.frame);
+                world::build(&world, &mut scene.frame, &mut StaticCache::default());
                 cpu += begun.elapsed().as_secs_f64();
                 // The frame proper, which builds the scene again itself.
                 let begun = std::time::Instant::now();
@@ -3436,7 +3439,7 @@ mod tests {
                     pose,
                     t: seconds as f32,
                 };
-                world::build(&world, &mut frame);
+                world::build(&world, &mut frame, &mut StaticCache::default());
             }
         }
         println!(

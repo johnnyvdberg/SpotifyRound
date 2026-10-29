@@ -1153,11 +1153,32 @@ fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
     Cells(out)
 }
 
+/// The static decor's placements, rebuilt only when the camera crosses a
+/// 0.5-unit cell: the smallest cell the static placers use. The frame copies
+/// the cached visible set, which is what the placers culled for the cell.
+pub struct StaticCache {
+    frame: Frame,
+    cell: Option<[i32; 2]>,
+    seed: f32,
+}
+
+impl Default for StaticCache {
+    fn default() -> Self {
+        Self {
+            frame: Frame::new(),
+            cell: None,
+            seed: f32::NAN,
+        }
+    }
+}
+
+const CACHE_CELL: f32 = 0.5;
+
 /// Build the frame.
 /// One kind of thing to place in the frame.
 type Placer = fn(&World, &mut Frame);
 
-pub fn build(world: &World, frame: &mut Frame) {
+pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     #[cfg(test)]
     let begun = std::time::Instant::now();
     frame.clear();
@@ -1168,14 +1189,15 @@ pub fn build(world: &World, frame: &mut Frame) {
     let algae = carried(Surface::Kelp, 2.0);
     let copper = carried(Surface::Copper, 1.0);
     let skin = carried(Surface::Skin, 3.0);
-    let steps: [(Placer, Option<[f32; 4]>); 22] = [
+    // The three placers with no placement-time `w.t` and no sprites: the
+    // shell is the shader's hinge and the tube worms' sway is the shader's.
+    let static_steps: [(Placer, Option<[f32; 4]>); 3] =
+        [(rocks, None), (gardens, None), (wrecks, wood)];
+    let steps: [(Placer, Option<[f32; 4]>); 19] = [
         (planes, None),
-        (rocks, None),
         (kelp, None),
         (forest, algae),
-        (gardens, None),
         (trench, rock),
-        (wrecks, wood),
         (ruins, marble),
         (cave, rock),
         (tunnel, None),
@@ -1193,14 +1215,13 @@ pub fn build(world: &World, frame: &mut Frame) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 22] = [
+    const STATIC_NAMES: [&str; 3] = ["rocks", "gardens", "wrecks"];
+    #[cfg(test)]
+    const STEP_NAMES: [&str; 19] = [
         "planes",
-        "rocks",
         "kelp",
         "forest",
-        "gardens",
         "trench",
-        "wrecks",
         "ruins",
         "cave",
         "tunnel",
@@ -1217,8 +1238,58 @@ pub fn build(world: &World, frame: &mut Frame) {
         "shafts",
         "particles",
     ];
+    let camera = [
+        (world.pose.pos[0] / CACHE_CELL).floor() as i32,
+        (world.pose.pos[2] / CACHE_CELL).floor() as i32,
+    ];
+    let seed = world.seabed.seed;
+    let stale = !cache.seed.eq(&seed) || cache.cell != Some(camera);
     #[cfg(test)]
     let show_steps = std::env::var_os("DIVE3D_BUILD_STEPS").is_some();
+    if stale {
+        cache.frame.clear();
+        #[cfg(test)]
+        for (i, (step, skin)) in static_steps.into_iter().enumerate() {
+            cache.frame.style(skin);
+            let started = std::time::Instant::now();
+            step(world, &mut cache.frame);
+            if show_steps {
+                eprintln!(
+                    "dive3d build step: static {} {:.3}",
+                    STATIC_NAMES[i],
+                    started.elapsed().as_secs_f64() * 1e3
+                );
+            }
+        }
+        #[cfg(not(test))]
+        for (step, skin) in static_steps {
+            cache.frame.style(skin);
+            step(world, &mut cache.frame);
+        }
+        for list in cache.frame.solid.iter_mut().chain(cache.frame.glass.iter_mut()) {
+            for instance in list.iter_mut() {
+                let r = instance.rows;
+                if instance.extra[1] > 0.5 {
+                    let (x, z) = (r[0][3], r[2][3]);
+                    instance.extra[3] = world.ground(x, z);
+                    let c = floor_albedo(&world.seabed.biome(x, z));
+                    instance.floor = [c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, 0.0];
+                }
+            }
+        }
+        cache.cell = Some(camera);
+        cache.seed = seed;
+    }
+    for (m, src) in cache.frame.solid.iter().enumerate() {
+        frame.solid[m].extend_from_slice(src);
+    }
+    for (m, src) in cache.frame.glass.iter().enumerate() {
+        frame.glass[m].extend_from_slice(src);
+    }
+    frame.sprites.extend_from_slice(&cache.frame.sprites);
+    frame.shafts.extend_from_slice(&cache.frame.shafts);
+    frame.beams.extend_from_slice(&cache.frame.beams);
+    frame.lights.extend_from_slice(&cache.frame.lights);
     #[cfg(test)]
     for (i, (step, skin)) in steps.into_iter().enumerate() {
         frame.style(skin);
@@ -4664,7 +4735,7 @@ mod tests {
                     pose,
                     t: seconds as f32,
                 };
-                build(&world, &mut frame);
+                build(&world, &mut frame, &mut StaticCache::default());
                 let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
                     track.clear();
                     continue;
@@ -4735,7 +4806,7 @@ mod tests {
                     t: seconds as f32,
                 };
                 let mut frame = Frame::new();
-                build(&world, &mut frame);
+                build(&world, &mut frame, &mut StaticCache::default());
                 found += frame.solid[model.index()].len();
             }
             assert!(found > 0, "no {model:?} anywhere in leg {leg}");
@@ -4817,7 +4888,7 @@ mod tests {
                     t: seconds as f32,
                 };
                 let mut frame = Frame::new();
-                build(&world, &mut frame);
+                build(&world, &mut frame, &mut StaticCache::default());
                 let bodies = &frame.solid[Model::Diver.index()];
                 if bodies.is_empty() {
                     continue;
@@ -4883,7 +4954,7 @@ mod tests {
                     t: seconds as f32,
                 };
                 let mut frame = Frame::new();
-                build(&world, &mut frame);
+                build(&world, &mut frame, &mut StaticCache::default());
                 let bodies = &frame.solid[Model::Diver.index()];
                 if bodies.is_empty() {
                     continue;
@@ -4992,7 +5063,7 @@ mod tests {
                         pose,
                         t: seconds as f32,
                     };
-                    build(&world, &mut frame);
+                    build(&world, &mut frame, &mut StaticCache::default());
                     let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
                         continue;
                     };
@@ -5072,7 +5143,7 @@ mod tests {
                     pose,
                     t: at as f32,
                 };
-                build(&world, &mut frame);
+                build(&world, &mut frame, &mut StaticCache::default());
                 let now: Vec<([f32; 3], f32)> = frame
                     .sprites
                     .iter()
