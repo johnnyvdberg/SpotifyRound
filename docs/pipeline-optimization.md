@@ -2032,3 +2032,44 @@ the difference will matter more as the static set grows.
 Chunk streaming — caching the same cells across the voyage rather than one
 cell at a time — remains the next meaningful cache step; the cell-grid design
 in §36 is what it needs.
+
+## 49. Chunk streaming: the exact design against the §47 cache
+
+The §47 cache rebuilds the whole nine-placer static frame when the camera
+crosses a 0.2-unit cell — ~14 frames of travel. The rebuild is the nine
+placers' full cull (~0.8 Pi) and the copy is the visible set. Chunk
+streaming removes the periodic rebuild: cache each **world cell's** static
+instances once per visit and reuse them whenever the camera returns.
+
+The pieces the code already has:
+
+- `cells(w, size, near, far, salt)` returns `(ix, iz, x, z)` per placer —
+  the cell id and its world-fixed jittered point. The grid is world-fixed, so
+  `(placer, salt, ix, iz)` is a stable key.
+- The nine placers' loops are the only producers of the static instances;
+  each iteration is one cell's worth, so tagging the loop with the cell is a
+  mechanical change (a `Frame` field or a `put` cell parameter).
+- The per-instance fade (`extra[2]`) and the grounding are camera-independent
+  and already baked at placement.
+
+The design:
+
+1. `StaticCache { cells: HashMap<(u16, i32, i32), Vec<Instance>>, seed }`,
+   with the placer id + salt as the `u16` and the cell as `(ix, iz)`.
+2. In a cache pass, run the nine placers with `cache_mode` once per visit
+   (the seed's first frame) and file their `put`s by the current cell; or
+   build lazily per visible cell. The lazy route avoids the initial 0.8 ms
+   and is the one to take: `cells()` already yields the visible cells, so
+   the frame asks for each visible cell, builds it if absent, and copies it.
+3. Per frame: iterate `cells()` (already the visible set), copy each cell's
+   cached list. No wide surplus, no periodic rebuild, no cull over the stale
+   cell — the §33/§48 failure modes are all absent.
+4. Eviction: the cell map can keep the whole visited voyage (small: the
+   static instances are ~10-20k per leg; 128 B each = 1-2.5 MB) or drop
+   cells older than a window. No eviction is needed at the current scale.
+
+Expected: the nine placers' per-frame cost goes from ~0.8/14 ≈ 0.06 Pi to the
+first-visit cost spread over the voyage, and the copy stays proportional to
+the visible set. That is the last CPU-placement term before packing.
+
+Not implemented this round; the tree stays at the §47/§48 state.
