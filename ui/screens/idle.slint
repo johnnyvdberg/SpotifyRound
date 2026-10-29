@@ -59,7 +59,7 @@ export component IdleScreen inherits Rectangle {
 
     // The scene frame: the globe paints the space and the air glow behind the
     // planet itself (`src/globe.rs`). The Nautilus' sea is drawn at the dive's
-    // resolution and its static bezel and needle tiles are laid over it below.
+    // resolution, filling the panel.
     //
     // The visibility sits on a wrapper of its own. On the same element Slint
     // puts it inside the opacity, and an opacity around anything with children
@@ -81,36 +81,7 @@ export component IdleScreen inherits Rectangle {
             opacity: Idle.fade;
         }
 
-        // The Nautilus' porthole: the sea above is drawn at the dive's own
-        // resolution, then the static brass is laid over it and the two gauge
-        // needles over that. The bezel never changes, so it is only a texture
-        // Slint composites; the needles are two small tiles at the gauges'
-        // centres.
-        Image {
-            width: 100%;
-            height: 100%;
-            source: Idle.bezel;
-            opacity: Idle.fade;
-            visible: Idle.scene == 1;
-        }
-        Image {
-            width: 192px;
-            height: 192px;
-            x: 150px;
-            y: 820px;
-            source: Idle.needle-depth;
-            opacity: Idle.fade;
-            visible: Idle.scene == 1;
-        }
-        Image {
-            width: 192px;
-            height: 192px;
-            x: 738px;
-            y: 820px;
-            source: Idle.needle-log;
-            opacity: Idle.fade;
-            visible: Idle.scene == 1;
-        }
+
     }
 
     // A slow breath at the rim, echoing the ring the player wears; the

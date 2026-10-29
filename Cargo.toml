@@ -2,7 +2,7 @@
 name = "spotify-round"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.97.1"
 description = "A round Spotify now-playing display for the Raspberry Pi"
 license = "MIT"
 build = "build.rs"
@@ -15,11 +15,15 @@ path = "src/main.rs"
 # Render straight through DRM/KMS with the GPU, for a Pi running without a
 # compositor (`cargo build --release --features kms`).
 kms = ["slint/backend-linuxkms"]
+# The Nautilus dive is 1080 x 1080 only. This feature is mandatory (and on by
+# default); the app refuses to compile without it so no 448 profile can creep
+# back in.
+full-hd = []
 # The renderer Slint draws the window with, on the shared wgpu device. Skia
 # compiles a small shader for each kind of draw; femtovg runs one large shader
 # for all of them, which costs the Pi's GPU several times as much per pixel
 # (`--no-default-features --features femtovg`, to compare).
-default = ["skia"]
+default = ["skia", "full-hd"]
 skia = ["slint/renderer-skia"]
 femtovg = ["slint/renderer-femtovg-wgpu"]
 
@@ -30,7 +34,11 @@ base64 = "0.23.1"
 bytemuck = "1.24"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 directories = "6.0.0"
+# CPU vector math in the mesh generator.
+glam = "0.34"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "tiff"] }
+# Vertex-fetch and post-transform-cache ordering for the generated models.
+meshopt = "0.7"
 pollster = "0.3"
 qrcode = { version = "0.14.1", default-features = false }
 rand = "0.9"
@@ -52,6 +60,8 @@ thiserror = "2.0.21"
 # The same wgpu as `slint::wgpu_30`, named here for its default features: WGSL
 # shaders and the Vulkan, Metal and GL backends, whichever renderer Slint uses.
 wgpu = "30"
+# Timer-query scopes around the Nautilus encoder; self-disables without timestamps.
+wgpu-profiler = "0.28"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 toml = "1.1.8"
 tracing = "0.1.44"
@@ -60,6 +70,8 @@ url = "2.5.8"
 
 [build-dependencies]
 slint-build = "1.18"
+# Links the WESL shader package into plain WGSL before wgpu sees it.
+wesl = "0.6"
 
 # Keep the application crate easy to debug, but never run the renderer
 # unoptimized: Slint, femtovg and wgpu are several times slower at `opt-level =

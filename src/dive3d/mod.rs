@@ -7,10 +7,8 @@
 //! pixel only pays for what actually covers it, instead of every pixel asking
 //! every feature whether it is there.
 //!
-//! The window itself is not part of the 3D scene: the brass bezel is one static
-//! texture, the sea through the glass is bent and engraved in a pass at its own
-//! resolution, and the gauge needles are small tiles, in
-//! [`crate::porthole::Porthole`].
+//! The window itself is not part of the 3D scene: the 1080 sea texture is
+//! handed straight to Slint as the full panel.
 
 mod heightmap;
 mod helm;
@@ -25,7 +23,6 @@ use anyhow::Result;
 use slint::wgpu_30::wgpu;
 
 use crate::gpu::Graphics;
-use crate::porthole::Porthole;
 use crate::visuals::Visual;
 use crate::voyage::{Biome, Voyage};
 use helm::{Helm, Pose};
@@ -33,16 +30,15 @@ use mesh::{Library, Lod, Vertex};
 use terrain::Terrain;
 use world::{Frame, Instance, Seabed, Sprite, World};
 
-pub use crate::porthole::SIZE;
+/// Edge of the panel-sized sea.
+pub const SIZE: u32 = 1080;
 
-/// Edge of the square the sea is rendered into. Geometry is cheap here, so it
-/// is drawn a little sharper than the procedural sea; at 640 the dive could not
-/// keep 60 fps on the Pi, and 448 is the tuned size.
-const SEA: u32 = 448;
+/// The sea is the panel's own pixels; there is no smaller profile.
+const SEA: u32 = SIZE;
 /// Samples per pixel. Multisampling quarters the pixels each of the Pi GPU's
 /// tiles holds, and the tiles' fixed costs outweighed the smoother edges, which
 /// the upscale softens anyway; the one sample keeps the fading models smooth by
-/// blending them into the water instead (see `MULTISAMPLED` in `scene.wgsl`).
+/// blending their coverage over the water (see the fading pipeline).
 const SAMPLES: u32 = 1;
 const MULTISAMPLED: bool = SAMPLES > 1;
 /// A coarser level of detail is drawn only where its surface strays from the
@@ -50,27 +46,83 @@ const MULTISAMPLED: bool = SAMPLES > 1;
 /// drawn at `SEA` and no finer, so no difference smaller can be drawn; and, unless
 /// its colours and normals stray by less than `LOD_STRAY` too, where the
 /// triangles it changed are under `LOD_EDGE` pixels, so whatever shading it
-/// dropped was finer than a pixel.
-const LOD_ERROR: f32 = 0.5;
+/// dropped was finer than a couple of pixels.
+const LOD_ERROR: f32 = 2.0;
 const LOD_STRAY: f32 = 0.1;
-const LOD_EDGE: f32 = 1.0;
+const LOD_EDGE: f32 = 6.0;
 /// The corner mask's triangles: six vertices to each of `MASK_SEGMENTS` in
-/// `scene.wgsl`.
+/// `scene.wesl`.
 const MASK_VERTICES: u32 = 6 * 64;
 const NEAR: f32 = 0.05;
-/// How far the glass bends the view at its edge.
-const BEND: f32 = 0.008;
 const MAX_INSTANCES: usize = 24_576;
 const MAX_SPRITES: usize = 8_192;
 const MAX_TUNNEL_VERTICES: usize = 16_384;
 const MAX_TUNNEL_INDICES: usize = 98_304;
-/// The sea, at half its brightness (`SEA_SCALE` in `scene.wgsl`): ten bits a
+/// The sea, at half its brightness (`SEA_SCALE` in `scene.wesl`): ten bits a
 /// channel are finer than the panel's eight, and half the size of half
 /// floats, so the GPU's tiles hold twice the pixels.
-const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgb10a2Unorm;
+const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Per-frame parameters, in the layout of `Globals` in `scene.wgsl`.
+/// The caustic tile, generated once on the CPU: two sines and a pow in Rust
+/// instead of in every vertex shader.
+/// The CPU side of the caustic precompute, split out so it can be timed without
+/// a GPU.
+fn caustic_texels() -> Vec<u8> {
+    const SIZE: usize = 256;
+    let mut texels = vec![0u8; SIZE * SIZE];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let p = [x as f32 / SIZE as f32, y as f32 / SIZE as f32];
+            let a = (p[0] * std::f32::consts::TAU + (p[1] * 8.168).sin()).sin();
+            let b = (p[1] * 6.912 + (p[0] * 5.655).sin()).sin();
+            let c = (a + b).abs().mul_add(-0.5, 1.0).max(0.0).powf(7.0);
+            texels[y * SIZE + x] = (c * 255.0) as u8;
+        }
+    }
+    texels
+}
+
+fn caustic_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    const SIZE: u32 = 256;
+    let texels = caustic_texels();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Dive3d caustics"),
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &texels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(SIZE),
+            rows_per_image: Some(SIZE),
+        },
+        wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture
+}
+
+/// Per-frame parameters, in the layout of `Globals` in `scene.wesl`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Globals {
@@ -138,9 +190,14 @@ pub(crate) struct Nautilus {
     draws: Vec<Draw>,
     sprite_buffer: wgpu::Buffer,
     colour: wgpu::TextureView,
+    /// The sea texture itself, for the full-HD UI layer. The view above is
+    /// the same texture when multisampling is off.
+    #[allow(dead_code)]
+    sea_texture: wgpu::Texture,
+    #[allow(dead_code)]
+    caustic: wgpu::Texture,
     depth: wgpu::TextureView,
     resolved: wgpu::TextureView,
-    porthole: Porthole,
     relief: wgpu::Texture,
     voyage: Voyage,
     helm: Helm,
@@ -155,7 +212,7 @@ pub(crate) struct Nautilus {
 }
 
 /// The materials models get a pipeline of their own for, as `MATERIAL` in
-/// `scene.wgsl`: plain first, then those of [`world::material`]. Anything else
+/// `scene.wesl`: plain first, then those of [`world::material`]. Anything else
 /// is drawn by the last, -1, which reads the material per instance. Each has a
 /// second pipeline for models that stand on the seabed (`GROUNDED`).
 const MATERIALS: [i32; 8] = [
@@ -245,13 +302,21 @@ mod part {
     /// Every model at its full detail.
     pub const FULL_DETAIL: u16 = 1024;
     pub const SHAFTS: u16 = 2048;
+    /// Not parts: the cheaper lighting/material paths the shader can switch
+    /// to at run time, so a benchmark can price a feature without rebuilding.
+    pub const CHEAP_MODELS: u16 = 4096;
+    pub const CHEAP_TERRAIN: u16 = 8192;
+    pub const CHEAP_BACKGROUND: u16 = 16384;
 }
 
 /// Shader switches for the benchmark, as `counts.y` bits (see `debug` in
-/// `scene.wgsl`), and the extra variant that changes the sampler.
+/// `scene.wesl`), and the extra variant that changes the sampler.
 #[cfg_attr(not(test), allow(dead_code))]
 mod shader_switch {
     pub const NO_NOISE: u32 = 2;
+    pub const CHEAP_MODELS: u32 = 4;
+    pub const CHEAP_TERRAIN: u32 = 8;
+    pub const CHEAP_BACKGROUND: u32 = 16;
 }
 
 impl Nautilus {
@@ -272,7 +337,7 @@ impl Nautilus {
     }
 
     fn build(gpu: &Graphics, colour: wgpu::TextureFormat, plain: bool) -> Result<Self> {
-        let scale = if colour == wgpu::TextureFormat::Rgba16Float {
+        let scale = if cfg!(feature = "full-hd") || colour == wgpu::TextureFormat::Rgba16Float {
             1.0
         } else {
             0.5
@@ -381,6 +446,22 @@ impl Nautilus {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         // The seabed's relief, replaced on every visit; and the surfaces, painted once.
@@ -457,6 +538,16 @@ impl Nautilus {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
+        let caustic = caustic_texture(device, &gpu.queue);
+        let caustic_view = caustic.create_view(&wgpu::TextureViewDescriptor::default());
+        let caustic_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Dive3d caustics"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let group_with = |sampler: &wgpu::Sampler| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Dive3d globals"),
@@ -477,6 +568,14 @@ impl Nautilus {
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&caustic_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&caustic_sampler),
                     },
                 ],
             })
@@ -513,14 +612,25 @@ impl Nautilus {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let sea = target(
-            "Dive3d sea",
-            colour,
-            1,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        );
+        let sea_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Dive3d sea"),
+            size: wgpu::Extent3d {
+                width: SEA,
+                height: SEA,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: colour,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let sea = sea_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Without multisampling the sea is drawn straight into the texture the
-        // porthole samples; with it, into a multisampled target that resolves
+        // Slint samples; with it, into a multisampled target that resolves
         // into `sea`.
         let colour_target = if MULTISAMPLED {
             target(
@@ -542,7 +652,9 @@ impl Nautilus {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Dive3d shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!(concat!(env!("OUT_DIR"), "/scene.wgsl")).into(),
+            ),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Dive3d pipeline layout"),
@@ -554,9 +666,11 @@ impl Nautilus {
         ];
         let instance_attributes = wgpu::vertex_attr_array![
             4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
-            10 => Float32x4,
+            10 => Float32x4, 11 => Float32x4, 12 => Float32x4, 13 => Float32x4, 14 => Float32x4,
         ];
-        let terrain_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        let terrain_attributes = wgpu::vertex_attr_array![
+            0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+        ];
         let sprite_attributes =
             wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
         let model_buffers = [
@@ -597,6 +711,7 @@ impl Nautilus {
                         write_depth: bool,
                         compare: wgpu::CompareFunction,
                         coverage: bool,
+                        write_alpha: bool,
                         constants: &[(&str, f64)],
                         cull: Option<wgpu::Face>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -619,13 +734,20 @@ impl Nautilus {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: colour,
                         blend,
-                        write_mask: wgpu::ColorWrites::ALL,
+                        // The sea is handed to Slint with its alpha channel:
+                        // fading models blend their coverage as alpha, but
+                        // must leave the channel opaque behind them.
+                        write_mask: if write_alpha {
+                            wgpu::ColorWrites::ALL
+                        } else {
+                            wgpu::ColorWrites::COLOR
+                        },
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions {
                         constants: &[
                             constants,
                             &[
-                                ("SEA_SCALE", f64::from(scale)),
+                                ("SEA_SCALE", scale),
                                 ("PLAIN_TEXTURES", f64::from(u8::from(plain))),
                             ],
                         ]
@@ -671,6 +793,7 @@ impl Nautilus {
             // Only where the depth is still the clear value: nothing drawn.
             wgpu::CompareFunction::GreaterEqual,
             false,
+            true,
             &[],
             None,
         );
@@ -683,14 +806,20 @@ impl Nautilus {
             true,
             nearer,
             false,
+            true,
             &[],
             None,
         );
         // Models that are fully there, compiled without the discard so the GPU
         // can skip whatever is hidden before shading it; and those fading in or
-        // out, by coverage.
+        // out, which are blended over what is behind them, back to front.
         // Each in a pipeline per material and grounded flag.
-        let per_material = |label, coverage, fading: f64, cull| {
+        let per_material = |label,
+                            coverage,
+                            fading: f64,
+                            blend: Option<wgpu::BlendState>,
+                            write_depth: bool,
+                            cull| {
             let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
             for &material in &MATERIALS {
                 for grounded in [0.0, 1.0] {
@@ -699,15 +828,15 @@ impl Nautilus {
                         "vs_model",
                         "fs_model",
                         &model_buffers,
-                        None,
-                        true,
+                        blend,
+                        write_depth,
                         nearer,
                         coverage,
+                        fading == 0.0,
                         &[
                             ("FADING", fading),
                             ("MATERIAL", f64::from(material)),
                             ("GROUNDED", grounded),
-                            ("MULTISAMPLED", f64::from(u8::from(MULTISAMPLED))),
                         ],
                         cull,
                     ));
@@ -715,8 +844,23 @@ impl Nautilus {
             }
             pipelines
         };
-        let models = per_material("Dive3d models", false, 0.0, None);
-        let sealed = per_material("Dive3d sealed models", false, 0.0, Some(wgpu::Face::Back));
+        let blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::REPLACE,
+        };
+        let models = per_material("Dive3d models", false, 0.0, None, true, None);
+        let sealed = per_material(
+            "Dive3d sealed models",
+            false,
+            0.0,
+            None,
+            true,
+            Some(wgpu::Face::Back),
+        );
         // Before anything else, the corners outside the round window are
         // marked as nearest of all, so nothing drawn there is shaded.
         let mask = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -753,7 +897,16 @@ impl Nautilus {
             multiview_mask: None,
             cache: None,
         });
-        let fading = per_material("Dive3d fading models", true, 1.0, None);
+        // One sample has no alpha-to-coverage: blending the coverage over the
+        // water is the dissolve. Multisampled, the coverage itself does it.
+        let fading = per_material(
+            "Dive3d fading models",
+            true,
+            1.0,
+            (!MULTISAMPLED).then_some(blend),
+            !MULTISAMPLED,
+            None,
+        );
         let glass = pipeline(
             "Dive3d glass",
             "vs_model",
@@ -763,6 +916,7 @@ impl Nautilus {
             false,
             nearer,
             false,
+            true,
             &[],
             None,
         );
@@ -775,6 +929,7 @@ impl Nautilus {
             false,
             nearer,
             false,
+            true,
             &[],
             None,
         );
@@ -787,6 +942,7 @@ impl Nautilus {
             false,
             nearer,
             false,
+            true,
             &[],
             None,
         );
@@ -799,11 +955,11 @@ impl Nautilus {
             false,
             nearer,
             false,
+            true,
             &[],
             None,
         );
 
-        let porthole = Porthole::new(gpu, &resolved, SEA, BEND, scale);
         tracing::info!(
             models = library.lods.len(),
             vertices = library.vertices.len(),
@@ -841,9 +997,10 @@ impl Nautilus {
             draws: Vec::new(),
             sprite_buffer,
             colour: colour_target,
+            sea_texture,
+            caustic,
             depth,
             resolved,
-            porthole,
             relief,
             voyage: Voyage::default(),
             helm: Helm::default(),
@@ -870,7 +1027,7 @@ impl Nautilus {
         false
     }
 
-    fn draw(&mut self, gpu: &Graphics, seconds: f64, visit: u64, frame: usize) -> Result<()> {
+    fn draw(&mut self, gpu: &Graphics, seconds: f64, visit: u64, _frame: usize) -> Result<()> {
         let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
         if self.visit != Some(visit) {
             // A new visit: a new seabed, and the boat settles onto it afresh.
@@ -915,12 +1072,6 @@ impl Nautilus {
             gpu.queue
                 .write_buffer(ground, at as u64, bytemuck::cast_slice(points));
         });
-        // The gauges read the boat's real depth.
-        let at = crate::voyage::Position {
-            x: f64::from(pose.pos[0]),
-            altitude: voyage.altitude,
-            depth: pose.depth,
-        };
         let mut uniforms = globals(&world, &self.frame);
         if self.skips(part::LIGHTS) {
             uniforms.counts[0] = 0.0;
@@ -928,6 +1079,15 @@ impl Nautilus {
         let mut switches = 0;
         if self.skips(part::NO_NOISE) {
             switches |= shader_switch::NO_NOISE;
+        }
+        if self.skips(part::CHEAP_MODELS) {
+            switches |= shader_switch::CHEAP_MODELS;
+        }
+        if self.skips(part::CHEAP_TERRAIN) {
+            switches |= shader_switch::CHEAP_TERRAIN;
+        }
+        if self.skips(part::CHEAP_BACKGROUND) {
+            switches |= shader_switch::CHEAP_BACKGROUND;
         }
         uniforms.counts[1] = switches as f32;
         gpu.queue
@@ -998,10 +1158,28 @@ impl Nautilus {
             }));
         }
         order.sort_unstable_by(|a, b| {
-            (a.kind, a.slot, a.model, a.lod)
-                .cmp(&(b.kind, b.slot, b.model, b.lod))
-                .then(a.depth.total_cmp(&b.depth))
-                .then(a.index.cmp(&b.index))
+            let kind = a.kind.cmp(&b.kind);
+            if kind != std::cmp::Ordering::Equal {
+                return kind;
+            }
+            // Fading models blend back to front, so the farthest goes first;
+            // solid models go nearest first so the depth test can reject what
+            // lies behind them.
+            if a.kind == Kind::Fading {
+                b.depth
+                    .total_cmp(&a.depth)
+                    .then(a.slot.cmp(&b.slot))
+                    .then(a.model.cmp(&b.model))
+                    .then(a.lod.cmp(&b.lod))
+                    .then(a.index.cmp(&b.index))
+            } else {
+                a.slot
+                    .cmp(&b.slot)
+                    .then(a.model.cmp(&b.model))
+                    .then(a.lod.cmp(&b.lod))
+                    .then(a.depth.total_cmp(&b.depth))
+                    .then(a.index.cmp(&b.index))
+            }
         });
         let all = &mut self.staged;
         let draws = &mut self.draws;
@@ -1032,13 +1210,16 @@ impl Nautilus {
         }
         // Stable, so the translucent draws stay in the order they came.
         draws.sort_by(|a, b| {
-            (a.kind, a.slot)
-                .cmp(&(b.kind, b.slot))
-                .then(if a.kind == Kind::Glass {
-                    std::cmp::Ordering::Equal
-                } else {
-                    a.nearest.total_cmp(&b.nearest)
-                })
+            let kind = a.kind.cmp(&b.kind);
+            if kind != std::cmp::Ordering::Equal {
+                return kind;
+            }
+            match a.kind {
+                // The instances are already back to front; keep them so.
+                Kind::Fading => b.nearest.total_cmp(&a.nearest),
+                Kind::Glass => std::cmp::Ordering::Equal,
+                _ => a.slot.cmp(&b.slot).then(a.nearest.total_cmp(&b.nearest)),
+            }
         });
         // The tunnel is in world space already: one instance that moves nothing.
         let tunnel_count = self.frame.tunnel_indices.len().min(MAX_TUNNEL_INDICES) as u32;
@@ -1056,6 +1237,12 @@ impl Nautilus {
                 anim: [0.0; 4],
                 extra: [world::material::VAULT, 0.0, 1.0, 0.0],
                 surface: [textures::Surface::Basalt.layer(), 1.5, 0.0, 0.0],
+                floor: [0.0; 4],
+                normal: [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ],
             });
         }
         // It is only rebuilt when the boat has moved on by a ring of it.
@@ -1094,139 +1281,170 @@ impl Nautilus {
             bytemuck::cast_slice(beams),
         );
 
+        if std::env::var_os("DIVE3D_STATS").is_some() {
+            let tris: u64 = draws
+                .iter()
+                .map(|d| u64::from(lods[d.model][d.lod].count) * u64::from(d.count))
+                .sum::<u64>()
+                / 3;
+            let mut by_lod = [0u64; mesh::LODS];
+            for d in draws.iter() {
+                by_lod[d.lod] +=
+                    u64::from(lods[d.model][d.lod].count) / 3 * u64::from(d.count);
+            }
+            let verts: u64 = draws
+                .iter()
+                .map(|d| u64::from(lods[d.model][d.lod].vertices) * u64::from(d.count))
+                .sum();
+            eprintln!(
+                "dive3d stats: {} draws, {} instances, {} model tris (lod {:?}), {} model verts, {} terrain tiles, {} sprites",
+                draws.len(),
+                all.len(),
+                tris,
+                by_lod,
+                verts,
+                tiles.len(),
+                sprites.len() + shafts.len() + beams.len()
+            );
+        }
+
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Dive3d encoder"),
             });
-        if !self.skips(part::SEA) {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Dive3d sea pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: if MULTISAMPLED {
-                        &self.colour
-                    } else {
-                        &self.resolved
-                    },
-                    depth_slice: None,
-                    resolve_target: if MULTISAMPLED {
-                        Some(&self.resolved)
-                    } else {
-                        None
-                    },
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        // Multisampled: only the resolved image is needed.
-                        store: if MULTISAMPLED {
-                            wgpu::StoreOp::Discard
+        let this = &*self;
+        let result = gpu.profiled("Nautilus", &mut encoder, |encoder| -> Result<()> {
+            if !this.skips(part::SEA) {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Dive3d sea pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: if MULTISAMPLED {
+                            &this.colour
                         } else {
-                            wgpu::StoreOp::Store
+                            &this.resolved
                         },
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
+                        depth_slice: None,
+                        resolve_target: if MULTISAMPLED {
+                            Some(&this.resolved)
+                        } else {
+                            None
+                        },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            // Multisampled: only the resolved image is needed.
+                            store: if MULTISAMPLED {
+                                wgpu::StoreOp::Discard
+                            } else {
+                                wgpu::StoreOp::Store
+                            },
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &this.depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
                     }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            #[cfg(test)]
-            let group = if self.skips(part::ANISOTROPY) {
-                &self.trilinear
-            } else {
-                &self.group
-            };
-            #[cfg(not(test))]
-            let group = &self.group;
-            pass.set_bind_group(0, group, &[]);
-            if self.skips(part::QUARTER) {
-                let half = SEA as f32 / 2.0;
-                pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
-            }
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                #[cfg(test)]
+                let group = if this.skips(part::ANISOTROPY) {
+                    &this.trilinear
+                } else {
+                    &this.group
+                };
+                #[cfg(not(test))]
+                let group = &this.group;
+                pass.set_bind_group(0, group, &[]);
+                if this.skips(part::QUARTER) {
+                    let half = SEA as f32 / 2.0;
+                    pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
+                }
 
-            pass.set_pipeline(&self.mask);
-            pass.draw(0..MASK_VERTICES, 0..1);
-            // What is fully there goes first, so the seabed behind it, and
-            // every other model, can be skipped before it is shaded.
-            pass.set_vertex_buffer(1, self.instances.slice(..));
-            if tunnel_drawn && !self.skips(part::MODELS) {
-                pass.set_pipeline(&self.models[pipeline_slot(&all[tunnel_instance as usize])]);
-                pass.set_vertex_buffer(0, self.tunnel.slice(..));
-                pass.set_index_buffer(self.tunnel_indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..tunnel_count, 0, tunnel_instance..tunnel_instance + 1);
-            }
-            let models = |pass: &mut wgpu::RenderPass, wanted: Kind| {
-                pass.set_vertex_buffer(0, self.vertices.slice(..));
-                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                let mut bound = None;
-                for d in self.draws.iter().filter(|d| d.kind == wanted) {
-                    if bound != Some(d.slot) {
-                        pass.set_pipeline(match wanted {
-                            Kind::Sealed => &self.sealed[d.slot],
-                            Kind::Solid => &self.models[d.slot],
-                            Kind::Fading => &self.fading[d.slot],
-                            Kind::Glass => &self.glass,
-                        });
-                        bound = Some(d.slot);
+                pass.set_pipeline(&this.mask);
+                pass.draw(0..MASK_VERTICES, 0..1);
+                // What is fully there goes first, so the seabed behind it, and
+                // every other model, can be skipped before it is shaded.
+                pass.set_vertex_buffer(1, this.instances.slice(..));
+                if tunnel_drawn && !this.skips(part::MODELS) {
+                    pass.set_pipeline(&this.models[pipeline_slot(&all[tunnel_instance as usize])]);
+                    pass.set_vertex_buffer(0, this.tunnel.slice(..));
+                    pass.set_index_buffer(this.tunnel_indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..tunnel_count, 0, tunnel_instance..tunnel_instance + 1);
+                }
+                let models = |pass: &mut wgpu::RenderPass, wanted: Kind| {
+                    pass.set_vertex_buffer(0, this.vertices.slice(..));
+                    pass.set_index_buffer(this.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    let mut bound = None;
+                    for d in this.draws.iter().filter(|d| d.kind == wanted) {
+                        if bound != Some(d.slot) {
+                            pass.set_pipeline(match wanted {
+                                Kind::Sealed => &this.sealed[d.slot],
+                                Kind::Solid => &this.models[d.slot],
+                                Kind::Fading => &this.fading[d.slot],
+                                Kind::Glass => &this.glass,
+                            });
+                            bound = Some(d.slot);
+                        }
+                        let l = this.lods[d.model][d.lod];
+                        pass.draw_indexed(
+                            l.first..l.first + l.count,
+                            l.base,
+                            d.first..d.first + d.count,
+                        );
                     }
-                    let l = self.lods[d.model][d.lod];
-                    pass.draw_indexed(
-                        l.first..l.first + l.count,
-                        l.base,
-                        d.first..d.first + d.count,
-                    );
+                };
+                if !this.skips(part::MODELS) {
+                    models(&mut pass, Kind::Sealed);
+                    models(&mut pass, Kind::Solid);
                 }
-            };
-            if !self.skips(part::MODELS) {
-                models(&mut pass, Kind::Sealed);
-                models(&mut pass, Kind::Solid);
-            }
-            if !self.skips(part::TERRAIN) {
-                pass.set_pipeline(&self.terrain_pipeline);
-                pass.set_vertex_buffer(0, self.ground.slice(..));
-                pass.set_index_buffer(self.ground_indices.slice(..), wgpu::IndexFormat::Uint32);
-                for &slot in &tiles {
-                    let base = slot as i32 * terrain::VERTICES as i32;
-                    pass.draw_indexed(0..self.ground_count, base, 0..1);
+                if !this.skips(part::TERRAIN) {
+                    pass.set_pipeline(&this.terrain_pipeline);
+                    pass.set_vertex_buffer(0, this.ground.slice(..));
+                    pass.set_index_buffer(this.ground_indices.slice(..), wgpu::IndexFormat::Uint32);
+                    for &slot in &tiles {
+                        let base = slot as i32 * terrain::VERTICES as i32;
+                        pass.draw_indexed(0..this.ground_count, base, 0..1);
+                    }
                 }
-            }
-            if !self.skips(part::MODELS) {
-                models(&mut pass, Kind::Fading);
-            }
-            // The open water, last of everything solid: it shades only the
-            // pixels nothing has covered.
-            pass.set_pipeline(&self.background);
-            pass.draw(0..3, 0..1);
-            if !self.skips(part::GLASS) {
-                models(&mut pass, Kind::Glass);
-            }
+                // The open water, before the things that fade into it: it
+                // shades only the pixels nothing solid has covered, and the
+                // fading models blend over it.
+                pass.set_pipeline(&this.background);
+                pass.draw(0..3, 0..1);
+                if !this.skips(part::MODELS) {
+                    models(&mut pass, Kind::Fading);
+                }
+                if !this.skips(part::GLASS) {
+                    models(&mut pass, Kind::Glass);
+                }
 
-            if !sprites.is_empty() && !self.skips(part::SPRITES) {
-                pass.set_pipeline(&self.sprites);
-                pass.set_vertex_buffer(0, self.sprite_buffer.slice(..));
-                pass.draw(0..6, 0..sprites.len() as u32);
+                if !sprites.is_empty() && !this.skips(part::SPRITES) {
+                    pass.set_pipeline(&this.sprites);
+                    pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
+                    pass.draw(0..6, 0..sprites.len() as u32);
+                }
+                if !shafts.is_empty() && !this.skips(part::SHAFTS) {
+                    let first = sprites.len() as u32;
+                    pass.set_pipeline(&this.shafts);
+                    pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
+                    pass.draw(0..6, first..first + shafts.len() as u32);
+                }
+                if !beams.is_empty() && !this.skips(part::SHAFTS) {
+                    let first = (sprites.len() + shafts.len()) as u32;
+                    pass.set_pipeline(&this.beams);
+                    pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
+                    pass.draw(0..6, first..first + beams.len() as u32);
+                }
             }
-            if !shafts.is_empty() && !self.skips(part::SHAFTS) {
-                let first = sprites.len() as u32;
-                pass.set_pipeline(&self.shafts);
-                pass.set_vertex_buffer(0, self.sprite_buffer.slice(..));
-                pass.draw(0..6, first..first + shafts.len() as u32);
-            }
-            if !beams.is_empty() && !self.skips(part::SHAFTS) {
-                let first = (sprites.len() + shafts.len()) as u32;
-                pass.set_pipeline(&self.beams);
-                pass.set_vertex_buffer(0, self.sprite_buffer.slice(..));
-                pass.draw(0..6, first..first + beams.len() as u32);
-            }
-        }
-        self.porthole
-            .draw(gpu, &mut encoder, seconds, seed, at, frame);
+            Ok(())
+        });
+        result?;
         gpu.submit(encoder.finish());
         Ok(())
     }
@@ -1271,8 +1489,23 @@ impl Nautilus {
         if swiped.is_some() {
             self.voyage = Voyage::default();
         }
-        let preview = self.porthole.compose(gpu);
-        crate::porthole::read_texture(gpu, &preview, crate::porthole::SIZE)
+        crate::gpu::read_texture(gpu, &self.sea_texture, SIZE)
+    }
+
+    /// A quick reference frame: a few draws to settle pipelines and the helm,
+    /// then the composed frame. For the documentation sheet and visual
+    /// checks, where the exact helm history of `read_back_swiped` is not
+    /// needed.
+    #[cfg(test)]
+    fn read_back_fast(&mut self, gpu: &Graphics, seconds: f64, seed: u64) -> Vec<u8> {
+        for (i, at) in [seconds - 3.0, seconds - 1.0, seconds]
+            .into_iter()
+            .enumerate()
+        {
+            self.draw(gpu, at, seed, i % crate::visuals::SLOTS)
+                .expect("a 3D dive frame");
+        }
+        crate::gpu::read_texture(gpu, &self.sea_texture, SIZE)
     }
 }
 
@@ -1281,17 +1514,8 @@ impl Visual for Nautilus {
         self.draw(gpu, seconds, seed, frame)
     }
 
-    fn texture(&self, frame: usize) -> wgpu::Texture {
-        self.porthole.texture(frame)
-    }
-
-    fn overlay(&self) -> Option<wgpu::Texture> {
-        Some(self.porthole.bezel())
-    }
-
-    fn needles(&self, frame: usize) -> [Option<wgpu::Texture>; 2] {
-        let [depth, log] = self.porthole.needles(frame);
-        [Some(depth), Some(log)]
+    fn texture(&self, _frame: usize) -> wgpu::Texture {
+        self.sea_texture.clone()
     }
 
     fn travel(&mut self, legs: i32) {
@@ -1505,7 +1729,7 @@ mod tests {
              flex-wrap:wrap;gap:12px}figure{margin:0}img{width:360px}</style>\n",
         );
         for (i, place) in places.iter().enumerate() {
-            let pixels = scene.read_back_swiped(&gpu, place.seconds(), place.seed, place.swiped);
+            let pixels = scene.read_back_fast(&gpu, place.seconds(), place.seed);
             let frame = image::RgbaImage::from_raw(SIZE, SIZE, pixels).expect("a whole frame");
             let file = format!("{}.png", place.name);
             frame.save(dir.join(&file)).expect("a screenshot");
@@ -1559,70 +1783,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "writes the porthole's layers; set DIVE3D_LAYERS_DIR"]
-    fn porthole_layers() {
-        let Ok(dir) = std::env::var("DIVE3D_LAYERS_DIR") else {
-            return;
-        };
-        let dir = std::path::Path::new(&dir);
-        std::fs::create_dir_all(dir).expect("a directory for the layers");
-        let gpu = crate::gpu::headless().expect("a GPU adapter");
-        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
-        scene.draw(&gpu, leg(0.0), 0, 0).expect("a frame");
-        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        let sea = crate::porthole::read_texture(&gpu, &scene.porthole.texture(0), SEA);
-        image::save_buffer(
-            dir.join("sea.png"),
-            &sea,
-            SEA,
-            SEA,
-            image::ExtendedColorType::Rgba8,
-        )
-        .expect("the sea");
-        let bezel = crate::porthole::read_texture(&gpu, &scene.porthole.bezel(), SIZE);
-        image::save_buffer(
-            dir.join("bezel.png"),
-            &bezel,
-            SIZE,
-            SIZE,
-            image::ExtendedColorType::Rgba8,
-        )
-        .expect("the bezel");
-        for (name, needle) in ["depth", "log"].into_iter().zip(scene.porthole.needles(0)) {
-            let pixels = crate::porthole::read_texture(&gpu, &needle, crate::porthole::NEEDLE);
-            image::save_buffer(
-                dir.join(format!("needle-{name}.png")),
-                &pixels,
-                crate::porthole::NEEDLE,
-                crate::porthole::NEEDLE,
-                image::ExtendedColorType::Rgba8,
-            )
-            .expect("a needle");
-        }
-    }
-
-    #[test]
-    #[ignore = "needs a working GPU adapter"]
-    fn the_porthole_shows_a_sea() {
-        let pixels = render_once(leg(0.0), 0).expect("a GPU adapter and a frame");
-        let at = |x: u32, y: u32| {
-            let i = ((y * SIZE + x) * 4) as usize;
-            [pixels[i], pixels[i + 1], pixels[i + 2]]
-        };
-        let centre = at(SIZE / 2, SIZE / 2);
-        assert!(
-            centre.iter().any(|&c| c > 10),
-            "the sea should not be black: {centre:?}"
-        );
-        assert_ne!(at(0, 0), centre, "the casing and the sea should differ");
-    }
-
-    /// What each part of the scene costs: the frame time with everything, then
-    /// with one part left out at a time, over the heaviest legs.
-    #[test]
     #[ignore = "a benchmark; needs a working GPU adapter"]
     fn frame_cost() {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
+        println!("adapter: {}, profiler: {}", gpu.adapter, gpu.profiling());
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
         // The same scene, its sea in half floats as it was before.
         let mut floats =
@@ -1637,12 +1801,19 @@ mod tests {
             ("no sprites", part::SPRITES),
             ("no sun shafts", part::SHAFTS),
             ("no point lights", part::LIGHTS),
-            ("porthole only", part::SEA),
+            ("empty sea", part::SEA),
             ("quarter pixels", part::QUARTER),
             ("plain textures", part::PLAIN_TEXTURES),
             ("trilinear only", part::ANISOTROPY),
             ("no noise", part::NO_NOISE),
             ("full detail", part::FULL_DETAIL),
+            ("cheap models", part::CHEAP_MODELS),
+            ("cheap terrain", part::CHEAP_TERRAIN),
+            ("cheap background", part::CHEAP_BACKGROUND),
+            (
+                "all cheap lights",
+                part::CHEAP_MODELS | part::CHEAP_TERRAIN | part::CHEAP_BACKGROUND,
+            ),
             ("half-float sea", 0),
         ];
         let legs = [1.0, 3.0, 4.0];
@@ -1689,12 +1860,58 @@ mod tests {
         }
     }
 
+    /// How much of the panel each part of the frame actually covers: with the
+    /// part left out, the difference is the pixels it was shading.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn coverage() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        let at = leg(1.0) + 2.0;
+        let shot = |scene: &mut Nautilus, skip: u16| -> Vec<u8> {
+            scene.skip = skip;
+            for i in 0..8 {
+                scene
+                    .draw(&gpu, at - 0.8 + f64::from(i) * 0.1, 0, 0)
+                    .expect("a frame");
+            }
+            scene.draw(&gpu, at, 0, 0).expect("a frame");
+            crate::gpu::read_texture(&gpu, &scene.sea_texture, SIZE)
+        };
+        let all = shot(&mut scene, 0);
+        println!("coverage of {} pixels", SIZE * SIZE);
+        for (name, skip) in [
+            ("terrain", part::TERRAIN),
+            ("models", part::MODELS),
+            ("glass", part::GLASS),
+            ("sprites", part::SPRITES),
+            ("shafts", part::SHAFTS),
+        ] {
+            let without = shot(&mut scene, skip);
+            let differing = all
+                .chunks_exact(4)
+                .zip(without.chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            println!(
+                "coverage {name:>10}: {differing:>7} px ({:.1}%)",
+                differing as f64 * 100.0 / f64::from(SIZE * SIZE)
+            );
+        }
+        scene.skip = 0;
+    }
+
     /// Time the scene per leg, on whatever adapter is present.
     #[test]
     #[ignore = "a benchmark; needs a working GPU adapter"]
     fn frame_time() {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
+        println!("adapter: {}, profiler: {}", gpu.adapter, gpu.profiling());
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        // Same binary, different feature set: useful without rebuilding.
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP") {
+            scene.skip = skip.parse().unwrap_or(0);
+        }
         scene.draw(&gpu, 0.0, 0, 0).expect("a frame");
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let names = [
@@ -1738,6 +1955,394 @@ mod tests {
         println!(
             "dive3d frame: mean {:.3} ms",
             total / names.len() as f64 * 1e3
+        );
+    }
+    /// Time specific seeds of every scene at several places inside each leg:
+    /// the regression bench for hotspots, not just the leg average.
+    ///
+    /// `DIVE3D_HOTSPOT_SEEDS=0,250000,500000,750000` chooses visits (the
+    /// voyage seed is the visit modulo 1,000,003); `DIVE3D_HOTSPOT_PLACES`
+    /// chooses fractions through each leg; `DIVE3D_HOTSPOT_FRAMES` sets the
+    /// samples. Writes CSV to `DIVE3D_HOTSPOT_DIR` when set.
+    #[test]
+    #[ignore = "a benchmark; needs a working GPU adapter"]
+    fn hotspots() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        println!("adapter: {}, profiler: {}", gpu.adapter, gpu.profiling());
+        let list = |name: &str, default: &[f64]| -> Vec<f64> {
+            std::env::var(name).map_or_else(
+                |_| default.to_vec(),
+                |text| {
+                    text.split(',')
+                        .filter_map(|v| v.trim().parse().ok())
+                        .collect()
+                },
+            )
+        };
+        let seeds: Vec<u64> = list(
+            "DIVE3D_HOTSPOT_SEEDS",
+            &[0.0, 250_000.0, 500_000.0, 750_000.0],
+        )
+        .into_iter()
+        .map(|v| v as u64)
+        .collect();
+        let places = list("DIVE3D_HOTSPOT_PLACES", &[0.15, 0.45, 0.85]);
+        let frames = std::env::var("DIVE3D_HOTSPOT_FRAMES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(6usize);
+        let names = [
+            "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
+        ];
+        let span = crate::voyage::LEG / crate::voyage::SPEED;
+        let mut rows = Vec::new();
+        for &visit in &seeds {
+            let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+            // Build the seabed and warm its pipelines before timing it.
+            for i in 0..4 {
+                scene
+                    .draw(&gpu, leg(0.0) + f64::from(i) * 0.1, visit, 0)
+                    .expect("a warm frame");
+                gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+            }
+            for (n, name) in names.iter().enumerate() {
+                for &place in &places {
+                    let seconds = leg(n as f64) + place.clamp(0.0, 0.99) * span;
+                    for i in 0..3 {
+                        scene
+                            .draw(&gpu, seconds + f64::from(i) * 0.02, visit, i as usize)
+                            .expect("a warm frame");
+                        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                    }
+                    let mut total = 0.0;
+                    let mut worst: f64 = 0.0;
+                    for i in 0..frames {
+                        let begun = std::time::Instant::now();
+                        scene
+                            .draw(
+                                &gpu,
+                                seconds + i as f64 * 0.02,
+                                visit,
+                                i % crate::visuals::SLOTS,
+                            )
+                            .expect("a frame");
+                        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                        let ms = begun.elapsed().as_secs_f64() * 1e3;
+                        total += ms;
+                        worst = worst.max(ms);
+                    }
+                    let count: usize = scene.frame.solid.iter().map(Vec::len).sum::<usize>()
+                        + scene.frame.glass.iter().map(Vec::len).sum::<usize>();
+                    rows.push((
+                        visit,
+                        n,
+                        name.to_string(),
+                        place,
+                        total / frames as f64,
+                        worst,
+                        count,
+                        scene.frame.sprites.len(),
+                    ));
+                }
+            }
+        }
+        rows.sort_by(|a, b| b.4.total_cmp(&a.4));
+        println!(
+            "{:>8}  {:<9} {:>5} {:>8} {:>8} {:>7} {:>7}",
+            "seed", "scene", "place", "mean_ms", "worst_ms", "inst", "sprite"
+        );
+        for r in rows.iter().take(20) {
+            println!(
+                "{:>8}  {:<9} {:>5.2} {:>8.2} {:>8.2} {:>7} {:>7}",
+                r.0, r.2, r.3, r.4, r.5, r.6, r.7
+            );
+        }
+        println!("{} hotspots measured", rows.len());
+        if let Ok(dir) = std::env::var("DIVE3D_HOTSPOT_DIR") {
+            let mut csv = String::from("seed,scene,place,mean_ms,worst_ms,instances,sprites\n");
+            for r in &rows {
+                csv.push_str(&format!(
+                    "{},{},{:.2},{:.3},{:.3},{},{}\n",
+                    r.0, r.2, r.3, r.4, r.5, r.6, r.7
+                ));
+            }
+            std::fs::write(std::path::Path::new(&dir).join("hotspots.csv"), csv)
+                .expect("a hotspot CSV");
+        }
+    }
+
+    /// One tiled reference image of every place in `places::all()` — every
+    /// scene, every moment of the voyage, and every effect we shoot — for the
+    /// docs and for comparing a visual change at a glance. Regenerate with
+    /// `DIVE3D_SHEET=docs/dive3d-scenes.png cargo test --release
+    /// dive3d::tests::scenes_sheet -- --ignored`.
+    #[test]
+    #[ignore = "writes the documentation contact sheet; set DIVE3D_SHEET"]
+    fn scenes_sheet() {
+        let Ok(path) = std::env::var("DIVE3D_SHEET") else {
+            return;
+        };
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        let places = places::all();
+        let tile: u32 = std::env::var("DIVE3D_SHEET_TILE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(280);
+        let across: u32 = std::env::var("DIVE3D_SHEET_COLS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(7);
+        let rows = (places.len() as u32).div_ceil(across);
+        let mut sheet = image::RgbaImage::new(tile * across, tile * rows);
+        for (i, place) in places.iter().enumerate() {
+            let pixels = scene.read_back_swiped(&gpu, place.seconds(), place.seed, place.swiped);
+            let frame = image::RgbaImage::from_raw(SIZE, SIZE, pixels).expect("a whole frame");
+            let thumb =
+                image::imageops::resize(&frame, tile, tile, image::imageops::FilterType::Triangle);
+            let (x, y) = (i as u32 % across * tile, i as u32 / across * tile);
+            image::imageops::overlay(&mut sheet, &thumb, i64::from(x), i64::from(y));
+            println!("{i:3}: {}", place.name);
+        }
+        let path = std::path::Path::new(&path);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).expect("a directory for the sheet");
+        }
+        sheet.save(path).expect("the documentation sheet");
+        let file = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("dive3d-scenes.png");
+        let mut html = format!(
+            "<!doctype html><meta charset=utf-8><title>Dive3D scenes</title>\n\
+             <style>body{{background:#111;color:#ddd;font:13px system-ui,sans-serif;margin:24px}}\
+             h1{{font-size:18px}} .grid{{display:grid;grid-template-columns:repeat({across},280px);gap:10px}}\
+             figure{{margin:0}} .tile{{width:280px;height:280px;background-image:url({file});\
+             background-repeat:no-repeat}} figcaption{{padding:4px 0;color:#bbb}}\
+             code{{color:#9cf}}</style>\n<h1>Nautilus: every scene and effect</h1>\n\
+             <p>One sheet, regenerated by <code>DIVE3D_SHEET=docs/dive3d-scenes.png cargo test --release dive3d::tests::scenes_sheet -- --ignored</code>.</p>\n<div class=grid>\n"
+        );
+        for (i, place) in places.iter().enumerate() {
+            let (x, y) = (i as u32 % across * tile, i as u32 / across * tile);
+            html += &format!(
+                "<figure><div class=tile style=\"background-position:-{x}px -{y}px\"></div>\
+                 <figcaption>{i}: {name}</figcaption></figure>\n",
+                name = place.name
+            );
+        }
+        html += "</div>\n";
+        std::fs::write(path.with_extension("html"), html).expect("the scene index");
+        println!(
+            "wrote {} ({} x {})",
+            path.display(),
+            sheet.width(),
+            sheet.height()
+        );
+    }
+
+    /// The same three demanding scenes under each lighting path, tiled for a
+    /// visual comparison: rich, cheap models, cheap terrain, both, triplanar.
+    /// Regenerate with `DIVE3D_QUALITY_SHEET=docs/dive3d-lighting.png ...`.
+    #[test]
+    #[ignore = "writes a lighting comparison sheet; set DIVE3D_QUALITY_SHEET"]
+    fn quality_sheet() {
+        let Ok(path) = std::env::var("DIVE3D_QUALITY_SHEET") else {
+            return;
+        };
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        let places = [
+            (
+                "shallows",
+                places::all()
+                    .into_iter()
+                    .find(|p| p.name == "0-shallows-middle")
+                    .unwrap(),
+            ),
+            (
+                "forest",
+                places::all()
+                    .into_iter()
+                    .find(|p| p.name == "1-forest-middle")
+                    .unwrap(),
+            ),
+            (
+                "atlantis",
+                places::all()
+                    .into_iter()
+                    .find(|p| p.name == "4-atlantis-middle")
+                    .unwrap(),
+            ),
+        ];
+        let variants: [(&str, u16); 4] = [
+            ("rich", 0),
+            ("cheap model light", part::CHEAP_MODELS),
+            ("cheap terrain light", part::CHEAP_TERRAIN),
+            ("both cheap", part::CHEAP_MODELS | part::CHEAP_TERRAIN),
+        ];
+        let tile = 360;
+        let across = places.len() as u32;
+        let mut sheet = image::RgbaImage::new(tile * across, tile * variants.len() as u32);
+        for (row, (name, skip)) in variants.iter().enumerate() {
+            scene.skip = *skip;
+            for (col, (_, place)) in places.iter().enumerate() {
+                let pixels = scene.read_back_fast(&gpu, place.seconds(), place.seed);
+                let frame = image::RgbaImage::from_raw(SIZE, SIZE, pixels).expect("a frame");
+                let thumb = image::imageops::resize(
+                    &frame,
+                    tile,
+                    tile,
+                    image::imageops::FilterType::Triangle,
+                );
+                image::imageops::overlay(
+                    &mut sheet,
+                    &thumb,
+                    i64::from(col as u32 * tile),
+                    i64::from(row as u32 * tile),
+                );
+                println!("{name}: {}", place.name);
+            }
+        }
+        scene.skip = 0;
+        let path = std::path::Path::new(&path);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).expect("a directory for the sheet");
+        }
+        sheet.save(path).expect("the comparison sheet");
+        let file = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("dive3d-lighting.png");
+        let mut html = format!(
+            "<!doctype html><meta charset=utf-8><title>Dive3D lighting</title>\n\
+             <style>body{{background:#111;color:#ddd;font:13px system-ui,sans-serif;margin:24px}}\
+             table{{border-collapse:collapse}} td{{padding:4px;vertical-align:top}}\
+             .tile{{width:360px;height:360px;background-image:url({file});background-repeat:no-repeat}}\
+             th{{text-align:left;padding:4px}} code{{color:#9cf}}</style>\n\
+             <h1>Nautilus lighting paths</h1>\n<p>Rich, then each cheaper path, over the same three places.\
+             Regenerate with <code>DIVE3D_QUALITY_SHEET=docs/dive3d-lighting.png cargo test --release dive3d::tests::quality_sheet -- --ignored</code>.</p>\n<table><tr><th></th>"
+        );
+        for (name, _) in &places {
+            html += &format!("<th>{name}</th>");
+        }
+        html += "</tr>\n";
+        for (row, (name, _)) in variants.iter().enumerate() {
+            html += &format!("<tr><th>{name}</th>");
+            for col in 0..places.len() {
+                let (x, y) = (col as u32 * tile, row as u32 * tile);
+                html += &format!(
+                    "<td><div class=tile style=\"background-position:-{x}px -{y}px\"></div></td>"
+                );
+            }
+            html += "</tr>\n";
+        }
+        html += "</table>\n";
+        std::fs::write(path.with_extension("html"), html).expect("the lighting index");
+        println!(
+            "wrote {} ({} x {})",
+            path.display(),
+            sheet.width(),
+            sheet.height()
+        );
+    }
+    /// Price the work moved to (or proposed for) the CPU, without a GPU:
+    /// caustic generation, a visit's seabed and the per-frame scene build.
+    #[test]
+    #[ignore = "a CPU benchmark; no GPU needed"]
+    fn cpu_cost() {
+        let begun = std::time::Instant::now();
+        for _ in 0..100 {
+            std::hint::black_box(caustic_texels());
+        }
+        println!(
+            "cpu caustic tile (256x256): {:.3} ms",
+            begun.elapsed().as_secs_f64() * 1e3 / 100.0
+        );
+        let begun = std::time::Instant::now();
+        for visit in 0..20 {
+            std::hint::black_box(Seabed::new(visit, visit as f32 / 20.0));
+        }
+        println!(
+            "cpu new seabed: {:.3} ms",
+            begun.elapsed().as_secs_f64() * 1e3 / 20.0
+        );
+        let seabed = Seabed::new(0, 0.0);
+        let mut voyage = Voyage::default();
+        let mut helm = Helm::default();
+        let mut frame = Frame::new();
+        let begun = std::time::Instant::now();
+        for n in 0..8 {
+            for i in 0..60 {
+                let seconds = leg(n as f64) + f64::from(i) * 0.25;
+                let at = voyage.advance(seconds, 0.0);
+                let pose = helm.steer(&seabed, at, seconds);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: seconds as f32,
+                };
+                world::build(&world, &mut frame);
+            }
+        }
+        println!(
+            "cpu scene build: {:.3} ms",
+            begun.elapsed().as_secs_f64() * 1e3 / (8.0 * 60.0)
+        );
+        // Building the seabed's tiles: each vertex now carries its own shading,
+        // so this is what the GPU no longer has to work out per frame.
+        let mut terrain = Terrain::default();
+        let mut vertices = 0usize;
+        let seconds = leg(1.0);
+        let at = voyage.advance(seconds, 0.0);
+        let pose = helm.steer(&seabed, at, seconds);
+        let world = World {
+            seabed: &seabed,
+            pose,
+            t: seconds as f32,
+        };
+        let begun = std::time::Instant::now();
+        for _ in 0..10 {
+            terrain.clear();
+            let _ = terrain.update(&world, |_, points| vertices += points.len());
+        }
+        println!(
+            "cpu seabed tiles: {:.3} ms a visit ({} vertices)",
+            begun.elapsed().as_secs_f64() * 1e3 / 10.0,
+            vertices / 10
+        );
+        // What a per-instance light pass would cost: the thing the GPU's
+        // per-vertex point-light loop currently does for every model vertex.
+        let instances: usize = frame.solid.iter().map(Vec::len).sum::<usize>()
+            + frame.glass.iter().map(Vec::len).sum::<usize>();
+        let lights = &frame.lights;
+        let begun = std::time::Instant::now();
+        for _ in 0..100 {
+            let mut sum = 0.0f32;
+            for list in frame.solid.iter().chain(frame.glass.iter()) {
+                for instance in list {
+                    let p = [
+                        instance.rows[0][3],
+                        instance.rows[1][3],
+                        instance.rows[2][3],
+                    ];
+                    for light in lights.iter().take(4) {
+                        let d = [
+                            light.pos[0] - p[0],
+                            light.pos[1] - p[1],
+                            light.pos[2] - p[2],
+                        ];
+                        sum += light.colour[0]
+                            / (1.0
+                                + (d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+                                    / (light.range * light.range));
+                    }
+                }
+            }
+            std::hint::black_box(sum);
+        }
+        println!(
+            "cpu per-instance light ({instances} instances): {:.3} ms",
+            begun.elapsed().as_secs_f64() * 1e3 / 100.0
         );
     }
 }

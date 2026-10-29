@@ -13,10 +13,14 @@
 //! Each model is also built coarser, at up to [`LODS`] levels of detail, from
 //! the same recipe with half the segments at each step: [`Lod`] records how
 //! far each strays from the full model, so the renderer only draws it where
-//! the difference is too small to see.
+//! the difference is too small to see. `glam` does the vector math and
+//! meshoptimizer reorders the finished vertices and triangles for the GPU's
+//! fetch and post-transform caches.
 
 use std::cell::Cell;
 use std::f32::consts::{PI, TAU};
+
+use glam::Vec3;
 
 /// Levels of detail per model, the full one first.
 pub const LODS: usize = 3;
@@ -46,33 +50,18 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 /// The nearest point of triangle `t` to `p`, as barycentric weights of its
 /// corners.
 fn closest_on_triangle(p: [f32; 3], t: [[f32; 3]; 3]) -> [f32; 3] {
-    let [a, b, c] = t;
-    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
-    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    let p = Vec3::from_array(p);
+    let [a, b, c] = t.map(Vec3::from_array);
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
     if d1 <= 0.0 && d2 <= 0.0 {
         return [1.0, 0.0, 0.0];
     }
-    let bp = sub(p, b);
-    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
     if d3 >= 0.0 && d4 <= d3 {
         return [0.0, 1.0, 0.0];
     }
@@ -81,8 +70,8 @@ fn closest_on_triangle(p: [f32; 3], t: [[f32; 3]; 3]) -> [f32; 3] {
         let v = d1 / (d1 - d3);
         return [1.0 - v, v, 0.0];
     }
-    let cp = sub(p, c);
-    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
     if d6 >= 0.0 && d5 <= d6 {
         return [0.0, 0.0, 1.0];
     }
@@ -101,12 +90,6 @@ fn closest_on_triangle(p: [f32; 3], t: [[f32; 3]; 3]) -> [f32; 3] {
     [1.0 - v - w, v, w]
 }
 
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9);
-    [v[0] / l, v[1] / l, v[2] / l]
-}
-
-/// A small, stable hash for the shapes that want a little irregularity.
 fn jitter(i: u32, salt: u32) -> f32 {
     let mut h = i.wrapping_mul(0x9e37_79b9) ^ salt.wrapping_mul(0x85eb_ca6b);
     h ^= h >> 15;
@@ -137,28 +120,28 @@ impl Mesh {
 
     /// Smooth normals from the faces around each vertex.
     fn smooth(mut self) -> Self {
-        let mut normals = vec![[0.0f32; 3]; self.vertices.len()];
+        let mut normals = vec![Vec3::ZERO; self.vertices.len()];
         for t in self.indices.as_chunks::<3>().0 {
             let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
-            let n = cross(
-                sub(self.vertices[b].pos, self.vertices[a].pos),
-                sub(self.vertices[c].pos, self.vertices[a].pos),
-            );
+            let n = (Vec3::from_array(self.vertices[b].pos)
+                - Vec3::from_array(self.vertices[a].pos))
+            .cross(Vec3::from_array(self.vertices[c].pos) - Vec3::from_array(self.vertices[a].pos));
             for i in [a, b, c] {
-                for k in 0..3 {
-                    normals[i][k] += n[k];
-                }
+                normals[i] += n;
             }
         }
         for (v, n) in self.vertices.iter_mut().zip(normals) {
-            v.normal = normalize(n);
+            v.normal = n.normalize_or_zero().to_array();
         }
         self
     }
 
     /// A triangle with its own vertices and a flat normal, for hard edges.
     fn flat(&mut self, p: [[f32; 3]; 3], colour: [f32; 3], aux: impl Fn([f32; 3]) -> [f32; 2]) {
-        let n = normalize(cross(sub(p[1], p[0]), sub(p[2], p[0])));
+        let n = (Vec3::from_array(p[1]) - Vec3::from_array(p[0]))
+            .cross(Vec3::from_array(p[2]) - Vec3::from_array(p[0]))
+            .normalize_or_zero()
+            .to_array();
         let base = self.vertices.len() as u32;
         for q in p {
             self.vertices.push(Vertex {
@@ -181,7 +164,7 @@ impl Mesh {
     fn map(mut self, f: impl Fn([f32; 3]) -> [f32; 3], g: impl Fn([f32; 3]) -> [f32; 3]) -> Self {
         for v in &mut self.vertices {
             v.pos = f(v.pos);
-            v.normal = normalize(g(v.normal));
+            v.normal = Vec3::from_array(g(v.normal)).normalize_or_zero().to_array();
         }
         self
     }
@@ -338,7 +321,7 @@ fn icosphere(subdivisions: u32) -> Vec<[f32; 3]> {
         [-t, 0.0, 1.0],
     ]
     .iter()
-    .map(|v| normalize(*v))
+    .map(|v| Vec3::from_array(*v).normalize().to_array())
     .collect();
     let mut faces: Vec<[u32; 3]> = vec![
         [0, 11, 5],
@@ -368,7 +351,11 @@ fn icosphere(subdivisions: u32) -> Vec<[f32; 3]> {
             let key = (a.min(b), a.max(b));
             *cache.entry(key).or_insert_with(|| {
                 let (p, q) = (verts[a as usize], verts[b as usize]);
-                verts.push(normalize([p[0] + q[0], p[1] + q[1], p[2] + q[2]]));
+                verts.push(
+                    (Vec3::from_array(p) + Vec3::from_array(q))
+                        .normalize()
+                        .to_array(),
+                );
                 verts.len() as u32 - 1
             })
         };
@@ -433,6 +420,10 @@ pub enum Model {
     Kelp,
     Tube,
     Capsule,
+    Diver,
+    DiverHelmet,
+    DiverLimb,
+    DiverBoot,
     Fish,
     Shark,
     Whale,
@@ -459,7 +450,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 35] = [
+    pub const ALL: [Model; 39] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -472,6 +463,10 @@ impl Model {
         Model::Kelp,
         Model::Tube,
         Model::Capsule,
+        Model::Diver,
+        Model::DiverHelmet,
+        Model::DiverLimb,
+        Model::DiverBoot,
         Model::Fish,
         Model::Shark,
         Model::Whale,
@@ -596,6 +591,10 @@ impl Model {
                 p.push((0.0, 1.0));
                 lathe(&p, 10, |_, _| 1.0, white, none).scaled([4.0, 1.0, 4.0])
             }
+            Model::Diver => diver_body(),
+            Model::DiverHelmet => diver_helmet(),
+            Model::DiverLimb => diver_limb(),
+            Model::DiverBoot => diver_boot(),
             Model::Fish => fish(),
             Model::Shark => shark(),
             Model::Whale => whale(),
@@ -1024,6 +1023,298 @@ fn penguin() -> Mesh {
     .map(|p| [p[1] + 0.40, p[0] + 0.01, p[2]], |n| [n[1], n[0], n[2]]);
     m.append(beak);
     m.with_aux(|p| [p[0] * 2.0, 0.0])
+}
+
+/// A tapered rod from `a` to `b`, closed at both ends: hoses, pipes and
+/// valves. The radius is `r0` at `a` and `r1` at `b`.
+fn rod(a: [f32; 3], b: [f32; 3], r0: f32, r1: f32, colour: [f32; 3]) -> Mesh {
+    let d = Vec3::from_array(b) - Vec3::from_array(a);
+    let length = d.length().max(1e-5);
+    let y = d / length;
+    let reference = if y.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+    let x = y.cross(reference).normalize_or_zero();
+    let z = x.cross(y);
+    lathe(
+        &[(0.0, 0.0), (r0, 0.0), (r1, 1.0), (0.0, 1.0)],
+        6,
+        |_, _| 1.0,
+        move |_, _| colour,
+        |_| [0.0; 2],
+    )
+    .map(
+        move |p| {
+            let q = x * p[0] + y * (p[1] * length) + z * p[2];
+            [a[0] + q.x, a[1] + q.y, a[2] + q.z]
+        },
+        move |n| {
+            let q = x * n[0] + y * n[1] + z * n[2];
+            [q.x, q.y, q.z]
+        },
+    )
+}
+
+/// A plain box of half-extents `size` about `centre`: straps, buckles and
+/// the frame the divers' reservoir hangs on.
+fn block(size: [f32; 3], centre: [f32; 3], colour: [f32; 3]) -> Mesh {
+    extrude(
+        &[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+        2.0,
+        colour,
+    )
+    .scaled(size)
+    .map(
+        move |p| [p[0] + centre[0], p[1] + centre[1], p[2] + centre[2]],
+        |n| n,
+    )
+}
+
+/// A diver's canvas suit from the hips to the neck, with the corselet's belt,
+/// the frame on his back and the air reservoir it carries: the feet are at
+/// y = 0, the copper helmet is a separate model on top.
+fn diver_body() -> Mesh {
+    let canvas = |y: f32, a: f32| {
+        // Coarse canvas, a little darker in the folds and at the seams.
+        let weave = 0.90 + 0.10 * ((a * 9.0).sin() * (y * 43.0).cos());
+        [0.46 * weave, 0.40 * weave, 0.31 * weave]
+    };
+    let mut m = lathe(
+        &[
+            (0.0, 0.400),
+            (0.074, 0.400),
+            (0.080, 0.445),
+            (0.072, 0.515),
+            (0.075, 0.580),
+            (0.086, 0.645),
+            (0.100, 0.695),
+            (0.098, 0.728),
+            (0.0, 0.755),
+        ],
+        10,
+        |_, _| 1.0,
+        canvas,
+        |_| [0.0; 2],
+    )
+    .scaled([1.0, 1.0, 0.66]);
+    // A leather belt and its brass buckle.
+    m.append(
+        lathe(
+            &[(0.0, 0.442), (0.081, 0.442), (0.083, 0.472), (0.0, 0.472)],
+            10,
+            |_, _| 1.0,
+            |_, _| [0.24, 0.20, 0.15],
+            |_| [0.0; 2],
+        )
+        .scaled([1.0, 1.0, 0.69]),
+    );
+    m.append(block(
+        [0.010, 0.016, 0.022],
+        [0.074, 0.457, 0.0],
+        [0.64, 0.42, 0.22],
+    ));
+    // The reservoir sits on a flat frame against the small of his back.
+    m.append(block(
+        [0.010, 0.125, 0.090],
+        [-0.076, 0.610, 0.0],
+        [0.22, 0.23, 0.22],
+    ));
+    m.append(
+        lathe(
+            &[
+                (0.0, 0.455),
+                (0.030, 0.455),
+                (0.043, 0.472),
+                (0.047, 0.505),
+                (0.047, 0.730),
+                (0.043, 0.758),
+                (0.0, 0.775),
+            ],
+            8,
+            |_, _| 1.0,
+            |y, _| {
+                // Two iron bands round the tank.
+                let band = if (y * 70.0).sin() > 0.6 { 0.88 } else { 1.0 };
+                [0.30 * band, 0.31 * band, 0.33 * band]
+            },
+            |_| [0.0; 2],
+        )
+        .map(|p| [p[0] - 0.120, p[1], p[2]], |n| n),
+    );
+    // Its valve, and the hose curling up into the back of the helmet.
+    m.append(rod(
+        [-0.120, 0.775, 0.0],
+        [-0.120, 0.802, 0.0],
+        0.014,
+        0.009,
+        [0.46, 0.38, 0.24],
+    ));
+    m.append(rod(
+        [-0.110, 0.774, 0.030],
+        [-0.074, 0.824, 0.036],
+        0.014,
+        0.011,
+        [0.16, 0.16, 0.15],
+    ));
+    m.append(rod(
+        [-0.074, 0.824, 0.036],
+        [-0.044, 0.850, 0.026],
+        0.011,
+        0.008,
+        [0.16, 0.16, 0.15],
+    ));
+    m
+}
+
+/// The copper helmet: a domed crown, the corselet over the shoulders, its
+/// neck ring, the boss and dark glass of the round faceplate, and the valve
+/// and exhaust on top and at the back.
+fn diver_helmet() -> Mesh {
+    let copper = |y: f32, a: f32| {
+        // Beaten copper, with a warmer band where the lamp catches the brow.
+        let sheen = 0.86 + 0.12 * (a * 4.0 + y * 17.0).sin();
+        [0.78 * sheen, 0.42 * sheen, 0.20 * sheen]
+    };
+    let mut m = lathe(
+        &[
+            (0.0, 0.735),
+            (0.100, 0.735),
+            (0.126, 0.755),
+            (0.130, 0.773),
+            (0.124, 0.795),
+            (0.0, 0.795),
+        ],
+        10,
+        |_, a| 1.0 + 0.010 * (a * 8.0).sin(),
+        copper,
+        |_| [0.0; 2],
+    )
+    .scaled([1.0, 1.0, 0.82]);
+    m.append(lathe(
+        &[(0.0, 0.790), (0.060, 0.790), (0.060, 0.803), (0.0, 0.803)],
+        8,
+        |_, _| 1.0,
+        |_, _| [0.52, 0.32, 0.16],
+        |_| [0.0; 2],
+    ));
+    // The crown, sat a little forward of the neck as the old diver's was.
+    m.append(
+        lathe(
+            &[
+                (0.0, 0.795),
+                (0.080, 0.795),
+                (0.099, 0.812),
+                (0.106, 0.840),
+                (0.106, 0.870),
+                (0.099, 0.900),
+                (0.084, 0.927),
+                (0.060, 0.948),
+                (0.0, 0.968),
+            ],
+            10,
+            |_, _| 1.0,
+            copper,
+            |_| [0.0; 2],
+        )
+        .scaled([1.0, 1.0, 0.97])
+        .map(|p| [p[0] + 0.030, p[1], p[2]], |n| n),
+    );
+    // The faceplate: a copper boss with the dark glass set into its face.
+    m.append(rod(
+        [0.090, 0.876, 0.0],
+        [0.145, 0.876, 0.0],
+        0.056,
+        0.052,
+        [0.72, 0.42, 0.21],
+    ));
+    m.append(rod(
+        [0.145, 0.876, 0.0],
+        [0.154, 0.876, 0.0],
+        0.042,
+        0.040,
+        [0.24, 0.42, 0.44],
+    ));
+    m.append(rod(
+        [0.030, 0.966, 0.0],
+        [0.030, 0.982, 0.0],
+        0.018,
+        0.012,
+        [0.58, 0.34, 0.16],
+    ));
+    // The exhaust pipe at the back that the bubbles stream from.
+    m.append(rod(
+        [-0.055, 0.905, 0.030],
+        [-0.086, 0.918, 0.044],
+        0.012,
+        0.008,
+        [0.46, 0.30, 0.17],
+    ));
+    m
+}
+
+/// One canvas limb of a diver's suit: from `between`'s start (0) to its end
+/// (1), with cuffs at wrist and ankle. The same mesh serves every arm and
+/// leg of the party.
+fn diver_limb() -> Mesh {
+    lathe(
+        &[
+            (0.0, 0.0),
+            (0.86, 0.0),
+            (0.80, 0.50),
+            (0.88, 0.94),
+            (0.82, 1.0),
+            (0.0, 1.0),
+        ],
+        8,
+        |_, _| 1.0,
+        |y, a| {
+            if y < 0.06 || y > 0.94 {
+                [0.30, 0.26, 0.20]
+            } else {
+                let fold = 0.90 + 0.10 * ((a * 5.0).sin() * (y * 27.0).cos());
+                [0.46 * fold, 0.40 * fold, 0.31 * fold]
+            }
+        },
+        |_| [0.0; 2],
+    )
+}
+
+/// A weighted diving boot, the ankle at the origin and the toe toward +x: a
+/// lead sole, a leather upper and a brass toe cap.
+fn diver_boot() -> Mesh {
+    let mut m = extrude(
+        &[
+            [-0.045, -0.028],
+            [0.062, -0.028],
+            [0.076, -0.006],
+            [0.048, 0.012],
+            [0.018, 0.020],
+            [0.018, 0.038],
+            [-0.038, 0.038],
+            [-0.048, 0.004],
+        ],
+        0.085,
+        [0.11, 0.11, 0.12],
+    );
+    m.append(extrude(
+        &[
+            [-0.050, -0.034],
+            [0.080, -0.034],
+            [0.080, -0.022],
+            [-0.050, -0.022],
+        ],
+        0.098,
+        [0.18, 0.18, 0.19],
+    ));
+    m.append(extrude(
+        &[
+            [0.040, -0.020],
+            [0.080, -0.020],
+            [0.080, 0.014],
+            [0.048, 0.018],
+        ],
+        0.092,
+        [0.52, 0.38, 0.22],
+    ));
+    m
 }
 
 /// A giant squid's mantle and fins, the tip at +0.4 and the head end at 0.
@@ -1488,6 +1779,8 @@ pub struct Lod {
     pub first: u32,
     pub count: u32,
     pub base: i32,
+    /// Vertices this level draws: what the vertex shader runs on.
+    pub vertices: u32,
     /// How far its surface strays from the full model's, either way, in the
     /// model's own units.
     pub error: f32,
@@ -1497,6 +1790,19 @@ pub struct Lod {
     /// The longest edge of what it changed: how fine the colours and normals
     /// it carries there are.
     pub edge: f32,
+}
+
+/// Reorder a mesh with meshoptimizer: pack the vertices actually referenced,
+/// in the order the GPU fetches them, then order triangles for the post-
+/// transform cache. The geometry and its winding are unchanged.
+fn optimized(mut mesh: Mesh) -> Mesh {
+    if mesh.indices.is_empty() || mesh.vertices.is_empty() {
+        return mesh;
+    }
+    let kept = meshopt::optimize_vertex_fetch_in_place(&mut mesh.indices, &mut mesh.vertices);
+    mesh.vertices.truncate(kept);
+    meshopt::optimize_vertex_cache_in_place(&mut mesh.indices, mesh.vertices.len());
+    mesh
 }
 
 impl Library {
@@ -1509,7 +1815,7 @@ impl Library {
             let mut levels: Vec<Mesh> = Vec::new();
             for step in 0..LODS as u32 {
                 COARSER.set(step);
-                let mesh = model.build();
+                let mesh = optimized(model.build());
                 COARSER.set(0);
                 if levels
                     .last()
@@ -1537,6 +1843,7 @@ impl Library {
                     first: indices.len() as u32,
                     count: mesh.indices.len() as u32,
                     base: vertices.len() as i32,
+                    vertices: mesh.vertices.len() as u32,
                     error: levels[0].distance(mesh).0.max(mesh.distance(&levels[0]).0),
                     stray: levels[0].distance(mesh).1,
                     edge: mesh.longest_new_edge(&levels[0]),
@@ -1569,9 +1876,10 @@ impl Mesh {
                 .map(|t| {
                     let c = corner(t);
                     let w = closest_on_triangle(v.pos, c);
-                    let q = [0, 1, 2].map(|k| c[0][k] * w[0] + c[1][k] * w[1] + c[2][k] * w[2]);
-                    let d = sub(v.pos, q);
-                    (dot(d, d).sqrt(), *t, w)
+                    let q = Vec3::from_array(c[0]) * w[0]
+                        + Vec3::from_array(c[1]) * w[1]
+                        + Vec3::from_array(c[2]) * w[2];
+                    ((Vec3::from_array(v.pos) - q).length(), *t, w)
                 })
                 .collect();
             let best = nearest.iter().map(|n| n.0).fold(f32::MAX, f32::min);
@@ -1588,19 +1896,21 @@ impl Mesh {
                 .map(|n| (n.1, n.2))
                 .max_by(|a, b| {
                     let facing = |(t, w): &([u32; 3], [f32; 3])| {
-                        dot(normalize(blend(*t, *w, |v| v.normal)), v.normal)
+                        Vec3::from_array(blend(*t, *w, |v| v.normal))
+                            .normalize_or_zero()
+                            .dot(Vec3::from_array(v.normal))
                     };
                     facing(a).total_cmp(&facing(b))
                 })
                 .expect("a triangle");
             let colour = blend(t, w, |v| v.colour);
-            let normal = normalize(blend(t, w, |v| v.normal));
+            let normal = Vec3::from_array(blend(t, w, |v| v.normal)).normalize_or_zero();
             // Colours relative to their brightness: countershading runs past 1.
             let tint = (0..3)
                 .map(|k| (colour[k] - v.colour[k]).abs() / colour[k].max(v.colour[k]).max(0.1))
                 .fold(0.0, f32::max);
-            let n = cross(normal, v.normal);
-            stray = stray.max(tint).max(dot(n, n).sqrt());
+            let n = normal.cross(Vec3::from_array(v.normal));
+            stray = stray.max(tint).max(n.length());
         }
         (far, stray)
     }
@@ -1626,8 +1936,9 @@ impl Mesh {
                 continue;
             }
             for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-                let d = sub(self.vertices[a as usize].pos, self.vertices[b as usize].pos);
-                longest = longest.max(dot(d, d).sqrt());
+                let d = Vec3::from_array(self.vertices[a as usize].pos)
+                    - Vec3::from_array(self.vertices[b as usize].pos);
+                longest = longest.max(d.length());
             }
         }
         longest

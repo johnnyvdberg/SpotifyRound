@@ -279,13 +279,19 @@ impl Bench {
         for _ in 0..5 {
             frame(self);
         }
-        self.gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        self.gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .ok();
         let before = v3d_stats();
         let begun = Instant::now();
         for _ in 0..FRAMES {
             frame(self);
         }
-        self.gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        self.gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .ok();
         let wall = begun.elapsed().as_secs_f64() * 1e3 / f64::from(FRAMES);
         let after = v3d_stats();
         let mut line = format!("gpu cost, {name:>34}: {wall:6.2} ms a frame");
@@ -307,6 +313,11 @@ impl Bench {
 fn gpu_cost() {
     use wgpu::LoadOp::{Clear, Load};
     let b = Bench::new();
+    println!(
+        "gpu cost, adapter: {}, profiler: {}",
+        b.gpu.adapter,
+        b.gpu.profiling()
+    );
     let black = Clear(wgpu::Color::BLACK);
     let keep = Some((Load, wgpu::StoreOp::Store));
     let drop = Some((Clear(0), wgpu::StoreOp::Discard));
@@ -319,8 +330,12 @@ fn gpu_cost() {
     b.measure("empty pass, clear + stencil dropped", |b| {
         b.frame(1, black, drop, None, 0, 0)
     });
-    b.measure("solid fill", |b| b.frame(1, black, None, Some(&b.solid), 1, 0));
-    b.measure("textured fill", |b| b.frame(1, black, None, Some(&b.image), 1, 0));
+    b.measure("solid fill", |b| {
+        b.frame(1, black, None, Some(&b.solid), 1, 0)
+    });
+    b.measure("textured fill", |b| {
+        b.frame(1, black, None, Some(&b.image), 1, 0)
+    });
     b.measure("blended textured fill", |b| {
         b.frame(1, black, None, Some(&b.blended), 1, 0)
     });
@@ -342,4 +357,23 @@ fn gpu_cost() {
     b.measure("4 buffer uploads, empty pass", |b| {
         b.frame(1, black, None, None, 0, 4)
     });
+}
+
+/// The benchmark the Pi 5 build runs on its own adapter. It is ignored
+/// elsewhere: a desktop GPU is not the target, and `frame_time` is the
+/// measurement that matters there.
+#[test]
+#[ignore = "needs a Raspberry Pi 5 V3D adapter"]
+fn videocore_vii() {
+    let gpu = crate::gpu::headless().expect("a GPU adapter");
+    println!("adapter: {}", gpu.adapter);
+    assert!(
+        gpu.adapter.to_ascii_lowercase().contains("v3d"),
+        "expected the Pi 5's V3D adapter, got {}",
+        gpu.adapter
+    );
+    assert!(
+        !gpu.profiling(),
+        "the V3D has no timestamp queries; wgpu-profiler must stay off"
+    );
 }
