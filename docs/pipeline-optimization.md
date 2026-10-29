@@ -2295,3 +2295,58 @@ follows the same shape at a larger scale: one struct, one conversion in
 `Library::build`, the previews gate.
 
 Not implemented this round (tree at §47 state); the next branch.
+
+## 58. Surface subset: the exact shader and layout text
+
+The shader side, in full:
+
+```wgsl
+struct InstanceSurface {
+    @location(4) m0: vec4<f32>,
+    @location(5) m1: vec4<f32>,
+    @location(6) m2: vec4<f32>,
+    @location(7) colour: vec4<f32>,
+    @location(8) anim: vec4<f32>,
+    @location(9) extra: vec4<f32>,
+    @location(10) surface: vec4<f32>,
+}
+
+@vertex
+fn vs_model_surface(v: Model, i: InstanceSurface) -> Lit {
+    // vs_model's body verbatim, with:
+    //   out.floor_y = 0.0;
+    //   out.floor   = vec3<f32>(0.0);
+    // and no `i.floor` read. The MATERIAL == VAULT branch stays (it is
+    // false for the surface's MATERIAL == SURFACE).
+}
+```
+
+The layout side, in `mod.rs` beside `instance_attributes`:
+
+```rust
+let surface_attributes = wgpu::vertex_attr_array![
+    4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4,
+    8 => Float32x4, 9 => Float32x4, 10 => Float32x4,
+];
+let surface_buffers = [
+    model_buffers[0],
+    Some(wgpu::VertexBufferLayout {
+        // The buffer still holds 128-byte records; the pipeline just fetches
+        // seven of the eight vec4s. The stride must stay 128.
+        array_stride: std::mem::size_of::<Instance>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &surface_attributes,
+    }),
+];
+```
+
+Then `models[material::SURFACE as usize] = pipeline(..., "vs_model_surface",
+&surface_buffers, ...)` after the `per_material` loop. The key detail is the
+**stride stays 128** — the subset cuts the fetch, not the buffer's record; the
+instance upload is unchanged and no other pipeline moves.
+
+This is the whole change; it is one edit across the shader and
+`Nautilus::build` plus the surface slot assignment. The previews are the gate
+(the surface's pixels should be identical), then the Pi.
+
+Not applied this round; the text above is the complete specification.
