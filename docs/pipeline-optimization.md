@@ -193,3 +193,51 @@ reverted. Verified afterwards that the whole table matches the last good state:
 
 Three of the four throughput changes survived measurement; the fourth did not
 and is gone.
+
+## 6. Raspberry Pi 5: the frame is not fill-bound
+
+Measured on the device itself: `ssh john@192.168.0.33`, adapter `V3D 7.1.7.0`,
+V3D at 960 MHz, `throttled=0x0`, 72 °C.
+
+**How to measure.** `deploy/build-for-pi.sh --tests` builds both binaries in the
+arm64 Debian container (46 s incremental), `scp target/pi/spotify-round-tests`
+to the Pi, then freeze the kiosk or it contends for the GPU:
+
+```
+kill -STOP <spotify-round pid>          # 15.55 ms mean while it runs
+/tmp/spotify-round-tests dive3d::tests::frame_cost --ignored --nocapture
+kill -CONT <spotify-round pid>          # 12.997 ms mean while it is frozen
+```
+
+**`frame_cost`, kiosk frozen, baseline 13.44 ms:**
+
+| variant | Δ | reading |
+|---|---|---|
+| no solid models | **−4.35 ms** | models are 32% of the frame |
+| empty sea | −9.81 ms | everything the pass draws |
+| quarter pixels | **−2.62 ms** | *all* fragment shading in the frame |
+| no terrain | −1.48 ms | |
+| plain textures | −1.20 ms | texture sampling |
+| full detail (LOD off) | **+1.85 ms** | the LOD work is worth 1.85 ms |
+| cheap models | +0.33 ms | the cheap-light path saves nothing |
+
+(Sprites and "no noise" came out *slower*; treat ±1.5 ms as noise.)
+
+**What this means — and it reverses the assumption this pass was built on:**
+
+1. **Fragment shading is 2.62 ms of 13.44.** All the `fs_model` work
+   (224 → 77 instructions) addressed a bucket smaller than the models' cost.
+2. **Models cost 4.35 ms and are not pixel-bound** — quartering the pixels
+   removes less than the models do. They pay in ~250 draws, ~150k vertices and
+   the binning pass. Batching, fewer draws and coarser geometry pay here;
+   better shading does not.
+3. **An empty sea still costs 3.63 ms** — 27% of the frame is fixed overhead
+   outside all drawing (pass setup, submission, or the texture handoff to
+   Slint). Worth finding before anything else.
+4. Shader instruction counts went down by 67% and the frame did not move:
+   12.3 ms (README, pre-loss) → 13.0 ms now. The LOD change is the one measured
+   win, at 1.85 ms.
+
+Absolute numbers are not directly comparable to the README's 12.3 ms: the
+recovered scene still differs from the lost one on shallows, forest and cave
+(kelp placement and the cave glow), and those are the heavier legs.
