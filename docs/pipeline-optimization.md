@@ -1583,7 +1583,11 @@ breathing.
 - Visual: **mean 0.0619/255, max 5** — the cave's formula is reproduced
   exactly; the ruins' two-sine flicker is approximated by the generic one, and
   the difference is invisible at these intensities.
-- Pi: no change expected.
+- Pi (checked after the docs commit): **9.011 ms** mean, shallows 10.504,
+  forest 10.560, arctic 7.027. That is the day's +0.3-0.5 drift against the
+  shell run's 8.706 (the scene building is flat at 1.43), not the flicker:
+  it is the light's colour.w + one branch in `light_at`, and the light path
+  was not on the critical path before it.
 
 ![light flicker: current / shader flicker / amplified difference](branch-light-flicker.png)
 
