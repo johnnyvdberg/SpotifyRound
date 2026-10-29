@@ -989,3 +989,46 @@ degraded smooth terrain. The **coarse + facets** is the cautious version at
 ~0.2 ms. The smooth 3-level terrain stays the default until that call is made;
 the 3.5–9% it would save is smaller than the render scale's 1–2.6 ms, so it is
 a look decision, not a performance rescue.
+
+### The full survey's ranked next steps
+
+The wider research (the session's survey) confirmed the sheet and ordered the
+remaining terrain work by return. Beyond the low-poly option taken above:
+
+1. **Stylised coarsening — done here.** The facet variant is the per-pixel
+   version; the even cheaper variant is a `flat`-interpolated, 3–4 band
+   quantised *vertex* light in the VS (zero per-pixel ALU), or baked
+   AO/curvature in the vertex colour. Pick whichever reads better.
+2. **Skirts only at LOD seams.** Same-level tile edges sample the same world
+   heights, so interior skirts are redundant; only edges facing a coarser
+   level need them. A 4-bit edge mask removes ~10–20% of terrain triangles for
+   **+0.1–0.25 ms**, at the cost of edge-mask plumbing and exact edge heights
+   (Cesium's [quantized-mesh](https://github.com/CesiumGS/quantized-mesh)
+   edge indices are the reference).
+3. **Bigger tiles or one merged draw.** 67 draws for 23k vertices is high
+   front-end overhead. 32×32-quad tiles cut the tile count ~4× (17 draws) at
+   the same vertex count and halve the skirt fraction, or merge the visible
+   tiles / use `multi_draw_indexed_indirect` for **0.1–0.3 ms**. Instancing
+   does not fit (each tile has unique heights); multi-draw support on V3DV
+   must be checked.
+4. **Albedo/AO detail instead of normals.** Baked cavity AO in vertex colour,
+   procedural colour bands/ripples from world xz, at most one detail-texture
+   fetch — the cheap half of bump mapping, without the per-pixel light.
+   **0.05–0.2 ms**, keeps the per-vertex lighting.
+5. **Simplify the far ring.** Use the existing sun-only cheap light branch for
+   LOD 2, or drop the farthest ring under near-opaque fog: **0.1–0.2 ms**,
+   low complexity; watch the horizon.
+
+Expected combined: **0.5–1.0 ms**, with the look carried by facets, palette
+and AO rather than added lighting. The survey's verdicts, with sources:
+[GPU Gems 2 clipmaps](https://hhoppe.com/proj/gpugcm/),
+[chunked LOD](https://tulrich.com/geekstuff/chunklod.html),
+[bevy_terrain](https://github.com/kurtkuehnert/bevy_terrain/blob/main/docs/implementation.md),
+[vange-rs](https://github.com/kvark/vange-rs/wiki/Rendering-Techniques),
+[Godot's mobile vertex shading and mesh LOD](https://docs.godotengine.org/en/stable/tutorials/rendering/renderers.html),
+[Unity terrain settings](https://docs.unity3d.com/6000.0/Documentation/Manual/terrain-OtherSettings.html),
+[Unreal landscape](https://dev.epicgames.com/documentation/en-us/unreal-engine/landscape-technical-guide),
+[Cesium quantized mesh](https://github.com/CesiumGS/quantized-mesh),
+[derivative maps](http://mmikkelsen3d.blogspot.com/2011/07/derivative-maps.html),
+[stylised mobile terrain](https://dev.to/tamtranngoc/why-mesh-terrain-is-often-a-better-choice-than-unity-terrain-for-stylized-mobile-projects-1hja),
+and [Mesa's V3D driver](https://docs.mesa3d.org/drivers/v3d.html).
