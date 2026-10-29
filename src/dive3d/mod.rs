@@ -163,8 +163,6 @@ pub(crate) struct Nautilus {
     beams: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     group: wgpu::BindGroup,
-    #[cfg(test)]
-    trilinear: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     /// Per model, its levels of detail, the full one first.
@@ -301,11 +299,9 @@ mod part {
     /// to tell what the fragments cost from what the vertices do.
     pub const QUARTER: u64 = 64;
     /// Not parts either: every texture lookup a flat grey (only in a scene
-    /// built [`Nautilus::with_plain_textures`]); no procedural noise;
-    /// trilinear instead of anisotropic filtering.
+    /// built [`Nautilus::with_plain_textures`]), and no procedural noise.
     pub const PLAIN_TEXTURES: u64 = 128;
     pub const NO_NOISE: u64 = 256;
-    pub const ANISOTROPY: u64 = 512;
     /// Every model at its full detail.
     pub const FULL_DETAIL: u64 = 1024;
     /// Both sun shafts and searchlight beams, as it always has. The two can
@@ -337,6 +333,16 @@ mod part {
     pub const BEAMS: u64 = 1 << 22;
     /// The tunnel through the cave's massif.
     pub const TUNNEL: u64 = 1 << 23;
+    /// The fading models whose coverage is the ice sheet's, worked out per
+    /// pixel; and the ones whose coverage is a per-instance fade.
+    pub const FADING_ICE: u64 = 1 << 24;
+    pub const FADING_PROPS: u64 = 1 << 25;
+    /// Opaque draws sorted nearest first across materials, instead of
+    /// material-major, without splitting any draw.
+    pub const DEPTH_FIRST_DRAWS: u64 = 1 << 26;
+    /// The seabed before the opaque models, so the depth test can reject the
+    /// models the ground hides.
+    pub const TERRAIN_FIRST: u64 = 1 << 27;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -806,7 +812,10 @@ impl Nautilus {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            anisotropy_clamp: 4,
+            // No anisotropic filtering: it measured 0.50 ms on the Pi and
+            // changed no preview pixel, because the surface samples carry
+            // their level of detail explicitly.
+            anisotropy_clamp: 1,
             ..Default::default()
         });
         let relief_view = relief.create_view(&wgpu::TextureViewDescriptor::default());
@@ -857,18 +866,6 @@ impl Nautilus {
             })
         };
         let group = group_with(&sampler);
-        // The same with plain trilinear filtering, to measure what the
-        // anisotropic filtering costs.
-        #[cfg(test)]
-        let trilinear = group_with(&device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Dive3d surfaces, trilinear"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            ..Default::default()
-        }));
 
         let target = |label, format, samples, usage| {
             device
@@ -1175,14 +1172,38 @@ impl Nautilus {
         });
         // One sample has no alpha-to-coverage: blending the coverage over the
         // water is the dissolve. Multisampled, the coverage itself does it.
-        let fading = per_material(
-            "Dive3d fading models",
-            true,
-            1.0,
-            (!MULTISAMPLED).then_some(blend),
-            !MULTISAMPLED,
-            None,
-        );
+        //
+        // Only the ice sheet works its coverage out per pixel; every other
+        // fading model has one coverage for the whole instance. Those are
+        // compiled without the discard (the CPU drops instances the shader
+        // would discard) so the GPU can reject what the opaque pass already
+        // hides before it shades it; the ice keeps the discard it needs.
+        let fading = {
+            let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
+            for &material in &MATERIALS {
+                for grounded in [0.0, 1.0] {
+                    let ice = material == world::material::ICE as i32;
+                    pipelines.push(pipeline(
+                        "Dive3d fading models",
+                        "vs_model",
+                        "fs_model",
+                        &model_buffers,
+                        (!MULTISAMPLED).then_some(blend),
+                        !MULTISAMPLED,
+                        nearer,
+                        true,
+                        false,
+                        &[
+                            ("FADING", if ice { 1.0 } else { 0.0 }),
+                            ("MATERIAL", f64::from(material)),
+                            ("GROUNDED", grounded),
+                        ],
+                        None,
+                    ));
+                }
+            }
+            pipelines
+        };
         let glass = pipeline(
             "Dive3d glass",
             "vs_model",
@@ -1254,8 +1275,6 @@ impl Nautilus {
             beams,
             globals,
             group,
-            #[cfg(test)]
-            trilinear,
             vertices,
             indices,
             lods: library.lods,
@@ -1427,6 +1446,7 @@ impl Nautilus {
         let hides = self.skip_effects;
         #[cfg(not(test))]
         let hides = 0u64;
+        let depth_first = self.skips(part::DEPTH_FIRST_DRAWS);
         let order = &mut self.order;
         order.clear();
         for (model, list) in self.frame.solid.iter().enumerate() {
@@ -1434,6 +1454,13 @@ impl Nautilus {
                 list.iter()
                     .enumerate()
                     .filter(|_| !hides_model(hides, model))
+                    // The ice's coverage is per pixel; every other fading
+                    // instance at zero coverage would discard every fragment,
+                    // so it is not drawn at all.
+                    .filter(|(_, i)| {
+                        i.extra[2] > 0.01
+                            || i.extra[0].round() as i32 == world::material::ICE as i32
+                    })
                     .map(|(index, i)| Staged {
                         kind: kind_of(model, i),
                         slot: pipeline_slot(i) as u32,
@@ -1525,6 +1552,14 @@ impl Nautilus {
                 // The instances are already back to front; keep them so.
                 Kind::Fading => b.nearest.total_cmp(&a.nearest),
                 Kind::Glass => std::cmp::Ordering::Equal,
+                // Material-major binds each pipeline once; nearest-first lets
+                // the depth test reject more fragments before shading them.
+                _ if depth_first => a
+                    .nearest
+                    .total_cmp(&b.nearest)
+                    .then(a.slot.cmp(&b.slot))
+                    .then(a.model.cmp(&b.model))
+                    .then(a.lod.cmp(&b.lod)),
                 _ => a.slot.cmp(&b.slot).then(a.nearest.total_cmp(&b.nearest)),
             }
         });
@@ -1697,15 +1732,7 @@ impl Nautilus {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                #[cfg(test)]
-                let group = if this.skips(part::ANISOTROPY) {
-                    &this.trilinear
-                } else {
-                    &this.group
-                };
-                #[cfg(not(test))]
-                let group = &this.group;
-                pass.set_bind_group(0, group, &[]);
+                pass.set_bind_group(0, &this.group, &[]);
                 // Test builds can render the whole pass at a fraction of the
                 // panel, to price a resolution the way `DIVE3D_SCALE` asks.
                 #[cfg(test)]
@@ -1728,6 +1755,18 @@ impl Nautilus {
                 // What is fully there goes first, so the seabed behind it, and
                 // every other model, can be skipped before it is shaded.
                 pass.set_vertex_buffer(1, this.instances.slice(..));
+                let draw_terrain = |pass: &mut wgpu::RenderPass| {
+                    pass.set_pipeline(&this.terrain_pipeline);
+                    pass.set_vertex_buffer(0, this.ground.slice(..));
+                    pass.set_index_buffer(this.ground_indices.slice(..), wgpu::IndexFormat::Uint32);
+                    for &slot in &tiles {
+                        let base = slot as i32 * terrain::VERTICES as i32;
+                        pass.draw_indexed(0..this.ground_count, base, 0..1);
+                    }
+                };
+                if !this.skips(part::TERRAIN) && this.skips(part::TERRAIN_FIRST) {
+                    draw_terrain(&mut pass);
+                }
                 if this.skips(part::QUARTER_MODELS) {
                     let half = SEA as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
@@ -1743,6 +1782,14 @@ impl Nautilus {
                     pass.set_index_buffer(this.indices.slice(..), wgpu::IndexFormat::Uint32);
                     let mut bound = None;
                     for d in this.draws.iter().filter(|d| d.kind == wanted) {
+                        if wanted == Kind::Fading {
+                            let ice = MATERIALS[d.slot / 2] == world::material::ICE as i32;
+                            if (ice && this.skips(part::FADING_ICE))
+                                || (!ice && this.skips(part::FADING_PROPS))
+                            {
+                                continue;
+                            }
+                        }
                         if bound != Some(d.slot) {
                             pass.set_pipeline(match wanted {
                                 Kind::Sealed => &this.sealed[d.slot],
@@ -1772,14 +1819,8 @@ impl Nautilus {
                 if this.skips(part::QUARTER_MODELS) {
                     pass.set_viewport(0.0, 0.0, SEA as f32, SEA as f32, 0.0, 1.0);
                 }
-                if !this.skips(part::TERRAIN) {
-                    pass.set_pipeline(&this.terrain_pipeline);
-                    pass.set_vertex_buffer(0, this.ground.slice(..));
-                    pass.set_index_buffer(this.ground_indices.slice(..), wgpu::IndexFormat::Uint32);
-                    for &slot in &tiles {
-                        let base = slot as i32 * terrain::VERTICES as i32;
-                        pass.draw_indexed(0..this.ground_count, base, 0..1);
-                    }
+                if !this.skips(part::TERRAIN) && !this.skips(part::TERRAIN_FIRST) {
+                    draw_terrain(&mut pass);
                 }
                 // The open water, before the things that fade into it: it
                 // shades only the pixels nothing solid has covered, and the
@@ -2373,7 +2414,6 @@ mod tests {
             ("empty sea", part::SEA),
             ("quarter pixels", part::QUARTER),
             ("plain textures", part::PLAIN_TEXTURES),
-            ("trilinear only", part::ANISOTROPY),
             ("no noise", part::NO_NOISE),
             ("full detail", part::FULL_DETAIL),
             ("coarsest detail", part::COARSE_DETAIL),
@@ -2514,6 +2554,10 @@ mod tests {
             ("pass: opaque models", part::MODELS),
             ("pass: glass models", part::GLASS),
             ("pass: fading models", part::FADING),
+            ("pass: fading ice", part::FADING_ICE),
+            ("pass: fading props", part::FADING_PROPS),
+            ("probe: depth-first draws", part::DEPTH_FIRST_DRAWS),
+            ("probe: terrain first", part::TERRAIN_FIRST),
             ("pass: sprites", part::SPRITES),
             ("pass: point lights", part::LIGHTS),
             ("pass: sun shafts", part::SUN_SHAFTS),
@@ -2528,7 +2572,6 @@ mod tests {
             ("probe: quarter pixels", part::QUARTER),
             ("probe: quarter model pixels", part::QUARTER_MODELS),
             ("probe: no noise", part::NO_NOISE),
-            ("probe: trilinear only", part::ANISOTROPY),
             ("light: cheap models", part::CHEAP_MODELS),
             ("light: cheap terrain", part::CHEAP_TERRAIN),
             ("light: cheap background", part::CHEAP_BACKGROUND),
@@ -2602,6 +2645,9 @@ mod tests {
         // whether an effect was in view at all.
         let mut model_seen: HashMap<u64, usize> = HashMap::new();
         let mut sprite_seen: HashMap<u64, usize> = HashMap::new();
+        // Fading instances by material (index into `MATERIALS`), to see which
+        // blend pass the 2.62 ms is made of.
+        let mut fade_seen: HashMap<usize, usize> = HashMap::new();
         let mut unknown = 0usize;
         scene.skip = 0;
         scene.skip_effects = 0;
@@ -2624,8 +2670,16 @@ mod tests {
                     *sprite_seen.entry(bit).or_default() += 1;
                 }
             }
+            for d in scene.draws.iter().filter(|d| d.kind == Kind::Fading) {
+                *fade_seen.entry(d.slot / 2).or_default() += d.count as usize;
+            }
         }
         assert_eq!(unknown, 0, "a sprite kind outside the four named ones");
+        let mut fade_line = String::new();
+        for (slot, n) in &fade_seen {
+            fade_line += &format!(" {}={}", MATERIALS[*slot], n);
+        }
+        println!("fading instances by material, all sampled frames:{fade_line}");
 
         // Paired round-robin: each round draws every variant once at the same
         // moment of the voyage, in a fresh random order. Each variant frame is

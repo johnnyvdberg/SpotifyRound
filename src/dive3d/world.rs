@@ -1195,15 +1195,41 @@ fn planes(w: &World, f: &mut Frame) {
         )
         .material(material::SURFACE);
     }
+    // The ice sheet is only the arctic's; the fragment shader works its
+    // coverage out per pixel and discards the rest, which over a 40 x 40
+    // plane is mostly discarded. Cut the plane to the stretch where the
+    // arctic is present and skip it entirely otherwise; the shading inside
+    // is world-space, so the picture does not change.
     let near = (0..=4).any(|i| w.share(c[0] + i as f32 * 3.0 - 6.0, c[2], ARCTIC) > 0.0);
     if near && w.ice() > w.eye() {
-        f.put(
-            Model::Plane,
-            place([c[0], w.ice(), c[2]], 0.0, 0.0, 0.0, big),
-            [1.0; 3],
-        )
-        .material(material::ICE)
-        .textured(Surface::Ice, 0.8);
+        let (mut x0, mut x1) = (f32::MAX, f32::MIN);
+        let mut x = c[0] - big[0] * 0.5;
+        while x <= c[0] + big[0] * 0.5 {
+            if w.share(x, corridor(x), ARCTIC) > 0.30 {
+                x0 = x0.min(x);
+                x1 = x1.max(x);
+            }
+            x += 0.5;
+        }
+        if x1 > x0 {
+            // The pixels' z shifts the voyage coordinate by up to about two
+            // units, so the cut keeps a margin past where the ice fades out.
+            let (x0, x1) = (x0 - 3.0, x1 + 3.0);
+            let width = (x1 - x0).min(big[0]);
+            f.put(
+                Model::Plane,
+                place(
+                    [(x0 + x1) * 0.5, w.ice(), c[2]],
+                    0.0,
+                    0.0,
+                    0.0,
+                    [width, 1.0, big[2]],
+                ),
+                [1.0; 3],
+            )
+            .material(material::ICE)
+            .textured(Surface::Ice, 0.8);
+        }
     }
 }
 

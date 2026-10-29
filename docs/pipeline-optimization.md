@@ -455,6 +455,9 @@ terrain detail. The practical path is **810², `TARGET_FPS` from the panel, a
 
 ## 9. Every effect, measured in one build
 
+The table below is the state at 1dd12b6; §12 re-measures after the fade and
+sea-pass fixes.
+
 `effect_cost` (new, ignored test) turns every draw-level effect off one at a time
 from **one binary** and prints one table. Two masks:
 
@@ -580,3 +583,58 @@ lighting solution to import: the remaining fragment cost is texture sampling,
 and the remaining vertex cost is the 503-instruction `vs_model`, which a
 runtime switch cannot reduce below the register cliff. The `!full_hd` build
 still lights twice (vertex and fragment); it is not the kiosk.
+
+## 12. Cutting the fade pass and the sea pass
+
+The effect table in §9 put the fading models at 2.56 ms and the sea pass at
+8.5–8.8 ms. In the order the changes paid:
+
+**Fading props: no discard, and no invisible instances.** Only the ice works
+its coverage out per pixel; every other fading model has one coverage for the
+whole instance. The fading pipelines were compiled with `FADING = 1` (a
+`discard`) for every material, which makes the GPU shade before the depth test
+— so every fading prop behind a rock or the seabed paid its fragment shader
+anyway. The props' pipelines now compile `FADING = 0` (no discard; the alpha
+still blends) and the ice keeps its discard, so early-Z rejects what the opaque
+pass hides before it shades it. Instances whose coverage is at most 0.01 are
+dropped at staging, since the shader would discard every fragment of them.
+
+Measured: **fading props 0.99 → 0.65–0.67 ms**, and 1,037 instances over the
+64 sampled frames (~16 a frame) were skipped.
+
+**Fading ice: cut the plane to where the ice is.** The ice is one 40 × 40 plane
+whose fragment shader finds the biome per pixel and discards the rest; it was
+drawn whenever the arctic was within ±6 units, so most of the plane was
+discarded. It is now cut in x to the stretch where the arctic's share is above
+the ice's fade-in threshold, plus a three-unit margin for the z shift, keeping
+the original near gate. The shading is in world space, so the ice itself is
+unchanged; the plane is only smaller.
+
+Measured: **fading ice 1.16 → 0.91–1.12 ms** (the row moves between runs; the
+clip is worth at most a fifth of a millisecond on average). The previews differ
+only on the arctic, by mean 0.25/255 and max 3/255: the plane's four corners
+carry the per-vertex light, and moving them shifts the interpolation slightly.
+Widening the gate to ±20 as well doubled the number of ice frames and made the
+frame *slower* (10.84 → 11.24 ms), so the original gate stayed.
+
+**Sea pass: no anisotropic filtering.** The surface sampler was anisotropy 4.
+With the shader's explicit-LOD samples it changed no preview pixel between 4
+and 1, and measured **0.43–0.52 ms** on the Pi, so it is now 1; the test's
+trilinear probe became a no-op and was removed.
+
+Measured: `frame_time` mean **10.19 → 9.65 ms**, forest **12.12 → 11.19**,
+shallows **13.10 → 12.74**; `effect_cost` everything **10.49 → 10.06–10.13**. The
+`plain textures` delta fell from 1.06 to 0.50, which is the texturing getting
+cheaper rather than the material effects.
+
+**Draw order was tried and is not the answer.** Opaque draws nearest-first —
+the same 260 draws, only more pipeline binds — costs +0.08 ms. Drawing the
+seabed before the opaque models costs +0.14 ms: the terrain shaded under the
+models costs more than the models the ground hides. Both are kept as test
+probes (`DEPTH_FIRST_DRAWS`, `TERRAIN_FIRST`), off in production.
+
+**Where it stands.** The frame is now **9.65 ms mean, 11.19 ms forest, 12.74 ms
+shallows** serial, from 10.49 / 12.96 / 13.61 at 1dd12b6. The fade pass is
+2.07 ms (ice 0.91–1.12, props 0.65); the pass's remaining cost is fragments
+(quarter pixels 3.70 ms), the model geometry (~3.2 ms) and the terrain
+(1.03 ms). The only large lever left is resolution (§8).
