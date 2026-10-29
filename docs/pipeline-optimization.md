@@ -1305,3 +1305,36 @@ instance/vertex packing with per-pipeline attribute subsets, and the UI
 (merge the three event-loop posts, reuse the `mark`, notifier off unless
 measuring, KMS overlay for the composite). Resolution remains the largest
 single lever for the frame.
+
+## 21. The static cache needs the animation in the shader first
+
+The static placements cache (the audit's biggest count-scaling win: 65% of the
+build, ~0.5–0.6 ms Pi now, 2–2.5 at 10k) was implemented as a first cut: the
+rocks, gardens, trench, wrecks, ruins and polar built into a `StaticCache`
+`Frame` once per visit / 4 units of camera travel, copied into the frame each
+time, with the dynamic placers still running per frame.
+
+**The visual gate refused it**: mean **2.14/255, max 202** vs the previous
+branch — nowhere near equivalent. The cause is in the "static" placers
+themselves: they animate from `w.t` at placement time.
+
+| placer | `w.t` use | effect |
+|---|---|---|
+| rocks | `(w.t * 0.35 + ix).sin() * 0.02` | seaweed sway |
+| gardens | `0.35 + 0.2 * (w.t * 0.25 + ix).sin()` | coral opening |
+| trench | `t = w.t` | the trench's light |
+| wrecks/ruins | several `w.t` sines | flicker, fireflies, rises |
+| polar | penguin swim phases | motion |
+
+Caching the instance matrices freezes all of that at the cache camera, so the
+frame shows the sway/opening/flicker stopped — the exact thing the audit's
+plan said to avoid by "moving the forest sway into the vertex shader (it is a
+per-instance sin of `w.t`)". That prerequisite is missing, so the cache is
+**not kept**; the branch is reverted and the failure image is
+`branch-static-cache.png`.
+
+The next attempt has to be ordered: move the sway/opening/flicker into the
+shader (`animate` already supports the plants' kind; the flicker needs a
+`g.camera.w` term in the instance colour or the light), verify it is
+pixel-identical with the placers still per-frame, and only then cache the
+matrices. Chunk streaming and the persistent static pool come after that.
