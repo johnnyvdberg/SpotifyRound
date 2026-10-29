@@ -1454,3 +1454,34 @@ The static-cache path in short: shell hinge done, rocks' sway already shader;
 remaining animation moves are the trench light, wreck/ruin flicker, polar
 phases; then the placements cache with the per-frame cull; then chunk
 streaming.
+
+## 26. The per-frame cull is right, but this subset cannot pay for it
+
+The design from §25 was built: the static placers (gardens + wrecks) run once
+into a wide placement cache (12-unit margin), and each frame every cached
+instance is tested against the window (`visible` at 1.5x its longest axis) and
+only the passing ones copied.
+
+- Pixels: **0.19/255, max 92** — the conservative 1.5x radius includes
+  instances the placers' exact culls dropped, and those are visible at the
+  edges.
+- Pi: **8.977 ms** vs 8.706; **1840 vs 1463** instances (+25%); scene building
+  1.711 vs 1.457.
+
+Why it loses: the cache saves the gardens+wrecks placement (~0.05 ms Pi), but
+the conservative radius stages 25% extra instances (~0.2 ms) and the cache's
+ground/copy plus the per-frame `visible` pass add ~0.1 ms. The subset is
+simply too small to amortize the cache's fixed costs.
+
+So the next cache attempt needs both:
+
+1. **the full static set**, which means finishing the animation moves (trench
+   light, wreck/ruin flicker, polar phases) so those placers can be cached;
+2. **an exact per-instance bound** (the model's local radius times the
+   instance's scale, not 1.5x the longest axis) so the frame cull copies the
+   same set the placers do — the 0.19 pixel diff must go to zero before the
+   cache is worth measuring.
+
+Not kept; image `branch-placements-cull.png`. The static-cache path is now:
+shell hinge (done) -> remaining animation moves -> full placement cache with
+exact bounds -> chunk streaming -> packing -> UI -> resolution.
