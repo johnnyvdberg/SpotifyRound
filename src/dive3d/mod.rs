@@ -2184,6 +2184,65 @@ impl Visual for Nautilus {
     fn travel(&mut self, legs: i32) {
         self.voyage.travel(legs, self.seconds);
     }
+
+    fn set_render_scale(&mut self, gpu: &Graphics, scale: f32) -> bool {
+        let render = ((SIZE as f32 * scale).round() as u32).max(2);
+        if render == self.render {
+            return false;
+        }
+        self.render = render;
+        let size = wgpu::Extent3d {
+            width: render,
+            height: render,
+            depth_or_array_layers: 1,
+        };
+        let target = |label, format, samples, usage| {
+            gpu.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: samples,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        self.sea_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Dive3d sea"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: COLOUR,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        self.resolved = self
+            .sea_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.colour = if MULTISAMPLED {
+            target(
+                "Dive3d colour",
+                COLOUR,
+                SAMPLES,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+        } else {
+            self.resolved.clone()
+        };
+        self.depth = target(
+            "Dive3d depth",
+            DEPTH,
+            SAMPLES,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        true
+    }
 }
 
 /// The pixel limits [`level_of`] picks a coarser model under. Test builds can

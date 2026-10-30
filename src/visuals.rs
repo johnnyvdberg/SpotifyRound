@@ -114,6 +114,12 @@ pub(crate) trait Visual: Send {
     /// A swipe on the visualizer: move `legs` stretches on (or back) through the
     /// scene's journey. Scenes without one ignore it.
     fn travel(&mut self, _legs: i32) {}
+
+    /// Change the resolution the visual is drawn at; true if it changed.
+    /// Scenes drawn at a fixed size ignore it.
+    fn set_render_scale(&mut self, _gpu: &Graphics, _scale: f32) -> bool {
+        false
+    }
 }
 
 /// Render the selected scene while the visualizer is visible.
@@ -226,6 +232,11 @@ pub fn spawn(
             let mut gpu_busy = Duration::ZERO;
             let mut reported = Instant::now();
             let mut in_flight = std::collections::VecDeque::new();
+            // Adaptive resolution, off unless SPOTIFY_ROUND_ADAPTIVE is set:
+            // the one-second report already has the GPU time, so step the
+            // sea's render scale between 0.6 and 1.0 from it.
+            let adaptive = std::env::var_os("SPOTIFY_ROUND_ADAPTIVE").is_some();
+            let mut scale = 1.0f32;
 
             loop {
                 if !take_built(&mut renderers, &mut mask, &mut building, &mut slots) {
@@ -315,6 +326,43 @@ pub fn spawn(
                 if reported.elapsed() >= Duration::from_secs(1) {
                     let ms = busy.as_secs_f32() * 1e3 / drawn as f32;
                     let gpu_ms = gpu_busy.as_secs_f32() * 1e3 / drawn as f32;
+                    if adaptive {
+                        let target = 1000.0 / FPS as f32;
+                        let next = if gpu_ms > target * 0.97 {
+                            (scale - 0.05).max(0.6)
+                        } else if gpu_ms < target * 0.80 {
+                            (scale + 0.05).min(1.0)
+                        } else {
+                            scale
+                        };
+                        if (next - scale).abs() > 1e-3 {
+                            scale = next;
+                            let changed = renderers
+                                .iter_mut()
+                                .flatten()
+                                .map(|r| r.set_render_scale(&gpu, scale))
+                                .any(|changed| changed);
+                            // The UI holds images built from the old texture
+                            // handles; hand it the rebuilt ones.
+                            if changed {
+                                let textures: Vec<Option<wgpu::Texture>> = renderers
+                                    .iter()
+                                    .flat_map(|r| match r {
+                                        Some(r) => (0..SLOTS)
+                                            .map(|f| Some(r.texture(f)))
+                                            .collect::<Vec<_>>(),
+                                        None => vec![None; SLOTS],
+                                    })
+                                    .collect();
+                                if ui
+                                    .upgrade_in_event_loop(move |ui| ui.set_idle_frames(textures))
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                    }
                     tracing::debug!(fps = drawn, ms, gpu_ms, slots, "visualizer");
                     let frames = drawn as i32;
                     if ui

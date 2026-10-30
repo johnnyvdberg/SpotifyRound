@@ -2645,3 +2645,23 @@ A real KMS overlay needs the dive exported from the app's wgpu device as a
 dma-buf and scanned out on a DRM plane, with the UI on an overlay plane —
 the app's own presentation code, not Slint's linuxkms backend. That is a new
 feature, not a renderer flag.
+
+## 70. Adaptive render scale (opt-in)
+
+`SPOTIFY_ROUND_ADAPTIVE=1` makes the display thread steer the sea's render
+scale from the GPU time it already measures. Off by default: it trades edge
+sharpness for headroom, and the look should not drift without being asked.
+
+- Signal: the existing one-second report's `gpu_ms` (the same number the
+  overlay shows), not the frame interval, so a vsync miss does not lower the
+  scale by itself.
+- Steps: 0.05 between 0.6 and 1.0; down when `gpu_ms > 0.97 x budget`, up
+  when `gpu_ms < 0.80 x budget`; budget is 1000/60 ms.
+- On a change the `Visual` recreates its sea/depth/colour targets and the
+  display thread re-sends the rebuilt texture handles to the UI, because the
+  UI caches `Image`s per slot.
+- The measured curve it rides: 1.0 9.66 ms, 0.9 8.59, 0.833 7.90, 0.75 7.05
+  (older baseline; the packed-vertex frame is 8.45 ms today), look diffs
+  0.27/0.30/0.34 mean /255 over the four preview legs.
+
+![adaptive scale: not a visual branch — same frames, stepped](branch-packed-whole.png)
