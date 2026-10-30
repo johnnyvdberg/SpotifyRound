@@ -32,8 +32,8 @@
 //! a little as it looks ahead and lifts as it looks back. The scenery then
 //! comes at the glass, or falls away from it, on the diagonal, rather than
 //! only sliding past it, and the voyage is seen in depth as well as across
-//! and up and down. He keeps the swing small among the forest's trunks and
-//! the city's columns, which stand close beside the corridor, and takes it
+//! and up and down. He keeps the swing small among the city's columns,
+//! which stand close beside the corridor, and takes it
 //! out before the cave, where the tunnel's walls leave room only for his
 //! look up it.
 //!
@@ -44,7 +44,7 @@
 use std::f32::consts::TAU;
 
 use super::world::{
-    ATLANTIS, CAVE, FOREST, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope,
+    ATLANTIS, CAVE, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope,
 };
 use crate::voyage::{Position, SPEED};
 
@@ -245,13 +245,13 @@ fn open(seabed: &Seabed, x: f32) -> f32 {
 }
 
 /// How far, as a share of [`SWING`], the boat may be swung off its track at
-/// `x`. The forest's trunks and the city's columns stand within about half a
-/// unit of the corridor, which the hull's ends would reach set farther
-/// across, so there it is held nearly straight, and it is straight in the
-/// cave's tunnel, where the crab takes over.
+/// `x`. The city's columns stand within half a unit of the corridor, which
+/// the hull's ends would reach set farther across, so there it is held
+/// nearly straight; the forest's trunks keep well clear of the lane and need
+/// no such care. It is straight in the cave's tunnel, where the crab takes
+/// over.
 fn room(seabed: &Seabed, x: f32) -> f32 {
-    let share = |id: usize| seabed.share(x, corridor(x), id);
-    (1.0 - 0.7 * share(FOREST) - 0.9 * share(ATLANTIS)).max(0.0) * open(seabed, x)
+    (1.0 - 0.9 * seabed.share(x, corridor(x), ATLANTIS)) * open(seabed, x)
 }
 
 /// Where the helmsman means to swing the boat at `x`, off its track, in
@@ -260,7 +260,7 @@ fn room(seabed: &Seabed, x: f32) -> f32 {
 /// stretch of sea is always seen the same way, saturating a little so it
 /// holds its angle for a while between swings. He reads the room several
 /// hull lengths ahead, a minute and more at cruising speed, so he has
-/// straightened up by the time the trunks close in, rather than being
+/// straightened up by the time the columns close in, rather than being
 /// brought straight by them.
 fn swing(seabed: &Seabed, x: f32, phase: f32) -> (f32, f32) {
     let weave = 0.8 * (x * TAU / 19.0 + phase * 0.9).sin()
