@@ -2509,3 +2509,40 @@ a single-ice-plane isolation render, not another full previews run.
 Reverted to `ce4467b`; the failed A/B is kept.
 
 ![ice subset: packed / ice subset / difference](branch-ice-subset.png)
+
+## 65. Current full-frame cost, refreshed
+
+The table below is the state at `28b8eb8` (24-byte vertices, nine-placer
+cache, cached LOD scale), assembled from the per-leg Pi runs and the paired
+desktop measurements. Values are means over the eight scene legs unless noted.
+
+| term | M1 Max | Pi 5 | share of the Pi frame | lever |
+|---|---|---|---|---|
+| CPU scene build | 0.45-0.75 ms | 0.87-1.65 ms | 10-19% | placer counts, per-cell cache |
+| staging + sort | 0.2-0.4 ms | 0.3-0.6 ms | 4-7% | instance count, sort keys |
+| instance upload | ~0.05 ms | ~0.1 ms | 1% | 128 B/instance, 1.5-2.1k |
+| encoder + submit | 0.15-0.3 ms | 0.3-0.5 ms | 4-6% | draw count ~250, one pass |
+| outside-pass (UI, present) | ~1.15 ms | ~2.0 ms | 24% | Slint posts, KMS overlay |
+| fill (fragments, 2x bins) | ~2.6 ms | ~4.5 ms | ~53% | render scale, fill area |
+| vertex (150k verts, 24 B) | ~0.6 ms | ~1.2 ms | ~14% | vertex count, packed decode |
+| frame total | 6.2-6.6 ms | 8.45 ms | | |
+
+Where the headroom is, in order of measured value:
+
+1. **Fill (4.5 ms)** — the render-scale ladder is 9.66 / 8.59 / 7.90 / 7.05
+   at 1.0 / 0.9 / 0.833 / 0.75, with look diffs 0.27 / 0.30 / 0.34 mean
+   /255. It is built and opt-in (`SPOTIFY_ROUND_RENDER_SCALE`); it remains
+   the largest single lever and the one that trades look for time.
+2. **Outside-pass (2.0 ms)** — the three per-frame Slint event-loop posts and
+   the UI texture handoff. The KMS overlay is the real fix (~1-1.5 ms) and is
+   platform integration, not a shader change.
+3. **Scene build (0.87-1.65 ms)** — the per-instance 152 ns build + 85 ns
+   staging is the count-scaling term for the future larger scenes. The
+   nine-placer cache already takes 0.52 ms of it; the next term is the
+   per-instance record, not the draws.
+4. **Vertex (1.2 ms)** — the 24-byte record is done; further gains need fewer
+   vertices (LOD), not a narrower record.
+
+Draw calls are not a lever on this device: ~250 draws at ~0.7 us is ~0.18 ms.
+
+![ice subset attempt, rejected](branch-ice-subset.png)
