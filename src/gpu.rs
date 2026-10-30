@@ -14,6 +14,10 @@ use anyhow::Result;
 use slint::wgpu_30::wgpu;
 use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
 
+/// A timer-query mark slot, and the pool it is returned to.
+type MarkSlot = Arc<Mutex<Option<Duration>>>;
+type MarkPool = Arc<Mutex<Vec<MarkSlot>>>;
+
 /// The device and queue everything renders with.
 #[derive(Clone)]
 pub struct Graphics {
@@ -31,7 +35,7 @@ pub struct Graphics {
     /// profiler frame after the command buffer has actually been submitted.
     profile_pending: Arc<AtomicBool>,
     /// The `Mark` slots, reused instead of allocating an `Arc` per frame.
-    marks: Arc<Mutex<Vec<Arc<Mutex<Option<Duration>>>>>>,
+    marks: MarkPool,
     /// The last actual GPU time from the timer-query profiler, if it is
     /// running. On the V3D the profiler is absent; `GpuLoad` reads its busy
     /// counters instead.
@@ -41,8 +45,8 @@ pub struct Graphics {
 /// A point in the queue, made by [`Graphics::mark`]: set to the time the GPU
 /// took once everything submitted before it is done.
 pub struct Mark {
-    slot: Arc<std::sync::Mutex<Option<Duration>>>,
-    pool: Arc<Mutex<Vec<Arc<Mutex<Option<Duration>>>>>>,
+    slot: MarkSlot,
+    pool: MarkPool,
 }
 
 impl Drop for Mark {
@@ -116,9 +120,7 @@ impl Graphics {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .pop()
             .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(None)));
-        *slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         let report = slot.clone();
         self.when_done(move |took| {
             *report
@@ -158,9 +160,7 @@ impl Graphics {
     /// The last Nautilus pass's GPU time in milliseconds, when timer queries
     /// are available. The V3D has none; [`GpuLoad`] reads its engine counters.
     pub fn gpu_ms(&self) -> Option<f32> {
-        if self.profiler.is_none() {
-            return None;
-        }
+        self.profiler.as_ref()?;
         *self
             .last_gpu_ms
             .lock()
@@ -429,7 +429,6 @@ fn log_profile(frame: &[wgpu_profiler::GpuTimerQueryResult]) {
     }
 }
 
-
 /// Read a square RGBA texture back to CPU pixels, for tests and reference
 /// frames.
 #[cfg(test)]
@@ -442,9 +441,11 @@ pub(crate) fn read_texture(gpu: &Graphics, texture: &wgpu::Texture, size: u32) -
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Readback"),
-    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Readback"),
+        });
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture,

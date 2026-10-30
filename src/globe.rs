@@ -1353,14 +1353,21 @@ mod tests {
         // Opaque everywhere, so Slint draws nothing under it.
         assert!(pixels.chunks(4).all(|pixel| pixel[3] == 255));
         // Outside the round panel there is only the window colour.
-        assert_eq!(at(0, 0), [7, 7, 10, 255], "the corner should be plain space");
+        assert_eq!(
+            at(0, 0),
+            [7, 7, 10, 255],
+            "the corner should be plain space"
+        );
         assert_eq!(at(SIZE - 1, SIZE - 1), at(0, 0));
 
         // The sun starts on the left, so the halo is only on that side.
         let limb = (half as f32 * PLANET) as u32;
         let space = brightness(0, 0);
         let halo = brightness(half - limb - 3, half);
-        assert!(halo > space + 6, "the halo should show, got {halo} over {space}");
+        assert!(
+            halo > space + 6,
+            "the halo should show, got {halo} over {space}"
+        );
         // Whatever the planet size, the glow has faded out by the frame edge: it
         // must never be cut off by the square.
         assert!(

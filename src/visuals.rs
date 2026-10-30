@@ -348,8 +348,7 @@ pub fn spawn(
                             let changed = renderers
                                 .iter_mut()
                                 .flatten()
-                                .map(|r| r.set_render_scale(&gpu, scale))
-                                .any(|changed| changed);
+                                .any(|r| r.set_render_scale(&gpu, scale));
                             // The UI holds images built from the old texture
                             // handles; hand it the rebuilt ones.
                             if changed {

@@ -41,10 +41,13 @@ Spotify **Premium** account.
   of the procedural scenes takes over the screen, chosen at random on every visit. The **Earth** is a
   rotating Blue Marble with Black Marble city lights, drifting clouds and their shadows, sun glint, sunset colour along the terminator and a scattering
   atmosphere. The **Nautilus** is the view from its salon window on a Jules Verne voyage, drawn as a 3D scene: the boat
-  travels from sunlit kelp shallows, slanting shafts of sunlight, manta rays and sea turtles through the submarine
-  forest, where helmeted divers in copper helmets, back reservoirs and weighted boots walk the seabed, along the rim of a terraced trench falling away into the dark,
-  past the galleons of Vigo Bay, the volcano-lit ruins of Atlantis and a lava cave down to
-  the abyss and its giant squid, then up under the polar ice. Swipe down on the player to summon the visualiser, swipe left or right on the dive to
+  travels from sunlit kelp shallows and a bright coral garden, through the submarine forest of Crespo,
+  the golden sargasso, the terraced trench and the galleons of Vigo Bay, past smoking hydrothermal
+  vents, the ruins of Atlantis and the salt flats of a brine lake, into a lava cave, through a bloom
+  of jellyfish, down to the abyss and its giant squid, then up under the aurora-lit polar ice.
+  Each shallow sea has its own water ceiling overhead; the sky itself only shows where a ray can
+  leave the water, through Snell's window or a lead in the polar ice. Swipe down on the
+  player to summon the visualiser, swipe left or right on the dive to
   travel on to the next stretch of sea or back, and tap anywhere to fade back.
 - **Touch first**: swipes are the only navigation — right for the queue, left for playlists, with the
   player in the middle — and dragging along the rim of the screen scrubs. Everything is laid out
@@ -448,9 +451,13 @@ the Pi 5's V3D; run it before trusting a Pi measurement. So:
 - The Nautilus' sea is the panel's full **1080 × 1080** with **one** sample. The shader profile
   shades the seabed with one texture lookup and full sun/lamp/four-point-light/caustic lighting at
   the vertices, with fine floor detail; the models use the same vertex light and material effects.
-  The 3D sea texture is handed to Slint directly, filling the panel. On the Pi 5 the dive measures
-  **8.7 ms on average over the eight legs, 10.0 ms on the heaviest leg, and 14.6 ms at the worst
-  sampled place** (the cave's far mouth), and the kiosk holds 60 fps. There is no smaller profile:
+  The 3D sea texture is handed to Slint directly, filling the panel. On the Pi 5 `frame_time` now
+  measures **11.6 ms on average over all thirteen legs, 15.2 ms on the heaviest leg** (the coral
+  garden's close reef), and **17.8 ms at the worst sampled hotspot** (a close jellyfish in the
+  wrecks); `frame_cost` is 13.8 ms. The live kiosk reports **61 fps with the scene at 1.9 ms and the
+  GPU at 10.5 ms**. The original eight seas average 11.2 ms and the five newer seas 12.1 ms now that
+  every leg is a full five minutes of world rather than ninety seconds. The procedural arctic sky
+  measured 36 ms until it became a baked cubemap; it is now 9.4 ms. There is no smaller profile:
   the sea is always the panel's 1080 pixels, and what the frame spends its time on is in
   [docs/pipeline-optimization.md](docs/pipeline-optimization.md).
 - What can be drawn together is: the player's glow, vignette and rim are one opaque texture from
@@ -544,16 +551,33 @@ Earth textures: NASA **Blue Marble** (day) and **Black Marble** (night lights), 
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). They live in `assets/earth/`.
 
 **The Nautilus.** The view from the Nautilus' salon window, after *Twenty Thousand Leagues Under the
-Seas*, drawn as a real 3D scene in `dive3d/`. The boat travels on through eight legs of about a
-minute and a half each: sunlit kelp shallows, the submarine forest of Crespo, a trench, the galleons
-of Vigo Bay, the ruins of Atlantis, a lava cave, the abyss, and the underside of the polar ice. A
-swipe to the left carries it on to the next leg in a few seconds' surge, a swipe to the right back to
-the last; `voyage.rs` steers it, and every visit joins a new seabed on a circuit whose eight legs
-are shuffled by the visit's seed (`order_for`; seed 0 is the canonical reference circuit). The
-course weaves so each boundary is crossed in the middle of a real turn, and the weave is eased out
+Seas*, drawn as a real 3D scene in `dive3d/`. The boat travels on through thirteen legs of five
+minutes each: sunlit kelp shallows, a coral garden, the submarine forest of Crespo, the golden
+sargasso, a trench, the galleons of Vigo Bay, smoking hydrothermal vents, the ruins of Atlantis,
+salt flats and brine pools, a lava cave, a bloom of jellyfish, the abyss, and the underside of the
+polar ice. A swipe to the left carries it on to the next leg in a short surge — the passage is
+scaled with the leg, so the boat keeps the same speed through it as before — and a swipe to the
+right back to the last; `voyage.rs` steers it, and every visit joins a new seabed on a
+circuit whose thirteen legs are shuffled by the visit's seed (`order_for`; seed 0 is the canonical
+reference circuit; the original eight keep their ids, and the five newer seas take the end of every
+per-biome table). The course weaves so each boundary is crossed in the middle of a real turn, and the weave is eased out
 over five units before the cave's mouth, where the tunnel leaves no room for it. Encounters — a
 school, a party of divers, a whale, the sister submarine — fade over the rim of the glass as they
 come into the window instead of appearing at full strength.
+
+The ceiling of every shallow sea is water, not a painted sky: the window sees the underside of the
+surface as a soft caustic shimmer, slow swells and the sun's sheen, kept low-contrast so it reads as
+a backdrop rather than a second scene. The sky is only what that water
+opens on to, and only where a ray can actually leave it: inside Snell's window overhead, which a
+level salon window rarely sees, and through the polar ice's leads, where the aurora shows. The cave,
+the vents, the bloom and the abyss have no sky at all, only water. The palettes are one small set in
+`sky_at`, used only where the physics opens a way out: the Snell window and the polar leads
+(`g.sky` in `scene.wesl`).
+
+<p align="center">
+  <img src="docs/10-dive3d-coral.png" width="420" alt="The coral garden under its water ceiling">
+  <img src="docs/11-dive3d-bloom.png" width="420" alt="The bloom: jellyfish over the ooze">
+</p>
 
 
 ### Reference sheets
@@ -617,8 +641,14 @@ always in the same place — and the swimmers in their processions; a diver is a
 for its stride, a school a few hundred instances of one fish. The vertex shader bends them: fish sweep
 their tails sideways, whales and dolphins beat their flukes, and manta rays and turtles their wings
 and flippers with the same wave run out from the body; kelp and fans sway, tentacles writhe and
-bells pulse. The seabed is built by `terrain.rs` from the same heightmap `world.rs` places things
-with, so everything stands on it, and anything on the seabed takes on its sand where it meets it. It
+bells pulse. Jellyfish are the most detailed of them: a medusa bell with a scalloped, eight-canal
+margin, an inner shell and a warm stomach, four frilled oral arms and a fringe of eight to sixteen
+writhing tentacles, in five species from the pale moon jelly to the glowing crystal jelly. The bell
+and the soft tissues are separate materials in the additive glass pass, so the rim, the canals, the
+stomach and the tentacle tips are lit differently instead of reading as one flat translucent dome.
+The new seas add their own life: branching reef coral, floating sargassum rafts, black smokers with
+tube worms, salt spires over brine pans, and the bloom's dense drift of jellyfish. The seabed is
+built by `terrain.rs` from the same heightmap `world.rs` places things with, so everything stands on it, and anything on the seabed takes on its sand where it meets it. It
 comes in tiles, built on the CPU the first time each comes into view and forgotten once the boat has
 left it behind, at three levels of detail nested around the boat: fine for at least five units,
 coarser out to the horizon, skirted where two levels meet so no crack shows. Only the tiles in view
@@ -670,8 +700,9 @@ and nothing is added per pixel; the helm heels the boat a little to port there s
 down over the edge. Slabs of rock jut over each drop, sediment spills from some of them and drifts
 down, sponges, sea fans and tube worms cling to the far wall, faintly glowing sea pens and
 crinoids stand on the terraces, lights blink in the dark at the bottom, and the water is clear
-enough for sunlight to slant down into it. The biomes' tables keep their numbers, the trench last;
-`voyage::ORDER` (and `order` in the shader) says the order the legs come in.
+enough for sunlight to slant down into it. The biomes' tables keep their numbers and their original
+ids, with the five newer seas after them; `voyage::ORDER` (and `order` in the shader) says the order
+the legs come in.
 The seabed is a random heightmap made afresh on every visit — rolling ground, folded ridges and the
 odd canyon, 64 units to a tile — shown more strongly in the rugged abyss than under the paved city;
 it shelves between the seas, so the boat drops over an edge into the abyss and climbs out to the ice.
@@ -713,9 +744,9 @@ yaw, nose and heel follow bounded, acceleration-limited springs, banking into th
 making; her depth answers its planes the same way. `cargo test --release
 dive3d::world::tests::submarines` holds the motion to those rates.
 It renders at 1080 × 1080 with one sample and a reversed depth buffer, then goes through the
-the full-panel sea: the 3D sea is handed to Slint directly, with no bezel or other overlay. On the
-Pi 5 `frame_time` measures 8.7 ms on average, 10.0 ms on the heaviest leg, and 14.6 ms at the worst
-sampled hotspot; `frame_cost` measures 9.69 ms on its three legs (11.11 ms before this pass). On a
+full-panel sea: the 3D sea is handed to Slint directly, with no bezel or other overlay. On the
+Pi 5 `frame_time` measures 11.6 ms on average, 15.2 ms on the heaviest leg, and 17.8 ms at the worst
+sampled hotspot; `frame_cost` measures 13.8 ms. On a
 desktop GPU it is about 2 ms, with the scene built in about 0.4 ms of CPU. `cargo test --release
 dive3d::tests::frame_time -- --ignored --nocapture` times it and `DIVE3D_PREVIEW_DIR=<dir> cargo
 test --release dive3d::tests::previews -- --ignored` writes a frame from each leg; add
@@ -767,6 +798,10 @@ binary accepts `DIVE3D_SKIP`: `4096` cheap model light, `8192` cheap terrain lig
 `vcgencmd get_throttled` and `vcgencmd pmic_read_adc` show the V3D pinned at 960 MHz, about 65 °C,
 `throttled=0x0` and about 3 A on VDD_CORE under the dive: the 1080 profile is shader/fill-bound,
 not clock- or thermal-throttled. `gpu_cost::videocore_vii` asserts the `V3D 7.1.7.0` adapter.
+
+<p align="center">
+  <img src="docs/12-dive3d-pi.png" width="420" alt="The live Pi 5 kiosk: 61 fps, scene 1.1 ms, GPU 9.6 ms">
+</p>
 
 The dive is **1080 × 1080 only**. The `full-hd` feature is mandatory: building without it stops
 with a compile error rather than silently falling back to a smaller sea.

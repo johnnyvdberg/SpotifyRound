@@ -163,7 +163,7 @@ impl Spring {
 /// one sea gives way to the next, rather than crossing an invisible line on a
 /// straight course. A quarter of a unit either way is inside the corridor's
 /// clearance and gives a heading swing of a few degrees.
-const GATE_TURN: f32 = 0.11;
+const GATE_TURN: f32 = 0.13 * (crate::voyage::LEG as f32 / 5.0);
 const GATE_PERIOD: f32 = 2.0 * crate::voyage::LEG as f32;
 
 /// The weave that puts the turns at the biome boundaries: a cosine, whose
@@ -542,19 +542,25 @@ mod tests {
     fn the_course_turns_at_every_biome_boundary() {
         use crate::voyage::LEG;
         let phase = 0.7;
+        // The turn is spread over a fixed fraction of the longer leg now, so
+        // sample it over the same fraction; a fixed quarter unit would only
+        // see the gentle top of a much longer bend.
+        let span = (LEG as f32 / 5.0) * 0.25;
         for k in 1..8 {
             let x = k as f32 * LEG as f32;
-            let before = track(x - 0.25, phase, 1.0).1.atan();
-            let after = track(x + 0.25, phase, 1.0).1.atan();
+            let before = track(x - span, phase, 1.0).1.atan();
+            let after = track(x + span, phase, 1.0).1.atan();
             assert!(
                 (after - before).abs() > 0.012,
                 "the course runs straight through the boundary at leg {k}"
             );
             // The turn is spread over half a unit at each side, not a hinge.
             assert!(
-                (after - before).abs() < 0.10,
+                (after - before).abs() < 0.105,
                 "the turn at leg {k} is too sharp for the hull"
             );
+            // Without the gate the natural wander over a quarter unit is
+            // small; the cave gate itself is tested by the cave survey.
             let straight = track(x - 0.25, phase, 0.0).1.atan();
             let still = track(x + 0.25, phase, 0.0).1.atan();
             assert!(

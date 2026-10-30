@@ -1,6 +1,6 @@
 //! The Nautilus' voyage as a real 3D scene.
 //!
-//! Eight biomes in the order each visit's seed shuffles them, with the swipes
+//! Thirteen biomes in the order each visit's seed shuffles them, with the swipes
 //! and the dive profile of [`crate::voyage`], rasterised: a seabed built in
 //! tiles as it comes into view ([`terrain`]), procedurally generated models placed and
 //! animated each frame by [`world`], a depth buffer and one sample. A
@@ -91,8 +91,11 @@ fn caustic_texels() -> Vec<u8> {
     for y in 0..SIZE {
         for x in 0..SIZE {
             let p = [x as f32 / SIZE as f32, y as f32 / SIZE as f32];
-            let a = (p[0] * std::f32::consts::TAU + (p[1] * 8.168).sin()).sin();
-            let b = (p[1] * 6.912 + (p[0] * 5.655).sin()).sin();
+            // Every term is periodic over the tile, so the texture repeats
+            // without a seam when the sea samples it beyond 0..1.
+            let (u, v) = (p[0] * std::f32::consts::TAU, p[1] * std::f32::consts::TAU);
+            let a = (u * 2.0 + (v * 3.0).sin()).sin();
+            let b = (v * 2.0 + (u * 5.0).sin() + 1.7).sin();
             let c = (a + b).abs().mul_add(-0.5, 1.0).max(0.0).powf(7.0);
             texels[y * SIZE + x] = (c * 255.0) as u8;
         }
@@ -139,6 +142,198 @@ fn caustic_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture 
     texture
 }
 
+/// Resolution of one face of the sky cubemap.
+const SKY_RES: u32 = 96;
+/// One cubemap per biome, in biome-id order.
+const SKY_LAYERS: u32 = 6 * 13;
+
+fn smooth01(a: f32, b: f32, v: f32) -> f32 {
+    let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The per-biome skyboxes, baked once into a cubemap array: one face set per
+/// biome, in the same order and with the same palettes the shader used to
+/// evaluate per pixel. Sampling this is one texture fetch, where the old
+/// procedural sky cost the Pi most of a frame in the arctic.
+fn sky_cube_texels() -> Vec<u8> {
+    // Zenith, horizon, cloudiness, cloud tint and sun tint, by biome id.
+    const ZENITH: [[f32; 3]; 13] = [
+        [0.07, 0.34, 0.62],
+        [0.06, 0.25, 0.30],
+        [0.10, 0.13, 0.14],
+        [0.045, 0.12, 0.32],
+        [0.010, 0.006, 0.004],
+        [0.002, 0.006, 0.014],
+        [0.04, 0.13, 0.26],
+        [0.05, 0.24, 0.42],
+        [0.06, 0.38, 0.68],
+        [0.24, 0.18, 0.05],
+        [0.020, 0.012, 0.010],
+        [0.28, 0.36, 0.42],
+        [0.020, 0.030, 0.080],
+    ];
+    const HORIZON: [[f32; 3]; 13] = [
+        [0.46, 0.80, 0.92],
+        [0.32, 0.62, 0.56],
+        [0.34, 0.40, 0.38],
+        [0.18, 0.34, 0.58],
+        [0.050, 0.020, 0.010],
+        [0.010, 0.030, 0.060],
+        [0.20, 0.44, 0.60],
+        [0.26, 0.54, 0.66],
+        [0.50, 0.88, 0.94],
+        [0.76, 0.58, 0.20],
+        [0.10, 0.04, 0.02],
+        [0.74, 0.82, 0.86],
+        [0.06, 0.08, 0.17],
+    ];
+    const CLOUDINESS: [f32; 13] = [
+        0.65, 0.35, 0.80, 0.20, 0.0, 0.0, 0.35, 0.10, 0.55, 0.72, 0.0, 0.60, 0.0,
+    ];
+    const CLOUD_TINT: [[f32; 3]; 13] = [
+        [0.98, 0.98, 0.96],
+        [0.82, 0.90, 0.82],
+        [0.58, 0.62, 0.64],
+        [0.76, 0.78, 0.90],
+        [0.0; 3],
+        [0.0; 3],
+        [0.86, 0.92, 0.96],
+        [0.92, 0.95, 0.98],
+        [1.0, 0.98, 0.94],
+        [0.98, 0.80, 0.46],
+        [0.0; 3],
+        [0.94, 0.94, 0.92],
+        [0.0; 3],
+    ];
+    const SUN_TINT: [[f32; 3]; 13] = [
+        [1.0, 0.96, 0.82],
+        [1.0, 0.92, 0.68],
+        [0.72, 0.74, 0.70],
+        [1.0, 0.88, 0.70],
+        [0.0; 3],
+        [0.0; 3],
+        [1.0, 0.96, 0.88],
+        [1.0, 0.97, 0.86],
+        [1.0, 0.94, 0.76],
+        [1.0, 0.68, 0.26],
+        [0.0; 3],
+        [1.0, 0.94, 0.82],
+        [0.0; 3],
+    ];
+    let sun = {
+        let d = world::SUN;
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        [d[0] / l, d[1] / l, d[2] / l]
+    };
+    let res = SKY_RES;
+    let mut out = vec![0u8; (SKY_LAYERS * res * res * 4) as usize];
+    // Six cube faces, each a square, then the biome layers one after another.
+    for face in 0..6u32 {
+        for y in 0..res {
+            for x in 0..res {
+                let u = (x as f32 + 0.5) / res as f32 * 2.0 - 1.0;
+                let v = (y as f32 + 0.5) / res as f32 * 2.0 - 1.0;
+                let mut dir = match face {
+                    0 => [1.0, -v, -u],
+                    1 => [-1.0, -v, u],
+                    2 => [u, 1.0, v],
+                    3 => [u, -1.0, -v],
+                    4 => [u, -v, 1.0],
+                    _ => [-u, -v, -1.0],
+                };
+                let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+                dir = [dir[0] / l, dir[1] / l, dir[2] / l];
+                for biome in 0..13usize {
+                    let up = dir[1].clamp(0.0, 1.0);
+                    let mut c = [0.0f32; 3];
+                    for k in 0..3 {
+                        c[k] = HORIZON[biome][k]
+                            + (ZENITH[biome][k] - HORIZON[biome][k]) * up.powf(0.55);
+                    }
+                    let toward_sun = (dir[0] * sun[0] + dir[1] * sun[1] + dir[2] * sun[2]).max(0.0);
+                    let halo = toward_sun.powf(24.0) * 0.18 + toward_sun.powf(6.0) * 0.06;
+                    let disc = smooth01(0.9992, 0.9997, toward_sun) * 1.8;
+                    for k in 0..3 {
+                        c[k] += SUN_TINT[biome][k] * (halo + disc);
+                    }
+                    // Clouds, from the same value noise the shader used, baked
+                    // still: one fetch replaces the per-pixel noise.
+                    let cloud = CLOUDINESS[biome] * smooth01(0.0, 0.12, up);
+                    if cloud > 0.0 {
+                        let ax = dir[0] / (0.45 + 1.1 * up) * 6.5;
+                        let az = dir[2] / (0.45 + 1.1 * up) * 6.5;
+                        let field = world::vnoise(ax, az, 71);
+                        let shred = 0.5 + 0.5 * (ax * 1.7 + az * 1.3).sin();
+                        let cover = smooth01(0.38, 0.62, field * 0.72 + shred * 0.28);
+                        let lit = 0.78 + 0.30 * toward_sun;
+                        for k in 0..3 {
+                            c[k] = c[k] * (1.0 - cover * cloud * 0.85)
+                                + CLOUD_TINT[biome][k] * lit * cover * cloud * 0.85;
+                        }
+                    }
+                    // The polar aurora, through the leads.
+                    if biome == world::ARCTIC {
+                        let band = (dir[0] * 7.0).sin()
+                            + 0.6 * (dir[2] * 5.0 + 1.3).sin()
+                            + 0.3 * (dir[0] * 13.0 - dir[2] * 9.0).sin();
+                        let curtain = smooth01(0.45, 1.30, band) * smooth01(0.0, 0.18, up);
+                        let violet = smooth01(1.05, 1.55, band) * smooth01(0.0, 0.25, up);
+                        c[0] += 0.08 * curtain * 0.55 + 0.24 * violet * 0.22;
+                        c[1] += 0.55 * curtain * 0.55 + 0.20 * violet * 0.22;
+                        c[2] += 0.30 * curtain * 0.55 + 0.60 * violet * 0.22;
+                    }
+                    let layer = biome as u32 * 6 + face;
+                    let at = ((layer * res + y) * res + x) as usize * 4;
+                    out[at] = (c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    out[at + 1] = (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    out[at + 2] = (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    out[at + 3] = 255;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn sky_cube_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Dive3d skyboxes"),
+        size: wgpu::Extent3d {
+            width: SKY_RES,
+            height: SKY_RES,
+            depth_or_array_layers: SKY_LAYERS,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let texels = sky_cube_texels();
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &texels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(SKY_RES * 4),
+            rows_per_image: Some(SKY_RES),
+        },
+        wgpu::Extent3d {
+            width: SKY_RES,
+            height: SKY_RES,
+            depth_or_array_layers: SKY_LAYERS,
+        },
+    );
+    texture
+}
+
 /// Per-frame parameters, in the layout of `Globals` in `scene.wesl`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -162,7 +357,10 @@ struct Globals {
     lights: [[f32; 4]; 8],
     light_colours: [[f32; 4]; 8],
     /// This visit's biome circuit, four legs a vector.
-    order: [[f32; 4]; 2],
+    order: [[f32; 4]; 4],
+    /// The biome mix the sky reads at the window: a, b, w, and how much of
+    /// the sea there has a sky above it at all.
+    sky: [f32; 4],
 }
 
 pub(crate) struct Nautilus {
@@ -254,11 +452,10 @@ pub(crate) struct Nautilus {
 /// `scene.wesl`: plain first, then those of [`world::material`]. Anything else
 /// is drawn by the last, -1, which reads the material per instance. Each has a
 /// second pipeline for models that stand on the seabed (`GROUNDED`).
-const MATERIALS: [i32; 8] = [
+const MATERIALS: [i32; 7] = [
     0,
     world::material::LAVA as i32,
     world::material::COPPER as i32,
-    world::material::SURFACE as i32,
     world::material::VAULT as i32,
     world::material::ICE as i32,
     world::material::GOLD as i32,
@@ -440,7 +637,8 @@ mod effect {
     pub const SQUID: u64 = 1 << 20;
     /// `Tube`: squid tentacles and jellyfish tentacles.
     pub const TUBES: u64 = 1 << 21;
-    /// The jellyfish's bell (`Bell`); its tentacles are [`TUBES`].
+    /// The jellyfish's bell (`Bell`) and its frilled oral arms
+    /// (`JellyArm`); its tentacles are [`TUBES`].
     pub const JELLYFISH: u64 = 1 << 22;
     pub const SHELLS: u64 = 1 << 23;
     pub const FANS: u64 = 1 << 24;
@@ -462,8 +660,16 @@ mod effect {
     pub const GLOWS: u64 = 1 << 33;
     /// Sprite kind `EMBER`: cave embers, arctic flecks, abyss blinks.
     pub const EMBERS: u64 = 1 << 34;
+    /// `Coral`: the branching heads of the coral garden.
+    pub const CORALS: u64 = 1 << 35;
+    /// `Sargassum`: the weed rafts of the sargasso.
+    pub const SARGASSUM: u64 = 1 << 36;
+    /// `Tree`: the forest's branching trees.
+    pub const TREES: u64 = 1 << 37;
+    /// `Vent`: hydrothermal chimneys and the far volcano.
+    pub const VENTS: u64 = 1 << 38;
 
-    pub const MODEL_BITS: u64 = (1 << 31) - 1;
+    pub const MODEL_BITS: u64 = ((1 << 31) - 1) | CORALS | SARGASSUM | TREES | VENTS;
     pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
     pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
 
@@ -510,7 +716,7 @@ mod effect {
             "cones",
             CONES,
             "Cone",
-            "forest trunks and branches, stalactites, crinoid arms, volcano",
+            "stalactites, crinoid arms, ruined spires",
         ),
         (
             "divers",
@@ -527,11 +733,23 @@ mod effect {
         ("turtles", TURTLES, "Turtle", "shallows, forest"),
         ("squid", SQUID, "Mantle", "the abyss's squid body"),
         ("tubes", TUBES, "Tube", "squid and jellyfish tentacles"),
-        ("jellyfish", JELLYFISH, "Bell", "drifting jellyfish bells"),
+        (
+            "jellyfish",
+            JELLYFISH,
+            "Bell, JellyArm",
+            "drifting jellyfish bells and oral arms",
+        ),
         ("shells", SHELLS, "Shell", "clams and pearls"),
         ("fans", FANS, "Fan", "sea fans"),
         ("stars", STARS, "Star", "starfish"),
         ("sponges", SPONGES, "Sponge", "sponges"),
+        (
+            "coral",
+            CORALS,
+            "Coral",
+            "the coral garden's branching heads",
+        ),
+        ("sargassum", SARGASSUM, "Sargassum", "sargasso weed rafts"),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
         ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
         (
@@ -597,11 +815,15 @@ fn model_bit(model: usize) -> u64 {
         Model::Turtle => effect::TURTLES,
         Model::Mantle => effect::SQUID,
         Model::Tube => effect::TUBES,
-        Model::Bell => effect::JELLYFISH,
+        Model::Bell | Model::JellyArm => effect::JELLYFISH,
         Model::Shell => effect::SHELLS,
         Model::Fan => effect::FANS,
         Model::Star => effect::STARS,
         Model::Sponge => effect::SPONGES,
+        Model::Coral => effect::CORALS,
+        Model::Sargassum => effect::SARGASSUM,
+        Model::Tree => effect::TREES,
+        Model::Vent => effect::VENTS,
         Model::Plane => effect::PLANES,
         Model::Keel => effect::ICE_KEELS,
         Model::Submarine | Model::Screw => effect::SUBMARINE,
@@ -803,6 +1025,16 @@ impl Nautilus {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::CubeArray,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         // The seabed's relief, replaced on every visit; and the surfaces, painted once.
@@ -819,6 +1051,11 @@ impl Nautilus {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
+        });
+        let sky = sky_cube_texture(device, &gpu.queue);
+        let sky_view = sky.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::CubeArray),
+            ..Default::default()
         });
         let relief = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Dive3d relief"),
@@ -940,6 +1177,10 @@ impl Nautilus {
                         binding: 12,
                         resource: wgpu::BindingResource::TextureView(&ice_bake_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: wgpu::BindingResource::TextureView(&sky_view),
+                    },
                 ],
             })
         };
@@ -1025,10 +1266,6 @@ impl Nautilus {
         ];
         let sprite_attributes =
             wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
-        let surface_attributes = wgpu::vertex_attr_array![
-            4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4,
-            8 => Float32x4, 9 => Float32x4, 10 => Float32x4,
-        ];
         let model_buffers = [
             Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<mesh::Packed>() as u64,
@@ -1039,20 +1276,6 @@ impl Nautilus {
                 array_stride: std::mem::size_of::<Instance>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &instance_attributes,
-            }),
-        ];
-        // The surface pipeline fetches seven of the eight instance vec4s
-        // (no floor); the buffer's record and stride stay the full 128.
-        let surface_buffers = [
-            Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<mesh::Packed>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &model_attributes,
-            }),
-            Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Instance>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &surface_attributes,
             }),
         ];
         let terrain_buffers = [Some(wgpu::VertexBufferLayout {
@@ -1252,30 +1475,7 @@ impl Nautilus {
             },
             alpha: wgpu::BlendComponent::REPLACE,
         };
-        let mut models = per_material("Dive3d models", false, 0.0, None, true, None);
-        if let Some(at) = MATERIALS
-            .iter()
-            .position(|&m| m == world::material::SURFACE as i32)
-        {
-            for grounded in [0.0, 1.0] {
-                models[at * 2 + grounded as usize] = pipeline(
-                    "Dive3d models",
-                    "vs_model_surface",
-                    "fs_model",
-                    &surface_buffers,
-                    None,
-                    true,
-                    nearer,
-                    false,
-                    true,
-                    &[
-                        ("MATERIAL", f64::from(world::material::SURFACE)),
-                        ("GROUNDED", grounded),
-                    ],
-                    None,
-                );
-            }
-        }
+        let models = per_material("Dive3d models", false, 0.0, None, true, None);
         let sealed = per_material(
             "Dive3d sealed models",
             false,
@@ -2370,14 +2570,41 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     let blend = |values: [f32; crate::voyage::BIOMES]| {
         values[here.a] + (values[here.b] - values[here.a]) * here.w as f32
     };
-    let tint = |c: [f32; 3]| {
+    // Each new sea colours the water its own way: the coral garden clear and
+    // warm, the sargasso golden and thick, the vents nearly black, the brine
+    // flats pale and milky, the bloom a deep indigo.
+    let cast = |c: [f32; 3]| {
+        let c = mix3(c, [0.10, 0.30, 0.28], share(world::CORAL) * 0.35);
+        let c = mix3(c, [0.18, 0.16, 0.055], share(world::SARGASSO) * 0.45);
+        let c = mix3(c, [0.030, 0.022, 0.018], share(world::VENTS) * 0.55);
+        let c = mix3(c, [0.17, 0.26, 0.25], share(world::BRINE) * 0.40);
+        let c = mix3(c, [0.035, 0.045, 0.13], share(world::BLOOM) * 0.55);
         let c = mix3(c, [0.05, 0.22, 0.32], arctic * 0.75);
         mix3(c, [0.030, 0.012, 0.010], cave * 0.85)
     };
-    let water = tint(water_tone(depth));
-    let deep = tint(water_tone((depth + 0.30).min(1.1)));
-    // Over the trench the water is clear, and daylight reaches its walls.
-    let sun = (-depth * 4.3).exp() * (1.0 - 0.95 * cave) * (1.0 + 1.8 * share(world::TRENCH));
+    let water = cast(water_tone(depth));
+    let deep = cast(water_tone((depth + 0.30).min(1.1)));
+    // The new seas' own tone, over the depth ramp: clear turquoise over the
+    // reef, gold under the weed, soot at the vents, milk over the brine and
+    // indigo in the bloom.
+    let water = mix3(water, [0.055, 0.38, 0.40], share(world::CORAL) * 0.55);
+    let water = mix3(water, [0.40, 0.34, 0.10], share(world::SARGASSO) * 0.60);
+    let water = mix3(water, [0.025, 0.030, 0.032], share(world::VENTS) * 0.75);
+    let water = mix3(water, [0.18, 0.31, 0.31], share(world::BRINE) * 0.60);
+    let water = mix3(water, [0.030, 0.055, 0.13], share(world::BLOOM) * 0.70);
+    let deep = mix3(deep, [0.012, 0.10, 0.14], share(world::CORAL) * 0.55);
+    let deep = mix3(deep, [0.14, 0.13, 0.05], share(world::SARGASSO) * 0.60);
+    let deep = mix3(deep, [0.005, 0.006, 0.008], share(world::VENTS) * 0.65);
+    let deep = mix3(deep, [0.060, 0.130, 0.150], share(world::BRINE) * 0.55);
+    let deep = mix3(deep, [0.004, 0.010, 0.040], share(world::BLOOM) * 0.65);
+    // Over the trench the water is clear, and daylight reaches its walls;
+    // the coral garden catches a little more sun, the vents almost none.
+    let sun = (-depth * 4.3).exp()
+        * (1.0 - 0.95 * cave)
+        * (1.0 + 1.8 * share(world::TRENCH))
+        * (1.0 + 0.55 * share(world::CORAL))
+        * (1.0 + 0.50 * share(world::SARGASSO))
+        * (1.0 - 0.55 * share(world::VENTS));
     let lamp = 0.22 + 0.95 * soft(0.12, 0.70, depth);
     let [right, up, out] = pose.basis;
     let in_boat = |v: [f32; 3]| {
@@ -2413,8 +2640,17 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         (-(below - 1.0) * 0.05).exp(),
         (-(below - 1.0) * 0.07).exp(),
     ];
-    // The trench's water is clear, so its far wall shows across the gulf.
-    let haze = blend([0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11]);
+    // The trench's water is clear, so its far wall shows across the gulf;
+    // the sargasso's weed and the vents' plumes thicken it.
+    let haze = blend([
+        0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11, 0.13, 0.18, 0.24, 0.14, 0.27,
+    ]);
+    // How much this sea has a sky the water can open on to: the shallow seas
+    // can through Snell's window, the polar ice through its leads; the cave,
+    // the deep and the bloom cannot.
+    let sky = blend([
+        1.0, 0.75, 0.60, 0.18, 0.0, 0.0, 0.65, 0.45, 1.0, 1.0, 0.0, 0.85, 0.0,
+    ]);
 
     // The lights that matter most: nearest what the window looks at, a
     // little way out from it, weighed by their reach.
@@ -2436,7 +2672,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         score(a).total_cmp(&score(b))
     });
     let v4 = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
-    let mut order = [[0.0; 4]; 2];
+    let mut order = [[0.0; 4]; 4];
     for (i, &id) in w.seabed.order.iter().enumerate() {
         order[i / 4][i % 4] = id as f32;
     }
@@ -2464,6 +2700,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         lights: [[0.0; 4]; 8],
         light_colours: [[0.0; 4]; 8],
         order,
+        sky: [here.a as f32, here.b as f32, here.w as f32, sky],
     };
     for (i, l) in lights.iter().take(8).enumerate() {
         g.lights[i] = [l.pos[0], l.pos[1], l.pos[2], l.range];
@@ -2510,7 +2747,7 @@ mod tests {
     fn median(values: &mut [f64]) -> f64 {
         values.sort_by(f64::total_cmp);
         let middle = values.len() / 2;
-        if values.len() % 2 == 0 {
+        if values.len().is_multiple_of(2) {
             (values[middle - 1] + values[middle]) / 2.0
         } else {
             values[middle]
@@ -2580,6 +2817,9 @@ mod tests {
         if let Ok(skip) = std::env::var("DIVE3D_SKIP") {
             scene.skip = skip.parse().unwrap_or(0);
         }
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP_EFFECTS") {
+            scene.skip_effects = mask(&skip);
+        }
         let render = scene.render;
         let seed: u64 = std::env::var("DIVE3D_PREVIEW_SEED")
             .ok()
@@ -2587,6 +2827,7 @@ mod tests {
             .unwrap_or(0);
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
+            "coral", "sargasso", "vents", "brine", "bloom",
         ];
         let offsets: Vec<f64> = std::env::var("DIVE3D_PREVIEW_OFFSETS")
             .ok()
@@ -2596,7 +2837,7 @@ mod tests {
                     .collect()
             })
             .unwrap_or_else(|| vec![0.0]);
-        for (n, _) in names.iter().enumerate() {
+        for n in 0..crate::voyage::BIOMES {
             let name = Biome::at((n as f64 + 0.5) * crate::voyage::LEG, seed_of(seed)).a;
             let name = names[name];
             for (k, offset) in offsets.iter().enumerate() {
@@ -3168,8 +3409,10 @@ mod tests {
         ] {
             let without = shot(&mut scene, skip);
             let differing = all
-                .chunks_exact(4)
-                .zip(without.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(without.as_chunks::<4>().0)
                 .filter(|(a, b)| a != b)
                 .count();
             println!(
@@ -3204,10 +3447,12 @@ mod tests {
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
+            "coral", "sargasso", "vents", "brine", "bloom",
         ];
         let frames = 60;
         let mut total = 0.0;
-        for (n, name) in names.iter().enumerate() {
+        for n in 0..crate::voyage::BIOMES {
+            let name = names[Biome::at((n as f64 + 0.5) * crate::voyage::LEG, 0.0).a];
             let (mut cpu, mut drawn) = (0.0, 0.0);
             for i in 0..frames {
                 let seconds = leg(n as f64) + i as f64 * 0.25;

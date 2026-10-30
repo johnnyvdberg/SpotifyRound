@@ -60,8 +60,9 @@ pub struct Point {
 }
 
 /// The surface texture each biome's floor wears, as `surface_of` in
-/// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt.
-const LAYERS: [usize; 8] = [12, 12, 13, 12, 10, 13, 12, 13];
+/// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt, then sand,
+/// silt, basalt, salt (the ice layer's crystalline tone) and ooze (silt).
+const LAYERS: [usize; 13] = [12, 12, 13, 12, 10, 13, 12, 13, 12, 13, 10, 11, 13];
 /// Biome ids, as the shader's constants.
 const SHALLOWS: usize = 0;
 const FOREST: usize = 1;
@@ -71,6 +72,11 @@ const CAVE: usize = 4;
 const ABYSS: usize = 5;
 const ARCTIC: usize = 6;
 const TRENCH: usize = 7;
+const CORAL: usize = 8;
+const SARGASSO: usize = 9;
+const VENTS: usize = 10;
+const BRINE: usize = 11;
+const BLOOM: usize = 12;
 
 /// `smoothstep` as the shader writes it.
 fn smooth01(a: f32, b: f32, v: f32) -> f32 {
@@ -182,13 +188,67 @@ fn shade(
         tint[0] += trench * 0.05 * (strata - 0.5);
         tint[1] += trench * 0.04 * (strata - 0.5);
     }
-    let sand = shallows + 0.55 * forest + 0.35 * wrecks + 0.6 * arctic;
+    let coral = presence(CORAL);
+    if coral > 0.0 {
+        // Reef sand: pale between the heads, pinker where the coral has
+        // crumbled into it, and a little coarser over the bommies.
+        let bloom = smooth01(0.55, 0.82, broad);
+        noise += coral * (0.09 * (broad - 0.5) + 0.05 * (grain - 0.5));
+        tint[0] += coral * (0.10 * (broad - 0.5) + 0.05 * bloom);
+        tint[1] += coral * (0.02 * (broad - 0.5) + 0.015 * bloom);
+        tint[2] -= coral * 0.02 * bloom;
+    }
+    let sargasso = presence(SARGASSO);
+    if sargasso > 0.0 {
+        // Weed drift on the silt: olive where it has rotted in, paler sand
+        // showing through the thinner patches.
+        let drift = smooth01(0.58, 0.84, broad);
+        noise += sargasso * (-0.07 + 0.08 * (broad - 0.5));
+        tint[0] -= sargasso * 0.05 * drift;
+        tint[1] += sargasso * 0.04 * (broad - 0.5);
+        tint[2] -= sargasso * 0.04 * drift;
+    }
+    let vents = presence(VENTS);
+    if vents > 0.0 {
+        // Fresh basalt and sulphur staining: the floor is darkest between
+        // the chimneys and bleached pale round the hot mouths.
+        let sulphur = smooth01(0.66, 0.90, broad);
+        noise += vents * (0.18 * (grain - 0.5) - 0.05 * sulphur);
+        tint[0] += vents * (0.16 * sulphur + 0.03 * (grain - 0.5));
+        tint[1] += vents * (0.10 * sulphur + 0.01 * (grain - 0.5));
+        tint[2] -= vents * 0.03 * sulphur;
+    }
+    let brine = presence(BRINE);
+    if brine > 0.0 {
+        // Salt crust: a pale polygonal mosaic, its cracks reading darker and
+        // the pans a shade greener.
+        let frac = |v: f32| v - v.floor();
+        let crack = (frac(x * 2.0 + z * 0.3) - 0.5)
+            .abs()
+            .min((frac(z * 2.0 - x * 0.2) - 0.5).abs());
+        let rim = smooth01(0.44, 0.5, crack);
+        let pan = smooth01(0.64, 0.88, broad);
+        noise += brine * (0.10 * (grain - 0.5) - 0.10 * rim);
+        tint[0] += brine * (0.03 * rim - 0.03 * pan);
+        tint[1] += brine * (0.03 * rim + 0.01 * pan);
+        tint[2] += brine * (0.02 * rim + 0.03 * pan);
+    }
+    let bloom = presence(BLOOM);
+    if bloom > 0.0 {
+        // Soft ooze, faintly blue-green where the bloom's light falls on it.
+        let ooze = smooth01(0.56, 0.82, broad);
+        noise += bloom * (-0.06 + 0.06 * (grain - 0.5));
+        tint[0] += bloom * 0.01 * (broad - 0.5);
+        tint[1] += bloom * (0.02 * ooze + 0.01 * (broad - 0.5));
+        tint[2] += bloom * (0.04 * ooze + 0.02 * (broad - 0.5));
+    }
+    let sand = shallows + 0.55 * forest + 0.35 * wrecks + 0.6 * arctic + 0.75 * coral;
     if sand > 0.0 {
         // Ripples in patches, so the sand does not corrugate as one sheet.
         let r = ((x * 0.8 + z) * 26.0 + world::vnoise(x * 3.0, z * 3.0, 5) * 4.0).sin();
         ripple = 0.16 * sand * (0.5 + 0.5 * broad) * smooth01(0.3, 1.0, r);
     }
-    let paving = presence(ATLANTIS);
+    let paving = presence(ATLANTIS) + 0.55 * presence(BRINE);
     let mut pave = if paving > 0.0 {
         let frac = |v: f32| v - v.floor();
         let row = (z * 4.0).floor();
@@ -240,8 +300,14 @@ fn shade(
     // Hollows lie in their own shade and crests catch the light: a little
     // baked ambient occlusion, so the relief reads even where the water is
     // too deep for the sun to shape it. Rock takes more than sand.
-    let hard =
-        presence(WRECKS) + presence(ATLANTIS) + presence(CAVE) + presence(ABYSS) + presence(TRENCH);
+    let hard = presence(WRECKS)
+        + presence(ATLANTIS)
+        + presence(CAVE)
+        + presence(ABYSS)
+        + presence(TRENCH)
+        + presence(CORAL)
+        + presence(VENTS)
+        + 0.7 * presence(BRINE);
     let cavity = cavity * (0.10 + 0.10 * hard);
     let colour = [
         base[0] * (1.0 + tint[0]) * (1.0 + cavity),

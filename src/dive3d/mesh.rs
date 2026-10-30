@@ -525,10 +525,25 @@ pub enum Model {
     Crystal,
     /// A cluster of crystal points fanning out of one pocket of rock.
     CrystalCluster,
+    /// A branching reef coral: a foot of staghorn or elkhorn, its arms
+    /// forking up and out, pale at the tips.
+    Coral,
+    /// A clump of sargassum weed: a flattened raft of fronds with tendrils
+    /// trailing below it, floating just under the surface.
+    Sargassum,
+    /// A frilled oral arm hanging from a jellyfish's bell; the tentacles are
+    /// [`Model::Tube`]s.
+    JellyArm,
+    /// A craggy hydrothermal chimney with a hollow, flared mouth. Scaled up,
+    /// it is also the far volcano.
+    Vent,
+    /// A submarine forest tree: a leaning trunk, forking branches and a
+    /// clustered canopy, all one model so a tree costs one instance.
+    Tree,
 }
 
 impl Model {
-    pub const ALL: [Model; 41] = [
+    pub const ALL: [Model; 46] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -570,6 +585,11 @@ impl Model {
         Model::Screw,
         Model::Crystal,
         Model::CrystalCluster,
+        Model::Coral,
+        Model::Sargassum,
+        Model::JellyArm,
+        Model::Vent,
+        Model::Tree,
     ];
 
     pub fn index(self) -> usize {
@@ -683,29 +703,54 @@ impl Model {
             Model::Penguin => penguin(),
             Model::Mantle => mantle(),
             Model::Bell => {
-                let mut p = Vec::new();
-                for i in 0..=8 {
-                    let a = i as f32 / 8.0 * PI * 0.5;
-                    // A dome with a flared, scalloped margin.
-                    p.push((a.cos() * (1.0 + 0.12 * (1.0 - a.sin())), a.sin() * 0.7));
-                }
-                p.reverse();
-                p.insert(0, (0.0, 0.7));
-                p.dedup();
-                p.reverse();
-                lathe(
-                    &p,
-                    16,
-                    |y, a| {
-                        if y < 0.05 {
-                            1.0 + 0.06 * (a * 8.0).sin()
-                        } else {
-                            1.0
-                        }
-                    },
-                    |y, _| [1.0, 1.0, 1.0 - 0.4 * y],
-                    |y| [0.0, y],
-                )
+                // A medusa bell: a domed crown, a slight waist and a flared,
+                // scalloped rim, with the radial canals picked out in vertex
+                // colour. The inner shell and the stomach give the additive
+                // glass shader something to glow through.
+                let profile = [
+                    (0.98, 0.000),
+                    (1.00, 0.030),
+                    (0.985, 0.085),
+                    (0.94, 0.160),
+                    (0.875, 0.250),
+                    (0.79, 0.350),
+                    (0.69, 0.455),
+                    (0.575, 0.560),
+                    (0.45, 0.655),
+                    (0.315, 0.735),
+                    (0.17, 0.795),
+                    (0.00, 0.820),
+                ];
+                let radius = |y: f32, a: f32| {
+                    let rim = (1.0 - y / 0.10).clamp(0.0, 1.0);
+                    let scallop = 1.0 + 0.055 * (a * 8.0).sin() * rim;
+                    let lobes = 1.0 + 0.012 * (a * 16.0).sin() * (1.0 - rim);
+                    scallop * lobes
+                };
+                let colour = |y: f32, a: f32| {
+                    let rim = (1.0 - y / 0.12).clamp(0.0, 1.0);
+                    let canal = 0.5 + 0.5 * (a * 8.0).sin();
+                    [1.0, 1.0 - 0.10 * rim, 1.0 - 0.10 * rim - 0.07 * canal * rim]
+                };
+                let mut m = lathe(&profile, 24, radius, colour, |y| {
+                    [0.0, (y / 0.68).clamp(0.0, 1.0)]
+                });
+                // The inner bell, a little smaller and lifted, so the rim
+                // reads as two translucent layers.
+                m.append(
+                    lathe(&profile, 20, radius, colour, |y| {
+                        [0.0, (y / 0.82).clamp(0.0, 1.0)]
+                    })
+                    .scaled([0.86, 0.84, 0.86])
+                    .map(|p| [p[0], p[1] + 0.045, p[2]], |n| n),
+                );
+                // The stomach: a warm pearl hanging under the crown.
+                m.append(
+                    sphere_with(1, |_| 1.0, |_| [1.0, 0.90, 0.80])
+                        .scaled([0.25, 0.17, 0.25])
+                        .map(|p| [p[0], p[1] + 0.52, p[2]], |n| n),
+                );
+                m.with_aux(|p| [0.0, (p[1] / 0.82).clamp(0.0, 1.0)])
             }
             Model::Shaft => {
                 // A Doric shaft with twenty flutes and a slight entasis.
@@ -820,6 +865,11 @@ impl Model {
             ),
             Model::Crystal => crystal(),
             Model::CrystalCluster => crystal_cluster(),
+            Model::Coral => coral(),
+            Model::Sargassum => sargassum(),
+            Model::JellyArm => jelly_arm(),
+            Model::Vent => vent(),
+            Model::Tree => tree(),
         }
     }
 }
@@ -1378,6 +1428,236 @@ fn rod(a: [f32; 3], b: [f32; 3], r0: f32, r1: f32, colour: [f32; 3]) -> Mesh {
             [q.x, q.y, q.z]
         },
     )
+}
+
+/// A branching reef coral: a foot of staghorn or elkhorn, its arms forking
+/// up and out, pale at the tips. The instance's colour carries the species.
+fn coral() -> Mesh {
+    let stem = [0.92, 0.86, 0.80];
+    let pale = [1.0, 0.97, 0.93];
+    let mut m = rod([0.0, -0.04, 0.0], [0.0, 0.16, 0.0], 0.15, 0.10, stem);
+    // A knobbly foot, so it grows out of the sand rather than being stuck in
+    // it.
+    m.append(
+        sphere_with(1, |p| 1.0 + 0.12 * (p[0] * 7.0).sin(), |_| stem).scaled([0.16, 0.075, 0.15]),
+    );
+    for k in 0..9 {
+        let a = k as f32 / 9.0 * TAU + 0.2;
+        let lift = 0.24 + 0.16 * (k as f32 * 2.3).sin().abs();
+        let reach = 0.13 + 0.055 * (k as f32 * 1.7).cos().abs();
+        let mid = [
+            a.cos() * reach * 0.62,
+            0.14 + lift * 0.52,
+            a.sin() * reach * 0.62,
+        ];
+        let tip = [a.cos() * reach * 1.28, 0.14 + lift, a.sin() * reach * 1.28];
+        m.append(rod([0.0, 0.12, 0.0], mid, 0.060, 0.038, stem));
+        m.append(rod(mid, tip, 0.038, 0.010, pale));
+        // One fork off each arm, bent away from its neighbour.
+        let b = a + if k % 2 == 0 { 0.75 } else { -0.75 };
+        let fork = [
+            mid[0] + b.cos() * 0.12,
+            mid[1] + 0.10 + 0.03 * (k as f32).sin(),
+            mid[2] + b.sin() * 0.12,
+        ];
+        m.append(rod(mid, fork, 0.026, 0.006, pale));
+        // Round polyps at the tips: coral is soft, not a bundle of spikes.
+        for end in [tip, fork] {
+            m.append(
+                sphere_with(1, |_| 1.0, |_| pale)
+                    .scaled([0.022, 0.014, 0.022])
+                    .map(
+                        move |p| [p[0] + end[0], p[1] + end[1], p[2] + end[2]],
+                        |n| n,
+                    ),
+            );
+        }
+    }
+    m.with_aux(|p| [0.0, ((p[1] + 0.10) / 0.62).clamp(0.0, 1.0)])
+}
+
+/// A clump of sargassum weed: a flattened, lobed raft of fronds with tendrils
+/// trailing below it. It floats just under the surface, so its underside is
+/// the side the window sees.
+fn sargassum() -> Mesh {
+    let weed = [0.72, 0.62, 0.28];
+    let pale = [0.90, 0.82, 0.52];
+    let mut m = sphere_with(
+        2,
+        |p| {
+            let lobe = 1.0 + 0.22 * ((p[0] * 7.3).sin() * (p[2] * 6.1).cos());
+            let underside = if p[1] < -0.1 { 0.75 } else { 1.0 };
+            lobe * underside
+        },
+        |p| {
+            if p[1] < -0.2 {
+                [0.42, 0.36, 0.16]
+            } else {
+                [0.72, 0.62, 0.28]
+            }
+        },
+    )
+    .scaled([0.72, 0.16, 0.58]);
+    for k in 0..10 {
+        let a = k as f32 / 10.0 * TAU;
+        let r = 0.12 + 0.34 * (k as f32 * 2.7).sin().mul_add(0.5, 0.5);
+        let root = [a.cos() * r, -0.01, a.sin() * r];
+        let len = 0.15 + 0.30 * (k as f32 * 1.3).cos().mul_add(0.5, 0.5);
+        let mid = [
+            root[0] + 0.05 * (a * 3.0).sin(),
+            -len * 0.5,
+            root[2] + 0.05 * (a * 2.0).cos(),
+        ];
+        let tip = [
+            root[0] + 0.10 * (a * 2.0).sin(),
+            -len,
+            root[2] + 0.10 * (a * 3.0).cos(),
+        ];
+        m.append(rod(root, mid, 0.012, 0.008, weed));
+        m.append(rod(mid, tip, 0.008, 0.002, pale));
+    }
+    m.with_aux(|_p| [0.0, 0.5])
+}
+
+/// A frilled oral arm hanging from a jellyfish's bell: a tapered ribbon with a
+/// ruffle in its edge, animated by the same writhing wave as the tentacles.
+fn jelly_arm() -> Mesh {
+    let segments = fewer(10, 4);
+    let across = 3;
+    let mut m = Mesh::default();
+    let mut rows = Vec::with_capacity(segments + 1);
+    for i in 0..=segments {
+        let t = i as f32 / segments as f32;
+        let y = -t;
+        let w = 0.16 * (1.0 - 0.85 * t) * (0.75 + 0.25 * (t * 9.0).sin()).max(0.35);
+        let mut row = Vec::with_capacity(across + 1);
+        for j in 0..=across {
+            let u = j as f32 / across as f32 * 2.0 - 1.0;
+            let x = u * w * (1.0 + 0.15 * (t * 12.0).sin());
+            let z = 0.06 * (t * 11.0 + u * 2.0).sin() * t;
+            row.push(m.vertex([x, y, z], [1.0; 3], [t, 0.0]));
+        }
+        rows.push(row);
+    }
+    for i in 0..segments {
+        for j in 0..across {
+            m.quad(
+                rows[i][j],
+                rows[i][j + 1],
+                rows[i + 1][j + 1],
+                rows[i + 1][j],
+            );
+        }
+    }
+    m.smooth()
+}
+
+/// A craggy hydrothermal chimney, hollow at the mouth. The outside climbs
+/// in ledges and the lip flares before the wall turns back down into the
+/// throat; mineral bands are baked into the vertex colour.
+fn vent() -> Mesh {
+    let profile = [
+        (0.42, 0.00),
+        (0.34, 0.10),
+        (0.38, 0.22),
+        (0.29, 0.36),
+        (0.34, 0.50),
+        (0.24, 0.64),
+        (0.29, 0.78),
+        (0.40, 0.89),
+        (0.43, 0.97),
+        (0.31, 1.00),
+        (0.22, 0.96),
+        (0.17, 0.89),
+        (0.00, 0.86),
+    ];
+    lathe(
+        &profile,
+        20,
+        |y, a| 1.0 + 0.10 * (a * 7.0 + y * 9.0).sin() + 0.05 * (a * 3.0 - y * 17.0).sin(),
+        |y, a| {
+            let band = 0.5 + 0.5 * (y * 19.0 + a * 2.0).sin();
+            // Pale mineral crust gathers on the lip; the throat below it is
+            // soot-black.
+            let lip = ((y - 0.84) / 0.16).clamp(0.0, 1.0);
+            [
+                0.10 + 0.10 * band + 0.20 * lip,
+                0.085 + 0.08 * band + 0.17 * lip,
+                0.075 + 0.06 * band + 0.11 * lip,
+            ]
+        },
+        |y| [0.0, y],
+    )
+}
+
+/// A forest tree: a leaning trunk, six forking branches and a clustered
+/// canopy. One instance per tree keeps the forest cheap while giving it a
+/// silhouette with depth rather than a post with a ball on top.
+fn tree() -> Mesh {
+    let bark = [0.30, 0.20, 0.14];
+    let leaf = [0.78, 0.82, 0.58];
+    let mut m = Mesh::default();
+    let base = [0.0, -0.04, 0.0];
+    let middle = [0.035, 0.50, 0.015];
+    let top = [-0.015, 0.97, 0.0];
+    m.append(rod(base, middle, 0.105, 0.062, bark));
+    m.append(rod(middle, top, 0.062, 0.020, bark));
+    // A few buttresses, so the trunk grows out of the silt.
+    for k in 0..3 {
+        let a = k as f32 * TAU / 3.0 + 0.5;
+        m.append(rod(
+            [a.cos() * 0.12, 0.0, a.sin() * 0.12],
+            [a.cos() * 0.04, 0.22, a.sin() * 0.04],
+            0.045,
+            0.020,
+            bark,
+        ));
+    }
+    let mut leaf_clumps: Vec<([f32; 3], f32)> = Vec::new();
+    for b in 0..6 {
+        let angle = b as f32 / 6.0 * TAU + 0.35;
+        let y = 0.30 + 0.085 * b as f32;
+        let reach = 0.20 + 0.07 * (b as f32 * 1.7).sin().abs();
+        let rise = 0.10 + 0.05 * (b as f32 * 2.3).cos().abs();
+        let root = [middle[0] * (y / 0.5), y, middle[2] * (y / 0.5)];
+        let tip = [
+            root[0] + angle.cos() * reach,
+            y + rise,
+            root[2] + angle.sin() * reach,
+        ];
+        m.append(rod(root, tip, 0.032, 0.010, bark));
+        let fork = [
+            tip[0] + (angle + 0.6).cos() * 0.11,
+            tip[1] + 0.08,
+            tip[2] + (angle + 0.6).sin() * 0.11,
+        ];
+        m.append(rod(tip, fork, 0.014, 0.005, bark));
+        leaf_clumps.push((tip, 0.10 + 0.025 * (b as f32 * 0.9).sin().abs()));
+        leaf_clumps.push((fork, 0.085));
+    }
+    // The crown: a broad, uneven collection of small clumps.
+    for k in 0..5 {
+        let a = k as f32 / 5.0 * TAU;
+        let p = [
+            top[0] + a.cos() * (0.10 + 0.04 * k as f32),
+            top[1] - 0.02 + 0.04 * (k as f32 * 1.3).sin(),
+            top[2] + a.sin() * (0.10 + 0.04 * k as f32),
+        ];
+        leaf_clumps.push((p, 0.105));
+    }
+    for (centre, size) in leaf_clumps {
+        let clump = sphere_with(
+            1,
+            |p| 1.0 + 0.16 * (p[0] * 5.0 + p[2] * 4.0).sin(),
+            |_| leaf,
+        )
+        .scaled([size * 1.15, size * 0.68, size]);
+        m.append(clump.map(
+            move |p| [p[0] + centre[0], p[1] + centre[1], p[2] + centre[2]],
+            |n| n,
+        ));
+    }
+    m.with_aux(|p| [0.0, p[1].clamp(0.0, 1.0)])
 }
 
 /// A plain box of half-extents `size` about `centre`: straps, buckles and

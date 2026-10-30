@@ -57,7 +57,12 @@ fn biome_name(id: usize) -> &'static str {
         4 => "cave",
         5 => "abyss",
         6 => "arctic",
-        _ => "trench",
+        7 => "trench",
+        8 => "coral",
+        9 => "sargasso",
+        10 => "vents",
+        11 => "brine",
+        _ => "bloom",
     }
 }
 
