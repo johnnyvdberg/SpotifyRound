@@ -26,3 +26,11 @@ ssh john@192.168.0.33 '
 
 The 5fed499 binary is `/tmp/srt-5fed499` on the Pi; rebuild it with a clean
 worktree at 5fed499 and `deploy/build-for-pi.sh --tests` if it has gone.
+
+## Second pass (5b49068)
+
+The tables above are for the merge at `653f3f1`. The cave-nook and city-type
+pass at `5b49068` has **not** been measured. Rebuild from `.worktrees/finish`,
+copy the binary to the Pi as `/tmp/srt-finish2`, and run the same commands;
+`/tmp/srt-5fed499` is still the baseline. Report the city and cave legs in
+particular, and keep the raw CSV here.
