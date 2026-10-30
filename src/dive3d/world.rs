@@ -954,6 +954,10 @@ pub struct Frame {
     /// Searchlight beams: `place` is the lamp and the beam's radius there,
     /// `tint` the colour and its radius at the far end, `stretch` the run.
     pub beams: Vec<Sprite>,
+    /// Far coral as cut-out cards: `place` is the foot and the height,
+    /// `tint` the colour and a seed for the shape, `stretch` the half width
+    /// and the form.
+    pub impostors: Vec<Sprite>,
     pub lights: Vec<Light>,
     /// The tunnel through the lava cave's massif, in world space for the
     /// stretch in view. It depends only on the seabed and that stretch, so it
@@ -985,6 +989,7 @@ impl Frame {
             sprites: Vec::new(),
             shafts: Vec::new(),
             beams: Vec::new(),
+            impostors: Vec::new(),
             lights: Vec::new(),
             tunnel: Vec::new(),
             tunnel_indices: Vec::new(),
@@ -1004,6 +1009,7 @@ impl Frame {
         self.sprites.clear();
         self.shafts.clear();
         self.beams.clear();
+        self.impostors.clear();
         self.lights.clear();
     }
 
@@ -1258,7 +1264,8 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::DiverBoot => carried(Surface::Plates, 6.0),
         Model::Manta => carried(Surface::Skin, 3.0),
         Model::Turtle => carried(Surface::Skin, 2.0),
-        Model::Coral => carried(Surface::Coral, 2.0),
+        Model::Coral | Model::CoralFinger => carried(Surface::Coral, 2.0),
+        Model::CoralTable => carried(Surface::Coral, 3.0),
         Model::Sargassum => carried(Surface::Kelp, 2.0),
         Model::Vent => fixed(Surface::Basalt, 2.5),
         Model::Tree => carried(Surface::Kelp, 2.0),
@@ -1493,9 +1500,10 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // The placers whose every placement-time and sprite-time motion is now
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body and the four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 9] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 10] = [
         (rocks, None),
         (gardens, None),
+        (reef, None),
         (wrecks, wood),
         (trench, rock),
         (ruins, marble),
@@ -1520,8 +1528,8 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 9] = [
-        "rocks", "gardens", "wrecks", "trench", "ruins", "cave", "polar", "kelp", "forest",
+    const STATIC_NAMES: [&str; 10] = [
+        "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "cave", "polar", "kelp", "forest",
     ];
     #[cfg(test)]
     const STEP_NAMES: [&str; 13] = [
@@ -1601,6 +1609,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     frame.sprites.extend_from_slice(&cache.frame.sprites);
     frame.shafts.extend_from_slice(&cache.frame.shafts);
     frame.beams.extend_from_slice(&cache.frame.beams);
+    frame.impostors.extend_from_slice(&cache.frame.impostors);
     frame.lights.extend_from_slice(&cache.frame.lights);
     #[cfg(test)]
     for (i, (step, skin)) in steps.into_iter().enumerate() {
@@ -1839,11 +1848,18 @@ fn kelp(w: &World, f: &mut Frame) {
 /// tree is one model — trunk, forks and clustered canopy — so the improved
 /// silhouette costs one instance instead of a dozen.
 fn forest(w: &World, f: &mut Frame) {
-    for &(ix, iz, x, z) in &cells(w, 0.75, 1.0, 17.0, 30) {
+    // Past fourteen units the forest's haze has hidden all but a twentieth of
+    // a tree, so the far trees melt into it from twelve rather than being
+    // drawn out to where nothing of them shows.
+    let c = w.pose.pos;
+    let out = w.pose.basis[2];
+    for &(ix, iz, x, z) in &cells(w, 0.75, 1.0, 14.0, 30) {
         if w.share(x, z, FOREST) < hash(ix, iz, 31) * 0.7 + 0.2 {
             continue;
         }
-        f.fade = fade(w.share(x, z, FOREST), hash(ix, iz, 31) * 0.7 + 0.2);
+        let depth = (x - c[0]) * out[0] + (z - c[2]) * out[2];
+        f.fade = fade(w.share(x, z, FOREST), hash(ix, iz, 31) * 0.7 + 0.2)
+            * (1.0 - smooth(12.0, 14.0, depth));
         if (z - corridor(x)).abs() < 1.4 {
             continue;
         }
@@ -2012,6 +2028,81 @@ fn gardens(w: &World, f: &mut Frame) {
     }
 }
 
+/// The reef between the gardens' bommies: one small coral to a cell, close
+/// enough that the floor reads as reef rather than sand. Near the window each
+/// is a model; further off, where its branches can no longer be told apart,
+/// it is a cut-out card in [`Frame::impostors`], which costs a quad.
+fn reef(w: &World, f: &mut Frame) {
+    const MODELS: f32 = 4.0;
+    let c = w.pose.pos;
+    let out = w.pose.basis[2];
+    let ahead = [c[0] + out[0] * 8.0, c[2] + out[2] * 8.0];
+    if w.biome(c[0], c[2]).weight(CORAL) <= 0.0 && w.biome(ahead[0], ahead[1]).weight(CORAL) <= 0.0
+    {
+        return;
+    }
+    let palettes = [
+        [1.00, 0.35, 0.46],
+        [1.00, 0.60, 0.22],
+        [0.66, 0.40, 0.92],
+        [1.00, 0.86, 0.56],
+        [1.00, 0.70, 0.72],
+        [0.45, 0.80, 0.62],
+    ];
+    for &(ix, iz, x, z) in &cells(w, 0.32, 0.6, 10.0, 60) {
+        let coral = w.biome(x, z).weight(CORAL) as f32;
+        let needs = hash(ix, iz, 61) * 0.7 + 0.3;
+        if coral < needs {
+            continue;
+        }
+        let y = w.ground(x, z);
+        let grown = fade(coral, needs);
+        let depth = (x - c[0]) * out[0] + (z - c[2]) * out[2];
+        let hue = palettes[(hash(ix, iz, 62) * 6.0) as usize % 6];
+        let form = hash(ix, iz, 63);
+        let yaw = hash(ix, iz, 64) * TAU;
+        let s = 0.10 + 0.12 * hash(ix, iz, 65);
+        // Its kind, and its height and half width in units of `s`.
+        let (model, kind, tall, half) = if form < 0.5 {
+            (Model::Coral, 0.0, 0.55, 0.24)
+        } else if form < 0.75 {
+            (Model::CoralFinger, 2.0, 0.55, 0.22)
+        } else {
+            (Model::CoralTable, 1.0, 0.55, 0.75)
+        };
+        if depth < MODELS {
+            if !w.visible([x, y + 0.1, z], 0.25) {
+                continue;
+            }
+            f.fade = grown;
+            let (scale, tilt) = if kind == 1.0 {
+                (
+                    [s * 0.75, s * 0.75, s * 0.75],
+                    (hash(ix, iz, 67) - 0.5) * 0.3,
+                )
+            } else {
+                ([s; 3], 0.0)
+            };
+            let rows = place([x, y - 0.01, z], yaw, tilt, tilt * 0.5, scale);
+            let instance = f.put(model, rows, hue);
+            if kind != 1.0 {
+                instance.moving(anim::SWAY, yaw, 0.015, 0.4);
+            }
+            instance.glowing(0.28).grounded();
+        } else {
+            let height = tall * s * grown;
+            if height < 0.01 || !w.visible([x, y + height * 0.5, z], height) {
+                continue;
+            }
+            f.impostors.push(Sprite {
+                place: [x, y, z, height],
+                tint: [hue[0], hue[1], hue[2], hash(ix, iz, 66) * 10.0],
+                stretch: [half * s * grown, kind, 0.0, 0.0],
+            });
+        }
+    }
+}
+
 /// One cell of the seabed's garden: where it is, which cell it is, and the
 /// bearing its life faces.
 #[derive(Clone, Copy)]
@@ -2044,7 +2135,7 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
     ];
     let hue = |salt: u32| palettes[(hash(ix, iz, salt) * 5.0) as usize % 5];
     let roll = hash(ix, iz, 80);
-    if roll < 0.38 {
+    if roll < 0.30 {
         // A thicket of branching coral.
         let heads = 4 + (hash(ix, iz, 81) * 4.0) as i32;
         for k in 0..heads {
@@ -2070,7 +2161,7 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
             .glowing(0.30)
             .grounded();
         }
-    } else if roll < 0.58 {
+    } else if roll < 0.44 {
         // A second, larger colony: a few broad branching heads with a fan
         // between them, so the bommie has depth rather than a single tuft.
         let tint = hue(88);
@@ -2105,7 +2196,48 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
         )
         .moving(anim::SWAY, yaw, 0.15, 0.7)
         .grounded();
-    } else if roll < 0.76 {
+    } else if roll < 0.56 {
+        // Table corals: one broad plate, or a smaller one stepped up beside
+        // it.
+        let plates = 1 + (hash(ix, iz, 120) < 0.45) as i32;
+        for k in 0..plates {
+            let s = (0.12 + 0.10 * hash(ix, iz + k, 121)) * (1.0 - 0.3 * k as f32);
+            let a = yaw + k as f32 * 2.3;
+            let p = [
+                x + a.cos() * 0.12 * k as f32,
+                y - 0.01,
+                z + a.sin() * 0.12 * k as f32,
+            ];
+            if !w.visible(p, s) {
+                continue;
+            }
+            let tilt = (hash(ix, iz + k, 127) - 0.5) * 0.3;
+            f.put(
+                Model::CoralTable,
+                place(p, a, tilt, tilt * 0.5, [s, s * (0.9 + 0.5 * k as f32), s]),
+                hue(122 + k as u32),
+            )
+            .glowing(0.24)
+            .grounded();
+        }
+    } else if roll < 0.66 {
+        // A patch of finger coral.
+        let clumps = 2 + (hash(ix, iz, 123) * 2.0) as i32;
+        let tint = hue(124);
+        for k in 0..clumps {
+            let a = yaw + k as f32 * 2.4;
+            let off = 0.04 + 0.12 * hash(ix + k, iz, 125);
+            let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
+            if !w.visible(p, 0.2) {
+                continue;
+            }
+            let s = 0.16 + 0.12 * hash(ix, iz + k, 126);
+            f.put(Model::CoralFinger, place(p, a, 0.0, 0.0, [s, s, s]), tint)
+                .moving(anim::SWAY, a, 0.015, 0.4)
+                .glowing(0.28)
+                .grounded();
+        }
+    } else if roll < 0.78 {
         // A brain coral: a low, lumpy dome.
         let s = 0.11 + 0.09 * hash(ix, iz, 90);
         if w.visible([x, y + 0.04, z], s) {
@@ -2177,21 +2309,34 @@ fn brine_garden(f: &mut Frame, w: &World, site: GardenSite) {
                 continue;
             }
             let s = 0.025 + 0.040 * hash(ix, iz + k, 98);
-            let rows = place(
-                p,
-                a,
+            let tall = s * (1.6 + 1.4 * hash(ix, iz, 101));
+            let lean = (
                 (hash(ix, iz + k, 99) - 0.5) * 0.5,
                 (hash(ix, iz + k, 100) - 0.5) * 0.5,
-                [s * 0.45, s * (1.6 + 1.4 * hash(ix, iz, 101)), s * 0.45],
             );
-            if hash(ix, iz + k, 106) < 0.4 {
-                // Some of the salt is translucent: a pale prism catching the
-                // light through its faces rather than a grey opaque tower.
-                f.glass(Model::Hex, rows, [0.86, 0.93, 0.96]).glowing(0.30);
+            // Salt crust stained here and there with iron, from white to a
+            // pale ochre.
+            let stain = hash(ix, iz + k, 107) * 0.18;
+            let crust = [0.93, 0.90 - stain * 0.3, 0.84 - stain];
+            let roll = hash(ix, iz + k, 106);
+            if roll < 0.25 {
+                // Some of the salt is translucent: a prism catching the light
+                // through its faces, a glint rather than a white slab.
+                let rows = place(p, a, lean.0, lean.1, [s * 0.45, tall, s * 0.45]);
+                f.glass(Model::Hex, rows, [0.42, 0.52, 0.55]).glowing(0.10);
+            } else if roll < 0.6 {
+                // A crusted column.
+                let rows = place(p, a, lean.0, lean.1, [s * 0.45, tall, s * 0.45]);
+                f.put(Model::Hex, rows, crust)
+                    .textured(Surface::Marble, 2.0)
+                    .glowing(0.16)
+                    .grounded();
             } else {
-                f.put(Model::Hex, rows, [0.92, 0.95, 0.96])
-                    .textured(Surface::Ice, 2.0)
-                    .glowing(0.24)
+                // A spire, built up to a point by the brine seeping out.
+                let rows = place(p, a, lean.0, lean.1, [s * 0.7, tall * 1.3, s * 0.7]);
+                f.put(Model::Cone, rows, crust)
+                    .textured(Surface::Marble, 2.0)
+                    .glowing(0.16)
                     .grounded();
             }
         }
@@ -5503,7 +5648,8 @@ fn submarines(w: &World, f: &mut Frame) {
         (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
     };
     let warm = [1.0, 0.82, 0.50];
-    let glow = 0.5 + 2.5 * dark;
+    // Lamplit amber, never blown out to white however dark the water.
+    let glow = 0.5 + 1.1 * dark;
     if w.visible(p, SUB_LENGTH * 0.55) {
         f.put(Model::Submarine, hull, [0.33, 0.34, 0.36])
             .material(material::COPPER);
@@ -5619,17 +5765,55 @@ fn submarines(w: &World, f: &mut Frame) {
         let sweep = 0.6 * ((t - start) * 0.21 + phase).sin();
         let dip = -0.16 + 0.08 * ((t - start) * 0.13 + phase).sin();
         let dir = turned([dip.cos() * sweep.cos(), dip.sin(), -dip.cos() * sweep.sin()]);
-        let reach = 3.2;
+        // Where the beam meets the seabed, if it does within its reach: it
+        // stops there in a pool of light rather than running on through the
+        // sand, or glows on in the water if it meets nothing.
+        let mut reach = 3.6;
+        let mut hit = None;
+        for step in 1..=14 {
+            let s = step as f32 * 0.25;
+            let q = add(o, [dir[0] * s, dir[1] * s, dir[2] * s]);
+            if q[1] < w.ground(q[0], q[2]) {
+                reach = s - 0.1;
+                hit = Some(add(q, [-dir[0] * 0.2, 0.15 - dir[1] * 0.2, -dir[2] * 0.2]));
+                break;
+            }
+        }
         let run = [dir[0] * reach, dir[1] * reach, dir[2] * reach];
         // Twice what it shows: the sea is stored at half its brightness.
         let k = 1.6 * lamp;
         let middle = add(o, [run[0] * 0.5, run[1] * 0.5, run[2] * 0.5]);
-        if w.visible(middle, reach * 0.5 + 0.5) {
+        if w.visible(middle, reach * 0.5 + 0.6) {
+            // A bright core, and a wide faint halo of light scattered off it.
+            let spread = 0.24 * reach;
             f.beams.push(Sprite {
-                place: [o[0], o[1], o[2], 0.015],
-                tint: [k, 0.9 * k, 0.7 * k, 0.55],
+                place: [o[0], o[1], o[2], 0.02],
+                tint: [k, 0.9 * k, 0.7 * k, spread],
                 stretch: [run[0], run[1], run[2], 0.0],
             });
+            let h = 0.45 * k;
+            f.beams.push(Sprite {
+                place: [o[0], o[1], o[2], 0.06],
+                tint: [h, 0.92 * h, 0.78 * h, spread * 2.6],
+                stretch: [run[0], run[1], run[2], 0.0],
+            });
+            // Motes caught in the cone, glinting as they drift through it.
+            for m in 0..14 {
+                let drift = (w.t * 0.05 + hash(slot, m, 505)) % 1.0;
+                let along = 0.12 + 0.85 * drift;
+                let a = hash(slot, m, 506) * TAU + w.t * 0.1;
+                let r = spread * along * 0.8 * hash(slot, m, 507).sqrt();
+                let side = norm([-dir[2], 0.0, dir[0]]);
+                let lift = [
+                    side[1] * dir[2] - side[2] * dir[1],
+                    side[2] * dir[0] - side[0] * dir[2],
+                    side[0] * dir[1] - side[1] * dir[0],
+                ];
+                let q = [0, 1, 2]
+                    .map(|i| o[i] + run[i] * along + (side[i] * a.cos() + lift[i] * a.sin()) * r);
+                let glint = lamp * (1.0 - along) * (drift * 8.0).min(1.0) * 0.5;
+                f.sprite(q, 0.008, [glint, 0.9 * glint, 0.75 * glint], GLOW);
+            }
         }
         if w.visible(o, 0.3) {
             // The lantern's glass, blazing when it looks toward the window.
@@ -5643,29 +5827,18 @@ fn submarines(w: &World, f: &mut Frame) {
                     &hull,
                     &place(mesh::SUB_LANTERN, 0.0, 0.0, 0.0, [0.004, 0.010, 0.010]),
                 ),
-                [1.0, 0.92, 0.75],
+                [1.0, 0.88, 0.66],
             )
-            .glowing(0.5 + 5.0 * lamp);
+            .glowing(0.5 + 2.5 * lamp);
             let g = lamp * (0.25 + 1.5 * facing);
             f.sprite(o, 0.04 + 0.12 * facing, [g, 0.9 * g, 0.7 * g], GLOW);
-        }
-        // A pool of light where the beam meets the seabed, or a glow in the
-        // water if it meets nothing.
-        let mut hit = None;
-        for step in 1..=12 {
-            let s = step as f32 * 0.25;
-            let q = add(o, [dir[0] * s, dir[1] * s, dir[2] * s]);
-            if q[1] < w.ground(q[0], q[2]) {
-                hit = Some(add(q, [-dir[0] * 0.2, 0.15 - dir[1] * 0.2, -dir[2] * 0.2]));
-                break;
-            }
         }
         let (spot, strength) = match hit {
             Some(q) => (q, 1.0),
             None => (add(o, [dir[0] * 1.5, dir[1] * 1.5, dir[2] * 1.5]), 0.5),
         };
-        let c = 0.9 * lamp * strength;
-        f.light(spot, 0.5, [c, 0.85 * c, 0.6 * c]);
+        let c = 1.1 * lamp * strength;
+        f.light(spot, 0.8, [c, 0.88 * c, 0.65 * c]);
     }
 }
 
@@ -5699,7 +5872,7 @@ fn shafts(w: &World, f: &mut Frame) {
             + 0.5 * b.weight(ARCTIC)
             + 0.45 * b.weight(TRENCH)
             + 0.38 * b.weight(CORAL)
-            + 0.40 * b.weight(SARGASSO)
+            + 0.85 * b.weight(SARGASSO)
             + 0.35 * b.weight(BRINE)) as f32;
         if h > bright.min(1.0) * 0.55 {
             continue;
@@ -5731,9 +5904,16 @@ fn shafts(w: &World, f: &mut Frame) {
         let breathe = 0.45 + 0.55 * (w.t * (0.25 + 0.2 * h) + h * 70.0).sin().max(0.0);
         let k =
             bright.min(1.0) * breathe * smooth(far, far - 2.0, depth) * 1.3 / (0.5 + width * 6.0);
+        // Through the sargasso's golden weed the light comes down gold.
+        let gold = b.weight(SARGASSO) as f32;
         f.shafts.push(Sprite {
             place: [start[0], start[1], start[2], width],
-            tint: [0.30 * k, 0.75 * k, 0.70 * k, 0.0],
+            tint: [
+                (0.30 + 0.45 * gold) * k,
+                (0.75 - 0.05 * gold) * k,
+                (0.70 - 0.40 * gold) * k,
+                0.0,
+            ],
             stretch: [run[0], run[1], run[2], 0.0],
         });
     }

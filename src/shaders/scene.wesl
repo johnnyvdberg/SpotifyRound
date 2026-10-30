@@ -1815,12 +1815,116 @@ fn vs_beam(
     return out;
 }
 
-// Soft across; brightest at the lamp, spreading thin as the cone widens and
-// gone by its end.
+// A cone of lit water seen side on: as deep as the cone is through its
+// middle and thinning to nothing at its edges, brighter still along its axis.
+// Brightest at the lamp, spreading thin as the cone widens, and fading out at
+// its end, which is where it meets the seabed or runs out of reach.
 @fragment
 fn fs_beam(in: Shaft) -> @location(0) vec4<f32> {
-    let across = 1.0 - in.corner.x * in.corner.x;
+    let x2 = in.corner.x * in.corner.x;
+    let across = sqrt(max(1.0 - x2, 0.0)) * (0.35 + 0.65 * exp(-4.0 * x2));
     let s = 0.5 - 0.5 * in.corner.y;
-    let along = smooth01(0.0, 0.03, s) * (1.0 - smooth01(0.45, 1.0, s)) / (1.0 + 10.0 * s * s);
-    return vec4<f32>(in.colour * (across * across * along), 0.0);
+    let along = smooth01(0.0, 0.02, s) * (1.0 - smooth01(0.7, 1.0, s)) / (1.0 + 6.0 * s);
+    return vec4<f32>(in.colour * (across * along), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Far coral
+// ---------------------------------------------------------------------------
+
+// Coral too far off for its branches to be told apart, drawn as one cut-out
+// card standing on the seabed and turned about the vertical to face the
+// window: `place` is its foot and its height, `tint` its colour and a seed
+// for its shape, `stretch.x` its half width and `stretch.y` its form
+// (0 branching, 1 a table, 2 fingers). It is opaque and writes depth, so it
+// hides what is behind it like the models it stands in for.
+struct Impostor {
+    @builtin(position) position: vec4<f32>,
+    // Across from -1 to 1 in units of its height, and up from 0 to 1.
+    @location(0) at: vec2<f32>,
+    @location(1) colour: vec3<f32>,
+    @location(2) fog: vec4<f32>,
+    @location(3) @interpolate(flat) shape: vec3<f32>,
+};
+
+@vertex
+fn vs_impostor(
+    @builtin(vertex_index) index: u32,
+    @location(0) place: vec4<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) stretch: vec4<f32>,
+) -> Impostor {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let corner = corners[index];
+    let foot = place.xyz;
+    let to = g.camera.xyz - foot;
+    let side = normalize(vec3<f32>(-to.z, 0.0, to.x) + vec3<f32>(1e-5, 0.0, 0.0));
+    // Sunk a little, so the foot meets the sand however the ground slopes.
+    let p = foot + side * corner.x * stretch.x + vec3<f32>(0.0, corner.y * place.w - 0.01, 0.0);
+    var out: Impostor;
+    out.position = project(p);
+    out.at = vec2<f32>(corner.x * stretch.x / place.w, corner.y);
+    let middle = foot + vec3<f32>(0.0, place.w * 0.5, 0.0);
+    let facing = normalize(vec3<f32>(to.x, length(to.xz) * 0.8, to.z));
+    out.colour = tint.rgb * (light_at(middle, facing) * 0.8 + vec3<f32>(0.2));
+    out.fog = fog_at(middle);
+    out.shape = vec3<f32>(tint.w, stretch.y, stretch.x / place.w);
+    return out;
+}
+
+// How far `p` is outside a branch from `a` to `b`, `r` thick: negative inside.
+fn branch_out(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+    let ab = b - a;
+    let t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
+    return length(p - a - ab * t) - r * (1.0 - 0.35 * t);
+}
+
+@fragment
+fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
+    let p = in.at;
+    let seed = in.shape.x;
+    let wide = in.shape.z;
+    var d = 1e3;
+    var tip = 0.0;
+    if (in.shape.y < 0.5) {
+        // Branching: arms fanning up and out of one foot, a round tip on each.
+        for (var k = 0; k < 6; k = k + 1) {
+            let f = f32(k);
+            let h = fract(sin(seed * 12.9898 + f * 78.233) * 43758.547);
+            let x = (f / 5.0 - 0.5) * 1.7 * wide + (h - 0.5) * 0.25 * wide;
+            let top = vec2<f32>(x, 0.62 + 0.38 * h);
+            let knee = vec2<f32>(x * 0.45, 0.30 + 0.15 * h);
+            d = min(d, branch_out(p, vec2<f32>(0.0, 0.0), knee, 0.11));
+            d = min(d, branch_out(p, knee, top, 0.075));
+            tip = max(tip, 1.0 - smooth01(0.0, 0.12, length(p - top)));
+        }
+    } else if (in.shape.y < 1.5) {
+        // A table: a broad plate on a short stem.
+        // A broad cupped plate on a short stem, its rim lifted.
+        let lift = 0.18 * (p.x / wide) * (p.x / wide);
+        let plate = length(vec2<f32>(p.x / wide, (p.y - 0.70 - lift) / 0.17)) - 1.0;
+        let rim = 0.05 * sin(p.x * 23.0 + seed * 7.0);
+        d = min(plate + rim, branch_out(p, vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.7), 0.10));
+        tip = smooth01(0.6, 0.95, abs(p.x / wide)) * step(0.55, p.y);
+    } else {
+        // Fingers: blunt and upright, close together.
+        for (var k = 0; k < 5; k = k + 1) {
+            let f = f32(k);
+            let h = fract(sin(seed * 39.425 + f * 11.135) * 24634.633);
+            let x = (f / 4.0 - 0.5) * 1.5 * wide;
+            let top = vec2<f32>(x * 1.1, 0.55 + 0.45 * h);
+            d = min(d, branch_out(p, vec2<f32>(x * 0.7, 0.0), top, 0.13));
+            tip = max(tip, 1.0 - smooth01(0.0, 0.15, length(p - top)));
+        }
+    }
+    if (d > 0.0) {
+        discard;
+    }
+    // In shade at the foot, the paler new growth at the tips.
+    let shade = 0.55 + 0.45 * smooth01(0.0, 0.8, p.y);
+    let colour = mix(in.colour * shade, in.colour * 1.25 + vec3<f32>(0.04), tip * 0.6);
+    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 0.0);
 }

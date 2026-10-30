@@ -384,6 +384,8 @@ pub(crate) struct Nautilus {
     shafts: wgpu::RenderPipeline,
     /// Searchlight beams of other submarines.
     beams: wgpu::RenderPipeline,
+    /// Far coral, as cut-out cards.
+    impostors: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
@@ -585,6 +587,8 @@ mod part {
     pub const UNDERWATER_GRADE: u64 = 1 << 30;
     /// Not a part: the low-poly facet shading on the seabed.
     pub const TERRAIN_FACETS: u64 = 1 << 31;
+    /// The far coral's cut-out cards.
+    pub const IMPOSTORS: u64 = 1 << 32;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -746,10 +750,17 @@ mod effect {
         (
             "coral",
             CORALS,
-            "Coral",
-            "the coral garden's branching heads",
+            "Coral, CoralTable, CoralFinger",
+            "the reef's branching, table and finger corals",
         ),
         ("sargassum", SARGASSUM, "Sargassum", "sargasso weed rafts"),
+        ("trees", TREES, "Tree", "the forest's branching trees"),
+        (
+            "vents",
+            VENTS,
+            "Vent",
+            "hydrothermal chimneys, the far volcano",
+        ),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
         ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
         (
@@ -820,7 +831,7 @@ fn model_bit(model: usize) -> u64 {
         Model::Fan => effect::FANS,
         Model::Star => effect::STARS,
         Model::Sponge => effect::SPONGES,
-        Model::Coral => effect::CORALS,
+        Model::Coral | Model::CoralTable | Model::CoralFinger => effect::CORALS,
         Model::Sargassum => effect::SARGASSUM,
         Model::Tree => effect::TREES,
         Model::Vent => effect::VENTS,
@@ -1606,6 +1617,21 @@ impl Nautilus {
             &[],
             None,
         );
+        // Opaque and writing depth, like the models: the discard is what
+        // shapes it, and it is drawn after them so they hide it first.
+        let impostors = pipeline(
+            "Dive3d impostors",
+            "vs_impostor",
+            "fs_impostor",
+            &sprite_buffers,
+            None,
+            true,
+            nearer,
+            false,
+            false,
+            &[],
+            None,
+        );
 
         let underwater = std::env::var_os("SPOTIFY_ROUND_UNDERWATER").is_some();
         let lowpoly = std::env::var_os("SPOTIFY_ROUND_LOWPOLY").is_some();
@@ -1633,6 +1659,7 @@ impl Nautilus {
             sprites,
             shafts,
             beams,
+            impostors,
             globals,
             group,
             vertices,
@@ -1845,6 +1872,7 @@ impl Nautilus {
         };
         let lods = &self.lods;
         let sea = self.render as f32;
+        let haze = uniforms.water[3];
         let full = self.skips(part::FULL_DETAIL);
         let coarse = self.skips(part::COARSE_DETAIL);
         let level_of = |model: usize, i: &Instance| {
@@ -1854,13 +1882,20 @@ impl Nautilus {
                 lods[model].len() - 1
             } else {
                 // The kelp is the one model whose coarse LOD holds up at
-                // distance: bias its LOD choice so the far half uses it.
+                // distance: bias its LOD choice so the far half uses it. The
+                // branching corals' coarser levels change only the shading
+                // across branches a few pixels wide, not along the long thin
+                // triangles their edge measure sees, so they go coarser too.
                 let bias = if model == mesh::Model::Kelp as usize {
                     2.0
+                } else if model == mesh::Model::Coral as usize
+                    || model == mesh::Model::CoralFinger as usize
+                {
+                    4.0
                 } else {
                     1.0
                 };
-                level_of(&lods[model], i, &pose, sea, bias)
+                level_of(&lods[model], i, &pose, sea, haze, bias)
             }
         };
         let out = pose.basis[2];
@@ -2074,6 +2109,19 @@ impl Nautilus {
             (std::mem::size_of_val(sprites) + std::mem::size_of_val(shafts)) as u64,
             bytemuck::cast_slice(beams),
         );
+        // And the far coral follows the beams.
+        let impostors = &self.frame.impostors[..self
+            .frame
+            .impostors
+            .len()
+            .min(MAX_SPRITES - sprites.len() - shafts.len() - beams.len())];
+        gpu.queue.write_buffer(
+            &self.sprite_buffer,
+            (std::mem::size_of_val(sprites)
+                + std::mem::size_of_val(shafts)
+                + std::mem::size_of_val(beams)) as u64,
+            bytemuck::cast_slice(impostors),
+        );
 
         #[cfg(test)]
         let upload_done = clock.elapsed();
@@ -2254,6 +2302,12 @@ impl Nautilus {
                 }
                 if !this.skips(part::TERRAIN) && !this.skips(part::TERRAIN_FIRST) {
                     draw_terrain(&mut pass);
+                }
+                if !impostors.is_empty() && !this.skips(part::IMPOSTORS) {
+                    let first = (sprites.len() + shafts.len() + beams.len()) as u32;
+                    pass.set_pipeline(&this.impostors);
+                    pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
+                    pass.draw(0..6, first..first + impostors.len() as u32);
                 }
                 // The open water, before the things that fade into it: it
                 // shades only the pixels nothing solid has covered, and the
@@ -2498,8 +2552,10 @@ fn lod_limits() -> (f32, f32) {
 }
 
 /// The coarsest of a model's levels of detail that looks the same as the
-/// full one for this instance, at its distance through the window.
-fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32, bias: f32) -> usize {
+/// full one for this instance, at its distance through the window and
+/// through the water: what the fog hides of a difference need not be drawn,
+/// so a pixel of error under nine tenths fog is a tenth of a pixel.
+fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32, haze: f32, bias: f32) -> usize {
     let d = [
         i.rows[0][3] - pose.pos[0],
         i.rows[1][3] - pose.pos[1],
@@ -2524,6 +2580,7 @@ fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32, bias: f32) -> usi
         return 0;
     }
     let pixels = scale * (sea * 0.5) / (world::VIEW * near);
+    let bias = bias * (haze * near).exp().min(16.0);
     let (error_limit, edge_limit) = lod_limits();
     (1..lods.len())
         .rev()
@@ -3195,7 +3252,7 @@ mod tests {
 
         // Warm every leg and every pipeline, so no variant pays a one-off the
         // others do not.
-        let legs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        let legs: Vec<f64> = (0..crate::voyage::BIOMES).map(|n| n as f64).collect();
         let frames = 8;
         let span = crate::voyage::LEG / crate::voyage::SPEED;
         let warm = |scene: &mut Nautilus| {
@@ -3526,10 +3583,16 @@ mod tests {
             .unwrap_or(6usize);
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
+            "coral", "sargasso", "vents", "brine", "bloom",
         ];
         let span = crate::voyage::LEG / crate::voyage::SPEED;
         let mut rows = Vec::new();
         for &visit in &seeds {
+            // Every leg of this visit's circuit, named by the biome it settles
+            // in: the circuit is shuffled per visit, so a leg is not a biome.
+            let legs: Vec<&str> = (0..crate::voyage::BIOMES)
+                .map(|n| names[Biome::at((n as f64 + 0.5) * crate::voyage::LEG, seed_of(visit)).a])
+                .collect();
             let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
             // Build the seabed and warm its pipelines before timing it.
             for i in 0..4 {
@@ -3538,7 +3601,7 @@ mod tests {
                     .expect("a warm frame");
                 gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
             }
-            for (n, name) in names.iter().enumerate() {
+            for (n, name) in legs.iter().enumerate() {
                 for &place in &places {
                     let seconds = leg(n as f64) + place.clamp(0.0, 0.99) * span;
                     for i in 0..3 {

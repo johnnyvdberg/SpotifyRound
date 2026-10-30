@@ -273,7 +273,20 @@ fn lathe(
     colour: impl Fn(f32, f32) -> [f32; 3],
     aux: impl Fn(f32) -> [f32; 2],
 ) -> Mesh {
-    let segments = fewer(segments, 5);
+    lathe_down_to(profile, segments, 5, radius, colour, aux)
+}
+
+/// [`lathe`], coarsening to as few as `least` segments: for thin parts, which
+/// still read as round from a little way off with three sides.
+fn lathe_down_to(
+    profile: &[(f32, f32)],
+    segments: usize,
+    least: usize,
+    radius: impl Fn(f32, f32) -> f32,
+    colour: impl Fn(f32, f32) -> [f32; 3],
+    aux: impl Fn(f32) -> [f32; 2],
+) -> Mesh {
+    let segments = fewer(segments, least);
     let mut m = Mesh::default();
     let mut rings = Vec::with_capacity(profile.len());
     for &(r, y) in profile {
@@ -528,6 +541,10 @@ pub enum Model {
     /// A branching reef coral: a foot of staghorn or elkhorn, its arms
     /// forking up and out, pale at the tips.
     Coral,
+    /// A table coral: a broad, wavy-rimmed plate on a short stem.
+    CoralTable,
+    /// Finger coral: a clump of upright, blunt-tipped fingers.
+    CoralFinger,
     /// A clump of sargassum weed: a flattened raft of fronds with tendrils
     /// trailing below it, floating just under the surface.
     Sargassum,
@@ -543,7 +560,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 46] = [
+    pub const ALL: [Model; 48] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -586,6 +603,8 @@ impl Model {
         Model::Crystal,
         Model::CrystalCluster,
         Model::Coral,
+        Model::CoralTable,
+        Model::CoralFinger,
         Model::Sargassum,
         Model::JellyArm,
         Model::Vent,
@@ -866,6 +885,8 @@ impl Model {
             Model::Crystal => crystal(),
             Model::CrystalCluster => crystal_cluster(),
             Model::Coral => coral(),
+            Model::CoralTable => coral_table(),
+            Model::CoralFinger => coral_finger(),
             Model::Sargassum => sargassum(),
             Model::JellyArm => jelly_arm(),
             Model::Vent => vent(),
@@ -1430,12 +1451,72 @@ fn rod(a: [f32; 3], b: [f32; 3], r0: f32, r1: f32, colour: [f32; 3]) -> Mesh {
     )
 }
 
-/// A branching reef coral: a foot of staghorn or elkhorn, its arms forking
-/// up and out, pale at the tips. The instance's colour carries the species.
+/// A tapered branch from `a` to `b`, `r0` thick at its foot and `r1` at its
+/// end, swelling into a rounded polyp there if `knob`, its colour running
+/// from `foot` to `tip`. `segments` round, coarsening to three.
+#[allow(clippy::too_many_arguments)]
+fn branch(
+    a: [f32; 3],
+    b: [f32; 3],
+    r0: f32,
+    r1: f32,
+    knob: bool,
+    foot: [f32; 3],
+    tip: [f32; 3],
+    segments: usize,
+) -> Mesh {
+    let d = Vec3::from_array(b) - Vec3::from_array(a);
+    let length = d.length().max(1e-5);
+    let y = d / length;
+    let reference = if y.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+    let x = y.cross(reference).normalize_or_zero();
+    let z = x.cross(y);
+    let knobbed = [
+        (0.0, 0.0),
+        (r0, 0.0),
+        (r1, 0.80),
+        (r1 * 1.7, 0.92),
+        (0.0, 1.0),
+    ];
+    let plain = [(0.0, 0.0), (r0, 0.0), (r1, 1.0), (0.0, 1.0)];
+    let profile: &[(f32, f32)] = if knob { &knobbed } else { &plain };
+    lathe_down_to(
+        profile,
+        segments,
+        3,
+        |_, _| 1.0,
+        move |t, _| [0, 1, 2].map(|c| foot[c] + (tip[c] - foot[c]) * t),
+        |_| [0.0; 2],
+    )
+    .map(
+        move |p| {
+            let q = x * p[0] + y * (p[1] * length) + z * p[2];
+            [a[0] + q.x, a[1] + q.y, a[2] + q.z]
+        },
+        move |n| {
+            let q = x * n[0] + y * n[1] + z * n[2];
+            [q.x, q.y, q.z]
+        },
+    )
+}
+
+/// A branching reef coral: a knobbly foot, nine arms forking up and out of
+/// it, and a round polyp at every tip. Coarser, the arms lose their sides
+/// and then their forks, each arm one branch from the foot to its tip.
 fn coral() -> Mesh {
     let stem = [0.92, 0.86, 0.80];
     let pale = [1.0, 0.97, 0.93];
-    let mut m = rod([0.0, -0.04, 0.0], [0.0, 0.16, 0.0], 0.15, 0.10, stem);
+    let coarse = COARSER.get();
+    let mut m = branch(
+        [0.0, -0.04, 0.0],
+        [0.0, 0.16, 0.0],
+        0.15,
+        0.10,
+        false,
+        stem,
+        stem,
+        6,
+    );
     // A knobbly foot, so it grows out of the sand rather than being stuck in
     // it.
     m.append(
@@ -1451,8 +1532,13 @@ fn coral() -> Mesh {
             a.sin() * reach * 0.62,
         ];
         let tip = [a.cos() * reach * 1.28, 0.14 + lift, a.sin() * reach * 1.28];
-        m.append(rod([0.0, 0.12, 0.0], mid, 0.060, 0.038, stem));
-        m.append(rod(mid, tip, 0.038, 0.010, pale));
+        let root = [0.0, 0.12, 0.0];
+        if coarse >= 2 {
+            m.append(branch(root, tip, 0.055, 0.016, true, stem, pale, 3));
+            continue;
+        }
+        m.append(branch(root, mid, 0.060, 0.038, false, stem, stem, 5));
+        m.append(branch(mid, tip, 0.038, 0.012, true, stem, pale, 5));
         // One fork off each arm, bent away from its neighbour.
         let b = a + if k % 2 == 0 { 0.75 } else { -0.75 };
         let fork = [
@@ -1460,20 +1546,74 @@ fn coral() -> Mesh {
             mid[1] + 0.10 + 0.03 * (k as f32).sin(),
             mid[2] + b.sin() * 0.12,
         ];
-        m.append(rod(mid, fork, 0.026, 0.006, pale));
-        // Round polyps at the tips: coral is soft, not a bundle of spikes.
-        for end in [tip, fork] {
-            m.append(
-                sphere_with(1, |_| 1.0, |_| pale)
-                    .scaled([0.022, 0.014, 0.022])
-                    .map(
-                        move |p| [p[0] + end[0], p[1] + end[1], p[2] + end[2]],
-                        |n| n,
-                    ),
-            );
-        }
+        m.append(branch(mid, fork, 0.026, 0.009, true, pale, pale, 4));
     }
     m.with_aux(|p| [0.0, ((p[1] + 0.10) / 0.62).clamp(0.0, 1.0)])
+}
+
+fn smooth(a: f32, b: f32, v: f32) -> f32 {
+    let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A table coral: a plate of acropora spread flat on a short stout stem,
+/// its rim wavy and pale with new growth, its underside in shade. One unit
+/// across and about two thirds of a unit tall.
+fn coral_table() -> Mesh {
+    // Cupped: the plate rises to its rim, so it is never a bare line
+    // seen edge on.
+    let profile = [
+        (0.0, 0.0),
+        (0.16, 0.0),
+        (0.10, 0.25),
+        (0.16, 0.42),
+        (0.60, 0.50),
+        (1.0, 0.66),
+        (0.95, 0.73),
+        (0.58, 0.60),
+        (0.0, 0.53),
+    ];
+    lathe(
+        &profile,
+        14,
+        |y, a| {
+            let wave = 0.09 * (a * 5.0).sin() + 0.05 * (a * 11.0 + 1.3).sin();
+            1.0 + wave * smooth(0.3, 0.6, y)
+        },
+        |y, a| {
+            let rim = smooth(0.60, 0.68, y) * (1.0 - smooth(0.70, 0.74, y));
+            let v = 0.82 + 0.10 * (a * 23.0).sin();
+            let under = if y < 0.5 { 0.75 } else { 1.0 };
+            let top = [v * under, v * under * 0.96, v * under * 0.92];
+            [0, 1, 2].map(|c| top[c] + (1.0 - top[c]) * rim * 0.8)
+        },
+        |_| [0.0; 2],
+    )
+}
+
+/// Finger coral: a clump of upright, blunt-tipped fingers out of one foot.
+/// Coarser, three of the fingers go.
+fn coral_finger() -> Mesh {
+    let base = [0.88, 0.84, 0.80];
+    let pale = [1.0, 0.98, 0.94];
+    let coarse = COARSER.get();
+    let mut m =
+        sphere_with(1, |p| 1.0 + 0.10 * (p[2] * 9.0).sin(), |_| base).scaled([0.20, 0.08, 0.20]);
+    let fingers = if coarse >= 2 { 4 } else { 7 };
+    for k in 0..fingers {
+        let a = k as f32 * 2.4;
+        let r = if k == 0 {
+            0.0
+        } else {
+            0.10 + 0.04 * (k as f32 * 1.9).sin().abs()
+        };
+        let foot = [a.cos() * r, 0.02, a.sin() * r];
+        let h = 0.32 + 0.22 * (k as f32 * 3.1).cos().abs();
+        let lean = 0.35 * r;
+        let tip = [foot[0] + a.cos() * lean, h, foot[2] + a.sin() * lean];
+        m.append(branch(foot, tip, 0.045, 0.034, true, base, pale, 5));
+    }
+    m.with_aux(|p| [0.0, (p[1] / 0.55).clamp(0.0, 1.0)])
 }
 
 /// A clump of sargassum weed: a flattened, lobed raft of fronds with tendrils
