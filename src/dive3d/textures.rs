@@ -3,7 +3,8 @@
 //! Each layer of one texture array is a tileable pattern made from wrapping
 //! noise: grained rock, planking, veined marble, fish scales, wrinkled whale
 //! skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt and
-//! riveted iron plating, and the meanders of a brain coral.
+//! riveted iron plating, the meanders of a brain coral, and the reef's carpet
+//! of living colonies.
 //! They are mostly tone, close to white on average, so a model's own colour
 //! still decides its hue and the texture adds the detail. The shader projects
 //! them along three axes, so no model needs texture coordinates.
@@ -36,10 +37,14 @@ pub enum Surface {
     /// ([`paint_vault`]), so the tunnel's single texture tap carries all
     /// three.
     Vault,
+    /// The living reef the coral's seabed is carpeted with: a mosaic of
+    /// small colonies, each its own texture and a shade of its own hue, with
+    /// dark crevices between ([`paint_reef`]).
+    Reef,
 }
 
 impl Surface {
-    pub const ALL: [Surface; 17] = [
+    pub const ALL: [Surface; 18] = [
         Surface::Plain,
         Surface::Rock,
         Surface::Wood,
@@ -57,6 +62,7 @@ impl Surface {
         Surface::Plates,
         Surface::Brain,
         Surface::Vault,
+        Surface::Reef,
     ];
 
     pub fn layer(self) -> f32 {
@@ -343,7 +349,80 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
         }
         // Not a colour: painted whole, with its relief, by `paint_vault`.
         Surface::Vault => grey(1.0),
+        Surface::Reef => paint_reef(u, v),
     }
+}
+
+/// The reef's carpet at (u, v): colonies a sixth of the tile across, each
+/// rounded up into a low head, lit on its top and shaded into the crevices
+/// that part it from the next, and each of one of four kinds: pocked with
+/// polyps, ribbed with the short branches of a tabular acropora seen from
+/// above, folded into a brain coral's meanders, or the smooth crust of an
+/// encrusting colony. Each takes its own tint about the floor's colour, so
+/// the mosaic shows colour as well as relief, while staying close to white
+/// on average like every other layer. Every field wraps.
+fn paint_reef(u: f32, v: f32) -> [f32; 3] {
+    const N: i32 = 8;
+    // Which colony this texel is in: the nearest of a wrapped jittered grid,
+    // its borders bent so the colonies are not a pavement of cobbles.
+    let bend = 0.35;
+    let (x, y) = (
+        (u + bend / N as f32 * (fbm(u, v, 4, 3, 169) - 0.5)) * N as f32,
+        (v + bend / N as f32 * (fbm(u, v, 4, 3, 170) - 0.5)) * N as f32,
+    );
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let (mut best, mut second, mut id) = (9.0f32, 9.0f32, (0, 0));
+    for dj in -1..=1 {
+        for di in -1..=1 {
+            let (ci, cj) = ((ix + di).rem_euclid(N), (iy + dj).rem_euclid(N));
+            let px = (ix + di) as f32 + 0.15 + 0.7 * hash(ci, cj, 160);
+            let py = (iy + dj) as f32 + 0.15 + 0.7 * hash(ci, cj, 161);
+            let d = (x - px).hypot(y - py);
+            if d < best {
+                second = best;
+                best = d;
+                id = (ci, cj);
+            } else if d < second {
+                second = d;
+            }
+        }
+    }
+    let edge = second - best;
+    // Not every border has opened into a crevice: some colonies have grown
+    // into one another.
+    let open = smooth(0.25, 0.55, fbm(u, v, 5, 2, 171));
+    let crevice = smooth(0.07, 0.0, edge) * open;
+    // A low head: highest at its middle, falling to the crevice.
+    let dome = smooth(0.0, 0.45, edge);
+    let kind = hash(id.0, id.1, 162);
+    let texture = if kind < 0.30 {
+        // Polyps: a pit to each, small and close.
+        0.80 + 0.30 * smooth(0.10, 0.32, cells(u, v, 48, 163))
+    } else if kind < 0.55 {
+        // Short upright branches seen end on: pale tips in dark gaps.
+        1.12 - 0.50 * smooth(0.22, 0.10, cells(u, v, 30, 164))
+    } else if kind < 0.75 {
+        // Meanders, as the brain coral's own but finer.
+        let wave = (std::f32::consts::TAU * (u * 24.0 + 2.5 * fbm(u, v, 6, 2, 165))).sin();
+        0.78 + 0.32 * smooth(-0.4, 0.6, wave)
+    } else {
+        // A smooth crust, mottled.
+        0.92 + 0.20 * fbm(u, v, 12, 2, 166)
+    };
+    let tone = texture * (0.84 + 0.24 * dome) * (1.0 - 0.50 * crevice);
+    // A colony's own tint about the floor's hue: warmer, cooler, greener or
+    // pinker, and a little lighter or darker.
+    const TINTS: [[f32; 3]; 6] = [
+        [1.06, 0.98, 0.90],
+        [0.95, 0.96, 1.06],
+        [0.97, 1.05, 0.94],
+        [1.06, 0.94, 1.01],
+        [1.02, 1.01, 0.97],
+        [0.98, 0.99, 1.00],
+    ];
+    let tint = TINTS[(hash(id.0, id.1, 167) * 6.0) as usize % 6];
+    let light = 0.90 + 0.18 * hash(id.0, id.1, 168);
+    tint.map(|c| c * tone * light)
 }
 
 /// How steep a slope of the tunnel's relief its channel holds, in heights
@@ -501,6 +580,9 @@ mod tests {
     fn the_reef_layers_are_where_the_shader_looks() {
         assert_eq!(Surface::Coral.layer(), 8.0, "CORAL_LAYER in scene.wesl");
         assert_eq!(Surface::Brain.layer(), 15.0, "BRAIN_LAYER in scene.wesl");
+        let shader = include_str!("../shaders/scene.wesl");
+        let line = format!("const REEF_LAYER: i32 = {};", Surface::Reef as usize);
+        assert!(shader.contains(&line), "scene.wesl wants `{line}`");
     }
 
     /// The cave's cliffs name the tunnel's layer in the shader by number.

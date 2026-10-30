@@ -81,6 +81,11 @@ const SURFACE_LOD: f32 = 8.0;
 // The coral and brain coral layers of the surfaces, `textures::Surface`.
 const CORAL_LAYER: i32 = 8;
 const BRAIN_LAYER: i32 = 15;
+// The living reef carpeting the coral's seabed, `textures::Surface::Reef`.
+const REEF_LAYER: i32 = 17;
+// How much of the terrain layer's fraction carries the reef, as
+// `terrain::REEF_SHARE`.
+const REEF_SHARE: f32 = 0.45;
 
 // Whether this models pipeline draws things that are fading in or out. Only
 // that one may discard fragments: the Pi's tile-based GPU skips hidden
@@ -362,12 +367,16 @@ fn biome_shape(l: Leg, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 
     }
     let coral = presence(l, CORAL);
     if (coral > 0.0) {
-        // A reef: rounded bommies rising out of pale sand, with the sandy
-        // channels between them scoured a little deeper.
-        let bommie = 0.5 + 0.5 * sin(TAU * (x * 0.25 + z * 0.25) + 1.1 * detail);
-        let channel = 0.5 + 0.5 * sin(TAU * (x * 0.125 - z * 0.25) + 0.6 * detail);
-        let knoll = smooth01(0.40, 0.78, bommie * (0.55 + 0.45 * channel));
-        shape += coral * (0.18 * h + 0.30 * knoll - 0.10 * channel + 0.08 * detail);
+        // A reef built of its own coral: flat-topped bommies and the ridges
+        // joining them, lumpy with colonies, and sand gutters scoured deeper
+        // between them (`world::reef_field`).
+        let field = 0.5
+            + 0.22 * sin(TAU * (x * 0.25 + z * 0.125) + 1.3 * detail)
+            + 0.20 * sin(TAU * (x * 0.125 - z * 0.25) + 0.9 * detail)
+            + 0.12 * sin(TAU * (x * 0.375 + z * 0.3125) + 2.1 * detail);
+        let mound = smooth01(0.50, 0.82, field);
+        let gutter = 1.0 - smooth01(0.12, 0.32, field);
+        shape += coral * (0.15 * h + 0.42 * mound - 0.10 * gutter + 0.06 * detail * mound + 0.03 * detail);
     }
     let sargasso = presence(l, SARGASSO);
     if (sargasso > 0.0) {
@@ -889,7 +898,7 @@ fn floor_albedo(l: Leg) -> vec3<f32> {
         vec3<f32>(0.17, 0.16, 0.17),
         vec3<f32>(0.36, 0.37, 0.38),
         vec3<f32>(0.58, 0.55, 0.47),
-        vec3<f32>(0.66, 0.50, 0.38),
+        vec3<f32>(0.80, 0.72, 0.58),
         vec3<f32>(0.39, 0.36, 0.22),
         vec3<f32>(0.08, 0.07, 0.07),
         vec3<f32>(0.74, 0.73, 0.68),
@@ -900,10 +909,10 @@ fn floor_albedo(l: Leg) -> vec3<f32> {
 }
 
 fn surface_of(l: Leg) -> vec2<i32> {
-    // Sand, sand, silt, sand, basalt, silt, sand, silt, then sand, silt,
+    // Sand, sand, silt, sand, basalt, silt, sand, silt, then reef, silt,
     // basalt, salt (ice's crystalline layer), ooze (silt) and the drowned
     // city's silted paving: by biome.
-    var layers = array<i32, 14>(12, 12, 13, 12, 10, 13, 12, 13, 12, 13, 10, 11, 13, 13);
+    var layers = array<i32, 14>(12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13);
     return vec2<i32>(layers[l.a], layers[l.b]);
 }
 
@@ -956,6 +965,9 @@ struct Ground {
     @location(6) world: vec3<f32>,
     // How much of the lava cave is here, from the tile's baked glow.
     @location(7) cave: f32,
+    // How much living reef covers the coral's seabed here, from the
+    // fraction of the tile's layer (`terrain::REEF_SHARE`).
+    @location(8) reef: f32,
 };
 
 @if(full_hd)
@@ -974,6 +986,7 @@ fn vs_terrain(
     out.world = world;
     out.cave = glow.a;
     out.layer = i32(baked.w + 0.5);
+    out.reef = clamp((baked.w - floor(baked.w + 0.02)) / REEF_SHARE, 0.0, 1.0);
     out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
     let n = normalize(normal);
     // The tile carries its floor's colour, detail and veins at full strength
@@ -1027,6 +1040,11 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
         );
     }
     var texture = sample.rgb * TEXTURE_RANGE;
+    // The reef's carpet of colonies shows only where they live: down the
+    // sand gutters it fades to a faint rubble.
+    if (layer == REEF_LAYER) {
+        texture = mix(vec3<f32>(0.92) + (texture - vec3<f32>(0.92)) * 0.25, texture, in.reef);
+    }
     var glow = vec3<f32>(0.0);
     if (cliff) {
         // The tunnel's rock (`vault_hd`) without its lighting: its tone,
@@ -2203,7 +2221,12 @@ fn fs_beam(in: Shaft) -> @location(0) vec4<f32> {
 // for its shape, `stretch.x` its half width, `stretch.y` its form (0
 // staghorn, 1 a table, 2 fingers, 3 a brain coral's dome, 4 a bushy head)
 // and `stretch.z`, if not zero, how near the window the card begins to
-// dissolve into the model that takes over from it. It is opaque and writes
+// dissolve into the model that takes over from it.
+//
+// Form 5 is not coral but one of the small reef fish hovering over it
+// (`world::reef_fish`): its card is centred on `place` rather than standing
+// on it, and swims round that point by the clock, `stretch.w` out, darting
+// and bobbing, its nose turned the way it is going. It is opaque and writes
 // depth, so it hides what is behind it like the models it stands in for.
 struct Impostor {
     @builtin(position) position: vec4<f32>,
@@ -2227,15 +2250,37 @@ fn vs_impostor(
         vec2<f32>(-1.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
     );
     let corner = corners[index];
-    let foot = place.xyz;
+    var foot = place.xyz;
+    let fish = stretch.y > 4.5;
+    var heading = vec3<f32>(0.0);
+    var lift = -0.015;
+    if (fish) {
+        // Round the swarm's centre on a loop of its own, quick or slow, one
+        // way or the other, with a dart along it now and then and a bob.
+        let seed = tint.w;
+        let rate = (0.35 + 0.45 * seeded(seed, 1.0)) * select(-1.0, 1.0, seeded(seed, 2.0) > 0.5);
+        let dart = 0.35 * sin(g.camera.w * 1.3 + seed * 5.0);
+        let angle = g.camera.w * rate + dart + seed * TAU;
+        let r = stretch.w;
+        foot += vec3<f32>(
+            cos(angle) * r,
+            0.3 * r * sin(angle * 1.7 + seed) + 0.01 * sin(g.camera.w * 2.1 + seed * 3.0),
+            sin(angle) * r * 0.8,
+        );
+        heading = vec3<f32>(-sin(angle), 0.0, cos(angle) * 0.8) * rate;
+        lift = -0.5 * place.w;
+    }
     let to = g.camera.xyz - foot;
     let side = normalize(vec3<f32>(-to.z, 0.0, to.x) + vec3<f32>(1e-5, 0.0, 0.0));
     // Sunk a little, so the foot meets the sand however the ground slopes.
-    let p = foot + side * corner.x * stretch.x + vec3<f32>(0.0, corner.y * place.w - 0.015, 0.0);
+    let p = foot + side * corner.x * stretch.x + vec3<f32>(0.0, corner.y * place.w + lift, 0.0);
     var out: Impostor;
     out.position = project(p);
-    out.at = vec2<f32>(corner.x * stretch.x / place.w, corner.y);
-    let middle = foot + vec3<f32>(0.0, place.w * 0.5, 0.0);
+    // A fish's card is drawn nose to +x: mirrored when it swims the other
+    // way across the window.
+    let nose = select(1.0, sign(dot(heading, side) + 1e-6), fish);
+    out.at = vec2<f32>(corner.x * nose * stretch.x / place.w, corner.y);
+    let middle = foot + vec3<f32>(0.0, place.w * 0.5 + lift + 0.015, 0.0);
     let facing = normalize(vec3<f32>(to.x, length(to.xz) * 0.8, to.z));
     // Lit as the models are: their sun and ambient light, and the glow the
     // reef's corals are given.
@@ -2314,6 +2359,20 @@ fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
             tip = max(tip, 1.0 - smooth01(0.0, 0.14, length(p - top)));
         }
         round = smooth01(0.0, 0.07, -d);
+    } else if (form > 4.5) {
+        // A small reef fish side on: a deep oval body, nose to +x, and a
+        // forked tail; darker along its back, paler at its belly, with a
+        // dark eye.
+        let x = p.x / wide;
+        let q = vec2<f32>((x - 0.12) / 0.70, (p.y - 0.5) / 0.38);
+        let body = (length(q) - 1.0) * min(0.70 * wide, 0.38);
+        let along = (-x - 0.50) / 0.48;
+        let fork = abs(p.y - 0.5) - (0.06 + 0.40 * along) + 0.12 * smooth01(0.6, 1.0, along);
+        let tail = max(fork, max(-along, along - 1.0) * 0.48 * wide);
+        d = min(body, tail);
+        round = 1.15 - 0.55 * smooth01(0.2, 0.9, p.y);
+        tip = 0.0;
+        groove = 0.75 * (1.0 - smooth01(0.03, 0.07, length(vec2<f32>((x - 0.58) * wide, p.y - 0.58))));
     } else {
         // A dome: a brain coral's low boulder, or a bushy head of short
         // branches, its outline lumpy with them.
@@ -2352,7 +2411,10 @@ fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
     }
     // In shade at the foot, darker round each branch's sides and in the
     // grooves, the paler new growth at the tips.
-    let shade = (0.50 + 0.50 * smooth01(0.0, 0.8, p.y)) * (0.62 + 0.38 * round) * (1.0 - groove);
+    var shade = (0.50 + 0.50 * smooth01(0.0, 0.8, p.y)) * (0.62 + 0.38 * round) * (1.0 - groove);
+    if (form > 4.5) {
+        shade = round * (1.0 - groove);
+    }
     let colour = mix(in.colour * shade, in.colour * 1.2 + vec3<f32>(0.05), tip * 0.55);
     return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 0.0);
 }

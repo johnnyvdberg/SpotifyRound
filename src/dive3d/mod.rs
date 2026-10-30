@@ -1955,6 +1955,10 @@ impl Nautilus {
                     || model == mesh::Model::SeaWhip as usize
                 {
                     4.0
+                } else if model == mesh::Model::CoralBrain as usize {
+                    // A boulder coral's grooves are its texture's; its
+                    // coarser domes lose only a little roundness at the rim.
+                    2.0
                 } else {
                     1.0
                 };
@@ -2690,12 +2694,12 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     let blend = |values: [f32; crate::voyage::BIOMES]| {
         values[here.a] + (values[here.b] - values[here.a]) * here.w as f32
     };
-    // Each new sea colours the water its own way: the coral garden clear and
-    // warm, the sargasso golden and thick, the vents nearly black, the brine
+    // Each new sea colours the water its own way: the coral reef clear and
+    // blue, the sargasso golden and thick, the vents nearly black, the brine
     // flats pale and milky, the bloom a deep indigo, the drowned city a
     // dim teal-green.
     let cast = |c: [f32; 3]| {
-        let c = mix3(c, [0.10, 0.30, 0.28], share(world::CORAL) * 0.35);
+        let c = mix3(c, [0.10, 0.34, 0.52], share(world::CORAL) * 0.45);
         let c = mix3(c, [0.18, 0.16, 0.055], share(world::SARGASSO) * 0.45);
         let c = mix3(c, [0.030, 0.022, 0.018], share(world::VENTS) * 0.55);
         let c = mix3(c, [0.17, 0.26, 0.25], share(world::BRINE) * 0.40);
@@ -2706,28 +2710,28 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     };
     let water = cast(water_tone(depth));
     let deep = cast(water_tone((depth + 0.30).min(1.1)));
-    // The new seas' own tone, over the depth ramp: clear turquoise over the
-    // reef, gold under the weed, soot at the vents, milk over the brine and
+    // The new seas' own tone, over the depth ramp: the bright, clear blue of
+    // a shallow tropical reef, gold under the weed, soot at the vents, milk over the brine and
     // indigo in the bloom, and in the drowned city a teal-green warmed a
     // little by the lights of its towers.
-    let water = mix3(water, [0.055, 0.38, 0.40], share(world::CORAL) * 0.55);
+    let water = mix3(water, [0.11, 0.46, 0.66], share(world::CORAL) * 0.70);
     let water = mix3(water, [0.40, 0.34, 0.10], share(world::SARGASSO) * 0.60);
     let water = mix3(water, [0.025, 0.030, 0.032], share(world::VENTS) * 0.75);
     let water = mix3(water, [0.18, 0.31, 0.31], share(world::BRINE) * 0.60);
     let water = mix3(water, [0.030, 0.055, 0.13], share(world::BLOOM) * 0.70);
     let water = mix3(water, [0.070, 0.190, 0.150], share(world::CITY) * 0.75);
-    let deep = mix3(deep, [0.012, 0.10, 0.14], share(world::CORAL) * 0.55);
+    let deep = mix3(deep, [0.025, 0.20, 0.38], share(world::CORAL) * 0.65);
     let deep = mix3(deep, [0.14, 0.13, 0.05], share(world::SARGASSO) * 0.60);
     let deep = mix3(deep, [0.005, 0.006, 0.008], share(world::VENTS) * 0.65);
     let deep = mix3(deep, [0.060, 0.130, 0.150], share(world::BRINE) * 0.55);
     let deep = mix3(deep, [0.004, 0.010, 0.040], share(world::BLOOM) * 0.65);
     let deep = mix3(deep, [0.010, 0.040, 0.034], share(world::CITY) * 0.70);
     // Over the trench the water is clear, and daylight reaches its walls;
-    // the coral garden catches a little more sun, the vents almost none.
+    // the shallow reef is flooded with it, the vents get almost none.
     let sun = (-depth * 4.3).exp()
         * (1.0 - 0.95 * cave)
         * (1.0 + 1.8 * share(world::TRENCH))
-        * (1.0 + 0.55 * share(world::CORAL))
+        * (1.0 + 0.70 * share(world::CORAL))
         * (1.0 + 0.50 * share(world::SARGASSO))
         * (1.0 - 0.55 * share(world::VENTS))
         * (1.0 - 0.60 * share(world::CITY));
@@ -2766,12 +2770,22 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         (-(below - 1.0) * 0.05).exp(),
         (-(below - 1.0) * 0.07).exp(),
     ];
+    // Over the reef the sea is a few metres deep and gin clear, and the
+    // daylight still has its reds: the corals keep their ochres, pinks and
+    // purples instead of going the teal of everything deeper. The water's
+    // light is cyan (`light_at`), so its red is lifted back past its green.
+    let coral = share(world::CORAL);
+    let tint = [
+        tint[0] * (1.0 + 0.40 * coral),
+        tint[1] * (1.0 - 0.06 * coral),
+        tint[2] * (1.0 + 0.04 * coral),
+    ];
     // The trench's water is clear, so its far wall shows across the gulf;
     // the sargasso's weed and the vents' plumes thicken it. The drowned
     // city's water is clear enough that its towers stand as silhouettes
     // across the avenue and their windows show from much further.
     let haze = blend([
-        0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11, 0.13, 0.18, 0.24, 0.14, 0.27, 0.09,
+        0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11, 0.085, 0.18, 0.24, 0.14, 0.27, 0.09,
     ]);
     // How much this sea has a sky the water can open on to: the shallow seas
     // can through Snell's window, the polar ice through its leads; the cave,

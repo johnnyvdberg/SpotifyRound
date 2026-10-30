@@ -60,10 +60,13 @@ pub struct Point {
 }
 
 /// The surface texture each biome's floor wears, as `surface_of` in
-/// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt, then sand,
+/// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt, then reef,
 /// silt, basalt, salt (the ice layer's crystalline tone), ooze (silt) and the
 /// drowned city's silted paving.
-const LAYERS: [usize; 14] = [12, 12, 13, 12, 10, 13, 12, 13, 12, 13, 10, 11, 13, 13];
+const LAYERS: [usize; 14] = [12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13];
+/// How much of a layer index's fraction the living reef takes: under one
+/// half, so the layer still rounds to itself (`REEF_SHARE` in `scene.wesl`).
+const REEF_SHARE: f32 = 0.45;
 /// Biome ids, as the shader's constants.
 const SHALLOWS: usize = 0;
 const FOREST: usize = 1;
@@ -191,14 +194,29 @@ fn shade(
         tint[1] += trench * 0.04 * (strata - 0.5);
     }
     let coral = presence(CORAL);
+    let mut reef = 0.0;
     if coral > 0.0 {
-        // Reef sand: pale between the heads, pinker where the coral has
-        // crumbled into it, and a little coarser over the bommies.
-        let bloom = smooth01(0.55, 0.82, broad);
+        // Living reef over the bommies and their skirts, a mosaic of
+        // colonies (`world::reef_tone`), and pale sand down the gutters,
+        // rippled and a shade pinker where the coral has crumbled into it.
+        // The colonies' own knobs and crevices are the reef layer's
+        // (`textures::Surface::Reef`); `reef` tells the shader how much of
+        // it to show, so the sand between keeps only a faint rubble.
+        let field = w.seabed.reef(x, z);
+        reef = coral * world::reef_cover(field);
+        let tone = world::reef_tone(x, z);
+        for k in 0..3 {
+            base[k] += (tone[k] - base[k]) * reef;
+        }
+        let crumb = smooth01(0.55, 0.82, broad) * (1.0 - reef);
         noise += coral * (0.09 * (broad - 0.5) + 0.05 * (grain - 0.5));
-        tint[0] += coral * (0.10 * (broad - 0.5) + 0.05 * bloom);
-        tint[1] += coral * (0.02 * (broad - 0.5) + 0.015 * bloom);
-        tint[2] -= coral * 0.02 * bloom;
+        // Colonies darker at their seams and in the shade of the bommies'
+        // overhangs, brighter on the sunlit tops.
+        let seam = world::vnoise(x * 3.3, z * 3.3 + 2.0, 73);
+        noise += reef * (0.22 * (seam - 0.5) + 0.10 * world::reef_mound(field) - 0.05);
+        tint[0] += coral * 0.05 * crumb;
+        tint[1] += coral * 0.015 * crumb;
+        tint[2] -= coral * 0.02 * crumb;
     }
     let sargasso = presence(SARGASSO);
     if sargasso > 0.0 {
@@ -254,7 +272,7 @@ fn shade(
         tint[1] += city * (0.03 * rust + 0.03 * (broad - 0.5));
         tint[2] -= city * 0.03 * rust;
     }
-    let sand = shallows + 0.55 * forest + 0.35 * wrecks + 0.6 * arctic + 0.75 * coral;
+    let sand = shallows + 0.55 * forest + 0.35 * wrecks + 0.6 * arctic + 0.75 * (coral - reef);
     if sand > 0.0 {
         // Ripples in patches, so the sand does not corrugate as one sheet.
         let r = ((x * 0.8 + z) * 26.0 + world::vnoise(x * 3.0, z * 3.0, 5) * 4.0).sin();
@@ -333,7 +351,14 @@ fn shade(
         base[2] * (1.0 + tint[2]) * (1.0 + cavity),
     ];
     (
-        [colour[0], colour[1], colour[2], LAYERS[b.a] as f32],
+        // The layer, and in its fraction how much living reef is here: the
+        // shader rounds the layer to the nearest and reads the reef back.
+        [
+            colour[0],
+            colour[1],
+            colour[2],
+            LAYERS[b.a] as f32 + REEF_SHARE * reef,
+        ],
         [noise, flat, ripple, pave],
         glow,
     )
@@ -591,6 +616,21 @@ mod tests {
     use super::*;
     use crate::dive3d::helm::Pose;
     use crate::dive3d::world::Seabed;
+
+    /// The shader reads the reef back out of the layer's fraction, and finds
+    /// the coral's floor by its layer: both by number.
+    #[test]
+    fn the_shader_reads_the_reef_as_the_tiles_store_it() {
+        let shader = include_str!("../shaders/scene.wesl");
+        let share = format!("const REEF_SHARE: f32 = {REEF_SHARE};");
+        assert!(shader.contains(&share), "scene.wesl wants `{share}`");
+        const { assert!(REEF_SHARE < 0.5, "the layer must still round to itself") };
+        assert_eq!(
+            LAYERS[CORAL],
+            crate::dive3d::textures::Surface::Reef as usize,
+            "the coral's floor wears the reef layer"
+        );
+    }
 
     #[test]
     fn tiles_cover_the_view_without_overlapping() {
