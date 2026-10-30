@@ -1220,7 +1220,7 @@ fn vs_model(v: Model, i: Instance) -> Lit {
         if (dot(facing, g.camera.xyz - world) < 0.0) {
             facing = -facing;
         }
-        out.local_normal = v.colour + point_lights(world, facing) * out.albedo * 2.5;
+        out.local_normal = v.colour + point_lights(world, facing) * out.albedo * 1.2;
         // Where the rock still runs hot: broad patches whose cracks glow,
         // most of them low down, where the lava flowed last. A noise a
         // vertex, so no pixel pays for it.
@@ -1519,7 +1519,7 @@ fn vault_hd(in: Lit, rock: vec4<f32>, distance: f32) -> vec3<f32> {
     let bounce = low * (0.6 - 0.4 * bumped.y) * (0.85 + 0.15 * sin(t * 1.9 + p.x));
     let near = 0.45 + 0.55 * smooth01(0.25, 1.6, distance);
     var colour = in.albedo * tone * (
-        (vec3<f32>(0.30, 0.24, 0.22) + vec3<f32>(1.5, 0.45, 0.12) * bounce) * near
+        (vec3<f32>(0.30, 0.24, 0.22) + vec3<f32>(1.1, 0.33, 0.09) * bounce) * near
             + vec3<f32>(1.0, 0.92, 0.78) * (lamp * (0.5 + 1.0 * near))
     );
     colour += in.local_normal * tone;
