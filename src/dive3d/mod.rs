@@ -1024,6 +1024,10 @@ impl Nautilus {
         ];
         let sprite_attributes =
             wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
+        let surface_attributes = wgpu::vertex_attr_array![
+            4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4,
+            8 => Float32x4, 9 => Float32x4, 10 => Float32x4,
+        ];
         let model_buffers = [
             Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Vertex>() as u64,
@@ -1034,6 +1038,20 @@ impl Nautilus {
                 array_stride: std::mem::size_of::<Instance>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &instance_attributes,
+            }),
+        ];
+        // The surface pipeline fetches seven of the eight instance vec4s
+        // (no floor); the buffer's record and stride stay the full 128.
+        let surface_buffers = [
+            Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &model_attributes,
+            }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Instance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &surface_attributes,
             }),
         ];
         let terrain_buffers = [Some(wgpu::VertexBufferLayout {
@@ -1230,7 +1248,27 @@ impl Nautilus {
             },
             alpha: wgpu::BlendComponent::REPLACE,
         };
-        let models = per_material("Dive3d models", false, 0.0, None, true, None);
+        let mut models = per_material("Dive3d models", false, 0.0, None, true, None);
+        if let Some(at) = MATERIALS.iter().position(|&m| m == world::material::SURFACE as i32) {
+            for grounded in [0.0, 1.0] {
+                models[at * 2 + grounded as usize] = pipeline(
+                    "Dive3d models",
+                    "vs_model_surface",
+                    "fs_model",
+                    &surface_buffers,
+                    None,
+                    true,
+                    nearer,
+                    false,
+                    true,
+                    &[
+                        ("MATERIAL", f64::from(world::material::SURFACE)),
+                        ("GROUNDED", grounded),
+                    ],
+                    None,
+                );
+            }
+        }
         let sealed = per_material(
             "Dive3d sealed models",
             false,

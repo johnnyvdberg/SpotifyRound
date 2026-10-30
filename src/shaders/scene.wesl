@@ -771,6 +771,19 @@ struct Instance {
     @location(11) floor: vec4<f32>,
 };
 
+// The surface pipeline's instance: the model record minus `floor`, which its
+// fragment never reads. The buffer's stride stays the full record; only the
+// fetch shrinks.
+struct InstanceSurface {
+    @location(4) m0: vec4<f32>,
+    @location(5) m1: vec4<f32>,
+    @location(6) m2: vec4<f32>,
+    @location(7) colour: vec4<f32>,
+    @location(8) anim: vec4<f32>,
+    @location(9) extra: vec4<f32>,
+    @location(10) surface: vec4<f32>,
+};
+
 struct Lit {
     @builtin(position) position: vec4<f32>,
     @location(0) world: vec3<f32>,
@@ -906,6 +919,45 @@ fn vs_model(v: Model, i: Instance) -> Lit {
         out.local = vec3<f32>(v.aux.x, 0.0, 0.0);
         out.local_normal = v.colour;
     }
+    return out;
+}
+
+// The same vertex stage for the surface pipeline, whose instance record has
+// no floor: the fragment's surface branch never reads it.
+@vertex
+fn vs_model_surface(v: Model, i: InstanceSurface) -> Lit {
+    let p = animate(v.pos, v.aux, i.anim);
+    let world = vec3<f32>(dot(i.m0, vec4<f32>(p, 1.0)), dot(i.m1, vec4<f32>(p, 1.0)), dot(i.m2, vec4<f32>(p, 1.0)));
+    let c0 = vec3<f32>(i.m0.x, i.m1.x, i.m2.x);
+    let c1 = vec3<f32>(i.m0.y, i.m1.y, i.m2.y);
+    let c2 = vec3<f32>(i.m0.z, i.m1.z, i.m2.z);
+    let n = cross(c1, c2) * v.normal.x + cross(c2, c0) * v.normal.y + cross(c0, c1) * v.normal.z;
+    var out: Lit;
+    out.position = project(world);
+    out.world = world;
+    out.normal = n;
+    out.albedo = i.colour.rgb * v.colour;
+    out.glow = i.colour.a;
+    out.material = u32(i.extra.x + 0.5);
+    out.local = v.pos;
+    out.local_normal = v.normal;
+    out.surface = i.surface;
+    out.fade = i.extra.z;
+    out.fog = fog_at(world);
+    var light = vec3<f32>(0.0);
+    if (switched(4u)) {
+        let light_n = normalize(n);
+        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
+        light = g.tint.rgb * (
+            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(light_n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
+            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (light_n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
+        );
+    } else {
+        light = light_at(world, normalize(n));
+    }
+    out.albedo *= light;
+    out.floor_y = 0.0;
+    out.floor = vec3<f32>(0.0);
     return out;
 }
 

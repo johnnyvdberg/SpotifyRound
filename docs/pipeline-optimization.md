@@ -2350,3 +2350,24 @@ This is the whole change; it is one edit across the shader and
 (the surface's pixels should be identical), then the Pi.
 
 Not applied this round; the text above is the complete specification.
+
+## 59. Surface pipeline subset: in, pixel-identical, neutral by size
+
+The surface pipeline now fetches seven of the eight instance vec4s. The shader
+has `InstanceSurface` and `vs_model_surface` (the same vertex stage without
+the floor outputs); `Nautilus::build` has `surface_attributes` /
+`surface_buffers` (stride still the full `Instance` record) and replaces the
+`models[MATERIALS == SURFACE]` slots after the `per_material` loop.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: **8.495 ms** vs 8.489 at the nine-placer cache — neutral, as expected:
+  the surface is two plane instances, so one fewer vec4 per vertex on them is
+  nothing measurable.
+
+Kept because it is exact, free, and proves the pipeline table can carry a
+second instance layout — the shape the vertex-format change (44 -> 24 B,
+0.1-0.2 ms) needs. That format change is the next packing step: one `Vertex`
+struct conversion in `Library::build`, the shader decoding f16/i8/u8, the
+previews gate.
+
+![surface subset: nine-placer / subset / difference](branch-surface-subset.png)
