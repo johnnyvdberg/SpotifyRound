@@ -1478,9 +1478,8 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // while the boat is still in the same position cell.
     let out = world.pose.basis[2];
     let heading = (out[0].atan2(out[2]) / 0.08).floor() as i32;
-    let stale = !cache.seed.eq(&seed)
-        || cache.cell != Some(camera)
-        || cache.heading != Some(heading);
+    let stale =
+        !cache.seed.eq(&seed) || cache.cell != Some(camera) || cache.heading != Some(heading);
     #[cfg(test)]
     let show_steps = std::env::var_os("DIVE3D_BUILD_STEPS").is_some();
     if stale {
