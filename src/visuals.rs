@@ -226,10 +226,11 @@ pub fn spawn(
             let mut active = usize::MAX;
             let mut travelled = travel.load(Ordering::Relaxed);
             let mut drawn = 0u32;
-            // Time spent recording and submitting frames since the last report,
-            // and the time the GPU took to finish them.
+            // Time spent recording and submitting frames since the last
+            // report. The GPU time comes from the V3D's busy counters on the
+            // Pi, or from timer queries where the adapter has them.
             let mut busy = Duration::ZERO;
-            let mut gpu_busy = Duration::ZERO;
+            let mut gpu_load = crate::gpu::GpuLoad::new();
             let mut reported = Instant::now();
             let mut in_flight = std::collections::VecDeque::new();
             // Adaptive resolution, off unless SPOTIFY_ROUND_ADAPTIVE is set:
@@ -318,14 +319,21 @@ pub fn spawn(
                 in_flight.push_back(gpu.mark());
                 while in_flight.len() > 1 {
                     if let Some(oldest) = in_flight.pop_front() {
-                        gpu_busy += gpu.wait_for(&oldest, GPU_TIMEOUT).unwrap_or(GPU_TIMEOUT);
+                        // The result is only the wait; the display's GPU time
+                        // comes from the counters or profiler below.
+                        let _ = gpu.wait_for(&oldest, GPU_TIMEOUT);
                     }
                 }
                 sequences[active] = (current + 1) % SLOTS;
                 drawn += 1;
                 if reported.elapsed() >= Duration::from_secs(1) {
                     let ms = busy.as_secs_f32() * 1e3 / drawn as f32;
-                    let gpu_ms = gpu_busy.as_secs_f32() * 1e3 / drawn as f32;
+                    // `-1` means this adapter exposes neither the V3D counters
+                    // nor timer queries; the UI shows `—`, not a made-up 16.7.
+                    let gpu_ms = gpu_load
+                        .per_frame(drawn)
+                        .or_else(|| gpu.gpu_ms())
+                        .unwrap_or(-1.0);
                     if adaptive {
                         let target = 1000.0 / FPS as f32;
                         let next = if gpu_ms > target * 0.97 {
@@ -373,7 +381,6 @@ pub fn spawn(
                     }
                     drawn = 0;
                     busy = Duration::ZERO;
-                    gpu_busy = Duration::ZERO;
                     reported = Instant::now();
                 }
 

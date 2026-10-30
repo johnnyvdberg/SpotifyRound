@@ -234,11 +234,16 @@ spotify-round --fps        # start with the frame-rate readout showing
 Press **F** on a keyboard to show or hide the frame-rate readout: a pill at the top of the circle,
 where the round glass still has room for it, with the frames the window presented in the last
 second and, while the visualizer runs, its own frame rate, the milliseconds its thread spent on
-each frame and the milliseconds the GPU took to finish it (`gpu`). Above 16 ms the GPU cannot keep
+each frame and the GPU milliseconds per frame (`gpu`). On the Pi the GPU figure comes from the
+V3D render engine's cumulative busy counter in
+`/sys/class/drm/card*/device/gpu_stats`, sampled once a second and divided by the frames drawn;
+where the adapter has timestamp queries and `SPOTIFY_ROUND_PROFILE` is set it comes from
+`wgpu-profiler` instead. If neither source exists the readout says `gpu —` rather than inventing a
+number. Above 16 ms the GPU cannot keep
 60 fps. The window only counts frames from the first time the readout is shown, because counting
 costs the Pi a render pass a frame. With `SPOTIFY_ROUND_FULL_SPEED` set, the same one-second line is
 also written to `/tmp/spotify-round-fps` — window fps, screen, idle, scene fps, scene ms and gpu ms
-— for measuring a kiosk whose console cannot be read over SSH.
+(-1 when no GPU source exists) — for measuring a kiosk whose console cannot be read over SSH.
 
 ### Controls
 

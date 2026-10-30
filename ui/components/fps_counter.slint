@@ -18,12 +18,18 @@ export component FpsCounter inherits Rectangle {
     border-color: Theme.hairline;
     visible: Stats.shown;
 
+    // A negative GPU time means this adapter has no timestamp queries and no
+    // V3D busy counters: say so rather than showing the display's frame period.
+    private property <string> gpu-text: Stats.scene-gpu-ms >= 0
+        ? "\{round(Stats.scene-gpu-ms * 10) / 10} ms"
+        : "—";
+
     label := Text {
         width: parent.width;
         height: parent.height;
         // The scene's own rate only means something while it is drawing.
         text: Idle.active
-            ? "\{Stats.display} fps · scene \{Stats.scene} · \{round(Stats.scene-ms * 10) / 10} ms · gpu \{round(Stats.scene-gpu-ms * 10) / 10} ms"
+            ? "\{Stats.display} fps · scene \{Stats.scene} · \{round(Stats.scene-ms * 10) / 10} ms · gpu \{root.gpu-text}"
             : "\{Stats.display} fps";
         color: Theme.ink;
         font-family: Theme.font;

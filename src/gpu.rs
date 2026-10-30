@@ -5,6 +5,7 @@
 //! and no re-upload. Slint has to be told about the device before any window
 //! exists, which is why this sits in its own module rather than inside `globe`.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,6 +32,10 @@ pub struct Graphics {
     profile_pending: Arc<AtomicBool>,
     /// The `Mark` slots, reused instead of allocating an `Arc` per frame.
     marks: Arc<Mutex<Vec<Arc<Mutex<Option<Duration>>>>>>,
+    /// The last actual GPU time from the timer-query profiler, if it is
+    /// running. On the V3D the profiler is absent; `GpuLoad` reads its busy
+    /// counters instead.
+    last_gpu_ms: Arc<Mutex<Option<f32>>>,
 }
 
 /// A point in the queue, made by [`Graphics::mark`]: set to the time the GPU
@@ -66,6 +71,7 @@ impl Graphics {
         let queue = self.queue.clone();
         let profiler = self.profiler.clone();
         let pending = self.profile_pending.clone();
+        let last_gpu_ms = self.last_gpu_ms.clone();
         self.on_ui_thread(move || {
             queue.submit(std::iter::once(commands));
             if let Some(profiler) = profiler
@@ -79,6 +85,11 @@ impl Graphics {
                 } else if let Some(frame) =
                     guard.process_finished_frame(queue.get_timestamp_period())
                 {
+                    if let Some(ms) = profile_ms(&frame) {
+                        *last_gpu_ms
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ms);
+                    }
                     log_profile(&frame);
                 }
             }
@@ -142,6 +153,18 @@ impl Graphics {
             let _ = self.device.poll(wgpu::PollType::Poll);
             std::thread::sleep(Duration::from_micros(250));
         }
+    }
+
+    /// The last Nautilus pass's GPU time in milliseconds, when timer queries
+    /// are available. The V3D has none; [`GpuLoad`] reads its engine counters.
+    pub fn gpu_ms(&self) -> Option<f32> {
+        if self.profiler.is_none() {
+            return None;
+        }
+        *self
+            .last_gpu_ms
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Whether timer-query profiling is active.
@@ -307,7 +330,88 @@ fn open(adapter: &wgpu::Adapter, label: &str, headless: bool) -> Result<Graphics
         profiler,
         profile_pending: Arc::new(AtomicBool::new(false)),
         marks: Arc::new(Mutex::new(Vec::new())),
+        last_gpu_ms: Arc::new(Mutex::new(None)),
     })
+}
+
+/// The Nautilus scope's GPU time from one finished profiler frame, in
+/// milliseconds. The visualizer opens exactly that scope, so a recursive walk
+/// finds it even if the profiler nests it.
+fn profile_ms(frame: &[wgpu_profiler::GpuTimerQueryResult]) -> Option<f32> {
+    for query in frame {
+        if query.label == "Nautilus"
+            && let Some(time) = &query.time
+        {
+            return Some(((time.end - time.start) * 1e3) as f32);
+        }
+        if let Some(ms) = profile_ms(&query.nested_queries) {
+            return Some(ms);
+        }
+    }
+    None
+}
+
+/// The Raspberry Pi's V3D busy counters, read from
+/// `/sys/class/drm/card*/device/gpu_stats`. Each engine line is
+/// `name timestamp jobs runtime`: `runtime` is cumulative busy nanoseconds.
+/// The render engine's delta over the display's reporting second, divided by
+/// the frames drawn, is the GPU time per frame on the device. Other GPUs have
+/// no such file; there [`Graphics::gpu_ms`] takes over or the display says
+/// `—`.
+pub struct GpuLoad {
+    path: Option<PathBuf>,
+    last: Option<u64>,
+}
+
+impl GpuLoad {
+    pub fn new() -> Self {
+        let path = gpu_stats_path();
+        let last = path.as_deref().and_then(read_render_runtime);
+        Self { path, last }
+    }
+
+    /// GPU milliseconds per frame over `frames` frames since the last call.
+    /// The first call only takes the baseline.
+    pub fn per_frame(&mut self, frames: u32) -> Option<f32> {
+        let now = read_render_runtime(self.path.as_deref()?)?;
+        let last = self.last.replace(now)?;
+        let delta = now.checked_sub(last)?;
+        // A counter reset or a long stall is not a frame cost.
+        if frames == 0 || delta > 5_000_000_000 {
+            return None;
+        }
+        Some(delta as f32 / 1e6 / frames as f32)
+    }
+}
+
+fn gpu_stats_path() -> Option<PathBuf> {
+    let entries = std::fs::read_dir("/sys/class/drm").ok()?;
+    entries.flatten().find_map(|entry| {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with("card") {
+            return None;
+        }
+        let path = entry.path().join("device/gpu_stats");
+        path.is_file().then_some(path)
+    })
+}
+
+fn read_render_runtime(path: &std::path::Path) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    render_runtime(&text)
+}
+
+fn render_runtime(text: &str) -> Option<u64> {
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("render") {
+            continue;
+        }
+        fields.next()?; // timestamp
+        fields.next()?; // jobs
+        return fields.next()?.parse().ok();
+    }
+    None
 }
 
 /// Log the slowest scopes of one finished profiler frame.
@@ -376,4 +480,32 @@ pub(crate) fn read_texture(gpu: &Graphics, texture: &wgpu::Texture, size: u32) -
     }
     buffer.unmap();
     pixels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_v3d_counter_parser_reads_the_render_engine() {
+        let text = "queue\ttimestamp\tjobs\truntime\n\
+                    bin\t96819875704297\t25518675\t7578612819218\n\
+                    render\t96819875704297\t25518675\t50863620570058\n\
+                    tfu\t96819875704297\t31475491\t8148262068943\n";
+        assert_eq!(render_runtime(text), Some(50_863_620_570_058));
+        assert_eq!(render_runtime("no counters here\n"), None);
+    }
+
+    #[test]
+    fn the_profiler_finds_the_nautilus_scope() {
+        let time = 0.001..0.010;
+        let frame = vec![wgpu_profiler::GpuTimerQueryResult {
+            label: "Nautilus".into(),
+            pid: 1,
+            tid: std::thread::current().id(),
+            time: Some(time),
+            nested_queries: Vec::new(),
+        }];
+        assert!((profile_ms(&frame).unwrap() - 9.0).abs() < 1e-3);
+    }
 }

@@ -122,9 +122,10 @@ export global Stats {
     // its thread spent building and submitting each, in milliseconds.
     in-out property <int> scene: 0;
     in-out property <float> scene-ms: 0;
-    // How long each of those frames took on the GPU, from its submission until
-    // it was done, in milliseconds.
-    in-out property <float> scene-gpu-ms: 0;
+    // GPU milliseconds per frame, from the V3D's busy counters on the Pi or
+    // from timer queries where the adapter has them; negative when no source
+    // exists, and the readout shows `—`.
+    in-out property <float> scene-gpu-ms: -1;
 }
 
 export global App {
