@@ -29,8 +29,14 @@ worktree at 5fed499 and `deploy/build-for-pi.sh --tests` if it has gone.
 
 ## Second pass (5b49068)
 
-The tables above are for the merge at `653f3f1`. The cave-nook and city-type
-pass at `5b49068` has **not** been measured. Rebuild from `.worktrees/finish`,
-copy the binary to the Pi as `/tmp/srt-finish2`, and run the same commands;
-`/tmp/srt-5fed499` is still the baseline. Report the city and cave legs in
-particular, and keep the raw CSV here.
+Measured by Claude on 2026-10-30, kiosk frozen, seeds 0 and 500000, 8
+frames, two back-to-back runs of each binary (`hotspots2-*.csv`), averaged:
+
+- Median place: **9.82 ms** at 5fed499, **9.63 ms** at 5b49068.
+- Slowest place: 14.71 ms (forest) at 5fed499, 12.74 ms (coral) at 5b49068.
+- The city leg: 8.89 ms mean, 10.85 ms worst place. Cave 9.94 → 9.78,
+  coral 11.42 → 10.83, bloom 9.36 → 8.03; brine (+0.66), trench (+0.48) and
+  arctic (+0.45) are a little dearer. Every place is inside the 16.6 ms budget.
+
+The path changes where each place's camera stands, so per-place numbers
+compare the same moments of the voyage rather than the same views.
