@@ -61,8 +61,9 @@ pub struct Point {
 
 /// The surface texture each biome's floor wears, as `surface_of` in
 /// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt, then sand,
-/// silt, basalt, salt (the ice layer's crystalline tone) and ooze (silt).
-const LAYERS: [usize; 13] = [12, 12, 13, 12, 10, 13, 12, 13, 12, 13, 10, 11, 13];
+/// silt, basalt, salt (the ice layer's crystalline tone), ooze (silt) and the
+/// drowned city's silted paving.
+const LAYERS: [usize; 14] = [12, 12, 13, 12, 10, 13, 12, 13, 12, 13, 10, 11, 13, 13];
 /// Biome ids, as the shader's constants.
 const SHALLOWS: usize = 0;
 const FOREST: usize = 1;
@@ -77,6 +78,7 @@ const SARGASSO: usize = 9;
 const VENTS: usize = 10;
 const BRINE: usize = 11;
 const BLOOM: usize = 12;
+const CITY: usize = 13;
 
 /// `smoothstep` as the shader writes it.
 fn smooth01(a: f32, b: f32, v: f32) -> f32 {
@@ -242,13 +244,23 @@ fn shade(
         tint[1] += bloom * (0.02 * ooze + 0.01 * (broad - 0.5));
         tint[2] += bloom * (0.04 * ooze + 0.02 * (broad - 0.5));
     }
+    let city = presence(CITY);
+    if city > 0.0 {
+        // Silt over the paving, rust running out from the towers' feet and
+        // a green bloom of weed in the hollows.
+        let rust = smooth01(0.60, 0.86, broad);
+        noise += city * (0.06 * (grain - 0.5) - 0.04);
+        tint[0] += city * (0.10 * rust - 0.02 * (broad - 0.5));
+        tint[1] += city * (0.03 * rust + 0.03 * (broad - 0.5));
+        tint[2] -= city * 0.03 * rust;
+    }
     let sand = shallows + 0.55 * forest + 0.35 * wrecks + 0.6 * arctic + 0.75 * coral;
     if sand > 0.0 {
         // Ripples in patches, so the sand does not corrugate as one sheet.
         let r = ((x * 0.8 + z) * 26.0 + world::vnoise(x * 3.0, z * 3.0, 5) * 4.0).sin();
         ripple = 0.16 * sand * (0.5 + 0.5 * broad) * smooth01(0.3, 1.0, r);
     }
-    let paving = presence(ATLANTIS) + 0.55 * presence(BRINE);
+    let paving = presence(ATLANTIS) + 0.55 * presence(BRINE) + 0.7 * city;
     let mut pave = if paving > 0.0 {
         let frac = |v: f32| v - v.floor();
         let row = (z * 4.0).floor();
@@ -307,7 +319,8 @@ fn shade(
         + presence(TRENCH)
         + presence(CORAL)
         + presence(VENTS)
-        + 0.7 * presence(BRINE);
+        + 0.7 * presence(BRINE)
+        + city;
     let cavity = cavity * (0.10 + 0.10 * hard);
     let colour = [
         base[0] * (1.0 + tint[0]) * (1.0 + cavity),

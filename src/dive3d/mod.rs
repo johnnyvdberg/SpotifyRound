@@ -145,7 +145,7 @@ fn caustic_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture 
 /// Resolution of one face of the sky cubemap.
 const SKY_RES: u32 = 96;
 /// One cubemap per biome, in biome-id order.
-const SKY_LAYERS: u32 = 6 * 13;
+const SKY_LAYERS: u32 = 6 * crate::voyage::BIOMES as u32;
 
 fn smooth01(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
@@ -158,7 +158,7 @@ fn smooth01(a: f32, b: f32, v: f32) -> f32 {
 /// procedural sky cost the Pi most of a frame in the arctic.
 fn sky_cube_texels() -> Vec<u8> {
     // Zenith, horizon, cloudiness, cloud tint and sun tint, by biome id.
-    const ZENITH: [[f32; 3]; 13] = [
+    const ZENITH: [[f32; 3]; crate::voyage::BIOMES] = [
         [0.07, 0.34, 0.62],
         [0.06, 0.25, 0.30],
         [0.10, 0.13, 0.14],
@@ -172,8 +172,11 @@ fn sky_cube_texels() -> Vec<u8> {
         [0.020, 0.012, 0.010],
         [0.28, 0.36, 0.42],
         [0.020, 0.030, 0.080],
+        // The drowned city is too deep for a sky; its cube is the water's
+        // own teal-green, in case a border ever samples it.
+        [0.010, 0.045, 0.040],
     ];
-    const HORIZON: [[f32; 3]; 13] = [
+    const HORIZON: [[f32; 3]; crate::voyage::BIOMES] = [
         [0.46, 0.80, 0.92],
         [0.32, 0.62, 0.56],
         [0.34, 0.40, 0.38],
@@ -187,11 +190,12 @@ fn sky_cube_texels() -> Vec<u8> {
         [0.10, 0.04, 0.02],
         [0.74, 0.82, 0.86],
         [0.06, 0.08, 0.17],
+        [0.040, 0.120, 0.100],
     ];
-    const CLOUDINESS: [f32; 13] = [
-        0.65, 0.35, 0.80, 0.20, 0.0, 0.0, 0.35, 0.10, 0.55, 0.72, 0.0, 0.60, 0.0,
+    const CLOUDINESS: [f32; crate::voyage::BIOMES] = [
+        0.65, 0.35, 0.80, 0.20, 0.0, 0.0, 0.35, 0.10, 0.55, 0.72, 0.0, 0.60, 0.0, 0.0,
     ];
-    const CLOUD_TINT: [[f32; 3]; 13] = [
+    const CLOUD_TINT: [[f32; 3]; crate::voyage::BIOMES] = [
         [0.98, 0.98, 0.96],
         [0.82, 0.90, 0.82],
         [0.58, 0.62, 0.64],
@@ -205,8 +209,9 @@ fn sky_cube_texels() -> Vec<u8> {
         [0.0; 3],
         [0.94, 0.94, 0.92],
         [0.0; 3],
+        [0.0; 3],
     ];
-    const SUN_TINT: [[f32; 3]; 13] = [
+    const SUN_TINT: [[f32; 3]; crate::voyage::BIOMES] = [
         [1.0, 0.96, 0.82],
         [1.0, 0.92, 0.68],
         [0.72, 0.74, 0.70],
@@ -219,6 +224,7 @@ fn sky_cube_texels() -> Vec<u8> {
         [1.0, 0.68, 0.26],
         [0.0; 3],
         [1.0, 0.94, 0.82],
+        [0.0; 3],
         [0.0; 3],
     ];
     let sun = {
@@ -244,7 +250,7 @@ fn sky_cube_texels() -> Vec<u8> {
                 };
                 let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
                 dir = [dir[0] / l, dir[1] / l, dir[2] / l];
-                for biome in 0..13usize {
+                for biome in 0..crate::voyage::BIOMES {
                     let up = dir[1].clamp(0.0, 1.0);
                     let mut c = [0.0f32; 3];
                     for k in 0..3 {
@@ -454,13 +460,14 @@ pub(crate) struct Nautilus {
 /// `scene.wesl`: plain first, then those of [`world::material`]. Anything else
 /// is drawn by the last, -1, which reads the material per instance. Each has a
 /// second pipeline for models that stand on the seabed (`GROUNDED`).
-const MATERIALS: [i32; 7] = [
+const MATERIALS: [i32; 8] = [
     0,
     world::material::LAVA as i32,
     world::material::COPPER as i32,
     world::material::VAULT as i32,
     world::material::ICE as i32,
     world::material::GOLD as i32,
+    world::material::CITY as i32,
     -1,
 ];
 
@@ -672,8 +679,15 @@ mod effect {
     pub const TREES: u64 = 1 << 37;
     /// `Vent`: hydrothermal chimneys and the far volcano.
     pub const VENTS: u64 = 1 << 38;
+    /// `Tower` and `Rotunda`: the drowned city's towers, near and far.
+    pub const TOWERS: u64 = 1 << 39;
+    /// `Dome` and `Walkway`: the city's lit glass.
+    pub const CITY_GLASS: u64 = 1 << 40;
+    /// `Pipework` and `Sign`: the city's pipes and neon signs.
+    pub const CITY_WORKS: u64 = 1 << 41;
 
-    pub const MODEL_BITS: u64 = ((1 << 31) - 1) | CORALS | SARGASSUM | TREES | VENTS;
+    pub const MODEL_BITS: u64 =
+        ((1 << 31) - 1) | CORALS | SARGASSUM | TREES | VENTS | TOWERS | CITY_GLASS | CITY_WORKS;
     pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
     pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
 
@@ -761,6 +775,24 @@ mod effect {
             "Vent",
             "hydrothermal chimneys, the far volcano",
         ),
+        (
+            "towers",
+            TOWERS,
+            "Tower, Rotunda",
+            "the drowned city's square and round towers",
+        ),
+        (
+            "city glass",
+            CITY_GLASS,
+            "Dome, Walkway",
+            "the drowned city's domes and glass walkways",
+        ),
+        (
+            "city works",
+            CITY_WORKS,
+            "Pipework, Sign",
+            "the drowned city's pipes and neon signs",
+        ),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
         ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
         (
@@ -839,6 +871,9 @@ fn model_bit(model: usize) -> u64 {
         Model::Keel => effect::ICE_KEELS,
         Model::Submarine | Model::Screw => effect::SUBMARINE,
         Model::Capsule => effect::CAPSULES,
+        Model::Tower | Model::Rotunda => effect::TOWERS,
+        Model::Dome | Model::Walkway => effect::CITY_GLASS,
+        Model::Pipework | Model::Sign => effect::CITY_WORKS,
     }
 }
 
@@ -2629,13 +2664,15 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     };
     // Each new sea colours the water its own way: the coral garden clear and
     // warm, the sargasso golden and thick, the vents nearly black, the brine
-    // flats pale and milky, the bloom a deep indigo.
+    // flats pale and milky, the bloom a deep indigo, the drowned city a
+    // dim teal-green.
     let cast = |c: [f32; 3]| {
         let c = mix3(c, [0.10, 0.30, 0.28], share(world::CORAL) * 0.35);
         let c = mix3(c, [0.18, 0.16, 0.055], share(world::SARGASSO) * 0.45);
         let c = mix3(c, [0.030, 0.022, 0.018], share(world::VENTS) * 0.55);
         let c = mix3(c, [0.17, 0.26, 0.25], share(world::BRINE) * 0.40);
         let c = mix3(c, [0.035, 0.045, 0.13], share(world::BLOOM) * 0.55);
+        let c = mix3(c, [0.030, 0.105, 0.085], share(world::CITY) * 0.60);
         let c = mix3(c, [0.05, 0.22, 0.32], arctic * 0.75);
         mix3(c, [0.030, 0.012, 0.010], cave * 0.85)
     };
@@ -2643,17 +2680,20 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     let deep = cast(water_tone((depth + 0.30).min(1.1)));
     // The new seas' own tone, over the depth ramp: clear turquoise over the
     // reef, gold under the weed, soot at the vents, milk over the brine and
-    // indigo in the bloom.
+    // indigo in the bloom, and in the drowned city a teal-green warmed a
+    // little by the lights of its towers.
     let water = mix3(water, [0.055, 0.38, 0.40], share(world::CORAL) * 0.55);
     let water = mix3(water, [0.40, 0.34, 0.10], share(world::SARGASSO) * 0.60);
     let water = mix3(water, [0.025, 0.030, 0.032], share(world::VENTS) * 0.75);
     let water = mix3(water, [0.18, 0.31, 0.31], share(world::BRINE) * 0.60);
     let water = mix3(water, [0.030, 0.055, 0.13], share(world::BLOOM) * 0.70);
+    let water = mix3(water, [0.070, 0.190, 0.150], share(world::CITY) * 0.75);
     let deep = mix3(deep, [0.012, 0.10, 0.14], share(world::CORAL) * 0.55);
     let deep = mix3(deep, [0.14, 0.13, 0.05], share(world::SARGASSO) * 0.60);
     let deep = mix3(deep, [0.005, 0.006, 0.008], share(world::VENTS) * 0.65);
     let deep = mix3(deep, [0.060, 0.130, 0.150], share(world::BRINE) * 0.55);
     let deep = mix3(deep, [0.004, 0.010, 0.040], share(world::BLOOM) * 0.65);
+    let deep = mix3(deep, [0.010, 0.040, 0.034], share(world::CITY) * 0.70);
     // Over the trench the water is clear, and daylight reaches its walls;
     // the coral garden catches a little more sun, the vents almost none.
     let sun = (-depth * 4.3).exp()
@@ -2661,7 +2701,8 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         * (1.0 + 1.8 * share(world::TRENCH))
         * (1.0 + 0.55 * share(world::CORAL))
         * (1.0 + 0.50 * share(world::SARGASSO))
-        * (1.0 - 0.55 * share(world::VENTS));
+        * (1.0 - 0.55 * share(world::VENTS))
+        * (1.0 - 0.60 * share(world::CITY));
     let lamp = 0.22 + 0.95 * soft(0.12, 0.70, depth);
     let [right, up, out] = pose.basis;
     let in_boat = |v: [f32; 3]| {
@@ -2698,15 +2739,17 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         (-(below - 1.0) * 0.07).exp(),
     ];
     // The trench's water is clear, so its far wall shows across the gulf;
-    // the sargasso's weed and the vents' plumes thicken it.
+    // the sargasso's weed and the vents' plumes thicken it. The drowned
+    // city's water is clear enough that its towers stand as silhouettes
+    // across the avenue and their windows show from much further.
     let haze = blend([
-        0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11, 0.13, 0.18, 0.24, 0.14, 0.27,
+        0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11, 0.13, 0.18, 0.24, 0.14, 0.27, 0.09,
     ]);
     // How much this sea has a sky the water can open on to: the shallow seas
     // can through Snell's window, the polar ice through its leads; the cave,
-    // the deep and the bloom cannot.
+    // the deep, the bloom and the drowned city cannot.
     let sky = blend([
-        1.0, 0.75, 0.60, 0.18, 0.0, 0.0, 0.65, 0.45, 1.0, 1.0, 0.0, 0.85, 0.0,
+        1.0, 0.75, 0.60, 0.18, 0.0, 0.0, 0.65, 0.45, 1.0, 1.0, 0.0, 0.85, 0.0, 0.0,
     ]);
 
     // The lights that matter most: nearest what the window looks at, a
@@ -2744,7 +2787,8 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         water: [water[0], water[1], water[2], haze],
         deep: [deep[0], deep[1], deep[2], pose.depth as f32],
         lamp: [lamp_dir[0], lamp_dir[1], lamp_dir[2], lamp],
-        levels: [w.surface(), w.vault(), w.ice(), 0.0],
+        // The drowned city's glow in the water, low along the horizon.
+        levels: [w.surface(), w.vault(), w.ice(), share(world::CITY)],
         world: [
             w.seabed.seed,
             share(world::ATLANTIS) + 1.8 * cave,
@@ -2884,7 +2928,7 @@ mod tests {
             .unwrap_or(0);
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom",
+            "coral", "sargasso", "vents", "brine", "bloom", "city",
         ];
         let offsets: Vec<f64> = std::env::var("DIVE3D_PREVIEW_OFFSETS")
             .ok()
@@ -3504,7 +3548,7 @@ mod tests {
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom",
+            "coral", "sargasso", "vents", "brine", "bloom", "city",
         ];
         let frames = 60;
         let mut total = 0.0;
@@ -3583,7 +3627,7 @@ mod tests {
             .unwrap_or(6usize);
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom",
+            "coral", "sargasso", "vents", "brine", "bloom", "city",
         ];
         let span = crate::voyage::LEG / crate::voyage::SPEED;
         let mut rows = Vec::new();
