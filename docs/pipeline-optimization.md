@@ -2608,3 +2608,40 @@ That is the next thing to attack if the counts grow: write instances straight
 into the staging buffer with fewer per-instance branches, rather than
 per-model `Vec`s that are copied again. It is a larger change than the
 branches taken so far and is not attempted here.
+
+## 68. KMS: build fixed, LinuxKMS backend does not carry the dive texture
+
+The `kms` feature (`slint/backend-linuxkms`, no compositor) did not compile:
+the linuxkms backend links `libgbm`/`libdrm`, and `deploy/pi-build/Dockerfile`
+did not install `libgbm-dev`/`libdrm-dev`. Fixed; the feature now builds
+(both the default Skia renderer and the FemtoVG-wgpu renderer).
+
+Tested on the Pi as a systemd unit with the same PAM seat and tty7 as cage:
+
+- The backend **runs**: the process opens the DRM, allocates udmabuf/memfd
+  scanout buffers and input devices, and sleeps in `drm_read` (its event
+  loop). The Slint UI draws — the fps/scene/gpu overlay is visible.
+- The **dive is blank**. The dive is a wgpu texture imported with
+  `slint::Image::try_from(wgpu::Texture)`; the linuxkms Skia adapter falls
+  back to its software path (`Could not initialize software display`; DRM
+  dumb buffers `Permission denied`; legacy fb and `/dev/fb0` `EBUSY`), and
+  the FemtoVG-wgpu adapter fails to open `/dev/dri/renderD128`
+  (`Resource temporarily unavailable` — the app's own wgpu device already
+  holds it). Neither adapter samples the imported wgpu texture.
+- So the linuxkms backend does not share the app's wgpu device; the
+  `WGPUConfiguration::Manual` handoff that makes the dive visible under cage
+  is not honored there.
+
+The `vc4-kms-v3d` overlay is set correctly (`/boot/firmware/config.txt:26`,
+with `disable_fw_kms_setup=1`); the display is `card1` → `vc4-drm`
+(HDMI-A-1/2, Writeback), the render node is `card0` → `v3d` +
+`renderD128`. `dtoverlay -l` lists only dynamic overlays, so its "No overlays
+loaded" is not evidence against the boot overlay.
+
+Restored the cage kiosk (dive visible, 61 fps). Removed the leftover
+`SPOTIFY_ROUND_FULL_SPEED=1` drop-in now that sudo works.
+
+A real KMS overlay needs the dive exported from the app's wgpu device as a
+dma-buf and scanned out on a DRM plane, with the UI on an overlay plane —
+the app's own presentation code, not Slint's linuxkms backend. That is a new
+feature, not a renderer flag.

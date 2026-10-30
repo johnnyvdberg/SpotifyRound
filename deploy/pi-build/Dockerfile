@@ -6,7 +6,7 @@ FROM debian:trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl pkg-config \
         libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libwayland-dev \
-        libegl1-mesa-dev libgl1-mesa-dev \
+        libegl1-mesa-dev libgl1-mesa-dev libgbm-dev libdrm-dev \
         libseat-dev libinput-dev libudev-dev \
     && rm -rf /var/lib/apt/lists/*
 
