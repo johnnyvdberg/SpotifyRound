@@ -172,7 +172,12 @@ pub fn ice_bake(w: &World, origin: [f32; 2], size: f32, res: u32) -> Vec<u8> {
             let z = origin[1] + v * size;
             let coverage = smooth(0.35, 0.65, w.share(x, z, ARCTIC));
             let floes = vnoise(x * 0.9, z * 1.3, 14);
-            let lead = 1.0 - smooth(0.02, 0.06, (vnoise(x * 0.35 + 3.0, z * 0.08, 15) - 0.5).abs());
+            let lead = 1.0
+                - smooth(
+                    0.02,
+                    0.06,
+                    (vnoise(x * 0.35 + 3.0, z * 0.08, 15) - 0.5).abs(),
+                );
             let bumps = vnoise(x * 6.0, z * 6.0, 16);
             let k = ((j * res + i) * 4) as usize;
             out[k] = q(floes);
@@ -259,13 +264,89 @@ pub fn trench_profile(x: f32, across: f32) -> f32 {
     let cut = smooth(0.55, 0.95, (x * 1.9 + 1.4 * (x * 0.61).sin()).sin());
     let gully =
         cut * (0.2 + 0.35 * smooth(-1.2, 1.6, u)) * smooth(-2.0, -1.2, u) * smooth(2.8, 2.2, u);
-    up + back - down - gully
+    // Ledged strata down the walls: small shelves that follow the terraces
+    // rather than straight lines. Nothing on the rim the boat sails along.
+    let strata = 2.0 * smooth(-0.3, 0.3, (u * 9.0 + 0.8 * (x * 0.7).sin()).sin()) - 1.0;
+    let ledge = 0.12 * strata * smooth(1.2, 1.6, u) * (1.0 - smooth(6.8, 7.4, u));
+    up + back - down - gully + ledge
 }
 
 /// How far the trench's terraces wander to port of their line at `x`, so
 /// their edges never run straight.
 pub fn trench_wander(x: f32) -> f32 {
     0.25 * (x * 0.29 + 1.0).sin() + 0.12 * (x * 0.83).sin()
+}
+
+/// The shape each biome gives its own floor, over the shared heightmap: the
+/// same function as `biome_shape` in `scene.wesl`. `across` is signed distance
+/// from the corridor (positive to port), `h` the heightmap's height and
+/// `detail` its fine grain. Every term is periodic over the heightmap's 64
+/// units, so the added shape repeats with it.
+fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 {
+    let weight = |id: usize| b.weight(id) as f32;
+    let mut shape = 0.0;
+    let shallows = weight(SHALLOWS);
+    if shallows > 0.0 {
+        // Low banks with sand waves breaking over them.
+        let banks = smooth(0.45, 0.72, 0.5 + 0.5 * detail);
+        let waves = (TAU * (x * 0.25 + z * 0.125) + 1.4 * detail).sin()
+            + 0.5 * (TAU * (x * 0.125 - z * 0.25) + 0.8 * detail).sin();
+        shape += shallows * (0.10 * h + 0.10 * banks + 0.05 * waves);
+    }
+    let forest = weight(FOREST);
+    if forest > 0.0 {
+        // A low silt flat, hummocked and pocked with the mounds roots raise.
+        let hummocks = (TAU * (x * 0.5 + z * 0.25) + 1.2 * detail).sin()
+            + 0.6 * (TAU * (x * 0.25 - z * 0.5) + 0.7 * detail).sin();
+        let mounds = smooth(0.45, 0.75, 0.5 + 0.5 * detail);
+        shape += forest * (-0.05 * h + 0.12 * hummocks + 0.25 * detail + 0.30 * mounds);
+    }
+    let wrecks = weight(WRECKS);
+    if wrecks > 0.0 {
+        // Sediment drifts running along the wreck field, with rock showing
+        // through where the drift is thin.
+        let drifts =
+            (TAU * z * 0.125 + 0.8 * detail).sin() + 0.4 * (TAU * (z * 0.375 + x * 0.0625)).sin();
+        let rocks = smooth(0.60, 0.85, 0.5 + 0.5 * detail);
+        shape += wrecks * (0.25 * h + 0.20 * drifts + 0.40 * rocks);
+    }
+    let atlantis = weight(ATLANTIS);
+    if atlantis > 0.0 {
+        // Level city terraces: broad plateaus in x and z, with soft risers
+        // between them, so the paving keeps a clear, flat floor.
+        let terrace =
+            |v: f32| 2.0 * smooth(-0.22, 0.22, (TAU * v * 0.25 + 0.25 * detail).sin()) - 1.0;
+        shape +=
+            atlantis * (-0.11 * h + 0.22 * terrace(x) + 0.18 * terrace(z * 2.0) + 0.02 * detail);
+    }
+    let cave = weight(CAVE);
+    if cave > 0.0 {
+        // Ledged basalt round the tunnel's mouths. Kept clear of the tunnel
+        // itself, so the floor the helm follows and the vault are unchanged.
+        let ledges =
+            2.0 * smooth(-0.35, 0.35, (TAU * across.abs() / 1.2 + 0.4 * detail).sin()) - 1.0;
+        let near = smooth(0.45, 0.9, across.abs());
+        shape += cave * near * (0.25 * ledges + 0.12 * detail);
+    }
+    let abyss = weight(ABYSS);
+    if abyss > 0.0 {
+        // Folded rock: sharp ridges from the grain, cut through by canyons
+        // that follow the heightmap's own contours.
+        let fold = 1.0 - 2.0 * detail.abs();
+        let canyon = 1.0 - smooth(0.0, 0.09, (h - 0.25).abs());
+        shape += abyss * (0.32 * h + 0.65 * (fold * fold - 0.35) - 0.45 * canyon);
+    }
+    let arctic = weight(ARCTIC);
+    if arctic > 0.0 {
+        // Ice-scoured and flat: long shallow grooves, not banks.
+        let scour = 1.0 - smooth(0.0, 0.22, (TAU * z * 0.5 + 0.7 * detail).sin().abs());
+        shape += arctic * (-0.10 * h + 0.06 * detail - 0.12 * scour);
+    }
+    let trench = weight(TRENCH);
+    if trench > 0.0 {
+        shape += trench * (0.05 * h + 0.08 * detail);
+    }
+    shape
 }
 
 /// Where the trench's terrace edges lie across the corridor, before they
@@ -451,16 +532,19 @@ impl Seabed {
     }
 
     /// The seabed's height at (x, z), exactly as `ground` in the shader: the
-    /// biome's depth, the heightmap's relief, a little fine roughness and the
-    /// mountains that rise in the far distance.
+    /// biome's depth, the heightmap's relief and grain, the shape each biome
+    /// gives its floor, a little fine roughness and the mountains that rise in
+    /// the far distance.
     pub fn ground(&self, x: f32, z: f32) -> f32 {
         let b = self.biome(x, z);
+        let sample = crate::dive3d::heightmap::sample(&self.map, x, z);
         let base = -Self::by_biome(&b, SEABED);
-        let relief = Self::by_biome(&b, RELIEF) * super::heightmap::sample(&self.map, x, z)[0];
+        let relief = Self::by_biome(&b, RELIEF) * sample[0];
         let rough = Self::by_biome(&b, [0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05]);
         let ridges = Self::by_biome(&b, [1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4]);
         let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2);
-        let off = (z - corridor(x)).abs();
+        let across = z - corridor(x);
+        let off = across.abs();
         let far = smooth(7.0, 22.0, off) * (0.3 + ridges * vnoise(x * 0.16, z * 0.16 + 3.0, 4));
         // The lava cave's massif, rising either side of its tunnel.
         let mut massif = b.weight(CAVE) as f32
@@ -475,11 +559,12 @@ impl Seabed {
         }
         let trench = b.weight(TRENCH) as f32;
         let trench = if trench > 0.0 {
-            trench * trench_profile(x, z - corridor(x))
+            trench * trench_profile(x, across)
         } else {
             0.0
         };
-        base + relief + rough * (n - 0.45) + far + massif + trench
+        let shape = biome_shape(&b, x, z, across, sample[0], sample[3]);
+        base + relief + shape + rough * (n - 0.45) + far + massif + trench
     }
 
     /// The openings off the lava cave's tunnel nearest `x`, if a cave is
@@ -888,15 +973,7 @@ impl Frame {
 
     /// Sediment spilling from a lip: the shader owns the fall and the fade,
     /// so the anchor is the lip and the placer stays cacheable.
-    fn mote_sprite(
-        &mut self,
-        p: [f32; 3],
-        size: f32,
-        colour: [f32; 3],
-        n: f32,
-        h: f32,
-        fall: f32,
-    ) {
+    fn mote_sprite(&mut self, p: [f32; 3], size: f32, colour: [f32; 3], n: f32, h: f32, fall: f32) {
         self.sprites.push(Sprite {
             place: [p[0], p[1], p[2], size],
             tint: [colour[0], colour[1], colour[2], MOTE],
@@ -1221,7 +1298,9 @@ impl<'a> IntoIterator for &'a Cells {
 fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
     let ([x0, x1, z0, z1], o, r) = footprint(w, near, far);
     let c = w.pose.pos;
-    let mut out = CELLS.with(|pool| pool.borrow_mut().pop()).unwrap_or_default();
+    let mut out = CELLS
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
     out.clear();
     for iz in ((z0 - size) / size).floor() as i32..=((z1 + size) / size).ceil() as i32 {
         for ix in ((x0 - size) / size).floor() as i32..=((x1 + size) / size).ceil() as i32 {
@@ -1266,15 +1345,23 @@ const CACHE_CELL: f32 = 0.2;
 /// visible cells from outside the placer; the polar has none (it follows the
 /// lane rather than the cell grid) and stays in the per-frame set.
 const PLACER_CELLS: [&[(f32, f32, f32, u32)]; 9] = [
-    &[(0.55, 0.6, 14.0, 10)],                     // rocks
-    &[(0.6, 0.8, 7.0, 40)],                       // gardens
-    &[(2.4, 1.6, 10.0, 60)],                      // wrecks
+    &[(0.55, 0.6, 14.0, 10)],                       // rocks
+    &[(0.6, 0.8, 7.0, 40)],                         // gardens
+    &[(2.4, 1.6, 10.0, 60)],                        // wrecks
     &[(0.3, 0.6, 9.0, 500), (0.4, 1.5, 10.0, 530)], // trench
-    &[(0.55, 1.0, 16.0, 70), (5.0, 6.0, 22.0, 80), (14.0, 18.0, 30.0, 90)], // ruins
-    &[(0.16, 0.5, 9.0, 100), (0.2, 0.5, 12.0, 110), (1.0, 0.5, 9.0, 120)], // cave
-    &[],                                          // polar (lane, not cells)
-    &[(KELP_CELL, 0.8, 15.0, KELP_SALT)],         // kelp
-    &[(0.75, 1.0, 17.0, 30)],                     // forest
+    &[
+        (0.55, 1.0, 16.0, 70),
+        (5.0, 6.0, 22.0, 80),
+        (14.0, 18.0, 30.0, 90),
+    ], // ruins
+    &[
+        (0.16, 0.5, 9.0, 100),
+        (0.2, 0.5, 12.0, 110),
+        (1.0, 0.5, 9.0, 120),
+    ], // cave
+    &[],                                            // polar (lane, not cells)
+    &[(KELP_CELL, 0.8, 15.0, KELP_SALT)],           // kelp
+    &[(0.75, 1.0, 17.0, 30)],                       // forest
 ];
 
 /// Build the frame.
@@ -1369,7 +1456,12 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
             cache.frame.style(skin);
             step(world, &mut cache.frame);
         }
-        for list in cache.frame.solid.iter_mut().chain(cache.frame.glass.iter_mut()) {
+        for list in cache
+            .frame
+            .solid
+            .iter_mut()
+            .chain(cache.frame.glass.iter_mut())
+        {
             for instance in list.iter_mut() {
                 let r = instance.rows;
                 if instance.extra[1] > 0.5 {
@@ -1863,8 +1955,12 @@ fn trench(w: &World, f: &mut Frame) {
                         top[1] + 0.05,
                         top[2] + a.sin() * 0.07,
                     ];
-                    f.put(Model::Cone, between(top, tip, 0.008), hue)
-                        .moving(anim::WAVE, k as f32, 0.15, 0.6);
+                    f.put(Model::Cone, between(top, tip, 0.008), hue).moving(
+                        anim::WAVE,
+                        k as f32,
+                        0.15,
+                        0.6,
+                    );
                 }
             }
         }
@@ -1918,11 +2014,7 @@ fn trench(w: &World, f: &mut Frame) {
                 let a = 0.45 * f.fade;
                 for n in 0..18 {
                     let nf = n as f32;
-                    let q = [
-                        x,
-                        p[1] - 0.05,
-                        p[2] + out * 0.15,
-                    ];
+                    let q = [x, p[1] - 0.05, p[2] + out * 0.15];
                     f.mote_sprite(q, 0.03, [0.55 * a, 0.50 * a, 0.40 * a], nf, h, fall);
                 }
             }
@@ -1952,9 +2044,23 @@ fn trench(w: &World, f: &mut Frame) {
         };
         let rate = 0.5 + hash(ix, iz, 533);
         let phase = hash(ix, iz, 534) * TAU;
-        f.glow_sprite(p, 0.025, [hue[0] * a, hue[1] * a, hue[2] * a], phase, rate, 0.0);
+        f.glow_sprite(
+            p,
+            0.025,
+            [hue[0] * a, hue[1] * a, hue[2] * a],
+            phase,
+            rate,
+            0.0,
+        );
         let halo = a * 0.12;
-        f.glow_sprite(p, 0.14, [hue[0] * halo, hue[1] * halo, hue[2] * halo], phase, rate, 0.0);
+        f.glow_sprite(
+            p,
+            0.14,
+            [hue[0] * halo, hue[1] * halo, hue[2] * halo],
+            phase,
+            rate,
+            0.0,
+        );
     }
 }
 
@@ -2370,7 +2476,14 @@ fn cave(w: &World, f: &mut Frame) {
                 y,
                 z + (hash(ix + k, iz, 124) - 0.5) * 0.6,
             ];
-            f.ember_sprite(p, 0.012, [1.0, 0.45, 0.1], hash(ix * 4 + k, iz, 122), 0.12, 1.0);
+            f.ember_sprite(
+                p,
+                0.012,
+                [1.0, 0.45, 0.1],
+                hash(ix * 4 + k, iz, 122),
+                0.12,
+                1.0,
+            );
         }
     }
 }
@@ -3187,10 +3300,7 @@ fn diver(w: &World, f: &mut Frame, feet: [f32; 3], s: f32, stride: f32, lamp: bo
     for b in 0..5 {
         let bubble = bubble(b, 5, w.t + feet[0] * 0.37, life);
         let rise = bubble.age / life;
-        let q = add(
-            exhaust,
-            [-0.05 * rise, 0.1 * s + rise * 0.35, 0.01 * rise],
-        );
+        let q = add(exhaust, [-0.05 * rise, 0.1 * s + rise * 0.35, 0.01 * rise]);
         let fade = bubble.fade * window_fade(w, q, 0.012);
         if fade > 0.001 {
             f.sprite(
@@ -3796,8 +3906,7 @@ fn polar(w: &World, f: &mut Frame) {
             // go, and the shader ages the bubble from the camera clock
             // (bubble_sprite), so the trail is camera-static and cacheable.
             let was0 = px - 0.04;
-            let y0 = top - 0.25 - hash(k, d + 6, 360) * 0.45
-                + 0.06 * (was0 * 3.5 + phase).sin();
+            let y0 = top - 0.25 - hash(k, d + 6, 360) * 0.45 + 0.06 * (was0 * 3.5 + phase).sin();
             for b in 0..5 {
                 f.bubble_sprite(
                     [was0, y0, p[2]],
@@ -3875,7 +3984,6 @@ const DIVE_RATE: f32 = -0.12;
 const CLIMB_ACCEL: f32 = 0.2;
 /// How finely her depth is stepped, in seconds, for the same reason.
 const DEPTH_STEP: f32 = 0.1;
-
 
 /// How another submarine passes the Nautilus.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3980,8 +4088,7 @@ impl Attitude {
         let turning = wrap(to[0] - from[0]);
         for i in 1..=steps {
             let part = i as f32 / steps as f32;
-            self.yaw
-                .follow(from[0] + turning * part, 0.7, YAWING, step);
+            self.yaw.follow(from[0] + turning * part, 0.7, YAWING, step);
             self.pitch
                 .follow(from[1] + (to[1] - from[1]) * part, 0.5, NODDING, step);
             // Her bank follows the turn she is making, not the path she has
@@ -4325,8 +4432,7 @@ fn submarines(w: &World, f: &mut Frame) {
         let b = 2.9 * c;
         let d = ((across - b) * (across - b) + 0.8).sqrt();
         let db = 2.9 * (cx * along + cz * (corridor_slope(x) * along + crossing));
-        let out = 0.5 * (1.0 + (across - b) / d) * crossing
-            + 0.5 * (1.0 - (across - b) / d) * db;
+        let out = 0.5 * (1.0 + (across - b) / d) * crossing + 0.5 * (1.0 - (across - b) / d) * db;
         [along, corridor_slope(x) * along + out]
     };
     let [along, across] = way(t);
@@ -4352,7 +4458,11 @@ fn submarines(w: &World, f: &mut Frame) {
     attitude.turn_to(asked, t);
     encounter.attitude = Some(attitude);
     f.encounter = Some(encounter);
-    let (yaw, pitch, roll) = (attitude.yaw.angle, attitude.pitch.angle, attitude.roll.angle);
+    let (yaw, pitch, roll) = (
+        attitude.yaw.angle,
+        attitude.pitch.angle,
+        attitude.roll.angle,
+    );
     let water_speed = (flat * flat + rate * rate).sqrt();
 
     let cave = w
@@ -4959,11 +5069,10 @@ mod tests {
                 // The moment this party's leader walks level with the boat.
                 // The window looks out on the +z side, where a party keeps
                 // when its slot falls on that side.
-                let seconds = ((f64::from(k) + 0.5) * 7.0 - start)
-                    / (crate::voyage::SPEED - 0.02);
+                let seconds = ((f64::from(k) + 0.5) * 7.0 - start) / (crate::voyage::SPEED - 0.02);
                 let x = (start + crate::voyage::SPEED * seconds) as f32;
-                let at_leg = (f64::from(x) / crate::voyage::LEG)
-                    .rem_euclid(crate::voyage::BIOMES as f64);
+                let at_leg =
+                    (f64::from(x) / crate::voyage::LEG).rem_euclid(crate::voyage::BIOMES as f64);
                 let leg_at = Biome::leg_of(leg) as f64;
                 if !(leg_at + 0.2..=leg_at + 0.7).contains(&at_leg) {
                     continue;
@@ -4973,9 +5082,7 @@ mod tests {
                     side(k, 150),
                     hash(k, 0, 150)
                 );
-                if side(k, 150) < 0.0
-                    || hash(k, 0, 150) < 0.2
-                {
+                if side(k, 150) < 0.0 || hash(k, 0, 150) < 0.2 {
                     continue;
                 }
                 let pose = Pose::level(x, seabed.ground(x, 0.6) + 0.5);
@@ -5008,9 +5115,7 @@ mod tests {
                 );
                 let visible = bodies
                     .iter()
-                    .filter(|b| {
-                        world.visible([b.rows[0][3], b.rows[1][3], b.rows[2][3]], 0.09)
-                    })
+                    .filter(|b| world.visible([b.rows[0][3], b.rows[1][3], b.rows[2][3]], 0.09))
                     .count();
                 println!(
                     "cam {:?} feet {:?} visible {visible}",
@@ -5037,8 +5142,8 @@ mod tests {
         let mut voyage = Voyage::default();
         let mut helm = super::super::helm::Helm::default();
         for (leg, name) in [(FOREST, "forest"), (ATLANTIS, "atlantis")] {
-            let start = crate::voyage::LEG / crate::voyage::SPEED
-                * (Biome::leg_of(leg) as f64 + 0.1);
+            let start =
+                crate::voyage::LEG / crate::voyage::SPEED * (Biome::leg_of(leg) as f64 + 0.1);
             let span = crate::voyage::LEG / crate::voyage::SPEED * 0.8;
             let (mut parties, mut visible) = (0, 0);
             for i in 0..60 {
@@ -5060,27 +5165,19 @@ mod tests {
                 let here = bodies
                     .iter()
                     .filter(|b| {
-                        world.visible(
-                            [b.rows[0][3], b.rows[1][3] + 0.08, b.rows[2][3]],
-                            0.10,
-                        )
+                        world.visible([b.rows[0][3], b.rows[1][3] + 0.08, b.rows[2][3]], 0.10)
                     })
                     .count();
                 if here > 0 {
                     visible += 1;
                 }
                 if i == 0 {
-                    println!(
-                        "pose {:?} basis {:?}",
-                        world.pose.pos, world.pose.basis
-                    );
+                    println!("pose {:?} basis {:?}", world.pose.pos, world.pose.basis);
                     for b in bodies {
                         println!(
                             "body {:?} d {:?}",
                             [b.rows[0][3], b.rows[1][3], b.rows[2][3]],
-                            [0, 1, 2].map(|k| {
-                                b.rows[k][3] - world.pose.pos[k]
-                            })
+                            [0, 1, 2].map(|k| { b.rows[k][3] - world.pose.pos[k] })
                         );
                     }
                 }
@@ -5096,109 +5193,109 @@ mod tests {
         }
     }
 
-        /// No fish is ever drawn with its body in the seabed, however the school
-        /// straddles a rise in it or bends as it turns.
-        #[test]
-        fn fish_keep_off_the_seabed() {
-            let mut seen = 0;
-            for visit in [0u64, 500_000] {
-                let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
-                let seabed = Seabed::new(visit, seed);
-                let mut voyage = Voyage::default();
-                let mut helm = super::super::helm::Helm::default();
-                let mut frame = Frame::new();
-                for i in 0..600 {
-                    let seconds = 5.0 + i as f64 * 3.0;
-                    let at = voyage.advance(seconds, seed);
-                    let pose = helm.steer(&seabed, at, seconds);
-                    let world = World {
-                        seabed: &seabed,
-                        pose,
-                        t: seconds as f32,
-                    };
-                    frame.clear();
-                    shoals(&world, &mut frame);
-                    for fish in &frame.solid[Model::Fish.index()] {
-                        let rows = fish.rows;
-                        let p = [rows[0][3], rows[1][3], rows[2][3]];
-                        let scale = (rows[1][0].powi(2) + rows[1][1].powi(2) + rows[1][2].powi(2))
-                            .sqrt();
-                        // The fish's body reaches about 0.40 of its length below
-                        // its centre, a little more as it noses up or down.
-                        let bottom = p[1] - 0.45 * scale;
-                        let ground = seabed.ground(p[0], p[2]);
-                        assert!(
-                            bottom >= ground - 1e-3,
-                            "a fish {:.3} into the seabed at {seconds:.1} s",
-                            ground - bottom
-                        );
-                        seen += 1;
-                    }
-                }
-            }
-            assert!(seen > 1000, "only {seen} fish in view");
-        }
-
-        /// A sister never passes through a kelp stalk: where a bed stands in her
-        /// way she rises over it, and the drawn hull keeps clear of every blade.
-        #[test]
-        fn sisters_keep_clear_of_the_kelp() {
-            let mut seen = 0;
-            let mut blades = 0;
-            for visit in [0u64, 500_000] {
-                let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
-                let seabed = Seabed::new(visit, seed);
-                let mut voyage = Voyage::default();
-                let mut helm = super::super::helm::Helm::default();
-                let mut frame = Frame::new();
-                for i in 0..1800 {
-                    let seconds = 5.0 + i as f64;
-                    let at = voyage.advance(seconds, seed);
-                    let pose = helm.steer(&seabed, at, seconds);
-                    let world = World {
-                        seabed: &seabed,
-                        pose,
-                        t: seconds as f32,
-                    };
-                    build(&world, &mut frame, &mut StaticCache::default());
-                    let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
-                        continue;
-                    };
-                    seen += 1;
-                    let rows = hull.rows;
-                    let turn = rows.map(|row| [row[0], row[1], row[2]].map(|v| v / SUB_LENGTH));
+    /// No fish is ever drawn with its body in the seabed, however the school
+    /// straddles a rise in it or bends as it turns.
+    #[test]
+    fn fish_keep_off_the_seabed() {
+        let mut seen = 0;
+        for visit in [0u64, 500_000] {
+            let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
+            let seabed = Seabed::new(visit, seed);
+            let mut voyage = Voyage::default();
+            let mut helm = super::super::helm::Helm::default();
+            let mut frame = Frame::new();
+            for i in 0..600 {
+                let seconds = 5.0 + i as f64 * 3.0;
+                let at = voyage.advance(seconds, seed);
+                let pose = helm.steer(&seabed, at, seconds);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: seconds as f32,
+                };
+                frame.clear();
+                shoals(&world, &mut frame);
+                for fish in &frame.solid[Model::Fish.index()] {
+                    let rows = fish.rows;
                     let p = [rows[0][3], rows[1][3], rows[2][3]];
-                    let to_local = |q: [f32; 3]| {
-                        let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
-                        [0, 1, 2].map(|c| turn[0][c] * d[0] + turn[1][c] * d[1] + turn[2][c] * d[2])
-                    };
-                    for plant in &frame.solid[Model::Kelp.index()] {
-                        if plant.extra[2] < 0.05 {
-                            continue;
-                        }
-                        blades += 1;
-                        let base = [plant.rows[0][3], plant.rows[1][3], plant.rows[2][3]];
-                        let tall = (plant.rows[1][0].powi(2)
-                            + plant.rows[1][1].powi(2)
-                            + plant.rows[1][2].powi(2))
-                        .sqrt();
-                        for k in 0..=10 {
-                            let q = [base[0], base[1] + tall * k as f32 / 10.0, base[2]];
-                            let local = to_local(q);
-                            let across = local[1].hypot(local[2]);
-                            assert!(
-                                local[0].abs() > 0.5 || across > 0.1,
-                                "a sister passes through kelp at {seconds:.1} s: \
+                    let scale =
+                        (rows[1][0].powi(2) + rows[1][1].powi(2) + rows[1][2].powi(2)).sqrt();
+                    // The fish's body reaches about 0.40 of its length below
+                    // its centre, a little more as it noses up or down.
+                    let bottom = p[1] - 0.45 * scale;
+                    let ground = seabed.ground(p[0], p[2]);
+                    assert!(
+                        bottom >= ground - 1e-3,
+                        "a fish {:.3} into the seabed at {seconds:.1} s",
+                        ground - bottom
+                    );
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 1000, "only {seen} fish in view");
+    }
+
+    /// A sister never passes through a kelp stalk: where a bed stands in her
+    /// way she rises over it, and the drawn hull keeps clear of every blade.
+    #[test]
+    fn sisters_keep_clear_of_the_kelp() {
+        let mut seen = 0;
+        let mut blades = 0;
+        for visit in [0u64, 500_000] {
+            let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
+            let seabed = Seabed::new(visit, seed);
+            let mut voyage = Voyage::default();
+            let mut helm = super::super::helm::Helm::default();
+            let mut frame = Frame::new();
+            for i in 0..1800 {
+                let seconds = 5.0 + i as f64;
+                let at = voyage.advance(seconds, seed);
+                let pose = helm.steer(&seabed, at, seconds);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: seconds as f32,
+                };
+                build(&world, &mut frame, &mut StaticCache::default());
+                let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
+                    continue;
+                };
+                seen += 1;
+                let rows = hull.rows;
+                let turn = rows.map(|row| [row[0], row[1], row[2]].map(|v| v / SUB_LENGTH));
+                let p = [rows[0][3], rows[1][3], rows[2][3]];
+                let to_local = |q: [f32; 3]| {
+                    let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+                    [0, 1, 2].map(|c| turn[0][c] * d[0] + turn[1][c] * d[1] + turn[2][c] * d[2])
+                };
+                for plant in &frame.solid[Model::Kelp.index()] {
+                    if plant.extra[2] < 0.05 {
+                        continue;
+                    }
+                    blades += 1;
+                    let base = [plant.rows[0][3], plant.rows[1][3], plant.rows[2][3]];
+                    let tall = (plant.rows[1][0].powi(2)
+                        + plant.rows[1][1].powi(2)
+                        + plant.rows[1][2].powi(2))
+                    .sqrt();
+                    for k in 0..=10 {
+                        let q = [base[0], base[1] + tall * k as f32 / 10.0, base[2]];
+                        let local = to_local(q);
+                        let across = local[1].hypot(local[2]);
+                        assert!(
+                            local[0].abs() > 0.5 || across > 0.1,
+                            "a sister passes through kelp at {seconds:.1} s: \
                                  {across:.3} across at {:.2} along",
-                                local[0]
-                            );
-                        }
+                            local[0]
+                        );
                     }
                 }
             }
-            assert!(seen > 100, "only {seen} frames with a sister in view");
-            assert!(blades > 100, "only {blades} kelp blades in view with one");
         }
+        assert!(seen > 100, "only {seen} frames with a sister in view");
+        assert!(blades > 100, "only {blades} kelp blades in view with one");
+    }
 
     /// Bubbles never pop in or out of view. Over a few seconds of the divers'
     /// helmet trails, a flight of penguins' flipper trails and a submarine's
@@ -5273,8 +5370,121 @@ mod tests {
                 }
                 last = now.into_iter().map(|(p, _)| p).collect();
             }
-            assert!(seen > 100, "{name}: only {seen} bubbles in the whole sample");
+            assert!(
+                seen > 100,
+                "{name}: only {seen} bubbles in the whole sample"
+            );
             assert_eq!(pops, 0, "{name}: {pops} bubbles popped, worst {worst:.3}");
+        }
+    }
+
+    /// The biome profiles are the same function in Rust and in `scene.wesl`.
+    /// This is the shader's `biome_shape`, term for term; the two are held
+    /// together over a grid of every biome pair, and the shape is periodic
+    /// over the heightmap's 64 units so the added relief wraps with it.
+    #[test]
+    fn the_biome_shapes_match_the_shader_and_wrap() {
+        use std::f32::consts::TAU;
+        fn shader_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 {
+            let presence = |id: usize| b.weight(id) as f32;
+            let mut shape = 0.0;
+            let shallows = presence(SHALLOWS);
+            if shallows > 0.0 {
+                let banks = smooth(0.45, 0.72, 0.5 + 0.5 * detail);
+                let waves = (TAU * (x * 0.25 + z * 0.125) + 1.4 * detail).sin()
+                    + 0.5 * (TAU * (x * 0.125 - z * 0.25) + 0.8 * detail).sin();
+                shape += shallows * (0.10 * h + 0.10 * banks + 0.05 * waves);
+            }
+            let forest = presence(FOREST);
+            if forest > 0.0 {
+                let hummocks = (TAU * (x * 0.5 + z * 0.25) + 1.2 * detail).sin()
+                    + 0.6 * (TAU * (x * 0.25 - z * 0.5) + 0.7 * detail).sin();
+                let mounds = smooth(0.45, 0.75, 0.5 + 0.5 * detail);
+                shape += forest * (-0.05 * h + 0.12 * hummocks + 0.25 * detail + 0.30 * mounds);
+            }
+            let wrecks = presence(WRECKS);
+            if wrecks > 0.0 {
+                let drifts = (TAU * z * 0.125 + 0.8 * detail).sin()
+                    + 0.4 * (TAU * (z * 0.375 + x * 0.0625)).sin();
+                let rocks = smooth(0.60, 0.85, 0.5 + 0.5 * detail);
+                shape += wrecks * (0.25 * h + 0.20 * drifts + 0.40 * rocks);
+            }
+            let atlantis = presence(ATLANTIS);
+            if atlantis > 0.0 {
+                let terrace = |v: f32| {
+                    2.0 * smooth(-0.22, 0.22, (TAU * v * 0.25 + 0.25 * detail).sin()) - 1.0
+                };
+                shape += atlantis
+                    * (-0.11 * h + 0.22 * terrace(x) + 0.18 * terrace(z * 2.0) + 0.02 * detail);
+            }
+            let cave = presence(CAVE);
+            if cave > 0.0 {
+                let ledges = 2.0
+                    * smooth(-0.35, 0.35, (TAU * across.abs() / 1.2 + 0.4 * detail).sin())
+                    - 1.0;
+                let near = smooth(0.45, 0.9, across.abs());
+                shape += cave * near * (0.25 * ledges + 0.12 * detail);
+            }
+            let abyss = presence(ABYSS);
+            if abyss > 0.0 {
+                let fold = 1.0 - 2.0 * detail.abs();
+                let canyon = 1.0 - smooth(0.0, 0.09, (h - 0.25).abs());
+                shape += abyss * (0.32 * h + 0.65 * (fold * fold - 0.35) - 0.45 * canyon);
+            }
+            let arctic = presence(ARCTIC);
+            if arctic > 0.0 {
+                let scour = 1.0 - smooth(0.0, 0.22, (TAU * z * 0.5 + 0.7 * detail).sin().abs());
+                shape += arctic * (-0.10 * h + 0.06 * detail - 0.12 * scour);
+            }
+            let trench = presence(TRENCH);
+            if trench > 0.0 {
+                shape += trench * (0.05 * h + 0.08 * detail);
+            }
+            shape
+        }
+
+        let ids = [
+            SHALLOWS, FOREST, WRECKS, ATLANTIS, CAVE, ABYSS, ARCTIC, TRENCH,
+        ];
+        let weights = [0.0, 0.2, 0.5, 0.8, 1.0];
+        for &a in &ids {
+            for &c in &ids {
+                for w in weights {
+                    let b = Biome { a, b: c, w };
+                    for i in 0..7 {
+                        for j in 0..7 {
+                            let x = -31.7 + i as f32 * 11.3;
+                            let z = -27.1 + j as f32 * 9.7;
+                            let across = -6.0 + i as f32 * 2.0;
+                            let h = -1.4 + j as f32 * 0.45;
+                            let detail = -0.9 + (i + j) as f32 * 0.15;
+                            let want = shader_shape(&b, x, z, across, h, detail);
+                            let got = biome_shape(&b, x, z, across, h, detail);
+                            assert!(
+                                (want - got).abs() < 2e-6,
+                                "{a}/{c} w {w} at ({x}, {z}): {got} != {want}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Every term of the shape repeats with the heightmap.
+        for &id in &ids {
+            let b = Biome {
+                a: id,
+                b: id,
+                w: 0.0,
+            };
+            for i in 0..20 {
+                let x = i as f32 * 2.7 - 20.0;
+                let z = i as f32 * -3.1 + 7.0;
+                let h = (x * 0.37).sin();
+                let detail = (z * 0.29).cos();
+                let here = biome_shape(&b, x, z, 0.8, h, detail);
+                let next = biome_shape(&b, x + 64.0, z + 64.0, 0.8, h, detail);
+                assert!((here - next).abs() < 2e-5, "biome {id} seam at {x}, {z}");
+            }
         }
     }
 }
