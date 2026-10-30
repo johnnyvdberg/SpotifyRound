@@ -157,15 +157,47 @@ impl Spring {
     }
 }
 
-/// The hull's track at `x`: the middle of the corridor, with a wander of the
-/// helmsman's own about it, and its slope dz/dx. Its tightest bend is about
-/// twenty units' radius, so the hull's way stays clear of what stands beside
-/// the corridor.
-fn track(x: f32, phase: f32) -> (f32, f32) {
-    let (a, b) = (x * 0.29 + phase, x * 0.67 + phase * 1.3);
+/// How far the course weaves to either side of the corridor at a biome
+/// boundary, and the wavelength of the weave: two legs, so every boundary falls
+/// at the crest of one of its bends. The boat is therefore always turning as
+/// one sea gives way to the next, rather than crossing an invisible line on a
+/// straight course. A quarter of a unit either way is inside the corridor's
+/// clearance and gives a heading swing of a few degrees.
+const GATE_TURN: f32 = 0.11;
+const GATE_PERIOD: f32 = 2.0 * crate::voyage::LEG as f32;
+
+/// The weave that puts the turns at the biome boundaries: a cosine, whose
+/// second derivative is greatest (and heading straight across the corridor)
+/// exactly at each boundary.
+fn gate(x: f32, open: f32) -> (f32, f32) {
+    let k = TAU / GATE_PERIOD;
     (
-        corridor(x) + 0.07 * a.sin() + 0.035 * b.sin(),
-        corridor_slope(x) + 0.07 * 0.29 * a.cos() + 0.035 * 0.67 * b.cos(),
+        GATE_TURN * open * (k * x).cos(),
+        -GATE_TURN * k * open * (k * x).sin(),
+    )
+}
+
+/// The start of the nearest stretch of lava cave along the corridor, in
+/// world x, if this visit has one. The tunnel is about five units long, and
+/// the gate's weave eases out over the five before it.
+fn cave_start(seabed: &Seabed, x: f32) -> Option<f32> {
+    let leg = seabed.order.iter().position(|&b| b == CAVE)? as f32;
+    let leg_length = crate::voyage::LEG as f32;
+    let period = leg_length * crate::voyage::BIOMES as f32;
+    let base = (leg - 0.05) * leg_length;
+    Some(base + ((x - base) / period).round() * period)
+}
+
+/// The hull's track at `x`: the middle of the corridor, with a wander of the
+/// helmsman's own about it and the turn into the next biome, and its slope
+/// dz/dx. Its tightest bend is about ten units' radius, so the hull's way stays
+/// clear of what stands beside the corridor.
+fn track(x: f32, phase: f32, open: f32) -> (f32, f32) {
+    let (a, b) = (x * 0.29 + phase, x * 0.67 + phase * 1.3);
+    let (across, slope) = gate(x, open);
+    (
+        corridor(x) + 0.07 * a.sin() + 0.035 * b.sin() + across,
+        corridor_slope(x) + 0.07 * 0.29 * a.cos() + 0.035 * 0.67 * b.cos() + slope,
     )
 }
 
@@ -238,10 +270,20 @@ impl Helm {
 
         // A heavy boat holds its way: only a slow swing of a few percent.
         let x = voyage.x as f32 + 0.025 * (t * TAU / 75.0 + phase).sin();
-        let (z, slope) = track(x, phase);
+        // Ease the weave out over the five units before the mouth, a lane
+        // change the hull can make, rather than following the biome blend's
+        // own short ramp into the tunnel.
+        let open = if let Some(cave) = cave_start(seabed, x) {
+            let out = (cave - x).max(x - (cave + 5.2)).max(0.0);
+            smooth(0.0, 5.0, out)
+        } else {
+            1.0
+        };
+        let (z, slope) = track(x, phase, open);
         let heading = -slope.atan();
         // How fast the track bends, per unit along it, for the bank.
-        let bend = -(track(x + 0.05, phase).1.atan() - track(x - 0.05, phase).1.atan()) / 0.1;
+        let bend =
+            -(track(x + 0.05, phase, open).1.atan() - track(x - 0.05, phase, open).1.atan()) / 0.1;
 
         let alt = (voyage.altitude as f32 * 0.8).max(RADIUS + KEEL + 0.05);
         let pitch = self.pitch.value;
@@ -261,7 +303,7 @@ impl Helm {
         let mut about = f32::MIN;
         for k in 0..=6 {
             let ax = x - 0.6 + k as f32 * 0.3;
-            let az = track(ax, phase).0;
+            let az = track(ax, phase, open).0;
             for side in [-0.35, 0.0, 0.35] {
                 about = about.max(seabed.ground(ax, az + side));
             }
@@ -287,7 +329,7 @@ impl Helm {
         for k in 1..=((AHEAD - 0.9) / 0.3) as i32 {
             let d = 0.9 + k as f32 * 0.3;
             let ax = x + d;
-            let az = track(ax, phase).0;
+            let az = track(ax, phase, open).0;
             // Across the whole width the hull sweeps, its ends swinging
             // out as far as half its length when it is set at an angle.
             let g = [-0.6, -0.3, 0.0, 0.3, 0.6]
@@ -493,6 +535,34 @@ mod survey;
 mod tests {
     use super::*;
     use crate::voyage::Voyage;
+
+    /// Every biome boundary falls in the middle of a real turn, and the turn
+    /// is taken out where the cave's walls leave no room for it.
+    #[test]
+    fn the_course_turns_at_every_biome_boundary() {
+        use crate::voyage::LEG;
+        let phase = 0.7;
+        for k in 1..8 {
+            let x = k as f32 * LEG as f32;
+            let before = track(x - 0.25, phase, 1.0).1.atan();
+            let after = track(x + 0.25, phase, 1.0).1.atan();
+            assert!(
+                (after - before).abs() > 0.012,
+                "the course runs straight through the boundary at leg {k}"
+            );
+            // The turn is spread over half a unit at each side, not a hinge.
+            assert!(
+                (after - before).abs() < 0.10,
+                "the turn at leg {k} is too sharp for the hull"
+            );
+            let straight = track(x - 0.25, phase, 0.0).1.atan();
+            let still = track(x + 0.25, phase, 0.0).1.atan();
+            assert!(
+                (still - straight).abs() < (after - before).abs() * 0.8,
+                "the cave must be entered straight"
+            );
+        }
+    }
 
     #[test]
     fn the_boat_moves_smoothly_and_stays_off_the_seabed() {

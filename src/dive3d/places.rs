@@ -5,12 +5,18 @@
 //! all and an `index.html` naming them; `DIVE3D_SHOTS=cave` keeps only the
 //! places whose names contain `cave`. Add a place here when a feature needs
 //! checking somewhere the legs' own shots do not reach.
+//!
+//! Every place is in the visit of a given seed: the seabed, the biome circuit
+//! and the encounters are all functions of it. `DIVE3D_SHOTS_SEED` overrides
+//! the seeds of the leg, seabed and cave shots, so an exact random circuit can
+//! be photographed reproducibly.
 
-use crate::voyage::{BIOMES, LEG, SPEED};
+use crate::voyage::{self, BIOMES, Biome, LEG, SPEED};
 
 /// A moment on the voyage: `leg` legs from the start of a visit (a fraction
 /// lands within a leg; each changes into the next from about 0.7 on), in the
-/// visit of `seed`, which picks the seabed and where the circuit starts.
+/// visit of `seed`, which picks the seabed, the biome order and where the
+/// circuit starts.
 pub struct Place {
     pub name: String,
     pub leg: f64,
@@ -35,37 +41,71 @@ impl Place {
     }
 }
 
-/// The legs of seed 0's circuit, in the order of `voyage::ORDER`.
-const NAMES: [&str; BIOMES] = [
-    "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
-];
+/// A screenshot seed from the environment, if one was asked for.
+fn seeded() -> Option<u64> {
+    std::env::var("DIVE3D_SHOTS_SEED")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+}
+
+fn biome_name(id: usize) -> &'static str {
+    match id {
+        0 => "shallows",
+        1 => "forest",
+        2 => "wrecks",
+        3 => "atlantis",
+        4 => "cave",
+        5 => "abyss",
+        6 => "arctic",
+        _ => "trench",
+    }
+}
+
+/// Which biome a settled leg of `seed`'s circuit is in.
+fn leg_biome(leg: usize, seed: u64) -> usize {
+    Biome::at((leg as f64 + 0.5) * LEG, voyage::seed_of(seed)).a
+}
+
+/// Which leg of `seed`'s circuit is biome `id`.
+fn leg_of(id: usize, seed: u64) -> usize {
+    (0..BIOMES)
+        .find(|&leg| leg_biome(leg, seed) == id)
+        .unwrap_or(0)
+}
 
 /// Every place to shoot, in order.
 pub fn all() -> Vec<Place> {
     let mut places = Vec::new();
     // Each leg as it settles, in the middle, and as it gives way to the next.
-    for (n, name) in NAMES.iter().enumerate() {
+    let seed = seeded().unwrap_or(0);
+    for n in 0..BIOMES {
+        let name = biome_name(leg_biome(n, seed));
         for (when, at) in [("early", 0.15), ("middle", 0.45), ("leaving", 0.85)] {
-            places.push(Place::new(format!("{n}-{name}-{when}"), n as f64 + at, 0));
+            places.push(Place::new(
+                format!("{n}-{name}-{when}"),
+                n as f64 + at,
+                seed,
+            ));
         }
     }
     // Another visit's seabed, to see that nothing depends on one seed.
-    for (n, name) in NAMES.iter().enumerate() {
+    let other = seeded().unwrap_or(7);
+    for n in 0..BIOMES {
         places.push(Place::new(
-            format!("{n}-{name}-other-seabed"),
+            format!("{n}-{}-other-seabed", biome_name(leg_biome(n, other))),
             n as f64 + 0.45,
-            7,
+            other,
         ));
     }
     // How the Nautilus moves: setting itself across the cave's tunnel at its
     // mouth, well inside it and leaving it, and part way through a swipe's
     // passage, the rush of bubbles at its height.
-    let cave = crate::voyage::Biome::leg_of(super::world::CAVE) as f64;
+    let cave = leg_of(super::world::CAVE, seed) as f64;
     for (name, at) in [("mouth", -0.05), ("deep", 0.4), ("far-mouth", 0.8)] {
-        places.push(Place::new(format!("helm-cave-{name}"), cave + at, 0));
+        places.push(Place::new(format!("helm-cave-{name}"), cave + at, seed));
     }
     for (name, after) in [("gathering", 0.8), ("rushing", 1.75), ("settling", 3.0)] {
-        let mut place = Place::new(format!("helm-swipe-{name}"), 1.5, 0);
+        let mut place = Place::new(format!("helm-swipe-{name}"), 1.5, seed);
         place.swiped = Some(after);
         places.push(place);
     }
@@ -81,7 +121,7 @@ pub fn all() -> Vec<Place> {
         ("passages-3", 0.10),
         ("far-mouth", 0.22),
     ] {
-        places.push(Place::new(format!("{cave}-cave-{name}"), cave + at, 0));
+        places.push(Place::new(format!("{cave}-cave-{name}"), cave + at, seed));
     }
     // Another submarine met on the way: the encounters run on the visit's
     // clock (`submarines` in `world.rs`), so these are moments of visits 0

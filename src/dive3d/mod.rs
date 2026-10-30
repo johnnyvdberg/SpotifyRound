@@ -24,7 +24,7 @@ use slint::wgpu_30::wgpu;
 
 use crate::gpu::Graphics;
 use crate::visuals::Visual;
-use crate::voyage::{Biome, Voyage};
+use crate::voyage::{Biome, Voyage, seed_of};
 use helm::{Helm, Pose};
 use mesh::{Library, Lod, Vertex};
 use terrain::Terrain;
@@ -32,7 +32,6 @@ use world::{Frame, Instance, Seabed, Sprite, StaticCache, World};
 
 /// Edge of the panel-sized sea.
 pub const SIZE: u32 = 1080;
-
 
 /// The ice bake: a 64-unit square around the camera, 512 texels across, at
 /// the highest ice frequency's Nyquist and a bit over.
@@ -162,6 +161,8 @@ struct Globals {
     ice: [f32; 4],
     lights: [[f32; 4]; 8],
     light_colours: [[f32; 4]; 8],
+    /// This visit's biome circuit, four legs a vector.
+    order: [[f32; 4]; 2],
 }
 
 pub(crate) struct Nautilus {
@@ -1230,7 +1231,10 @@ impl Nautilus {
                         fading == 0.0,
                         &[
                             ("FADING", fading),
-                            ("FADE_OPAQUE", f64::from(u8::from(blend.is_none() && write_depth))),
+                            (
+                                "FADE_OPAQUE",
+                                f64::from(u8::from(blend.is_none() && write_depth)),
+                            ),
                             ("MATERIAL", f64::from(material)),
                             ("GROUNDED", grounded),
                         ],
@@ -1249,7 +1253,10 @@ impl Nautilus {
             alpha: wgpu::BlendComponent::REPLACE,
         };
         let mut models = per_material("Dive3d models", false, 0.0, None, true, None);
-        if let Some(at) = MATERIALS.iter().position(|&m| m == world::material::SURFACE as i32) {
+        if let Some(at) = MATERIALS
+            .iter()
+            .position(|&m| m == world::material::SURFACE as i32)
+        {
             for grounded in [0.0, 1.0] {
                 models[at * 2 + grounded as usize] = pipeline(
                     "Dive3d models",
@@ -1461,6 +1468,7 @@ impl Nautilus {
             seabed: Seabed {
                 map: vec![[0.0; 4]; heightmap::SIZE * heightmap::SIZE],
                 seed: 0.0,
+                order: crate::voyage::ORDER,
             },
             visit: None,
             underwater,
@@ -1488,7 +1496,7 @@ impl Nautilus {
     fn draw(&mut self, gpu: &Graphics, seconds: f64, visit: u64, _frame: usize) -> Result<()> {
         #[cfg(test)]
         let clock = std::time::Instant::now();
-        let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
+        let seed = seed_of(visit);
         if self.visit != Some(visit) {
             // A new visit: a new seabed, and the boat settles onto it afresh.
             self.seabed = Seabed::new(visit, seed);
@@ -1647,7 +1655,11 @@ impl Nautilus {
             } else {
                 // The kelp is the one model whose coarse LOD holds up at
                 // distance: bias its LOD choice so the far half uses it.
-                let bias = if model == mesh::Model::Kelp as usize { 2.0 } else { 1.0 };
+                let bias = if model == mesh::Model::Kelp as usize {
+                    2.0
+                } else {
+                    1.0
+                };
                 level_of(&lods[model], i, &pose, sea, bias)
             }
         };
@@ -1806,7 +1818,8 @@ impl Nautilus {
         }
         // It is only rebuilt when the boat has moved on by a ring of it.
         if tunnel_fits && self.tunnel_uploaded != Some(self.frame.tunnel_version) {
-            let packed: Vec<mesh::Packed> = self.frame.tunnel.iter().map(mesh::Packed::from).collect();
+            let packed: Vec<mesh::Packed> =
+                self.frame.tunnel.iter().map(mesh::Packed::from).collect();
             gpu.queue
                 .write_buffer(&self.tunnel, 0, bytemuck::cast_slice(&packed));
             gpu.queue.write_buffer(
@@ -1872,8 +1885,7 @@ impl Nautilus {
                 / 3;
             let mut by_lod = [0u64; mesh::LODS];
             for d in draws.iter() {
-                by_lod[d.lod] +=
-                    u64::from(lods[d.model][d.lod].count) / 3 * u64::from(d.count);
+                by_lod[d.lod] += u64::from(lods[d.model][d.lod].count) / 3 * u64::from(d.count);
             }
             let verts: u64 = draws
                 .iter()
@@ -2351,7 +2363,7 @@ fn water_tone(d: f32) -> [f32; 3] {
 fn globals(w: &World, frame: &Frame) -> Globals {
     let pose: Pose = w.pose;
     let depth = 1.0 - (-(pose.depth as f32) / 7.0).exp();
-    let here = Biome::at(f64::from(pose.pos[0]), w.seabed.seed);
+    let here = Biome::in_order(f64::from(pose.pos[0]), &w.seabed.order);
     let share = |id: usize| here.weight(id) as f32;
     let cave = share(world::CAVE);
     let arctic = share(world::ARCTIC);
@@ -2424,6 +2436,10 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         score(a).total_cmp(&score(b))
     });
     let v4 = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
+    let mut order = [[0.0; 4]; 2];
+    for (i, &id) in w.seabed.order.iter().enumerate() {
+        order[i / 4][i % 4] = id as f32;
+    }
     let mut g = Globals {
         camera: [cam[0], cam[1], cam[2], w.t],
         view: [world::VIEW, NEAR, 0.0, 0.0],
@@ -2447,6 +2463,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         ice: [0.0; 4],
         lights: [[0.0; 4]; 8],
         light_colours: [[0.0; 4]; 8],
+        order,
     };
     for (i, l) in lights.iter().take(8).enumerate() {
         g.lights[i] = [l.pos[0], l.pos[1], l.pos[2], l.range];
@@ -2579,12 +2596,17 @@ mod tests {
             for (k, offset) in offsets.iter().enumerate() {
                 let pixels = scene.read_back(&gpu, leg(n as f64) + offset, 0);
                 let path = std::path::Path::new(&dir).join(format!("{n}-{name}-{k}.png"));
-                let image = image::RgbaImage::from_raw(render, render, pixels)
-                    .expect("a whole frame");
+                let image =
+                    image::RgbaImage::from_raw(render, render, pixels).expect("a whole frame");
                 let image = if render == SIZE {
                     image
                 } else {
-                    image::imageops::resize(&image, SIZE, SIZE, image::imageops::FilterType::Triangle)
+                    image::imageops::resize(
+                        &image,
+                        SIZE,
+                        SIZE,
+                        image::imageops::FilterType::Triangle,
+                    )
                 };
                 image.save(&path).expect("a preview image");
             }

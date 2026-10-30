@@ -47,6 +47,8 @@ struct Globals {
     ice: vec4<f32>,
     lights: array<vec4<f32>, 8>,
     light_colours: array<vec4<f32>, 8>,
+    // This visit's eight-leg biome circuit, four legs a vector.
+    order: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -113,11 +115,28 @@ const ABYSS: i32 = 5;
 const ARCTIC: i32 = 6;
 const TRENCH: i32 = 7;
 
-// The biome of the `n`th leg of a circuit, as `voyage::ORDER`: the trench,
-// last in every table, comes between the forest and the wrecks. Worked out
-// rather than looked up, which would cost the Pi a table in every shader.
+// One component of a four-leg vector. A dynamic index into a uniform vector
+// is not worth the risk on every shader the Pi compiles, so this is unrolled.
+fn leg_component(v: vec4<f32>, i: u32) -> f32 {
+    var out = v.x;
+    if (i == 1u) {
+        out = v.y;
+    } else if (i == 2u) {
+        out = v.z;
+    } else if (i == 3u) {
+        out = v.w;
+    }
+    return out;
+}
+
+// The biome of the `n`th leg of this visit's circuit, from the shuffled order
+// the CPU sends in `g.order` (`voyage::order_for`).
 fn order(n: i32) -> i32 {
-    return select(select(n - 1, TRENCH, n == 2), n, n < 2);
+    let k = u32(((n % BIOMES) + BIOMES) % BIOMES);
+    if (k < 4u) {
+        return i32(leg_component(g.order[0], k));
+    }
+    return i32(leg_component(g.order[1], k - 4u));
 }
 
 // ---------------------------------------------------------------------------
@@ -185,9 +204,8 @@ struct Leg {
 fn leg(x: f32) -> Leg {
     let u = x / LEG;
     let k = floor(u);
-    let start = i32(g.world.x * f32(BIOMES));
-    let a = order(((i32(k) + start) % BIOMES + BIOMES) % BIOMES);
-    let b = order(((i32(k) + 1 + start) % BIOMES + BIOMES) % BIOMES);
+    let a = order(i32(k));
+    let b = order(i32(k) + 1);
     return Leg(a, b, smooth01(1.0 - BLEND, 1.0, u - k));
 }
 

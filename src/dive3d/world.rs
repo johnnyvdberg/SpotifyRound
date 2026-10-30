@@ -172,7 +172,12 @@ pub fn ice_bake(w: &World, origin: [f32; 2], size: f32, res: u32) -> Vec<u8> {
             let z = origin[1] + v * size;
             let coverage = smooth(0.35, 0.65, w.share(x, z, ARCTIC));
             let floes = vnoise(x * 0.9, z * 1.3, 14);
-            let lead = 1.0 - smooth(0.02, 0.06, (vnoise(x * 0.35 + 3.0, z * 0.08, 15) - 0.5).abs());
+            let lead = 1.0
+                - smooth(
+                    0.02,
+                    0.06,
+                    (vnoise(x * 0.35 + 3.0, z * 0.08, 15) - 0.5).abs(),
+                );
             let bumps = vnoise(x * 6.0, z * 6.0, 16);
             let k = ((j * res + i) * 4) as usize;
             out[k] = q(floes);
@@ -428,6 +433,8 @@ pub const RELIEF: [f32; BIOMES] = [0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.3
 pub struct Seabed {
     pub map: Vec<[f32; 4]>,
     pub seed: f32,
+    /// This visit's eight-leg circuit, as [`crate::voyage::order_for`].
+    pub order: [usize; BIOMES],
 }
 
 impl Seabed {
@@ -435,11 +442,12 @@ impl Seabed {
         Self {
             map: super::heightmap::generate(visit),
             seed,
+            order: crate::voyage::order_for(seed),
         }
     }
 
     pub fn biome(&self, x: f32, z: f32) -> Biome {
-        Biome::at(f64::from(voyage_x(x, z)), self.seed)
+        Biome::in_order(f64::from(voyage_x(x, z)), &self.order)
     }
 
     pub fn share(&self, x: f32, z: f32, id: usize) -> f32 {
@@ -683,6 +691,16 @@ impl World<'_> {
     /// which is round: the corners of the square the sea is drawn into are
     /// behind the brass.
     pub fn visible(&self, p: [f32; 3], radius: f32) -> bool {
+        self.reveal(p, radius) > 0.001
+    }
+
+    /// How far a creature or a party at `p` has swum into the window: one well
+    /// inside it, easing to nothing at its rim and at the near plane. A school,
+    /// a diver or a whale is placed only when this is positive, so the ones
+    /// that wander in fade over the brass instead of appearing in the middle
+    /// of the glass. The band is wider for a large subject, which covers more
+    /// of the rim as it crosses.
+    pub fn reveal(&self, p: [f32; 3], radius: f32) -> f32 {
         let d = [
             p[0] - self.pose.pos[0],
             p[1] - self.pose.pos[1],
@@ -692,13 +710,14 @@ impl World<'_> {
         let [right, up, out] = self.pose.basis;
         let z = dot(out);
         if z + radius < 0.08 {
-            return false;
+            return 0.0;
         }
         // A sphere touches the cone of view up to a little past its radius,
         // as the cone's side slants.
         let reach = VIEW * z.max(0.0) * 1.08 + radius * 1.1;
-        let (x, y) = (dot(right), dot(up));
-        x * x + y * y < reach * reach
+        let lateral = dot(right).hypot(dot(up));
+        let band = 0.10 + 0.45 * radius;
+        smooth(reach, (reach - band).max(0.0), lateral) * smooth(0.08, 0.16, z + radius)
     }
 }
 
@@ -888,15 +907,7 @@ impl Frame {
 
     /// Sediment spilling from a lip: the shader owns the fall and the fade,
     /// so the anchor is the lip and the placer stays cacheable.
-    fn mote_sprite(
-        &mut self,
-        p: [f32; 3],
-        size: f32,
-        colour: [f32; 3],
-        n: f32,
-        h: f32,
-        fall: f32,
-    ) {
+    fn mote_sprite(&mut self, p: [f32; 3], size: f32, colour: [f32; 3], n: f32, h: f32, fall: f32) {
         self.sprites.push(Sprite {
             place: [p[0], p[1], p[2], size],
             tint: [colour[0], colour[1], colour[2], MOTE],
@@ -1221,7 +1232,9 @@ impl<'a> IntoIterator for &'a Cells {
 fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
     let ([x0, x1, z0, z1], o, r) = footprint(w, near, far);
     let c = w.pose.pos;
-    let mut out = CELLS.with(|pool| pool.borrow_mut().pop()).unwrap_or_default();
+    let mut out = CELLS
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
     out.clear();
     for iz in ((z0 - size) / size).floor() as i32..=((z1 + size) / size).ceil() as i32 {
         for ix in ((x0 - size) / size).floor() as i32..=((x1 + size) / size).ceil() as i32 {
@@ -1266,15 +1279,23 @@ const CACHE_CELL: f32 = 0.2;
 /// visible cells from outside the placer; the polar has none (it follows the
 /// lane rather than the cell grid) and stays in the per-frame set.
 const PLACER_CELLS: [&[(f32, f32, f32, u32)]; 9] = [
-    &[(0.55, 0.6, 14.0, 10)],                     // rocks
-    &[(0.6, 0.8, 7.0, 40)],                       // gardens
-    &[(2.4, 1.6, 10.0, 60)],                      // wrecks
+    &[(0.55, 0.6, 14.0, 10)],                       // rocks
+    &[(0.6, 0.8, 7.0, 40)],                         // gardens
+    &[(2.4, 1.6, 10.0, 60)],                        // wrecks
     &[(0.3, 0.6, 9.0, 500), (0.4, 1.5, 10.0, 530)], // trench
-    &[(0.55, 1.0, 16.0, 70), (5.0, 6.0, 22.0, 80), (14.0, 18.0, 30.0, 90)], // ruins
-    &[(0.16, 0.5, 9.0, 100), (0.2, 0.5, 12.0, 110), (1.0, 0.5, 9.0, 120)], // cave
-    &[],                                          // polar (lane, not cells)
-    &[(KELP_CELL, 0.8, 15.0, KELP_SALT)],         // kelp
-    &[(0.75, 1.0, 17.0, 30)],                     // forest
+    &[
+        (0.55, 1.0, 16.0, 70),
+        (5.0, 6.0, 22.0, 80),
+        (14.0, 18.0, 30.0, 90),
+    ], // ruins
+    &[
+        (0.16, 0.5, 9.0, 100),
+        (0.2, 0.5, 12.0, 110),
+        (1.0, 0.5, 9.0, 120),
+    ], // cave
+    &[],                                            // polar (lane, not cells)
+    &[(KELP_CELL, 0.8, 15.0, KELP_SALT)],           // kelp
+    &[(0.75, 1.0, 17.0, 30)],                       // forest
 ];
 
 /// Build the frame.
@@ -1369,7 +1390,12 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
             cache.frame.style(skin);
             step(world, &mut cache.frame);
         }
-        for list in cache.frame.solid.iter_mut().chain(cache.frame.glass.iter_mut()) {
+        for list in cache
+            .frame
+            .solid
+            .iter_mut()
+            .chain(cache.frame.glass.iter_mut())
+        {
             for instance in list.iter_mut() {
                 let r = instance.rows;
                 if instance.extra[1] > 0.5 {
@@ -1863,8 +1889,12 @@ fn trench(w: &World, f: &mut Frame) {
                         top[1] + 0.05,
                         top[2] + a.sin() * 0.07,
                     ];
-                    f.put(Model::Cone, between(top, tip, 0.008), hue)
-                        .moving(anim::WAVE, k as f32, 0.15, 0.6);
+                    f.put(Model::Cone, between(top, tip, 0.008), hue).moving(
+                        anim::WAVE,
+                        k as f32,
+                        0.15,
+                        0.6,
+                    );
                 }
             }
         }
@@ -1918,11 +1948,7 @@ fn trench(w: &World, f: &mut Frame) {
                 let a = 0.45 * f.fade;
                 for n in 0..18 {
                     let nf = n as f32;
-                    let q = [
-                        x,
-                        p[1] - 0.05,
-                        p[2] + out * 0.15,
-                    ];
+                    let q = [x, p[1] - 0.05, p[2] + out * 0.15];
                     f.mote_sprite(q, 0.03, [0.55 * a, 0.50 * a, 0.40 * a], nf, h, fall);
                 }
             }
@@ -1952,9 +1978,23 @@ fn trench(w: &World, f: &mut Frame) {
         };
         let rate = 0.5 + hash(ix, iz, 533);
         let phase = hash(ix, iz, 534) * TAU;
-        f.glow_sprite(p, 0.025, [hue[0] * a, hue[1] * a, hue[2] * a], phase, rate, 0.0);
+        f.glow_sprite(
+            p,
+            0.025,
+            [hue[0] * a, hue[1] * a, hue[2] * a],
+            phase,
+            rate,
+            0.0,
+        );
         let halo = a * 0.12;
-        f.glow_sprite(p, 0.14, [hue[0] * halo, hue[1] * halo, hue[2] * halo], phase, rate, 0.0);
+        f.glow_sprite(
+            p,
+            0.14,
+            [hue[0] * halo, hue[1] * halo, hue[2] * halo],
+            phase,
+            rate,
+            0.0,
+        );
     }
 }
 
@@ -2259,9 +2299,29 @@ fn ruins(w: &World, f: &mut Frame) {
             [0.05, 0.04, 0.04],
         );
         let crater = [x, y + h * 0.97, z];
-        f.glow_sprite(crater, 2.2, [0.9, 0.30, 0.06], ix as f32, 2.3, 1.0);
-        f.glow_sprite(crater, 0.6, [1.0, 0.55, 0.15], ix as f32, 2.3, 1.0);
-        f.light_flicker(crater, 10.0, [0.7, 0.24, 0.07], ix as f32 + 0.5);
+        let show = f.fade;
+        f.glow_sprite(
+            crater,
+            2.2,
+            [0.9 * show, 0.30 * show, 0.06 * show],
+            ix as f32,
+            2.3,
+            1.0,
+        );
+        f.glow_sprite(
+            crater,
+            0.6,
+            [1.0 * show, 0.55 * show, 0.15 * show],
+            ix as f32,
+            2.3,
+            1.0,
+        );
+        f.light_flicker(
+            crater,
+            10.0,
+            [0.7 * show, 0.24 * show, 0.07 * show],
+            ix as f32 + 0.5,
+        );
         // A thread of lava down one flank.
         for k in 0..10 {
             let t = k as f32 / 10.0;
@@ -2270,7 +2330,14 @@ fn ruins(w: &World, f: &mut Frame) {
                 y + h * (0.95 - t * 0.9),
                 z - 0.5,
             ];
-            f.glow_sprite(p, 0.18, [0.7, 0.20, 0.04], ix as f32, 2.3, 1.0);
+            f.glow_sprite(
+                p,
+                0.18,
+                [0.7 * show, 0.20 * show, 0.04 * show],
+                ix as f32,
+                2.3,
+                1.0,
+            );
         }
     }
 }
@@ -2361,7 +2428,13 @@ fn cave(w: &World, f: &mut Frame) {
             continue;
         }
         let y = w.ground(x, z);
-        f.light_flicker([x, y + 0.15, z], 1.6, [1.4, 0.42, 0.09], ix as f32 * 1.7);
+        let show = fade(w.share(x, z, CAVE), 0.5);
+        f.light_flicker(
+            [x, y + 0.15, z],
+            1.6,
+            [1.4 * show, 0.42 * show, 0.09 * show],
+            ix as f32 * 1.7,
+        );
         for k in 0..4 {
             // The ember's rise/fade is the shader's (ember_sprite); the
             // anchor is the pool floor.
@@ -2370,7 +2443,14 @@ fn cave(w: &World, f: &mut Frame) {
                 y,
                 z + (hash(ix + k, iz, 124) - 0.5) * 0.6,
             ];
-            f.ember_sprite(p, 0.012, [1.0, 0.45, 0.1], hash(ix * 4 + k, iz, 122), 0.12, 1.0);
+            f.ember_sprite(
+                p,
+                0.012,
+                [1.0 * show, 0.45 * show, 0.1 * show],
+                hash(ix * 4 + k, iz, 122),
+                0.12,
+                1.0,
+            );
         }
     }
 }
@@ -2914,13 +2994,14 @@ fn vents(w: &World, f: &mut Frame) {
         )
         .grounded();
         let top = [x, y + h * 0.95, z];
-        f.sprite(top, 0.08, [1.0, 0.44, 0.13], GLOW);
-        f.light(top, 0.8, [0.9, 0.36, 0.10]);
+        let show = f.fade;
+        f.sprite(top, 0.08, [1.0 * show, 0.44 * show, 0.13 * show], GLOW);
+        f.light(top, 0.8, [0.9 * show, 0.36 * show, 0.10 * show]);
         for k in 0..10 {
             let rise = (w.t * 0.25 + k as f32 / 10.0).fract();
             let wobble = (rise * 9.0 + w.t + ix as f32).sin() * 0.03 * (0.3 + rise * 2.0);
             let p = [top[0] + wobble, top[1] + rise * 0.8, top[2]];
-            let fade = 1.0 - rise;
+            let fade = (1.0 - rise) * show;
             f.sprite(
                 p,
                 0.03 + rise * 0.10,
@@ -2972,9 +3053,14 @@ fn divers(w: &World, f: &mut Frame) {
     let u = cam - WALK * w.t;
     let k = (u / 7.0).floor();
     let lead = (k + 0.5) * 7.0 + WALK * w.t;
-    if (lead - cam).abs() > 5.0 {
+    // The party appears out of the gloom and fades in as it comes abeam; it
+    // was cut off at five units, which put a whole group of divers into the
+    // glass at once.
+    let near = (lead - cam).abs();
+    if near > 8.0 {
         return;
     }
+    let entering = smooth(8.0, 4.5, near);
     // Keep the party on the side the window looks out on, or it walks behind
     // the hull where nobody can see it.
     let side = if w.pose.basis[2][2] >= 0.0 { 1.0 } else { -1.0 };
@@ -2983,7 +3069,8 @@ fn divers(w: &World, f: &mut Frame) {
     if share < 0.5 || hash(k as i32, 0, 150) < 0.2 {
         return;
     }
-    f.fade = fade(share, 0.5);
+    let fade_in = fade(share, 0.5) * entering;
+    f.fade = fade_in;
     // The party walks a lane beside the corridor and steps round what stands
     // in it: each diver treads the same path as the one in front.
     let obstacles = obstacles(w, lead - 1.6, lead + 0.8, lane(lead, 1.5, side));
@@ -2998,12 +3085,18 @@ fn divers(w: &World, f: &mut Frame) {
         let heading = -((path(x + 0.04) - path(x - 0.04)) / 0.08).atan();
         let feet = [x, w.ground(x, z), z];
         let size = 0.17 * (1.0 - fd * 0.04);
+        let show = w.reveal([x, feet[1] + 0.45 * size, z], 0.5 * size);
+        if show <= 0.001 {
+            continue;
+        }
         // Feet stay planted: a full stride covers twice a step of the legs.
         let stride = x / (size * 0.56) * TAU + fd * 1.9;
+        f.fade = fade_in * show;
         let mark = f.mark();
         diver(w, f, feet, size, stride, d == 0);
         f.turn_since(&mark, feet, heading);
     }
+    f.fade = fade_in;
 }
 
 /// What a diver must walk round near `lane` between `x0` and `x1`: boulders,
@@ -3065,6 +3158,7 @@ fn detour(o: (f32, f32, f32), x: f32, base: f32) -> f32 {
 }
 
 fn diver(w: &World, f: &mut Frame, feet: [f32; 3], s: f32, stride: f32, lamp: bool) {
+    let show = f.fade;
     let at = |dx: f32, dy: f32, dz: f32| [feet[0] + dx * s, feet[1] + dy * s, feet[2] + dz * s];
     let bob = 0.012 * stride.cos().abs();
     let hip = at(0.0, 0.44 + bob, 0.0);
@@ -3152,14 +3246,18 @@ fn diver(w: &World, f: &mut Frame, feet: [f32; 3], s: f32, stride: f32, lamp: bo
             place(light, 0.0, 0.0, 0.0, [0.03 * s, 0.04 * s, 0.03 * s]),
             [0.16, 0.15, 0.14],
         );
-        f.sprite(light, 0.04, [1.0, 0.94, 0.78], GLOW);
+        f.sprite(light, 0.04, [show, 0.94 * show, 0.78 * show], GLOW);
         f.sprite(
             add(light, [0.06, -0.02, 0.0]),
             0.25,
-            [0.12, 0.11, 0.09],
+            [0.12 * show, 0.11 * show, 0.09 * show],
             GLOW,
         );
-        f.light(add(light, [0.05, -0.02, 0.0]), 0.5, [1.4, 1.3, 1.05]);
+        f.light(
+            add(light, [0.05, -0.02, 0.0]),
+            0.5,
+            [1.4 * show, 1.3 * show, 1.05 * show],
+        );
     } else {
         let elbow = at(0.06, 0.55 + bob, 0.08);
         let hand = at(0.15, 0.55 + bob, 0.08);
@@ -3187,11 +3285,8 @@ fn diver(w: &World, f: &mut Frame, feet: [f32; 3], s: f32, stride: f32, lamp: bo
     for b in 0..5 {
         let bubble = bubble(b, 5, w.t + feet[0] * 0.37, life);
         let rise = bubble.age / life;
-        let q = add(
-            exhaust,
-            [-0.05 * rise, 0.1 * s + rise * 0.35, 0.01 * rise],
-        );
-        let fade = bubble.fade * window_fade(w, q, 0.012);
+        let q = add(exhaust, [-0.05 * rise, 0.1 * s + rise * 0.35, 0.01 * rise]);
+        let fade = bubble.fade * window_fade(w, q, 0.012) * show;
         if fade > 0.001 {
             f.sprite(
                 q,
@@ -3278,9 +3373,14 @@ fn shoals(w: &World, f: &mut Frame) {
             let gathering = vnoise(centre_x * 0.25, 0.0, sp.salt + 1);
             let b = w.biome(centre_x, sp.z);
             let gate = World::by_biome(&b, sp.gate);
-            if gate < 0.3 || gathering * 0.7 + hash(k, 1, sp.salt) * 0.5 < 0.5 {
+            // The school's own chance comes and goes smoothly with the
+            // gathering noise. Let it fade through the last of that chance
+            // rather than switching a whole cloud of fish on.
+            let chance = gathering * 0.7 + hash(k, 1, sp.salt) * 0.5;
+            if gate < 0.2 || chance < 0.42 {
                 continue;
             }
+            let school_fade = smooth(0.30, 0.55, gate) * smooth(0.42, 0.50, chance);
             let big = hash(k, 2, sp.salt).powf(2.0);
             let rx = 0.08 + 0.75 * big;
             let ry = rx * (0.22 + 0.2 * hash(k, 3, sp.salt));
@@ -3328,7 +3428,7 @@ fn shoals(w: &World, f: &mut Frame) {
                 (rz / g).ceil() as i32,
             );
             let dir = if sp.speed >= 0.0 { 1.0 } else { -1.0 };
-            let fade = smooth(0.3, 0.6, gate);
+            let fade = school_fade;
             for i in -nx..=nx {
                 for j in -ny..=ny {
                     for l in -nz..=nz {
@@ -3361,7 +3461,19 @@ fn shoals(w: &World, f: &mut Frame) {
                         if r > density + 0.06 {
                             continue;
                         }
-                        f.fade = smooth(0.06, -0.06, r - density);
+                        let body = sp.size * (0.85 + 0.3 * hash(i, j, sp.salt + 12));
+                        let show = w.reveal(
+                            [
+                                centre[0] + local[0],
+                                centre[1] + local[1],
+                                centre[2] + local[2],
+                            ],
+                            body * 1.8,
+                        );
+                        if show <= 0.001 {
+                            continue;
+                        }
+                        f.fade = smooth(0.06, -0.06, r - density) * show * fade;
                         let wob = [
                             (w.t * 0.7 + r * 20.0).sin() * 0.08 * g,
                             (w.t * 0.9 + r * 13.0).cos() * 0.05 * g,
@@ -3437,12 +3549,13 @@ fn great_swimmers(w: &World, f: &mut Frame) {
         if w.share(x, z, SHALLOWS) < 0.4 || hash(k, 2, 300) < 0.3 {
             continue;
         }
-        f.fade = fade(w.share(x, z, SHALLOWS), 0.4);
         let length = 1.35;
         let y = w.surface() - 0.35 - hash(k, 3, 300) * 0.25;
-        if !w.visible([x, y, z], length) {
+        let show = w.reveal([x, y, z], length);
+        if show <= 0.001 {
             continue;
         }
+        f.fade = fade(w.share(x, z, SHALLOWS), 0.4) * show;
         let beat = 0.035 / (0.25 * length) * TAU;
         f.put(
             Model::Whale,
@@ -3463,7 +3576,7 @@ fn great_swimmers(w: &World, f: &mut Frame) {
         if w.share(x, pod, SHALLOWS) < 0.4 || hash(k, 1, 310) < 0.3 {
             continue;
         }
-        f.fade = fade(w.share(x, pod, SHALLOWS), 0.4);
+        let fade_in = fade(w.share(x, pod, SHALLOWS), 0.4);
         for d in 0..5 {
             let fd = d as f32;
             let phase = hash(k, d + 2, 310) * TAU;
@@ -3473,9 +3586,11 @@ fn great_swimmers(w: &World, f: &mut Frame) {
                 w.eye() - 0.05 + hash(k, d + 20, 310) * 0.35 + 0.04 * (w.t * 0.6 + phase).sin(),
                 pod + side(k, 310) * fd * 0.15,
             ];
-            if !w.visible(p, size) {
+            let show = w.reveal(p, size);
+            if show <= 0.001 {
                 continue;
             }
+            f.fade = fade_in * show;
             let beat = 0.13 / (0.9 * size) * TAU;
             f.put(
                 Model::Dolphin,
@@ -3497,13 +3612,14 @@ fn great_swimmers(w: &World, f: &mut Frame) {
         if w.share(x, z, WRECKS) < 0.4 || hash(k, 2, 320) < 0.4 {
             continue;
         }
-        f.fade = fade(w.share(x, z, WRECKS), 0.4);
         let length = 0.32;
         let y = w.ground(x, z) + 0.2 + hash(k, 3, 320) * 0.4;
         let p = [x, y + 0.03 * (w.t * 0.2 + k as f32).sin(), z];
-        if !w.visible(p, length) {
+        let show = w.reveal(p, length);
+        if show <= 0.001 {
             continue;
         }
+        f.fade = fade(w.share(x, z, WRECKS), 0.4) * show;
         let beat = 0.05 / (0.35 * length) * TAU;
         f.put(
             Model::Shark,
@@ -3533,15 +3649,16 @@ fn gliders(w: &World, f: &mut Frame) {
         if share < 0.4 || hash(k, 2, 340) < 0.35 {
             continue;
         }
-        f.fade = fade(share, 0.4);
         let span = 0.30 + 0.12 * hash(k, 3, 340);
         let phase = hash(k, 4, 340) * TAU;
         let y = (w.ground(x, z) + 0.6 + 0.9 * hash(k, 5, 340)).min(w.surface() - 0.35)
             + 0.08 * (w.t * 0.21 + phase).sin();
         let p = [x, y, z];
-        if !w.visible(p, span) {
+        let show = w.reveal(p, span);
+        if show <= 0.001 {
             continue;
         }
+        f.fade = fade(share, 0.4) * show;
         f.put(
             Model::Manta,
             place(
@@ -3561,14 +3678,15 @@ fn gliders(w: &World, f: &mut Frame) {
         if share < 0.4 || hash(k, 2, 350) < 0.4 {
             continue;
         }
-        f.fade = fade(share, 0.4);
         let length = 0.20 + 0.06 * hash(k, 3, 350);
         let phase = hash(k, 4, 350) * TAU;
         let y = w.ground(x, z) + 0.25 + 0.5 * hash(k, 5, 350) + 0.04 * (w.t * 0.4 + phase).sin();
         let p = [x, y, z];
-        if !w.visible(p, length) {
+        let show = w.reveal(p, length);
+        if show <= 0.001 {
             continue;
         }
+        f.fade = fade(share, 0.4) * show;
         f.put(
             Model::Turtle,
             place(
@@ -3591,13 +3709,14 @@ fn squid(w: &World, f: &mut Frame) {
         if w.share(x, z, ABYSS) < 0.4 {
             continue;
         }
-        f.fade = fade(w.share(x, z, ABYSS), 0.4);
         let s = 1.1;
         let y = w.eye() - 0.1 + 0.1 * (w.t * 0.13 + k as f32).sin();
         let head = [x, y, z];
-        if !w.visible(head, s) {
+        let show = w.reveal(head, s);
+        if show <= 0.001 {
             continue;
         }
+        f.fade = fade(w.share(x, z, ABYSS), 0.4) * show;
         let jet = 0.5 + 0.5 * (w.t * 0.9).sin();
         let mottled = [0.40, 0.12, 0.08];
         // It swims mantle first, toward -x: the mantle runs from the head.
@@ -3674,13 +3793,14 @@ fn squid(w: &World, f: &mut Frame) {
         if w.share(x, z, ABYSS) < 0.5 || hash(ix, iz, 341) < 0.5 {
             continue;
         }
-        f.fade = fade(w.share(x, z, ABYSS), 0.5);
         let y =
             w.ground(x, z) + 0.15 + hash(ix, iz, 342) * 0.3 + 0.03 * (w.t * 1.3 + ix as f32).sin();
         let p = [x, y, z];
-        if !w.visible(p, 0.1) {
+        let show = w.reveal(p, 0.16);
+        if show <= 0.001 {
             continue;
         }
+        f.fade = fade(w.share(x, z, ABYSS), 0.5) * show;
         f.put(
             Model::Sphere,
             place(p, 0.0, 0.0, 0.0, [0.045, 0.035, 0.03]),
@@ -3691,16 +3811,32 @@ fn squid(w: &World, f: &mut Frame) {
         f.sprite(
             lure,
             0.012,
-            [0.45 * flicker, 1.0 * flicker, 0.85 * flicker],
+            [
+                0.45 * flicker * show,
+                1.0 * flicker * show,
+                0.85 * flicker * show,
+            ],
             GLOW,
         );
         f.sprite(
             lure,
             0.06,
-            [0.05 * flicker, 0.12 * flicker, 0.10 * flicker],
+            [
+                0.05 * flicker * show,
+                0.12 * flicker * show,
+                0.10 * flicker * show,
+            ],
             GLOW,
         );
-        f.light(lure, 0.15, [0.3 * flicker, 0.8 * flicker, 0.7 * flicker]);
+        f.light(
+            lure,
+            0.15,
+            [
+                0.3 * flicker * show,
+                0.8 * flicker * show,
+                0.7 * flicker * show,
+            ],
+        );
     }
 }
 
@@ -3712,7 +3848,6 @@ fn drifters(w: &World, f: &mut Frame) {
         if here < hash(ix, iz, 351) * 0.8 + 0.2 {
             continue;
         }
-        f.fade = fade(here, hash(ix, iz, 351) * 0.8 + 0.2);
         let s = 0.04 + 0.05 * hash(ix, iz, 352);
         let phase = hash(ix, iz, 353) * TAU;
         let y = w.ground(x, z)
@@ -3720,9 +3855,11 @@ fn drifters(w: &World, f: &mut Frame) {
             + hash(ix, iz, 354) * (0.3 * z + 0.3)
             + 0.04 * (w.t * 0.13 + phase).sin();
         let p = [x + 0.03 * (w.t * 0.09 + phase).sin(), y, z];
-        if !w.visible(p, s * 3.0) {
+        let show = w.reveal(p, s * 3.0);
+        if show <= 0.001 {
             continue;
         }
+        f.fade = fade(here, hash(ix, iz, 351) * 0.8 + 0.2) * show;
         let tint = if hash(ix, iz, 355) < 0.5 {
             [0.35, 0.32, 0.80]
         } else {
@@ -3753,7 +3890,7 @@ fn polar(w: &World, f: &mut Frame) {
         if w.share(x, flight, ARCTIC) < 0.4 || hash(k, 1, 360) < 0.25 {
             continue;
         }
-        f.fade = fade(w.share(x, flight, ARCTIC), 0.4);
+        let fade_in = fade(w.share(x, flight, ARCTIC), 0.4);
         for d in 0..4 {
             let fd = d as f32;
             let phase = hash(k, d + 2, 360) * TAU;
@@ -3765,9 +3902,11 @@ fn polar(w: &World, f: &mut Frame) {
                 top - 0.25 - hash(k, d + 6, 360) * 0.45 + wave,
                 flight + side(k, 360) * fd * 0.2,
             ];
-            if !w.visible(p, 0.1) {
+            let show = w.reveal(p, 0.18);
+            if show <= 0.001 {
                 continue;
             }
+            f.fade = fade_in * show;
             let s = 0.075;
             let pitch = slope.atan();
             f.put(
@@ -3796,8 +3935,7 @@ fn polar(w: &World, f: &mut Frame) {
             // go, and the shader ages the bubble from the camera clock
             // (bubble_sprite), so the trail is camera-static and cacheable.
             let was0 = px - 0.04;
-            let y0 = top - 0.25 - hash(k, d + 6, 360) * 0.45
-                + 0.06 * (was0 * 3.5 + phase).sin();
+            let y0 = top - 0.25 - hash(k, d + 6, 360) * 0.45 + 0.06 * (was0 * 3.5 + phase).sin();
             for b in 0..5 {
                 f.bubble_sprite(
                     [was0, y0, p[2]],
@@ -3815,7 +3953,7 @@ fn polar(w: &World, f: &mut Frame) {
         if w.share(x, pod, ARCTIC) < 0.4 || hash(k, 1, 370) < 0.3 {
             continue;
         }
-        f.fade = fade(w.share(x, pod, ARCTIC), 0.4);
+        let fade_in = fade(w.share(x, pod, ARCTIC), 0.4);
         for d in 0..3 {
             let fd = d as f32;
             let phase = hash(k, d + 2, 370) * TAU;
@@ -3825,9 +3963,11 @@ fn polar(w: &World, f: &mut Frame) {
                 top - 0.35 - hash(k, d + 12, 370) * 0.5,
                 pod + side(k, 370) * fd * 0.3,
             ];
-            if !w.visible(p, size) {
+            let show = w.reveal(p, size);
+            if show <= 0.001 {
                 continue;
             }
+            f.fade = fade_in * show;
             let beat = 0.07 / (0.5 * size) * TAU;
             // The bob and yaw are the shader's (anim::NARWHAL), with the
             // fluke's beat; the placement keeps only the pod's formation.
@@ -3875,7 +4015,6 @@ const DIVE_RATE: f32 = -0.12;
 const CLIMB_ACCEL: f32 = 0.2;
 /// How finely her depth is stepped, in seconds, for the same reason.
 const DEPTH_STEP: f32 = 0.1;
-
 
 /// How another submarine passes the Nautilus.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3980,8 +4119,7 @@ impl Attitude {
         let turning = wrap(to[0] - from[0]);
         for i in 1..=steps {
             let part = i as f32 / steps as f32;
-            self.yaw
-                .follow(from[0] + turning * part, 0.7, YAWING, step);
+            self.yaw.follow(from[0] + turning * part, 0.7, YAWING, step);
             self.pitch
                 .follow(from[1] + (to[1] - from[1]) * part, 0.5, NODDING, step);
             // Her bank follows the turn she is making, not the path she has
@@ -4325,8 +4463,7 @@ fn submarines(w: &World, f: &mut Frame) {
         let b = 2.9 * c;
         let d = ((across - b) * (across - b) + 0.8).sqrt();
         let db = 2.9 * (cx * along + cz * (corridor_slope(x) * along + crossing));
-        let out = 0.5 * (1.0 + (across - b) / d) * crossing
-            + 0.5 * (1.0 - (across - b) / d) * db;
+        let out = 0.5 * (1.0 + (across - b) / d) * crossing + 0.5 * (1.0 - (across - b) / d) * db;
         [along, corridor_slope(x) * along + out]
     };
     let [along, across] = way(t);
@@ -4352,7 +4489,11 @@ fn submarines(w: &World, f: &mut Frame) {
     attitude.turn_to(asked, t);
     encounter.attitude = Some(attitude);
     f.encounter = Some(encounter);
-    let (yaw, pitch, roll) = (attitude.yaw.angle, attitude.pitch.angle, attitude.roll.angle);
+    let (yaw, pitch, roll) = (
+        attitude.yaw.angle,
+        attitude.pitch.angle,
+        attitude.roll.angle,
+    );
     let water_speed = (flat * flat + rate * rate).sqrt();
 
     let cave = w
@@ -4361,7 +4502,8 @@ fn submarines(w: &World, f: &mut Frame) {
     let fading = fade(1.0 - cave, 0.7)
         * smooth(0.0, 0.06, u)
         * smooth(1.0, 0.94, u)
-        * (1.0 - smooth(0.12, 0.3, speed));
+        * (1.0 - smooth(0.12, 0.3, speed))
+        * w.reveal(p, SUB_LENGTH * 0.55);
     if fading <= 0.01 {
         return;
     }
@@ -4758,6 +4900,45 @@ mod tests {
     use super::*;
     use crate::voyage::Voyage;
 
+    /// A creature that wanders into the glass fades over its rim instead of
+    /// appearing at full opacity, and the near plane does the same.
+    #[test]
+    fn encounters_fade_at_the_window() {
+        let seabed = Seabed::new(0, 0.0);
+        let pose = super::super::helm::Pose::level(0.0, -2.0);
+        let w = World {
+            seabed: &seabed,
+            pose,
+            t: 0.0,
+        };
+        let c = pose.pos;
+        let out = pose.basis[2];
+        let right = pose.basis[0];
+        let at = |ahead: f32, across: f32| {
+            [
+                c[0] + out[0] * ahead + right[0] * across,
+                c[1] + out[1] * ahead + right[1] * across,
+                c[2] + out[2] * ahead + right[2] * across,
+            ]
+        };
+        let mid = at(5.0, 0.0);
+        let edge = VIEW * 5.0 * 1.08 + 0.02 * 1.1;
+        let inside = w.reveal(at(5.0, edge - 0.04), 0.02);
+        let at_edge = w.reveal(at(5.0, edge), 0.02);
+        let outside = w.reveal(at(5.0, edge + 0.6), 0.02);
+        assert!(w.reveal(mid, 0.02) > 0.99, "a centred subject is hidden");
+        assert!(
+            inside > 0.05 && inside < 0.95,
+            "the rim is a hard edge: {inside}"
+        );
+        assert!(
+            at_edge < 0.01,
+            "a subject on the rim is still full: {at_edge}"
+        );
+        assert_eq!(outside, 0.0);
+        assert_eq!(w.reveal(at(0.02, 0.0), 0.02), 0.0, "a subject in the lens");
+    }
+
     /// Along the trench the rim the boat sails is level, and beside it, where
     /// the window looks, the seabed falls away and rises again across the gulf.
     #[test]
@@ -4959,11 +5140,10 @@ mod tests {
                 // The moment this party's leader walks level with the boat.
                 // The window looks out on the +z side, where a party keeps
                 // when its slot falls on that side.
-                let seconds = ((f64::from(k) + 0.5) * 7.0 - start)
-                    / (crate::voyage::SPEED - 0.02);
+                let seconds = ((f64::from(k) + 0.5) * 7.0 - start) / (crate::voyage::SPEED - 0.02);
                 let x = (start + crate::voyage::SPEED * seconds) as f32;
-                let at_leg = (f64::from(x) / crate::voyage::LEG)
-                    .rem_euclid(crate::voyage::BIOMES as f64);
+                let at_leg =
+                    (f64::from(x) / crate::voyage::LEG).rem_euclid(crate::voyage::BIOMES as f64);
                 let leg_at = Biome::leg_of(leg) as f64;
                 if !(leg_at + 0.2..=leg_at + 0.7).contains(&at_leg) {
                     continue;
@@ -4973,9 +5153,7 @@ mod tests {
                     side(k, 150),
                     hash(k, 0, 150)
                 );
-                if side(k, 150) < 0.0
-                    || hash(k, 0, 150) < 0.2
-                {
+                if side(k, 150) < 0.0 || hash(k, 0, 150) < 0.2 {
                     continue;
                 }
                 let pose = Pose::level(x, seabed.ground(x, 0.6) + 0.5);
@@ -5008,9 +5186,7 @@ mod tests {
                 );
                 let visible = bodies
                     .iter()
-                    .filter(|b| {
-                        world.visible([b.rows[0][3], b.rows[1][3], b.rows[2][3]], 0.09)
-                    })
+                    .filter(|b| world.visible([b.rows[0][3], b.rows[1][3], b.rows[2][3]], 0.09))
                     .count();
                 println!(
                     "cam {:?} feet {:?} visible {visible}",
@@ -5037,8 +5213,8 @@ mod tests {
         let mut voyage = Voyage::default();
         let mut helm = super::super::helm::Helm::default();
         for (leg, name) in [(FOREST, "forest"), (ATLANTIS, "atlantis")] {
-            let start = crate::voyage::LEG / crate::voyage::SPEED
-                * (Biome::leg_of(leg) as f64 + 0.1);
+            let start =
+                crate::voyage::LEG / crate::voyage::SPEED * (Biome::leg_of(leg) as f64 + 0.1);
             let span = crate::voyage::LEG / crate::voyage::SPEED * 0.8;
             let (mut parties, mut visible) = (0, 0);
             for i in 0..60 {
@@ -5060,27 +5236,19 @@ mod tests {
                 let here = bodies
                     .iter()
                     .filter(|b| {
-                        world.visible(
-                            [b.rows[0][3], b.rows[1][3] + 0.08, b.rows[2][3]],
-                            0.10,
-                        )
+                        world.visible([b.rows[0][3], b.rows[1][3] + 0.08, b.rows[2][3]], 0.10)
                     })
                     .count();
                 if here > 0 {
                     visible += 1;
                 }
                 if i == 0 {
-                    println!(
-                        "pose {:?} basis {:?}",
-                        world.pose.pos, world.pose.basis
-                    );
+                    println!("pose {:?} basis {:?}", world.pose.pos, world.pose.basis);
                     for b in bodies {
                         println!(
                             "body {:?} d {:?}",
                             [b.rows[0][3], b.rows[1][3], b.rows[2][3]],
-                            [0, 1, 2].map(|k| {
-                                b.rows[k][3] - world.pose.pos[k]
-                            })
+                            [0, 1, 2].map(|k| { b.rows[k][3] - world.pose.pos[k] })
                         );
                     }
                 }
@@ -5096,109 +5264,109 @@ mod tests {
         }
     }
 
-        /// No fish is ever drawn with its body in the seabed, however the school
-        /// straddles a rise in it or bends as it turns.
-        #[test]
-        fn fish_keep_off_the_seabed() {
-            let mut seen = 0;
-            for visit in [0u64, 500_000] {
-                let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
-                let seabed = Seabed::new(visit, seed);
-                let mut voyage = Voyage::default();
-                let mut helm = super::super::helm::Helm::default();
-                let mut frame = Frame::new();
-                for i in 0..600 {
-                    let seconds = 5.0 + i as f64 * 3.0;
-                    let at = voyage.advance(seconds, seed);
-                    let pose = helm.steer(&seabed, at, seconds);
-                    let world = World {
-                        seabed: &seabed,
-                        pose,
-                        t: seconds as f32,
-                    };
-                    frame.clear();
-                    shoals(&world, &mut frame);
-                    for fish in &frame.solid[Model::Fish.index()] {
-                        let rows = fish.rows;
-                        let p = [rows[0][3], rows[1][3], rows[2][3]];
-                        let scale = (rows[1][0].powi(2) + rows[1][1].powi(2) + rows[1][2].powi(2))
-                            .sqrt();
-                        // The fish's body reaches about 0.40 of its length below
-                        // its centre, a little more as it noses up or down.
-                        let bottom = p[1] - 0.45 * scale;
-                        let ground = seabed.ground(p[0], p[2]);
-                        assert!(
-                            bottom >= ground - 1e-3,
-                            "a fish {:.3} into the seabed at {seconds:.1} s",
-                            ground - bottom
-                        );
-                        seen += 1;
-                    }
-                }
-            }
-            assert!(seen > 1000, "only {seen} fish in view");
-        }
-
-        /// A sister never passes through a kelp stalk: where a bed stands in her
-        /// way she rises over it, and the drawn hull keeps clear of every blade.
-        #[test]
-        fn sisters_keep_clear_of_the_kelp() {
-            let mut seen = 0;
-            let mut blades = 0;
-            for visit in [0u64, 500_000] {
-                let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
-                let seabed = Seabed::new(visit, seed);
-                let mut voyage = Voyage::default();
-                let mut helm = super::super::helm::Helm::default();
-                let mut frame = Frame::new();
-                for i in 0..1800 {
-                    let seconds = 5.0 + i as f64;
-                    let at = voyage.advance(seconds, seed);
-                    let pose = helm.steer(&seabed, at, seconds);
-                    let world = World {
-                        seabed: &seabed,
-                        pose,
-                        t: seconds as f32,
-                    };
-                    build(&world, &mut frame, &mut StaticCache::default());
-                    let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
-                        continue;
-                    };
-                    seen += 1;
-                    let rows = hull.rows;
-                    let turn = rows.map(|row| [row[0], row[1], row[2]].map(|v| v / SUB_LENGTH));
+    /// No fish is ever drawn with its body in the seabed, however the school
+    /// straddles a rise in it or bends as it turns.
+    #[test]
+    fn fish_keep_off_the_seabed() {
+        let mut seen = 0;
+        for visit in [0u64, 500_000] {
+            let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
+            let seabed = Seabed::new(visit, seed);
+            let mut voyage = Voyage::default();
+            let mut helm = super::super::helm::Helm::default();
+            let mut frame = Frame::new();
+            for i in 0..600 {
+                let seconds = 5.0 + i as f64 * 3.0;
+                let at = voyage.advance(seconds, seed);
+                let pose = helm.steer(&seabed, at, seconds);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: seconds as f32,
+                };
+                frame.clear();
+                shoals(&world, &mut frame);
+                for fish in &frame.solid[Model::Fish.index()] {
+                    let rows = fish.rows;
                     let p = [rows[0][3], rows[1][3], rows[2][3]];
-                    let to_local = |q: [f32; 3]| {
-                        let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
-                        [0, 1, 2].map(|c| turn[0][c] * d[0] + turn[1][c] * d[1] + turn[2][c] * d[2])
-                    };
-                    for plant in &frame.solid[Model::Kelp.index()] {
-                        if plant.extra[2] < 0.05 {
-                            continue;
-                        }
-                        blades += 1;
-                        let base = [plant.rows[0][3], plant.rows[1][3], plant.rows[2][3]];
-                        let tall = (plant.rows[1][0].powi(2)
-                            + plant.rows[1][1].powi(2)
-                            + plant.rows[1][2].powi(2))
-                        .sqrt();
-                        for k in 0..=10 {
-                            let q = [base[0], base[1] + tall * k as f32 / 10.0, base[2]];
-                            let local = to_local(q);
-                            let across = local[1].hypot(local[2]);
-                            assert!(
-                                local[0].abs() > 0.5 || across > 0.1,
-                                "a sister passes through kelp at {seconds:.1} s: \
+                    let scale =
+                        (rows[1][0].powi(2) + rows[1][1].powi(2) + rows[1][2].powi(2)).sqrt();
+                    // The fish's body reaches about 0.40 of its length below
+                    // its centre, a little more as it noses up or down.
+                    let bottom = p[1] - 0.45 * scale;
+                    let ground = seabed.ground(p[0], p[2]);
+                    assert!(
+                        bottom >= ground - 1e-3,
+                        "a fish {:.3} into the seabed at {seconds:.1} s",
+                        ground - bottom
+                    );
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 1000, "only {seen} fish in view");
+    }
+
+    /// A sister never passes through a kelp stalk: where a bed stands in her
+    /// way she rises over it, and the drawn hull keeps clear of every blade.
+    #[test]
+    fn sisters_keep_clear_of_the_kelp() {
+        let mut seen = 0;
+        let mut blades = 0;
+        for visit in [0u64, 500_000] {
+            let seed = (visit % 1_000_003) as f32 / 1_000_003.0;
+            let seabed = Seabed::new(visit, seed);
+            let mut voyage = Voyage::default();
+            let mut helm = super::super::helm::Helm::default();
+            let mut frame = Frame::new();
+            for i in 0..1800 {
+                let seconds = 5.0 + i as f64;
+                let at = voyage.advance(seconds, seed);
+                let pose = helm.steer(&seabed, at, seconds);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: seconds as f32,
+                };
+                build(&world, &mut frame, &mut StaticCache::default());
+                let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
+                    continue;
+                };
+                seen += 1;
+                let rows = hull.rows;
+                let turn = rows.map(|row| [row[0], row[1], row[2]].map(|v| v / SUB_LENGTH));
+                let p = [rows[0][3], rows[1][3], rows[2][3]];
+                let to_local = |q: [f32; 3]| {
+                    let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+                    [0, 1, 2].map(|c| turn[0][c] * d[0] + turn[1][c] * d[1] + turn[2][c] * d[2])
+                };
+                for plant in &frame.solid[Model::Kelp.index()] {
+                    if plant.extra[2] < 0.05 {
+                        continue;
+                    }
+                    blades += 1;
+                    let base = [plant.rows[0][3], plant.rows[1][3], plant.rows[2][3]];
+                    let tall = (plant.rows[1][0].powi(2)
+                        + plant.rows[1][1].powi(2)
+                        + plant.rows[1][2].powi(2))
+                    .sqrt();
+                    for k in 0..=10 {
+                        let q = [base[0], base[1] + tall * k as f32 / 10.0, base[2]];
+                        let local = to_local(q);
+                        let across = local[1].hypot(local[2]);
+                        assert!(
+                            local[0].abs() > 0.5 || across > 0.1,
+                            "a sister passes through kelp at {seconds:.1} s: \
                                  {across:.3} across at {:.2} along",
-                                local[0]
-                            );
-                        }
+                            local[0]
+                        );
                     }
                 }
             }
-            assert!(seen > 100, "only {seen} frames with a sister in view");
-            assert!(blades > 100, "only {blades} kelp blades in view with one");
         }
+        assert!(seen > 100, "only {seen} frames with a sister in view");
+        assert!(blades > 100, "only {blades} kelp blades in view with one");
+    }
 
     /// Bubbles never pop in or out of view. Over a few seconds of the divers'
     /// helmet trails, a flight of penguins' flipper trails and a submarine's
@@ -5273,7 +5441,10 @@ mod tests {
                 }
                 last = now.into_iter().map(|(p, _)| p).collect();
             }
-            assert!(seen > 100, "{name}: only {seen} bubbles in the whole sample");
+            assert!(
+                seen > 100,
+                "{name}: only {seen} bubbles in the whole sample"
+            );
             assert_eq!(pops, 0, "{name}: {pops} bubbles popped, worst {worst:.3}");
         }
     }

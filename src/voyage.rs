@@ -26,6 +26,38 @@ pub const BIOMES: usize = 8;
 /// wrecks, where the seabed first breaks away below a still sunlit rim.
 pub const ORDER: [usize; BIOMES] = [0, 1, 7, 2, 3, 4, 5, 6];
 
+/// The visit seed as the shader and the seabed see it: `visit` folded into
+/// 0..1. Seed 0 is the canonical circuit, so the reference sheet and every
+/// place named for a biome keep their meaning; every other visit shuffles the
+/// eight legs, so a new visit does not enter the biomes in the same order.
+pub fn seed_of(visit: u64) -> f32 {
+    (visit % 1_000_003) as f32 / 1_000_003.0
+}
+
+/// One 32-bit avalanche step.
+fn mix32(mut x: u32) -> u32 {
+    x = x.wrapping_add(0x9e37_79b9);
+    x = (x ^ (x >> 16)).wrapping_mul(0x21f0_aaad);
+    x = (x ^ (x >> 15)).wrapping_mul(0x735a_2d97);
+    x ^ (x >> 15)
+}
+
+/// The order the legs come in for a visit: [`ORDER`] itself for seed 0, and a
+/// deterministic Fisher-Yates shuffle of it for every other seed.
+pub fn order_for(seed: f32) -> [usize; BIOMES] {
+    let mut order = ORDER;
+    if seed == 0.0 {
+        return order;
+    }
+    let mut state = seed.to_bits() ^ 0x9e37_79b9;
+    for i in (1..BIOMES).rev() {
+        state = mix32(state);
+        let j = (state as usize) % (i + 1);
+        order.swap(i, j);
+    }
+    order
+}
+
 /// Where a visit starts within its first leg: on a settled stretch, rather than
 /// mid-transition.
 const START: f64 = LEG * 0.12;
@@ -212,12 +244,17 @@ pub struct Biome {
 }
 
 impl Biome {
-    /// The same sequence as `leg` in `dive3d/scene.wesl`.
+    /// The same sequence as `leg` in `dive3d/scene.wesl`, with the order the
+    /// visit's seed gives.
     pub fn at(x: f64, seed: f32) -> Self {
+        Self::in_order(x, &order_for(seed))
+    }
+
+    /// As [`Biome::at`], with the eight-leg circuit already shuffled.
+    pub fn in_order(x: f64, order: &[usize; BIOMES]) -> Self {
         let u = x / LEG;
         let k = u.floor();
-        let start = (seed * BIOMES as f32) as i64;
-        let id = |k: f64| ORDER[(k as i64 + start).rem_euclid(BIOMES as i64) as usize];
+        let id = |k: f64| order[(k as i64).rem_euclid(BIOMES as i64) as usize];
         let t = ((u - k - (1.0 - BLEND)) / BLEND).clamp(0.0, 1.0);
         Self {
             a: id(k),
@@ -226,7 +263,7 @@ impl Biome {
         }
     }
 
-    /// Which leg of a circuit starting with the shallows biome `id` is.
+    /// Which leg of the canonical circuit starts with biome `id`.
     #[cfg(test)]
     pub fn leg_of(id: usize) -> usize {
         ORDER.iter().position(|&b| b == id).unwrap_or(0)
@@ -262,8 +299,37 @@ mod tests {
         let mut voyage = Voyage::default();
         let at = voyage.advance(0.0, 0.0);
         assert_eq!(Biome::at(at.x, 0.0).a, 0);
+        let order = order_for(0.5);
         let at = voyage.advance(0.0, 0.5);
-        assert_eq!(Biome::at(at.x, 0.5).a, ATLANTIS);
+        assert_eq!(Biome::at(at.x, 0.5).a, order[0]);
+        assert_ne!(
+            order, ORDER,
+            "a visit should not repeat the canonical circuit"
+        );
+    }
+
+    #[test]
+    fn a_seeded_circuit_is_stable_and_covers_every_biome() {
+        for visit in [0u64, 1, 7, 42, 500_000] {
+            let seed = seed_of(visit);
+            let order = order_for(seed);
+            assert_eq!(
+                order,
+                order_for(seed),
+                "the same visit gives the same circuit"
+            );
+            let mut seen = order;
+            seen.sort_unstable();
+            assert_eq!(seen, std::array::from_fn::<usize, BIOMES, _>(|i| i));
+            // Every leg is one of the eight, and the legs either side of a
+            // border differ.
+            for leg in 0..2 * BIOMES {
+                let a = Biome::in_order((leg as f64 + 0.45) * LEG, &order).a;
+                let b = Biome::in_order((leg as f64 + 1.45) * LEG, &order).a;
+                assert_ne!(a, b);
+            }
+        }
+        assert_eq!(order_for(0.0), ORDER, "seed 0 is the reference circuit");
     }
 
     #[test]
