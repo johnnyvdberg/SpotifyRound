@@ -686,9 +686,19 @@ mod effect {
     pub const CITY_GLASS: u64 = 1 << 40;
     /// `Pipework` and `Sign`: the city's pipes and neon signs.
     pub const CITY_WORKS: u64 = 1 << 41;
+    /// `Ziggurat`, `Arcade`, `Factory` and `Theatre`: the city's other
+    /// buildings.
+    pub const CITY_BLOCKS: u64 = 1 << 42;
 
-    pub const MODEL_BITS: u64 =
-        ((1 << 31) - 1) | CORALS | SARGASSUM | TREES | VENTS | TOWERS | CITY_GLASS | CITY_WORKS;
+    pub const MODEL_BITS: u64 = ((1 << 31) - 1)
+        | CORALS
+        | SARGASSUM
+        | TREES
+        | VENTS
+        | TOWERS
+        | CITY_GLASS
+        | CITY_WORKS
+        | CITY_BLOCKS;
     pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
     pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
 
@@ -794,6 +804,12 @@ mod effect {
             "Pipework, Sign",
             "the drowned city's pipes and neon signs",
         ),
+        (
+            "city blocks",
+            CITY_BLOCKS,
+            "Ziggurat, Arcade, Factory, Theatre",
+            "the drowned city's stepped hall, arcade, works and picture palace",
+        ),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
         ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
         (
@@ -881,6 +897,7 @@ fn model_bit(model: usize) -> u64 {
         Model::Tower | Model::Rotunda => effect::TOWERS,
         Model::Dome | Model::Walkway => effect::CITY_GLASS,
         Model::Pipework | Model::Sign => effect::CITY_WORKS,
+        Model::Ziggurat | Model::Arcade | Model::Factory | Model::Theatre => effect::CITY_BLOCKS,
     }
 }
 

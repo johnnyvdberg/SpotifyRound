@@ -590,10 +590,22 @@ pub enum Model {
     /// A neon roundel on an iron plate, facing +z: a ring with a bar
     /// through it, in the instance's colour.
     Sign,
+    /// A stepped art-deco pyramid: four windowed tiers behind brass cornices,
+    /// neon at its corners and a beacon on its spire.
+    Ziggurat,
+    /// A low, wide arcade: two floors of windows, a colonnade along both
+    /// faces, a lit glass canopy and a neon marquee above it.
+    Arcade,
+    /// A riveted works hall with a sawtooth roof of lit skylights, two
+    /// smokestacks, pipes and a glowing furnace door.
+    Factory,
+    /// A round picture palace: a ribbed drum, neon fins round its lower
+    /// wall, a projecting glass marquee ringed in light, and a lit cupola.
+    Theatre,
 }
 
 impl Model {
-    pub const ALL: [Model; 60] = [
+    pub const ALL: [Model; 64] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -654,6 +666,10 @@ impl Model {
         Model::Walkway,
         Model::Pipework,
         Model::Sign,
+        Model::Ziggurat,
+        Model::Arcade,
+        Model::Factory,
+        Model::Theatre,
     ];
 
     pub fn index(self) -> usize {
@@ -944,6 +960,10 @@ impl Model {
             Model::Walkway => walkway(),
             Model::Pipework => pipework(),
             Model::Sign => sign(),
+            Model::Ziggurat => ziggurat(),
+            Model::Arcade => arcade(),
+            Model::Factory => factory(),
+            Model::Theatre => theatre(),
         }
     }
 }
@@ -2787,6 +2807,400 @@ fn sign() -> Mesh {
             city::PLAIN,
         );
     }
+    m
+}
+
+/// The drowned city's stepped pyramid: four tiers of windowed wall, each set
+/// back behind a brass cornice, with a neon band and corner piers on the
+/// middle tiers, a stepped crown and a beacon. It fills a block with a lower,
+/// broader silhouette than the towers and catches the eye from across the
+/// avenue.
+fn ziggurat() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(
+        &mut m,
+        block([0.72, 0.05, 0.72], [0.0, -0.03, 0.0], CRUST),
+        city::PLAIN,
+    );
+    barnacles(&mut m, 0.72, false);
+    let tiers = [
+        (0.66, 0.02, 0.60, 4),
+        (0.53, 0.60, 1.16, 3),
+        (0.40, 1.16, 1.68, 2),
+        (0.27, 1.68, 2.16, 1),
+        (0.15, 2.16, 2.52, 0),
+    ];
+    for (k, &(hw, y0, y1, piers)) in tiers.iter().enumerate() {
+        let mid = (y0 + y1) * 0.5;
+        let half = (y1 - y0) * 0.5;
+        city_part(
+            &mut m,
+            block([hw, half, hw], [0.0, mid, 0.0], IRON),
+            city::WINDOWS,
+        );
+        city_part(
+            &mut m,
+            block([hw + 0.028, 0.022, hw + 0.028], [0.0, y1, 0.0], BRASS),
+            city::PLAIN,
+        );
+        // A neon string course on two tiers, and brass corner piers rising
+        // past every cornice into small pinnacles.
+        if k == 1 || k == 3 {
+            city_part(
+                &mut m,
+                block(
+                    [hw + 0.012, 0.010, hw + 0.012],
+                    [0.0, y0 + 0.055, 0.0],
+                    WHITE,
+                ),
+                city::NEON,
+            );
+        }
+        let n = fewer(piers, 1);
+        for i in 0..n {
+            let u = if n == 1 {
+                0.0
+            } else {
+                -0.72 * hw + i as f32 * 1.44 * hw / (n - 1) as f32
+            };
+            for face in 0..4 {
+                let pier = block([0.018, half, 0.014], [hw + 0.012, mid, u], PIER);
+                city_part(&mut m, turned(pier, face as f32 * PI * 0.5), city::PLAIN);
+            }
+        }
+        let (corner, colour) = if k == 1 {
+            (city::NEON, WHITE)
+        } else {
+            (city::PLAIN, BRASS)
+        };
+        for (sx, sz) in [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)] {
+            city_part(
+                &mut m,
+                block(
+                    [0.024, half + 0.055, 0.024],
+                    [sx * hw, mid + 0.055, sz * hw],
+                    colour,
+                ),
+                corner,
+            );
+        }
+    }
+    city_part(
+        &mut m,
+        block([0.175, 0.05, 0.175], [0.0, 2.58, 0.0], BRASS),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        block([0.115, 0.035, 0.115], [0.0, 2.66, 0.0], BRASS),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        moved(point(0.055, 0.60, 8, 4, BRASS), [0.0, 2.69, 0.0]),
+        city::PLAIN,
+    );
+    beacon(&mut m, 0.03, [0.0, 3.32, 0.0]);
+    m
+}
+
+/// The drowned city's arcade: a low, broad hall of two windowed floors, a
+/// colonnade along both long faces under a lit glass canopy, a neon marquee
+/// over the doors and a small lit cupola on the roof. It is the street's
+/// frontage, between the towers.
+fn arcade() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(
+        &mut m,
+        block([0.98, 0.05, 0.62], [0.0, -0.03, 0.0], CRUST),
+        city::PLAIN,
+    );
+    barnacles(&mut m, 0.95, false);
+    city_part(
+        &mut m,
+        block([0.92, 0.42, 0.56], [0.0, 0.48, 0.0], IRON),
+        city::WINDOWS,
+    );
+    city_part(
+        &mut m,
+        block([0.96, 0.024, 0.60], [0.0, 0.92, 0.0], BRASS),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        block([0.74, 0.16, 0.42], [0.0, 1.10, 0.0], IRON),
+        city::WINDOWS,
+    );
+    city_part(
+        &mut m,
+        block([0.78, 0.020, 0.46], [0.0, 1.28, 0.0], BRASS),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        block([0.66, 0.030, 0.36], [0.0, 1.31, 0.0], BRASS),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        moved(cupola(0.15, 0.13, 14, 5, GLASS), [0.0, 1.34, 0.0]),
+        city::PANES,
+    );
+    city_part(&mut m, drum(0.035, 1.46, 1.52, 8, 4, BRASS), city::PLAIN);
+    beacon(&mut m, 0.022, [0.0, 1.55, 0.0]);
+    // The colonnade and its glass canopy, on both long faces.
+    for side in [-1.0f32, 1.0] {
+        let cols = fewer(5, 3);
+        for k in 0..cols {
+            let u = if cols == 1 {
+                0.0
+            } else {
+                -0.70 + k as f32 * 1.40 / (cols - 1) as f32
+            };
+            city_part(
+                &mut m,
+                moved(drum(0.034, 0.06, 0.88, 8, 4, PIER), [u, 0.0, side * 0.585]),
+                city::PLAIN,
+            );
+            city_part(
+                &mut m,
+                block([0.055, 0.020, 0.055], [u, 0.88, side * 0.585], BRASS),
+                city::PLAIN,
+            );
+        }
+        city_part(
+            &mut m,
+            block([0.82, 0.018, 0.19], [0.0, 0.79, side * 0.665], GLASS),
+            city::PANES,
+        );
+        city_part(
+            &mut m,
+            block([0.82, 0.010, 0.022], [0.0, 0.772, side * 0.755], WHITE),
+            city::NEON,
+        );
+        // A dark marquee board with a neon border over the canopy.
+        city_part(
+            &mut m,
+            block([0.50, 0.10, 0.018], [0.0, 1.04, side * 0.575], [0.16; 3]),
+            city::PLAIN,
+        );
+        city_part(
+            &mut m,
+            block([0.46, 0.008, 0.024], [0.0, 1.13, side * 0.580], WHITE),
+            city::NEON,
+        );
+        for sx in [-1.0f32, 1.0] {
+            city_part(
+                &mut m,
+                block(
+                    [0.018, 0.36, 0.018],
+                    [sx * 0.735, 0.49, side * 0.575],
+                    WHITE,
+                ),
+                city::NEON,
+            );
+        }
+    }
+    m
+}
+
+/// The drowned city's works: a riveted hall with a sawtooth roof of lit
+/// skylights, two banded smokestacks, a run of great pipes and a glowing
+/// furnace door. It is the city's industry, lower and dirtier than the
+/// towers.
+fn factory() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(
+        &mut m,
+        block([0.95, 0.05, 0.65], [0.0, -0.03, 0.0], CRUST),
+        city::PLAIN,
+    );
+    barnacles(&mut m, 0.92, false);
+    city_part(
+        &mut m,
+        block([0.88, 0.38, 0.58], [0.0, 0.48, 0.0], IRON),
+        city::WINDOWS,
+    );
+    city_part(
+        &mut m,
+        block([0.92, 0.025, 0.62], [0.0, 0.88, 0.0], BRASS),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        block([0.86, 0.030, 0.56], [0.0, 0.92, 0.0], IRON),
+        city::PLAIN,
+    );
+    // A sawtooth of lit skylights and their brass frames.
+    let teeth = fewer(4, 2);
+    for k in 0..teeth {
+        let u = -0.63 + k as f32 * 1.26 / (teeth - 1).max(1) as f32;
+        city_part(
+            &mut m,
+            block([0.105, 0.11, 0.52], [u, 1.01, 0.0], GLASS),
+            city::PANES,
+        );
+        city_part(
+            &mut m,
+            block([0.018, 0.13, 0.55], [u - 0.11, 1.03, 0.0], BRASS),
+            city::PLAIN,
+        );
+    }
+    // Two stacks with their bands and flared mouths.
+    for (x, z, r, top) in [(-0.50, 0.26, 0.13, 2.55), (0.48, 0.10, 0.10, 2.20)] {
+        city_part(&mut m, drum(r, 0.90, top, 12, 6, IRON), city::PLAIN);
+        let bands = fewer(3, 2);
+        for k in 0..bands {
+            let y = 1.10 + k as f32 * (top - 1.25) / (bands.max(2) - 1) as f32;
+            city_part(
+                &mut m,
+                drum(r + 0.018, y, y + 0.035, 12, 6, BRASS),
+                city::PLAIN,
+            );
+        }
+        city_part(
+            &mut m,
+            drum(r + 0.055, top - 0.06, top + 0.02, 12, 6, BRASS),
+            city::PLAIN,
+        );
+        beacon(&mut m, 0.022, [x, top + 0.08, z]);
+    }
+    // A run of pipes down one side and a riser into the hall.
+    city_part(
+        &mut m,
+        moved(
+            along_x(drum(0.045, -0.92, 0.92, 10, 5, VERDIGRIS)),
+            [0.0, 0.30, -0.675],
+        ),
+        city::PLAIN,
+    );
+    for x in [-0.86, -0.30, 0.30, 0.86] {
+        city_part(
+            &mut m,
+            moved(
+                along_x(drum(0.06, -0.025, 0.025, 10, 5, BRASS)),
+                [x, 0.30, -0.675],
+            ),
+            city::PLAIN,
+        );
+    }
+    city_part(
+        &mut m,
+        moved(
+            drum(0.045, 0.30, 0.92, 10, 5, VERDIGRIS),
+            [0.66, 0.0, -0.675],
+        ),
+        city::PLAIN,
+    );
+    // Furnace doors, glowing from within on both long faces.
+    for side in [-1.0f32, 1.0] {
+        city_part(
+            &mut m,
+            block(
+                [0.30, 0.20, 0.020],
+                [0.0, 0.34, side * 0.595],
+                [0.20, 0.17, 0.14],
+            ),
+            city::PLAIN,
+        );
+        city_part(
+            &mut m,
+            block([0.24, 0.15, 0.028], [0.0, 0.34, side * 0.607], GLASS),
+            city::PANES,
+        );
+        for x in [-0.12, 0.12] {
+            city_part(
+                &mut m,
+                block([0.014, 0.16, 0.012], [x, 0.34, side * 0.625], IRON),
+                city::PLAIN,
+            );
+        }
+    }
+    m
+}
+
+/// The drowned city's picture palace: a ribbed round drum with neon fins
+/// round its lower wall, a wide glass marquee ringed in light, a narrower
+/// upper drum and a lit cupola. It is the city's night out.
+fn theatre() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(&mut m, drum(0.86, -0.35, 0.08, 26, 9, CRUST), city::PLAIN);
+    barnacles(&mut m, 0.84, true);
+    city_part(&mut m, drum(0.74, 0.06, 1.10, 26, 10, IRON), city::WINDOWS);
+    city_part(&mut m, drum(0.80, 1.08, 1.13, 26, 10, BRASS), city::PLAIN);
+    city_part(&mut m, drum(0.52, 1.13, 1.50, 20, 8, IRON), city::WINDOWS);
+    city_part(&mut m, drum(0.58, 1.48, 1.53, 20, 8, BRASS), city::PLAIN);
+    // Brass fins up the lower wall, every other one carrying a thin neon
+    // strip: enough to mark the picture palace without turning it into a
+    // fairground hoop.
+    let fins = fewer(10, 5);
+    for k in 0..fins {
+        let a = k as f32 / fins as f32 * TAU;
+        let (s, c) = a.sin_cos();
+        let lit = k % 2 == 0;
+        city_part(
+            &mut m,
+            block(
+                [0.014, 0.34, 0.018],
+                [0.752 * c, 0.56, 0.752 * s],
+                if lit { WHITE } else { PIER },
+            ),
+            if lit { city::NEON } else { city::PLAIN },
+        );
+    }
+    // The marquee: a brass fascia, a glass canopy beneath it and a thin neon
+    // rim, all standing out over the pavement rather than round the whole
+    // drum like a carousel roof.
+    city_part(&mut m, drum(0.94, 1.06, 1.11, 26, 10, BRASS), city::PLAIN);
+    city_part(&mut m, drum(0.91, 1.01, 1.05, 26, 10, GLASS), city::PANES);
+    city_part(
+        &mut m,
+        moved(ring(0.915, 0.010, 26, WHITE), [0.0, 1.03, 0.0]),
+        city::NEON,
+    );
+    for k in 0..4 {
+        let a = (k as f32 - 1.5) * 0.22;
+        city_part(
+            &mut m,
+            block(
+                [0.012, 0.34, 0.012],
+                [0.91 * a.sin(), 1.02, 0.91 * a.cos()],
+                BRASS,
+            ),
+            city::PLAIN,
+        );
+    }
+    // The entrance: a projecting doorway and canopy on the avenue side.
+    for (z, w, h) in [(0.78, 0.24, 0.50), (0.84, 0.30, 0.16)] {
+        city_part(
+            &mut m,
+            block([w, h * 0.5, 0.07], [0.0, h * 0.5 + 0.06, z], IRON),
+            city::WINDOWS,
+        );
+    }
+    city_part(
+        &mut m,
+        block([0.34, 0.016, 0.16], [0.0, 0.62, 0.84], GLASS),
+        city::PANES,
+    );
+    city_part(
+        &mut m,
+        block([0.34, 0.010, 0.018], [0.0, 0.61, 0.92], WHITE),
+        city::NEON,
+    );
+    // The cupola and its lantern.
+    city_part(
+        &mut m,
+        moved(cupola(0.42, 0.40, 20, 7, GLASS), [0.0, 1.53, 0.0]),
+        city::PANES,
+    );
+    city_part(&mut m, drum(0.10, 1.90, 2.02, 10, 5, BRASS), city::PLAIN);
+    city_part(
+        &mut m,
+        moved(point(0.07, 0.18, 8, 4, BRASS), [0.0, 2.02, 0.0]),
+        city::PLAIN,
+    );
+    beacon(&mut m, 0.028, [0.0, 2.23, 0.0]);
     m
 }
 

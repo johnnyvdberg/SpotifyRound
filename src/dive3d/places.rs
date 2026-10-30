@@ -126,6 +126,11 @@ pub fn all() -> Vec<Place> {
         ("passages-2", -0.02),
         ("passages-3", 0.10),
         ("far-mouth", 0.22),
+        // The three shallow nooks, seen a little before the window reaches
+        // them: the camp, the crystal pocket and the lava pool.
+        ("nook-camp", 0.10),
+        ("nook-crystal", 0.50),
+        ("nook-ember", 0.70),
     ] {
         places.push(Place::new(format!("{cave}-cave-{name}"), cave + at, seed));
     }

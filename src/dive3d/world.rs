@@ -513,6 +513,35 @@ pub struct Opening {
     pub rise: f32,
 }
 
+/// What is tucked into one of the tunnel's shallow side nooks: a pocket of
+/// crystals, a still pool of lava, or a landing party's abandoned camp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NookKind {
+    Crystal,
+    Ember,
+    Camp,
+}
+
+/// A shallow recess in the tunnel wall, cut where a softer pocket of lava
+/// weathered out. It is a hollow, not a passage: the wall stands back a
+/// little over a hand's breadth of arc, and what is in it is close enough to
+/// see from the window.
+#[derive(Clone, Copy, Debug)]
+pub struct Nook {
+    pub kind: NookKind,
+    /// Its middle along the voyage, and round the arch (radians from the
+    /// window-side floor).
+    pub x: f32,
+    pub a: f32,
+    /// How far it stands back, and how wide it is along and round the arch.
+    pub depth: f32,
+    pub width: f32,
+    pub spread: f32,
+}
+
+/// The nooks in each cave, through the tunnel's length.
+const NOOKS: usize = 3;
+
 /// The tunnel's rings: how far apart, and how many points round each.
 const RING_STEP: f32 = 0.1;
 const AROUND: usize = 36;
@@ -750,6 +779,50 @@ impl Seabed {
         }))
     }
 
+    /// The cave's three shallow nooks, in the same frame as the openings:
+    /// one low on the window side for a camp, one higher for crystals, and
+    /// one low for a pool of lava. They sit between the passages, so the
+    /// tunnel's mouth and every passage's opening stay clear.
+    pub fn nooks(&self, x: f32) -> Option<[Nook; NOOKS]> {
+        let leg = crate::voyage::LEG as f32;
+        let u = (x / leg).floor();
+        let k = [u, u + 1.0]
+            .into_iter()
+            .find(|k| Biome::at(f64::from((k + 0.5) * leg), self.seed).a == CAVE)?;
+        let ki = k as i32;
+        let salt = self.seed.to_bits() & 0xffff;
+        Some(std::array::from_fn(|i| {
+            let h = |n: u32| hash(ki, i as i32, 730 + n + salt);
+            let (kind, along, angle, depth) = match i {
+                0 => (NookKind::Camp, 0.10, -0.06, 0.20),
+                1 => (NookKind::Crystal, 0.50, 0.34, 0.27),
+                _ => (NookKind::Ember, 0.70, 0.05, 0.22),
+            };
+            Nook {
+                kind,
+                x: (k + along) * leg + (h(0) - 0.5) * 0.03,
+                a: angle * PI + (h(1) - 0.5) * 0.10,
+                depth: depth * (0.85 + 0.3 * h(2)),
+                width: 0.10 + 0.04 * h(3),
+                spread: 0.16 + 0.06 * h(4),
+            }
+        }))
+    }
+
+    /// The tunnel's extra radius at (x, a) from the nooks: a smooth hollow,
+    /// only ever outward, so a nook is more room for the hull, never less.
+    fn nook_bump(&self, x: f32, a: f32) -> f32 {
+        let Some(nooks) = self.nooks(x) else {
+            return 0.0;
+        };
+        nooks.iter().fold(0.0f32, |most, n| {
+            let dx = (x - n.x) / n.width;
+            let da = (a - n.a) / n.spread;
+            let bump = n.depth * (-(dx * dx + da * da) * 1.5).exp();
+            most.max(bump)
+        })
+    }
+
     /// How far the side passages clear the massif at (x, o): 1 within one,
     /// where the rock is cut back to the tunnel's floor.
     fn bay(&self, x: f32, o: f32) -> f32 {
@@ -819,9 +892,15 @@ impl Seabed {
         local.max(-SEABED[CAVE] - 0.2)
     }
 
-    /// The tunnel's ragged inner radius at `x` and angle `a` around it.
+    /// The tunnel's ragged inner radius at `x` and angle `a` around it,
+    /// with the shallow nooks standing the wall back a little here and there.
     pub fn tunnel_radius(x: f32, a: f32) -> f32 {
         TUNNEL * (0.91 + 0.18 * vnoise(x * 2.2, a * 3.0, 6))
+    }
+
+    /// The same with the cave's nooks, for the world builder and the props.
+    fn tunnel_radius_with_nooks(&self, x: f32, a: f32) -> f32 {
+        Self::tunnel_radius(x, a) + self.nook_bump(x, a)
     }
 
     /// Height of the lava cave's vault.
@@ -1316,10 +1395,15 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::Tree => carried(Surface::Kelp, 2.0),
         Model::Submarine => carried(Surface::Plates, 5.0),
         Model::Screw => carried(Surface::Copper, 1.0),
-        Model::Tower | Model::Rotunda | Model::Dome | Model::Pipework => {
-            fixed(Surface::Plates, 3.0)
+        Model::Tower
+        | Model::Rotunda
+        | Model::Dome
+        | Model::Pipework
+        | Model::Ziggurat
+        | Model::Factory => fixed(Surface::Plates, 3.0),
+        Model::Walkway | Model::Sign | Model::Arcade | Model::Theatre => {
+            fixed(Surface::Copper, 3.0)
         }
-        Model::Walkway | Model::Sign => fixed(Surface::Copper, 3.0),
         _ => None,
     }
 }
@@ -3258,6 +3342,16 @@ const CITY_CEILING: f32 = -0.9;
 const TOWER_TALL: f32 = 4.78;
 const TOWER_CROWN: f32 = 3.9;
 const ROTUNDA_CROWN: f32 = 3.5;
+/// The new blocks' heights to their tips and crowns, at unit scale, as
+/// their builders in `mesh` make them.
+const ZIGGURAT_TALL: f32 = 3.34;
+const ZIGGURAT_CROWN: f32 = 2.80;
+const ARCADE_TALL: f32 = 1.56;
+const ARCADE_CROWN: f32 = 1.44;
+const FACTORY_TALL: f32 = 2.63;
+const FACTORY_CROWN: f32 = 1.02;
+const THEATRE_TALL: f32 = 2.24;
+const THEATRE_CROWN: f32 = 1.96;
 /// The colours its signs and spires are lit in: sea green, rose, amber and
 /// a cold violet blue.
 const NEON: [[f32; 3]; 4] = [
@@ -3293,26 +3387,36 @@ impl Building {
         let at = match self.model {
             Model::Rotunda => ROTUNDA_CROWN,
             Model::Dome => 1.2,
+            Model::Ziggurat => ZIGGURAT_CROWN,
+            Model::Arcade => ARCADE_CROWN,
+            Model::Factory => FACTORY_CROWN,
+            Model::Theatre => THEATRE_CROWN,
             _ => TOWER_CROWN,
         };
         self.y + at * self.s * self.tall
     }
 
     fn top(&self) -> f32 {
-        let at = if self.model == Model::Dome {
-            1.6
-        } else {
-            TOWER_TALL
+        let at = match self.model {
+            Model::Dome => 1.6,
+            Model::Ziggurat => ZIGGURAT_TALL,
+            Model::Arcade => ARCADE_TALL,
+            Model::Factory => FACTORY_TALL,
+            Model::Theatre => THEATRE_TALL,
+            _ => TOWER_TALL,
         };
         self.y + at * self.s * self.tall
     }
 
     /// The radius of its footing, however it is turned.
     fn reach(&self) -> f32 {
-        if self.model == Model::Dome {
-            1.05 * self.s
-        } else {
-            0.92 * self.s
+        match self.model {
+            Model::Dome => 1.05 * self.s,
+            Model::Arcade => 1.02 * self.s,
+            Model::Factory => 0.98 * self.s,
+            Model::Theatre => 0.96 * self.s,
+            Model::Ziggurat => 0.78 * self.s,
+            _ => 0.92 * self.s,
         }
     }
 
@@ -3335,36 +3439,75 @@ fn building(w: &World, ix: i32, iz: i32, far: bool) -> Option<Building> {
     let x = (ix as f32 + 0.5 + (h(0) - 0.5) * 0.3) * size;
     let z = (iz as f32 + 0.5 + (h(1) - 0.5) * 0.3) * size;
     let across = z - corridor(x);
-    if far != (across.abs() >= CITY_SPLIT) || h(2) < if far { 0.3 } else { 0.2 } {
+    if far != (across.abs() >= CITY_SPLIT) || h(2) < if far { 0.18 } else { 0.08 } {
         return None;
     }
     let share = w.share(x, z, CITY);
     if share < 0.3 {
         return None;
     }
+    // The frontage is low and busy; the towers stand behind it and in the
+    // haze. Low blocks are the arcade, the works and the picture palace.
+    let front = !far && across.abs() < AVENUE + 4.2;
+    let roll = h(4);
     let model = if far {
-        if h(4) < 0.4 {
+        if roll < 0.22 {
+            Model::Ziggurat
+        } else if roll < 0.46 {
             Model::Rotunda
         } else {
             Model::Tower
         }
-    } else if h(4) < 0.2 {
+    } else if front && roll < 0.42 {
+        if h(5) < 0.45 {
+            Model::Arcade
+        } else if h(5) < 0.78 {
+            Model::Factory
+        } else {
+            Model::Theatre
+        }
+    } else if roll < 0.12 {
         Model::Dome
-    } else if h(4) < 0.5 {
+    } else if roll < 0.30 {
         Model::Rotunda
+    } else if roll < 0.46 {
+        Model::Ziggurat
+    } else if roll < 0.60 {
+        Model::Arcade
+    } else if roll < 0.72 {
+        Model::Factory
+    } else if roll < 0.84 {
+        Model::Theatre
     } else {
         Model::Tower
     };
-    let s = match (model, far) {
-        (Model::Dome, _) => 0.55 + 0.5 * h(3),
-        (_, false) => 0.75 + 0.45 * h(3),
-        (_, true) => 1.0 + 0.3 * h(3),
+    let s = match model {
+        Model::Dome => 0.55 + 0.5 * h(3),
+        Model::Arcade => 0.80 + 0.35 * h(3),
+        Model::Factory => 0.76 + 0.34 * h(3),
+        Model::Theatre => 0.72 + 0.30 * h(3),
+        Model::Ziggurat => 0.72 + 0.35 * h(3),
+        _ if far => 1.0 + 0.3 * h(3),
+        _ => 0.75 + 0.45 * h(3),
     };
-    let reach = if model == Model::Dome { 1.05 } else { 0.92 } * s;
+    let reach = match model {
+        Model::Dome => 1.05,
+        Model::Arcade => 1.02,
+        Model::Factory => 0.98,
+        Model::Theatre => 0.96,
+        Model::Ziggurat => 0.78,
+        _ => 0.92,
+    } * s;
     if across.abs() < AVENUE + reach {
         return None;
     }
-    let foot = 0.64 * s;
+    let foot = match model {
+        Model::Arcade => 0.9 * s,
+        Model::Factory => 0.82 * s,
+        Model::Theatre => 0.78 * s,
+        Model::Ziggurat => 0.6 * s,
+        _ => 0.64 * s,
+    };
     let y = [
         (0.0, 0.0),
         (foot, 0.0),
@@ -3375,11 +3518,23 @@ fn building(w: &World, ix: i32, iz: i32, far: bool) -> Option<Building> {
     .iter()
     .map(|&(dx, dz)| w.ground(x + dx, z + dz))
     .fold(f32::MAX, f32::min);
+    let tallest = match model {
+        Model::Dome => 1.6,
+        Model::Ziggurat => ZIGGURAT_TALL,
+        Model::Arcade => ARCADE_TALL,
+        Model::Factory => FACTORY_TALL,
+        Model::Theatre => THEATRE_TALL,
+        _ => TOWER_TALL,
+    };
     let tall = if model == Model::Dome {
         1.0
     } else {
-        let room = (CITY_CEILING - y) / (TOWER_TALL * s);
-        (0.85 + 0.4 * h(5)).min(room)
+        let room = (CITY_CEILING - y) / (tallest * s);
+        let natural = match model {
+            Model::Arcade | Model::Factory | Model::Theatre => 0.95 + 0.20 * h(5),
+            _ => 0.85 + 0.4 * h(5),
+        };
+        natural.min(room)
     };
     if tall < 0.5 {
         return None;
@@ -3408,6 +3563,64 @@ fn city_put(f: &mut Frame, model: Model, rows: [[f32; 4]; 3], colour: [f32; 3], 
     i.floor = [neon[0], neon[1], neon[2], 0.0];
 }
 
+/// A shop or arcade on the avenue's frontage, between the tower blocks: a
+/// small low building that fills the street and gives the near view a
+/// pavement of lit canopies and signs. It keeps clear of the avenue and of
+/// the nearest block buildings.
+fn street_shop(w: &World, ix: i32, iz: i32, x: f32, z: f32) -> Option<Building> {
+    let across = z - corridor(x);
+    let side = across.signum();
+    let s = 0.55 + 0.18 * hash(ix, iz, CITY_SALT + 131);
+    let reach = 1.02 * s;
+    if across.abs() < AVENUE + 0.55 + reach || across.abs() > AVENUE + 1.5 {
+        return None;
+    }
+    // The block it would stand in front of, and the neighbours either way.
+    let bx = (x / CITY_NEAR).floor() as i32;
+    let bz = (z / CITY_NEAR).floor() as i32;
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            let Some(b) = building(w, bx + dx, bz + dz, false) else {
+                continue;
+            };
+            if (x - b.x).hypot(z - b.z) < b.reach() + reach + 0.12 {
+                return None;
+            }
+        }
+    }
+    let share = w.share(x, z, CITY);
+    if share < 0.4 {
+        return None;
+    }
+    let y = w
+        .ground(x - reach * 0.6, z)
+        .min(w.ground(x + reach * 0.6, z));
+    let model = if hash(ix, iz, CITY_SALT + 132) < 0.72 {
+        Model::Arcade
+    } else {
+        Model::Theatre
+    };
+    let tall = if model == Model::Theatre {
+        0.82 + 0.12 * hash(ix, iz, CITY_SALT + 133)
+    } else {
+        1.0
+    };
+    let neon = NEON[((hash(ix, iz, CITY_SALT + 134) * 4.0) as usize).min(3)].map(|c| c * 0.75);
+    Some(Building {
+        x,
+        z,
+        y,
+        model,
+        s,
+        tall,
+        yaw: -corridor_slope(x).atan() + side * (hash(ix, iz, CITY_SALT + 135) - 0.5) * 0.10,
+        across,
+        share,
+        neon,
+        seed: (ix, iz, CITY_SALT + 136),
+    })
+}
+
 /// The drowned city: towers of brass and iron stepped back in cornices and
 /// lit from within, round towers under glass cupolas and glass domes over
 /// halls, standing in blocks either side of a clear avenue and on into the
@@ -3431,13 +3644,21 @@ fn city(w: &World, f: &mut Frame) {
         // Walkways to the next block along the avenue and the next out from
         // it, between towers on the same side and low enough for both.
         for (dx, dz, n) in [(1, 0, 11), (0, 1, 12)] {
-            if b.model == Model::Dome || b.hash(n) > 0.55 {
+            if matches!(
+                b.model,
+                Model::Dome | Model::Arcade | Model::Factory | Model::Theatre
+            ) || b.hash(n) > 0.55
+            {
                 continue;
             }
             let Some(o) = building(w, ix + dx, iz + dz, false) else {
                 continue;
             };
-            if o.model == Model::Dome || o.across.signum() != b.across.signum() {
+            if matches!(
+                o.model,
+                Model::Dome | Model::Arcade | Model::Factory | Model::Theatre
+            ) || o.across.signum() != b.across.signum()
+            {
                 continue;
             }
             let lift =
@@ -3467,6 +3688,23 @@ fn city(w: &World, f: &mut Frame) {
         }
         f.fade = fade(b.share, 0.3);
         building_life(w, f, &b);
+    }
+    // A pavement of low shops along both sides of the avenue, filling the
+    // gaps between the blocks. They stand clear of the avenue and of the
+    // towers behind them, and are close enough to the window to carry signs.
+    for &(ix, iz, x, z) in &cells(w, 2.4, 0.5, 16.0, CITY_SALT + 120) {
+        let Some(b) = street_shop(w, ix, iz, x, z) else {
+            continue;
+        };
+        let height = b.top() - b.y;
+        if !w.visible([b.x, b.y + height * 0.5, b.z], height * 0.55 + b.reach()) {
+            continue;
+        }
+        f.fade = fade(b.share, 0.35);
+        place_building(w, f, &b);
+        if (b.x - c[0]).hypot(b.z - c[2]) < 12.0 {
+            building_life(w, f, &b);
+        }
     }
     for &(ix, iz, _, _) in &cells(w, CITY_FAR, 8.0, 60.0, CITY_FAR_SALT) {
         let Some(b) = building(w, ix, iz, true) else {
@@ -3536,12 +3774,17 @@ fn building_life(w: &World, f: &mut Frame, b: &Building) {
     let (sy, cy) = b.yaw.sin_cos();
     let normal = [toward * sy, toward * cy];
     if b.model != Model::Dome && b.hash(13) < 0.6 {
-        let wall = if b.model == Model::Rotunda {
-            0.47
-        } else {
-            0.53
+        // The face the sign hangs on: how far out it stands, and how high up
+        // the facade, as fractions of the block's height.
+        let (wall, rise) = match b.model {
+            Model::Rotunda => (0.47, 0.95 + 0.15 * b.hash(14)),
+            Model::Ziggurat => (0.68, 0.70 + 0.18 * b.hash(14)),
+            Model::Arcade => (0.66, 0.88),
+            Model::Factory => (0.62, 0.56),
+            Model::Theatre => (0.80, 0.76),
+            _ => (0.53, 0.95 + 0.25 * b.hash(14)),
         };
-        let up = b.y + b.s * b.tall * (1.0 + 0.9 * b.hash(14));
+        let up = b.y + b.s * b.tall * rise;
         let out = wall * b.s + 0.08 * b.s;
         let at = [b.x + normal[0] * out, up, b.z + normal[1] * out];
         city_put(
@@ -3619,7 +3862,7 @@ fn city_beams(w: &World, f: &mut Frame) {
         let Some(b) = building(w, ix, iz, false) else {
             continue;
         };
-        if b.model == Model::Dome || b.hash(21) > 0.3 {
+        if !matches!(b.model, Model::Tower | Model::Rotunda | Model::Ziggurat) || b.hash(21) > 0.3 {
             continue;
         }
         let show = fade(b.share, 0.3);
@@ -3712,7 +3955,7 @@ fn cave(w: &World, f: &mut Frame) {
         }
         f.fade = fade(share, 0.65);
         let a = (off / TUNNEL).clamp(-1.0, 1.0).acos();
-        let top = c[1] + 0.85 * Seabed::tunnel_radius(x, a) * a.sin() + 0.08;
+        let top = c[1] + 0.85 * w.seabed.tunnel_radius_with_nooks(x, a) * a.sin() + 0.08;
         let len = 0.05 + 0.32 * hash(ix, iz, 112).powf(1.5);
         if !w.visible([x, top - len * 0.5, z], len) {
             continue;
@@ -3765,6 +4008,343 @@ fn cave(w: &World, f: &mut Frame) {
                 0.12,
                 1.0,
             );
+        }
+    }
+    cave_props(w, f);
+}
+
+/// A point on the tunnel's wall at `x` and round the arch `a`, `inset` inside
+/// the rock: the nooks' recesses included. None outside the tunnel.
+fn tunnel_spot(seabed: &Seabed, x: f32, a: f32, inset: f32) -> Option<[f32; 3]> {
+    let (c, lat, share) = seabed.tunnel_at(x)?;
+    if share < TUNNEL_SHARE {
+        return None;
+    }
+    let r = (seabed.tunnel_radius_with_nooks(x, a) - inset).max(0.18);
+    Some([
+        c[0] + lat[0] * r * a.cos(),
+        c[1] + 0.85 * r * a.sin(),
+        c[2] + lat[2] * r * a.cos(),
+    ])
+}
+
+/// The props in the tunnel: what has settled in the nooks (a landing party's
+/// camp, a crystal pocket, a still lava pool), and the stalagmites, rubble
+/// and flowstone that gather along the walls between them. The geometry of a
+/// nook is the tunnel's own (`tunnel_radius_with_nooks`); these are only what
+/// stands in it, so the hollow and its contents always agree.
+fn cave_props(w: &World, f: &mut Frame) {
+    let cam_x = w.camera();
+    let cam = w.pose.pos;
+    let Some(nooks) = w.seabed.nooks(cam_x) else {
+        return;
+    };
+    let basalt = [0.16, 0.14, 0.13];
+    for n in nooks {
+        if (n.x - cam_x).abs() > 14.0 {
+            continue;
+        }
+        let Some((c, lat, share)) = w.seabed.tunnel_at(n.x) else {
+            continue;
+        };
+        if share < 0.6 {
+            continue;
+        }
+        let floor = c[1] - 0.25 * TUNNEL;
+        let side = if n.a.cos() < 0.0 { -1.0 } else { 1.0 };
+        let at = |along: f32, across: f32| {
+            [
+                c[0] + along + lat[0] * side * across,
+                floor,
+                c[2] + lat[2] * side * across,
+            ]
+        };
+        let centre = at(0.0, 0.78);
+        if distance(centre, cam) < 0.50 || !w.visible([centre[0], floor + 0.4, centre[2]], 1.1) {
+            continue;
+        }
+        f.fade = fade(share, 0.6);
+        let h = |k: u32| hash((n.x * 10.0) as i32, n.kind as i32, k);
+        // A broken rim of rock about the hollow's foot.
+        for k in 0..4 {
+            let q = at((h(20 + k) - 0.5) * 0.24, 0.78 + 0.12 * h(30 + k));
+            let s = 0.020 + 0.030 * h(40 + k);
+            f.put(
+                [Model::Rock0, Model::Rock1, Model::Rock2][(k as usize) % 3],
+                place(
+                    [q[0], floor + s * 0.55, q[2]],
+                    h(50 + k) * TAU,
+                    0.0,
+                    h(60 + k) * TAU,
+                    [s, s * 0.65, s * 1.2],
+                ),
+                basalt,
+            )
+            .textured(Surface::Basalt, 5.0);
+        }
+        match n.kind {
+            NookKind::Crystal => {
+                // Points growing out of the high wall, aimed across the
+                // hollow so the window sees their long faces.
+                let violet = [0.42, 0.34, 0.95];
+                for k in 0..7 {
+                    let a = n.a + (h(70 + k) - 0.5) * n.spread * 1.5;
+                    let x = n.x + (h(80 + k) - 0.5) * n.width * 1.2;
+                    let Some(base) = tunnel_spot(w.seabed, x, a, 0.015) else {
+                        continue;
+                    };
+                    let inward = norm([c[0] - base[0], 0.0, c[2] - base[2]]);
+                    let mut dir = [
+                        inward[0] * 0.55 + (h(90 + k) - 0.5) * 0.6,
+                        0.35 + 0.7 * h(100 + k),
+                        inward[2] * 0.55 + (h(110 + k) - 0.5) * 0.6,
+                    ];
+                    dir = norm(dir);
+                    let len = 0.10 + 0.16 * h(120 + k);
+                    let tip = add(base, dir.map(|v| v * len));
+                    let width = 0.025 + 0.025 * h(130 + k);
+                    f.glass(
+                        if k < 2 {
+                            Model::Crystal
+                        } else {
+                            Model::CrystalCluster
+                        },
+                        between(base, tip, width),
+                        violet,
+                    )
+                    .material(material::CRYSTAL)
+                    .glowing(0.18 + 0.16 * h(140 + k));
+                    if k == 0 {
+                        f.sprite(tip, 0.018, [0.7, 0.55, 1.2], GLOW);
+                    }
+                }
+                let (_, strength) = Secret::Crystal.light();
+                let light = at(0.0, 0.62);
+                f.light([light[0], floor + 0.55, light[2]], 0.45, [0.12, 0.10, 0.24]);
+                let glow = Secret::Crystal.light().0.map(|v| v * strength * 0.20);
+                f.glow_sprite(
+                    [light[0], floor + 0.55, light[2]],
+                    0.30,
+                    glow,
+                    h(150) * TAU,
+                    1.4,
+                    1.0,
+                );
+            }
+            NookKind::Ember => {
+                // A still pool in the hollow, its rim of cooled rock, and
+                // embers drifting up from it.
+                f.put(
+                    Model::Cylinder,
+                    place(
+                        [at(0.0, 0.84)[0], floor + 0.012, at(0.0, 0.84)[2]],
+                        0.0,
+                        0.0,
+                        0.0,
+                        [0.16, 0.012, 0.11],
+                    ),
+                    [0.85, 0.18, 0.035],
+                )
+                .material(material::LAVA)
+                .glowing(0.75);
+                let a = at(0.0, 0.82);
+                let flicker = 0.85 + 0.15 * (w.t * 0.7 + n.x).sin();
+                f.light_flicker(
+                    [a[0], floor + 0.22, a[2]],
+                    0.75,
+                    [1.2 * flicker, 0.36 * flicker, 0.07 * flicker],
+                    h(160) * TAU,
+                );
+                for k in 0..10 {
+                    let q = at((h(170 + k) - 0.5) * 0.26, 0.66 + 0.18 * h(180 + k));
+                    f.ember_sprite(
+                        [q[0], floor + 0.02, q[2]],
+                        0.010 + 0.006 * h(190 + k),
+                        [1.0, 0.42, 0.08],
+                        h(200 + k),
+                        0.10 + 0.04 * h(210 + k),
+                        0.55,
+                    );
+                }
+                f.put(
+                    Model::Hex,
+                    place(at(-0.26, 0.86), 0.6, 0.0, 0.0, [0.05, 0.12, 0.05]),
+                    [0.10, 0.09, 0.09],
+                );
+            }
+            NookKind::Camp => {
+                // A landing party's cache, left when the Nautilus went on:
+                // crates, a bedroll, a helmet and a lantern still burning.
+                let warm = [1.0, 0.62, 0.24];
+                let crate_at = at(-0.15, 0.82);
+                f.put(
+                    Model::Box,
+                    place(
+                        [crate_at[0], floor + 0.13, crate_at[2]],
+                        n.a + 0.5,
+                        0.0,
+                        0.0,
+                        [0.045, 0.040, 0.045],
+                    ),
+                    [0.32, 0.23, 0.14],
+                )
+                .textured(Surface::Wood, 4.0);
+                f.put(
+                    Model::Box,
+                    place(
+                        [crate_at[0] + 0.06, floor + 0.30, crate_at[2] - 0.03],
+                        n.a - 0.3,
+                        0.0,
+                        0.0,
+                        [0.042, 0.038, 0.042],
+                    ),
+                    [0.36, 0.26, 0.16],
+                )
+                .textured(Surface::Wood, 4.0);
+                for (dx, dz) in [(-0.20, 0.0), (0.0, -0.12)] {
+                    f.put(
+                        Model::Box,
+                        place(
+                            [crate_at[0] + dx, floor + 0.11, crate_at[2] + dz],
+                            0.0,
+                            0.0,
+                            0.0,
+                            [0.005, 0.045, 0.050],
+                        ),
+                        [0.16, 0.13, 0.08],
+                    )
+                    .textured(Surface::Plates, 8.0);
+                }
+                let roll = at(0.22, 0.80);
+                f.put(
+                    Model::Capsule,
+                    place(
+                        [roll[0], floor + 0.06, roll[2]],
+                        0.7,
+                        0.0,
+                        0.0,
+                        [0.085, 0.026, 0.038],
+                    ),
+                    [0.42, 0.36, 0.24],
+                )
+                .textured(Surface::Canvas, 1.5);
+                let helm = at(0.30, 0.87);
+                f.put(
+                    Model::DiverHelmet,
+                    place([helm[0], floor + 0.08, helm[2]], 1.3, 0.0, 0.0, [0.18; 3]),
+                    [0.56, 0.36, 0.22],
+                );
+                let lamp = at(-0.02, 0.90);
+                f.put(
+                    Model::Cylinder,
+                    place(
+                        [lamp[0], floor + 0.14, lamp[2]],
+                        0.0,
+                        0.0,
+                        0.0,
+                        [0.016, 0.026, 0.016],
+                    ),
+                    [0.95, 0.70, 0.32],
+                )
+                .material(material::GOLD)
+                .glowing(1.4);
+                f.put(
+                    Model::Box,
+                    place(
+                        [lamp[0], floor + 0.21, lamp[2]],
+                        0.0,
+                        0.0,
+                        0.0,
+                        [0.021, 0.005, 0.021],
+                    ),
+                    [0.25, 0.20, 0.12],
+                )
+                .textured(Surface::Plates, 8.0);
+                f.light_flicker([lamp[0], floor + 0.18, lamp[2]], 0.8, warm, 0.8);
+                f.glow_sprite(
+                    [lamp[0], floor + 0.18, lamp[2]],
+                    0.16,
+                    [0.55, 0.26, 0.08],
+                    h(220) * TAU,
+                    2.0,
+                    1.0,
+                );
+                // A pick stood against the wall, its haft and iron head.
+                let pick = at(0.06, 0.82);
+                f.put(
+                    Model::Cylinder,
+                    place(
+                        [pick[0], floor + 0.16, pick[2]],
+                        0.0,
+                        0.55,
+                        0.0,
+                        [0.005, 0.070, 0.005],
+                    ),
+                    [0.34, 0.24, 0.15],
+                )
+                .textured(Surface::Wood, 5.0);
+                f.put(
+                    Model::Box,
+                    place(
+                        [pick[0] + 0.07, floor + 0.28, pick[2]],
+                        0.0,
+                        0.55,
+                        0.0,
+                        [0.032, 0.006, 0.006],
+                    ),
+                    [0.30, 0.30, 0.32],
+                );
+            }
+        }
+    }
+    // Stalagmites and rubble along the walls between the nooks, and the odd
+    // flowstone column where a drip has run for a while.
+    for &(ix, iz, x, z) in &cells(w, 0.30, 0.5, 10.0, 150) {
+        let off = z - corridor(x);
+        if !(0.62..TUNNEL * 0.88).contains(&off.abs()) || w.seabed.in_mouth(x, off, true) {
+            continue;
+        }
+        let share = w.share(x, z, CAVE);
+        if share < 0.65 {
+            continue;
+        }
+        let Some((c, _, _)) = w.seabed.tunnel_at(x) else {
+            continue;
+        };
+        let floor = c[1] - 0.25 * TUNNEL;
+        if distance([x, floor, z], cam) < 1.10 {
+            continue;
+        }
+        let h = hash(ix, iz, 151);
+        if h < 0.16 {
+            continue;
+        }
+        f.fade = fade(share, 0.65);
+        if h > 0.62 {
+            let len = 0.035 + 0.11 * hash(ix, iz, 152).powf(1.4);
+            let r = 0.008 + 0.013 * hash(ix, iz, 153);
+            if w.visible([x, floor + len * 0.5, z], len) {
+                f.put(
+                    Model::Cone,
+                    place([x, floor + 0.01, z], 0.0, 0.0, 0.0, [r, len, r]),
+                    basalt,
+                )
+                .textured(Surface::Basalt, 7.0);
+            }
+        } else {
+            let s = 0.018 + 0.030 * hash(ix, iz, 154);
+            f.put(
+                [Model::Rock0, Model::Rock1, Model::Rock2][(ix + iz).rem_euclid(3) as usize],
+                place(
+                    [x, floor + s * 0.45, z],
+                    hash(ix, iz, 155) * TAU,
+                    0.0,
+                    hash(ix, iz, 156) * TAU,
+                    [s, s * 0.55, s * 1.2],
+                ),
+                basalt,
+            )
+            .textured(Surface::Basalt, 5.0);
         }
     }
 }
@@ -3927,7 +4507,7 @@ fn build_tunnel(w: &World, f: &mut Frame) {
                     // Rougher than the radius the boat keeps clear of, but
                     // only ever outward from it; with ledges where one flow
                     // of lava lies on the last, and darker in the hollows.
-                    let r = Seabed::tunnel_radius(x, a);
+                    let r = seabed.tunnel_radius_with_nooks(x, a);
                     let rough =
                         0.06 * vnoise(x * 7.0, a * 6.0, 21) + 0.03 * vnoise(x * 17.0, a * 13.0, 24);
                     let ledge01 = smooth(0.55, 0.7, vnoise(x * 1.3, a * 4.0, 25));
