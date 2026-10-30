@@ -2487,3 +2487,25 @@ Kept: exact, and 20 bytes less vertex fetch per vertex (150k vertices is
 The same whole-scene rule applies to any future vertex-format change: every
 buffer a pipeline draws must use its layout. The tunnel conversion is the
 proof of that rule in the tree.
+
+## 64. Ice in the plane subset: rejected
+
+The surface's seven-attribute instance subset was extended to the ice (also
+a plane whose fragment never reads the floor), sharing the same
+`vs_model_surface` entry. The previews gate rejected it:
+
+- **mean 0.1128/255, max 159** — a localised but clearly visible difference,
+  not quantisation.
+- Adding `FADING`/`FADE_OPAQUE` to the subset constants did not change the
+  diff, so it is not the alpha path.
+
+What is ruled out: the ice is placed with `put(Plane, ..).material(ICE)`
+with no `.grounded()` and no `.floor()`, so `extra.y`, `extra.w` and `floor`
+are all zero — the dropped eighth attribute carries nothing the ice reads.
+That points at the other difference between `vs_model` and
+`vs_model_surface` (which the surface passes pixel-identically), and needs
+a single-ice-plane isolation render, not another full previews run.
+
+Reverted to `ce4467b`; the failed A/B is kept.
+
+![ice subset: packed / ice subset / difference](branch-ice-subset.png)
