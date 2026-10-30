@@ -2665,3 +2665,48 @@ sharpness for headroom, and the look should not drift without being asked.
   0.27/0.30/0.34 mean /255 over the four preview legs.
 
 ![adaptive scale: not a visual branch — same frames, stepped](branch-packed-whole.png)
+
+## 71. KMS overlay: the savings estimate and the hard blocker
+
+The expected saving, before building: the live kiosk reads 15.5-16.5 ms
+(whole frame), the dive pass alone 8.45 ms, but most of that gap is Slint's
+own UI render and texture upload, not the compositor. The compositor's share
+was audited at ~1-1.5 ms, so a KMS overlay would return **~1-3 ms**
+(15.5 -> ~12.5-14.5), not the headline 7, and not enough for 90 fps alone.
+
+Feasibility checked on the device: V3D 7.1.7 exposes
+`VK_EXT_external_memory_dma_buf`, `VK_EXT_image_drm_format_modifier` and
+`VK_KHR_external_memory_fd`; `card1` is vc4-drm with HDMI-A-1 and planes.
+But **wgpu 30 cannot create an exportable image or render into an imported
+one**: `wgpu::Texture::as_hal` exists, there is no `Texture::from_hal`, and
+`TextureDescriptor` has no external-memory field. wgpu-hal's only dma-buf
+call is `texture_from_dmabuf_fd`, which is import-only and returns a
+`hal::Texture` the public device cannot use.
+
+So the overlay is a **raw-Vulkan/dma-buf presentation rewrite of the dive**,
+not a flag around the existing renderer. It was not built; the ~1-3 ms does
+not justify the rewrite, and the render-scale lever is measured and already
+deployed.
+
+## 72. Deployed kiosk state (2026-10-30)
+
+Binary: `cargo build --release --locked`, default features (`skia`,
+`full-hd`), sha256 `e6cf55d1...b42e9`, at
+`/home/john/SpotifyRound/target/release/spotify-round`; previous binary kept
+as `spotify-round.before-adaptive`. `cage-kiosk.service`, no restarts.
+
+Enabled: `SPOTIFY_ROUND_LOG=info` (base unit) and
+`SPOTIFY_ROUND_ADAPTIVE=1` (drop-in `cage-kiosk.service.d/adaptive.conf`).
+
+Deliberately not enabled: `SPOTIFY_ROUND_FULL_SPEED` (vsync pacing),
+`SPOTIFY_ROUND_PROFILE` (no timestamp queries on V3D),
+`SPOTIFY_ROUND_RENDER_SCALE` (default 1.0; the adaptive controller steers
+it), `SPOTIFY_ROUND_UNDERWATER`/`SPOTIFY_ROUND_LOWPOLY` (look flags),
+`SPOTIFY_ROUND_SCENE` (debug), the `SPOTIFY_ROUND_CLIENT_ID`/`CONFIG_DIR`
+auth pair (untouched), and the `DIVE3D_*` benchmark/preview flags
+(`DIVE3D_STATS` prints a scene-build line every frame). The `kms` and
+`femtovg` cargo features are not deployed: cage + Skia is the working path,
+the LinuxKMS backend cannot carry the imported dive texture, and femtovg is
+the slower comparison renderer.
+
+![deployed adaptive build](img/kiosk-adaptive-2026-10-30.png)
