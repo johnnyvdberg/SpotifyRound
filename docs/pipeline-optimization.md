@@ -2409,3 +2409,35 @@ vertex, which is 150k vertices x 30 B = 4.5 MB/frame less.
 
 Not applied this round; the scheme above is the complete edit set (Cargo,
 mesh.rs, shader, mod.rs layout).
+
+## 61. Packed vertex: attempted, failed the gate, and the likely cause
+
+The §60 scheme was implemented (14-byte `Packed` records, snorm8/unorm8
+formats, shader `vec4` fetch, `Library::build` conversion) and the previews
+gate rejected it hard: **mean 8.55/255, max 240**. Reverted to 563f2d3.
+
+Two concrete suspects, in order:
+
+1. **The tunnel's vertices are still 44-byte `mesh::Vertex`.** The tunnel is
+   drawn with the model pipeline (its own vertex buffer, `Nautilus.tunnel`),
+   and the pipeline's vertex layout became 14-byte `Packed`, so the tunnel's
+   vertices decode from the wrong offsets. The cave leg is exactly where a
+   tunnel-sized artifact would dominate. A correct pack must convert the
+   tunnel's vertices too (or give the tunnel its own pack-compatible layout).
+2. **`aux` carries animation coordinates**, not just texture coords: the fish
+   tail/sweep and the whale fluke use `v.aux` in `animate`. Unorm8 gives
+   1/255 steps on those coordinates, which at the fish's amplitude could show
+   as a rippled body rather than a shifted one. The fix is either f16 aux or
+   an explicit test of the fish legs alone.
+
+So the gate failure is not evidence that the format scheme is wrong; it is
+evidence that the pack is a **whole-scene** change: every vertex buffer that
+a packed-layout pipeline draws must be packed (model, tunnel, and any other
+`mesh::Vertex` buffer), and `aux` needs f16 precision if it feeds `animate`.
+
+The failed A/B is kept as `branch-packed-vertex.png`; the tree is at the
+surface-subset state (43c4b39 + this doc record). The next attempt should
+start from a single-leg render with the tunnel excluded, confirm the model
+vertices decode, then pack the tunnel, then the full previews.
+
+![packed vertex attempt: surface subset / packed / difference](branch-packed-vertex.png)
