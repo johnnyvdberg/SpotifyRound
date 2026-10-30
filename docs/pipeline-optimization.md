@@ -2546,3 +2546,33 @@ Where the headroom is, in order of measured value:
 Draw calls are not a lever on this device: ~250 draws at ~0.7 us is ~0.18 ms.
 
 ![ice subset attempt, rejected](branch-ice-subset.png)
+
+## 66. Audit correction: the UI handoff is one post, not three
+
+An earlier audit note claimed three per-frame Slint event-loop posts. In this
+tree there is exactly one: `Graphics::on_ui_thread` (`src/gpu.rs`), called
+only when GPU work must touch the UI thread (the texture import path), and it
+runs inline when `headless`. There is no per-frame posting cost to merge.
+
+So the outside-pass's ~2.0 ms is not a posting cost. It is the Slint
+composite and the present: the UI draws its own frame into the shared device
+and the swapchain presents both. The only real fix is platform integration
+(a KMS/DRM overlay plane so the UI composites under the 3D scanout), which is
+not a shader or encoder change and is not available through the current
+Slint/wgpu surface path on the Pi.
+
+What remains, with honest value:
+
+| item | value | status |
+|---|---|---|
+| render scale (fill) | −0.9 ms at 0.9, −1.8 at 0.833 | built, opt-in |
+| KMS overlay (outside-pass) | ~1-1.5 ms | platform work, not started |
+| instance record pack | ~0.1-0.2 ms GPU fetch; CPU build unchanged | not started |
+| ice/glass plane subset | ~1 vec4/instance on two small pipelines | ice rejected (§64) |
+| fewer vertices (LOD) | ~1.2 ms at 150k vertices | the fish/kelp LODs already done |
+
+The count-scaling term for the future larger scenes is the **CPU build
+(152 ns/instance) and staging (85 ns/instance)**, not the draws, not the
+instance record. Reducing those means changing what a placer does per
+instance (fewer per-instance branches, direct writes into the staging
+buffer), which is a bigger change than the branches taken so far.
