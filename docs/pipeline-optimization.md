@@ -569,6 +569,14 @@ previews are byte-identical between two renders, and the before/after mean
 pixel difference is ≤0.01/255. The frame is unchanged: 10.49 ms mean, 12.96 ms
 forest.
 
+**Follow-up (scene pops).** The Nautilus' own hull-shed stream was removed: it
+put large rings on the salon glass, because those sprites were staged only
+0.45–0.95 units from the camera. `window_fade` now also fades a bubble to
+nothing within 1.2 units of the window, all four surviving emitters go through
+it, and the swipe rush starts at 1.45 units. `bubbles_keep_off_the_glass`
+walks every leg and a swipe at 30 fps and asserts no `BUBBLE` sprite is closer
+than 1.2 units (nearest 1.592).
+
 ## 11. Lighting: already the low-spec reference
 
 The references are in

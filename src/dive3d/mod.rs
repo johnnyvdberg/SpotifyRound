@@ -1,7 +1,7 @@
 //! The Nautilus' voyage as a real 3D scene.
 //!
-//! Seven biomes in turn, with the swipes and the dive profile of
-//! [`crate::voyage`], rasterised: a seabed built in
+//! Eight biomes in the order each visit's seed shuffles them, with the swipes
+//! and the dive profile of [`crate::voyage`], rasterised: a seabed built in
 //! tiles as it comes into view ([`terrain`]), procedurally generated models placed and
 //! animated each frame by [`world`], a depth buffer and one sample. A
 //! pixel only pays for what actually covers it, instead of every pixel asking
@@ -2581,6 +2581,10 @@ mod tests {
             scene.skip = skip.parse().unwrap_or(0);
         }
         let render = scene.render;
+        let seed: u64 = std::env::var("DIVE3D_PREVIEW_SEED")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
         let names = [
             "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
         ];
@@ -2592,9 +2596,15 @@ mod tests {
                     .collect()
             })
             .unwrap_or_else(|| vec![0.0]);
-        for (n, name) in names.iter().enumerate() {
+        for (n, _) in names.iter().enumerate() {
+            let name = Biome::at(
+                (n as f64 + 0.5) * crate::voyage::LEG,
+                seed_of(seed),
+            )
+            .a;
+            let name = names[name];
             for (k, offset) in offsets.iter().enumerate() {
-                let pixels = scene.read_back(&gpu, leg(n as f64) + offset, 0);
+                let pixels = scene.read_back(&gpu, leg(n as f64) + offset, seed);
                 let path = std::path::Path::new(&dir).join(format!("{n}-{name}-{k}.png"));
                 let image =
                     image::RgbaImage::from_raw(render, render, pixels).expect("a whole frame");

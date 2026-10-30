@@ -539,11 +539,16 @@ Earth textures: NASA **Blue Marble** (day) and **Black Marble** (night lights), 
 
 **The Nautilus.** The view from the Nautilus' salon window, after *Twenty Thousand Leagues Under the
 Seas*, drawn as a real 3D scene in `dive3d/`. The boat travels on through eight legs of about a
-minute and a half each, cross-fading from one to the next: sunlit kelp shallows, the submarine forest of Crespo,
-a trench, the galleons of Vigo Bay, the ruins of Atlantis, a lava cave, the abyss, and the underside of the
-polar ice before the shallows again. A swipe to the left carries it on to the next leg in a few
-seconds' surge, a swipe to the right back to the last; `voyage.rs` steers it, and every visit joins
-the circuit somewhere new over a new seabed.
+minute and a half each: sunlit kelp shallows, the submarine forest of Crespo, a trench, the galleons
+of Vigo Bay, the ruins of Atlantis, a lava cave, the abyss, and the underside of the polar ice. A
+swipe to the left carries it on to the next leg in a few seconds' surge, a swipe to the right back to
+the last; `voyage.rs` steers it, and every visit joins a new seabed on a circuit whose eight legs
+are shuffled by the visit's seed (`order_for`; seed 0 is the canonical reference circuit). The
+course weaves so each boundary is crossed in the middle of a real turn, and the weave is eased out
+over five units before the cave's mouth, where the tunnel leaves no room for it. Encounters — a
+school, a party of divers, a whale, the sister submarine — fade over the rim of the glass as they
+come into the window instead of appearing at full strength.
+
 
 ### Reference sheets
 
@@ -562,6 +567,9 @@ The [lighting index](docs/dive3d-lighting.html) labels the rows and columns. Reg
 ```sh
 DIVE3D_SHEET=docs/dive3d-scenes.png cargo test --release dive3d::tests::scenes_sheet -- --ignored
 DIVE3D_QUALITY_SHEET=docs/dive3d-lighting.png cargo test --release dive3d::tests::quality_sheet -- --ignored
+# The leg, seabed and cave shots of one exact random circuit: seed 0 is the
+# canonical reference, any other visit number gives a reproducible shuffle.
+DIVE3D_SHOTS_SEED=7 DIVE3D_SHOTS_DIR=/tmp/dive-seed7 cargo test --release dive3d::tests::screenshots -- --ignored
 ```
 
 Both use the fast reference path (`read_back_fast`) so a whole sheet takes seconds, not the

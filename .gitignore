@@ -4,3 +4,4 @@
 .DS_Store
 .idea/db-forest-config.xml
 .claude/
+.worktrees/
