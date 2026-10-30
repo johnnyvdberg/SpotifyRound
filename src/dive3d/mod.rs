@@ -639,10 +639,11 @@ mod effect {
     pub const TURTLES: u64 = 1 << 19;
     /// The squid's body (`Mantle`); its tentacles are [`TUBES`].
     pub const SQUID: u64 = 1 << 20;
-    /// `Tube`: squid tentacles and jellyfish tentacles.
+    /// `Tube`: the squid's tentacles.
     pub const TUBES: u64 = 1 << 21;
-    /// The jellyfish's bell (`Bell`) and its frilled oral arms
-    /// (`JellyArm`); its tentacles are [`TUBES`].
+    /// The jellyfish: its bell (`Bell`), frilled oral arms (`JellyArm`)
+    /// and fringe of tentacles (`JellyFringe`), and the comb jellies
+    /// (`Comb`).
     pub const JELLYFISH: u64 = 1 << 22;
     pub const SHELLS: u64 = 1 << 23;
     pub const FANS: u64 = 1 << 24;
@@ -736,12 +737,12 @@ mod effect {
         ("mantas", MANTAS, "Manta", "shallows, wrecks, Atlantis"),
         ("turtles", TURTLES, "Turtle", "shallows, forest"),
         ("squid", SQUID, "Mantle", "the abyss's squid body"),
-        ("tubes", TUBES, "Tube", "squid and jellyfish tentacles"),
+        ("tubes", TUBES, "Tube", "the squid's tentacles"),
         (
             "jellyfish",
             JELLYFISH,
-            "Bell, JellyArm",
-            "drifting jellyfish bells and oral arms",
+            "Bell, JellyArm, JellyFringe, Comb",
+            "drifting jellyfish, their arms and tentacles, and comb jellies",
         ),
         ("shells", SHELLS, "Shell", "clams and pearls"),
         ("fans", FANS, "Fan", "sea fans"),
@@ -826,7 +827,7 @@ fn model_bit(model: usize) -> u64 {
         Model::Turtle => effect::TURTLES,
         Model::Mantle => effect::SQUID,
         Model::Tube => effect::TUBES,
-        Model::Bell | Model::JellyArm => effect::JELLYFISH,
+        Model::Bell | Model::JellyArm | Model::JellyFringe | Model::Comb => effect::JELLYFISH,
         Model::Shell => effect::SHELLS,
         Model::Fan => effect::FANS,
         Model::Star => effect::STARS,
@@ -2813,6 +2814,9 @@ mod tests {
 
     /// Write a frame of every place in [`places::all`] to `DIVE3D_SHOTS_DIR`,
     /// with a contact sheet of them all and an `index.html` naming each.
+    /// `DIVE3D_SHOTS_OFFSETS=0,0.3,0.6,0.9` shoots each place again that many
+    /// seconds later, as `<name>+<offset>s.png`: a short sequence, to see
+    /// that what the shader moves (a jellyfish's stroke) does move.
     #[test]
     #[ignore = "writes debugging screenshots; set DIVE3D_SHOTS_DIR"]
     fn screenshots() {
@@ -2822,9 +2826,34 @@ mod tests {
         let dir = std::path::Path::new(&dir);
         std::fs::create_dir_all(dir).expect("a directory for the screenshots");
         let only = std::env::var("DIVE3D_SHOTS").unwrap_or_default();
+        let offsets: Vec<f64> = std::env::var("DIVE3D_SHOTS_OFFSETS")
+            .ok()
+            .map(|list| {
+                list.split(',')
+                    .filter_map(|v| v.trim().parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
         let places: Vec<_> = places::all()
             .into_iter()
             .filter(|p| p.name.contains(only.as_str()))
+            .flat_map(|p| {
+                if offsets.is_empty() {
+                    return vec![(p, None)];
+                }
+                offsets
+                    .iter()
+                    .map(|&o| {
+                        let later = places::Place {
+                            name: format!("{}+{o}s", p.name),
+                            leg: p.leg,
+                            seed: p.seed,
+                            swiped: p.swiped,
+                        };
+                        (later, Some(o))
+                    })
+                    .collect()
+            })
             .collect();
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
@@ -2838,8 +2867,9 @@ mod tests {
              <style>body{background:#111;color:#ddd;font:14px sans-serif;display:flex;\
              flex-wrap:wrap;gap:12px}figure{margin:0}img{width:360px}</style>\n",
         );
-        for (i, place) in places.iter().enumerate() {
-            let pixels = scene.read_back_fast(&gpu, place.seconds(), place.seed);
+        for (i, (place, offset)) in places.iter().enumerate() {
+            let pixels =
+                scene.read_back_fast(&gpu, place.seconds() + offset.unwrap_or(0.0), place.seed);
             let frame = image::RgbaImage::from_raw(render, render, pixels).expect("a whole frame");
             let file = format!("{}.png", place.name);
             frame.save(dir.join(&file)).expect("a screenshot");
