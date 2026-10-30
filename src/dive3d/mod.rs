@@ -2586,7 +2586,7 @@ mod tests {
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(0);
         let names = [
-            "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
+            "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
         ];
         let offsets: Vec<f64> = std::env::var("DIVE3D_PREVIEW_OFFSETS")
             .ok()
@@ -2597,11 +2597,7 @@ mod tests {
             })
             .unwrap_or_else(|| vec![0.0]);
         for (n, _) in names.iter().enumerate() {
-            let name = Biome::at(
-                (n as f64 + 0.5) * crate::voyage::LEG,
-                seed_of(seed),
-            )
-            .a;
+            let name = Biome::at((n as f64 + 0.5) * crate::voyage::LEG, seed_of(seed)).a;
             let name = names[name];
             for (k, offset) in offsets.iter().enumerate() {
                 let pixels = scene.read_back(&gpu, leg(n as f64) + offset, seed);
@@ -3207,7 +3203,7 @@ mod tests {
         scene.draw(&gpu, 0.0, 0, 0).expect("a frame");
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let names = [
-            "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
+            "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
         ];
         let frames = 60;
         let mut total = 0.0;
@@ -3284,7 +3280,7 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(6usize);
         let names = [
-            "shallows", "forest", "trench", "wrecks", "atlantis", "cave", "abyss", "arctic",
+            "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
         ];
         let span = crate::voyage::LEG / crate::voyage::SPEED;
         let mut rows = Vec::new();

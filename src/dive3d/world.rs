@@ -3023,15 +3023,15 @@ fn passages(w: &World, f: &mut Frame) {
                 // and across the mouth so the window sees a long face rather
                 // than an end; a slab of basalt hides its foot.
                 let sprout = |f: &mut Frame,
-                                  k: i32,
-                                  model: Model,
-                                  s: f32,
-                                  a: f32,
-                                  length: f32,
-                                  width: f32,
-                                  up: f32,
-                                  lateral: f32,
-                                  glow: f32| {
+                              k: i32,
+                              model: Model,
+                              s: f32,
+                              a: f32,
+                              length: f32,
+                              width: f32,
+                              up: f32,
+                              lateral: f32,
+                              glow: f32| {
                     let wall = p.wall(s, a);
                     let c = p.centre(s);
                     let inward = norm([c[0] - wall[0], 0.0, c[2] - wall[2]]);
