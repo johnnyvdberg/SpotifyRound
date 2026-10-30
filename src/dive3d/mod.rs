@@ -1013,7 +1013,7 @@ impl Nautilus {
             immediate_size: 0,
         });
         let model_attributes = wgpu::vertex_attr_array![
-            0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x2,
+            0 => Float32x3, 1 => Snorm8x4, 2 => Unorm8x4, 3 => Float16x2,
         ];
         let instance_attributes = wgpu::vertex_attr_array![
             4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
@@ -1030,7 +1030,7 @@ impl Nautilus {
         ];
         let model_buffers = [
             Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Vertex>() as u64,
+                array_stride: std::mem::size_of::<mesh::Packed>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &model_attributes,
             }),
@@ -1044,7 +1044,7 @@ impl Nautilus {
         // (no floor); the buffer's record and stride stay the full 128.
         let surface_buffers = [
             Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Vertex>() as u64,
+                array_stride: std::mem::size_of::<mesh::Packed>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &model_attributes,
             }),
@@ -1806,8 +1806,9 @@ impl Nautilus {
         }
         // It is only rebuilt when the boat has moved on by a ring of it.
         if tunnel_fits && self.tunnel_uploaded != Some(self.frame.tunnel_version) {
+            let packed: Vec<mesh::Packed> = self.frame.tunnel.iter().map(mesh::Packed::from).collect();
             gpu.queue
-                .write_buffer(&self.tunnel, 0, bytemuck::cast_slice(&self.frame.tunnel));
+                .write_buffer(&self.tunnel, 0, bytemuck::cast_slice(&packed));
             gpu.queue.write_buffer(
                 &self.tunnel_indices,
                 0,

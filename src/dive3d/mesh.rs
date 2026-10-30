@@ -44,6 +44,42 @@ pub struct Vertex {
     pub aux: [f32; 2],
 }
 
+/// The GPU's vertex record: f32 positions (geometry and the tunnel need
+/// them), snorm8 normals, unorm8 colour, f16 aux (it feeds animate(), so
+/// 1/255 steps would show on a fish's body). 24 B instead of 44.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Packed {
+    pub pos: [f32; 3],
+    pub normal: [i8; 4],
+    pub colour: [u8; 4],
+    pub aux: [u16; 2],
+}
+
+impl From<&Vertex> for Packed {
+    fn from(v: &Vertex) -> Self {
+        Self {
+            pos: v.pos,
+            normal: [
+                (v.normal[0].clamp(-1.0, 1.0) * 127.0).round() as i8,
+                (v.normal[1].clamp(-1.0, 1.0) * 127.0).round() as i8,
+                (v.normal[2].clamp(-1.0, 1.0) * 127.0).round() as i8,
+                0,
+            ],
+            colour: [
+                (v.colour[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (v.colour[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (v.colour[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+                255,
+            ],
+            aux: [
+                half::f16::from_f32(v.aux[0]).to_bits(),
+                half::f16::from_f32(v.aux[1]).to_bits(),
+            ],
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -1764,7 +1800,7 @@ fn screw() -> Mesh {
 
 /// All models in one vertex and index buffer, with each model's range.
 pub struct Library {
-    pub vertices: Vec<Vertex>,
+    pub vertices: Vec<Packed>,
     pub indices: Vec<u32>,
     /// Per model, its levels of detail, the full one first; as many as
     /// building it coarser makes a difference to.
@@ -1848,7 +1884,7 @@ impl Library {
                     stray: levels[0].distance(mesh).1,
                     edge: mesh.longest_new_edge(&levels[0]),
                 });
-                vertices.extend_from_slice(&mesh.vertices);
+                vertices.extend(mesh.vertices.iter().map(Packed::from));
                 indices.extend_from_slice(&mesh.indices);
             }
             lods.push(list);
@@ -2029,8 +2065,8 @@ mod tests {
                 for &i in &library.indices[first as usize..(first + count) as usize] {
                     let v = library.vertices[(base as u32 + i) as usize];
                     let n = v.normal;
-                    let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-                    assert!(length.is_finite(), "{model:?} has a broken normal");
+                    let (x, y, z) = (n[0] as f32, n[1] as f32, n[2] as f32);
+                    assert!(x * x + y * y + z * z > 0.0, "{model:?} has a broken normal");
                 }
             }
         }

@@ -875,7 +875,7 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_model(v: Model, i: Instance) -> Lit {
-    let p = animate(v.pos, v.aux, i.anim);
+    let p = animate(v.pos, vec2<f32>(v.aux), i.anim);
     let world = vec3<f32>(dot(i.m0, vec4<f32>(p, 1.0)), dot(i.m1, vec4<f32>(p, 1.0)), dot(i.m2, vec4<f32>(p, 1.0)));
     // Normals by the cofactor matrix, which is right for any scale.
     let c0 = vec3<f32>(i.m0.x, i.m1.x, i.m2.x);
@@ -915,8 +915,8 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // their rock is in `aux`, and the light its passages throw on them as
     // their colour (`world::tunnel`).
     if (MATERIAL == VAULT) {
-        out.albedo = i.colour.rgb * v.aux.y;
-        out.local = vec3<f32>(v.aux.x, 0.0, 0.0);
+        out.albedo = i.colour.rgb * f32(v.aux.y);
+        out.local = vec3<f32>(f32(v.aux.x), 0.0, 0.0);
         out.local_normal = v.colour;
     }
     return out;
@@ -926,7 +926,7 @@ fn vs_model(v: Model, i: Instance) -> Lit {
 // no floor: the fragment's surface branch never reads it.
 @vertex
 fn vs_model_surface(v: Model, i: InstanceSurface) -> Lit {
-    let p = animate(v.pos, v.aux, i.anim);
+    let p = animate(v.pos, vec2<f32>(v.aux), i.anim);
     let world = vec3<f32>(dot(i.m0, vec4<f32>(p, 1.0)), dot(i.m1, vec4<f32>(p, 1.0)), dot(i.m2, vec4<f32>(p, 1.0)));
     let c0 = vec3<f32>(i.m0.x, i.m1.x, i.m2.x);
     let c1 = vec3<f32>(i.m0.y, i.m1.y, i.m2.y);

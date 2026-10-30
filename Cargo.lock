@@ -5124,6 +5124,7 @@ dependencies = [
  "clap",
  "directories",
  "glam",
+ "half",
  "image",
  "meshopt",
  "pollster",

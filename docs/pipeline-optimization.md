@@ -2459,3 +2459,31 @@ Kept: pixel-exact, free, and one less per-instance computation that grows
 with the count.
 
 ![scale cache: nine-placer / cached scale / difference](branch-scale-cache.png)
+
+## 63. Packed vertices, whole scene: pixel-identical at last
+
+The §61 post-mortem named the two causes; both are fixed and the gate passes:
+
+1. **The tunnel is converted too.** `Frame::tunnel` stays the f32 `Vertex`
+   list (the geometry needs it), and the upload converts to `Packed` at the
+   `write_buffer` call. The tunnel now decodes from the same 24-byte layout.
+2. **`aux` is f16, not unorm8.** `Packed.aux` is `[u16;2]` of half bits and
+   the shader's `Model.aux` is `vec2<f16>`, converted to f32 only for
+   `animate()` and the vault's casts.
+
+The layout: `Float32x3` (12) + `Snorm8x4` (4) + `Unorm8x4` (4) +
+`Float16x2` (4) = **24 B** per vertex, down from 44.
+
+- Visual: **mean 0.0000/255, max 0** — pixel-identical.
+- Pi: **8.452 ms** vs 8.489 (nine-placer) / 8.522 (scale cache); shallows
+  9.867, forest 9.829, trench 7.460, abyss 6.424 — a small consistent gain,
+  at the low end of the audit's 0.1-0.2 because the run was warm.
+
+Kept: exact, and 20 bytes less vertex fetch per vertex (150k vertices is
+3 MB/frame less).
+
+![packed whole scene: nine-placer / packed / difference](branch-packed-whole.png)
+
+The same whole-scene rule applies to any future vertex-format change: every
+buffer a pipeline draws must use its layout. The tunnel conversion is the
+proof of that rule in the tree.
