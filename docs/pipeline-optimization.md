@@ -2441,3 +2441,21 @@ start from a single-leg render with the tunnel excluded, confirm the model
 vertices decode, then pack the tunnel, then the full previews.
 
 ![packed vertex attempt: surface subset / packed / difference](branch-packed-vertex.png)
+
+## 62. Cached per-instance LOD scale: pixel-identical, neutral at these counts
+
+The LOD pick recomputed each instance's longest axis (three column norms and
+a square root) every frame — the audit's ~18 ns/instance term. `Frame::instance`
+now stores `axes(rows)` in `surface.w`, which the shader never reads and the
+surface pipeline's instance subset still carries; `level_of` uses it, and only
+instances built outside `put` (the tunnel) still compute it.
+
+- Visual: **0.0000/255, max 0** — pixel-identical.
+- Pi: **8.522 ms** vs 8.489 at the nine-placer cache; scene building 1.650
+  vs 1.598. Within the day's run drift; the term is real but tiny at 1.5-2.1k
+  instances (the audit's 18 ns x 2100 is 0.04 ms).
+
+Kept: pixel-exact, free, and one less per-instance computation that grows
+with the count.
+
+![scale cache: nine-placer / cached scale / difference](branch-scale-cache.png)

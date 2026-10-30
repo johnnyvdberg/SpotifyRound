@@ -2235,11 +2235,16 @@ fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32, bias: f32) -> usi
     ];
     let out = pose.basis[2];
     let z = d[0] * out[0] + d[1] * out[1] + d[2] * out[2];
-    // The longest of the instance's axes, as the model is stretched.
-    let scale = (0..3)
-        .map(|c| (0..3).map(|r| i.rows[r][c] * i.rows[r][c]).sum::<f32>())
-        .fold(0.0, f32::max)
-        .sqrt();
+    // The longest of the instance's axes, cached at placement in the unused
+    // surface.w; instances built directly (the tunnel) still compute it.
+    let scale = if i.surface[3] > 0.0 {
+        i.surface[3]
+    } else {
+        (0..3)
+            .map(|c| (0..3).map(|r| i.rows[r][c] * i.rows[r][c]).sum::<f32>())
+            .fold(0.0, f32::max)
+            .sqrt()
+    };
     // Pixels of the sea per unit of the model, its nearest point taken as
     // close as its centre less its own size.
     let near = z - scale * 1.5;

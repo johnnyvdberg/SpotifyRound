@@ -801,13 +801,18 @@ impl Frame {
     }
 
     fn instance(&self, model: Model, rows: [[f32; 4]; 3], colour: [f32; 3]) -> Instance {
+        // The fourth surface component is unused by the shader; it carries
+        // the instance's longest axis so the per-frame LOD pick need not
+        // recompute three column norms and a square root for every instance.
+        let mut surface = own_skin(model)
+            .or(self.skin)
+            .unwrap_or([0.0, 1.0, 0.0, 0.0]);
+        surface[3] = axes(rows);
         Instance {
             rows,
             colour: [colour[0], colour[1], colour[2], 0.0],
             extra: [0.0, 0.0, self.fade, 0.0],
-            surface: own_skin(model)
-                .or(self.skin)
-                .unwrap_or([0.0, 1.0, 0.0, 0.0]),
+            surface,
             ..Default::default()
         }
     }
@@ -1062,6 +1067,14 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
 /// needs: things grow out of the seabed and melt away rather than pop.
 fn fade(share: f32, needs: f32) -> f32 {
     smooth(needs, needs + 0.2, share)
+}
+
+/// The longest of an instance's axes, as the model is stretched.
+fn axes(rows: [[f32; 4]; 3]) -> f32 {
+    (0..3)
+        .map(|c| (0..3).map(|r| rows[r][c] * rows[r][c]).sum::<f32>())
+        .fold(0.0, f32::max)
+        .sqrt()
 }
 
 /// A transform: rotate by yaw (about y), pitch (about z) and roll (about x),
