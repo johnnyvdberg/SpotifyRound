@@ -50,10 +50,11 @@ pub struct Point {
     /// rgb: the floor's colour at full detail; a: its surface layer.
     pub albedo: [f32; 4],
     /// x: the fine noise at full strength; y: how flat the face is, so the
-    /// noise shows most on level ground; z: the sand ripples; w: the paving's
-    /// joints.
+    /// noise shows most on level ground; z: the sand ripples, or the lava
+    /// cave's cooling cracks; w: the paving's joints, or its finer cracks.
     pub shade: [f32; 4],
-    /// The lava cave's glow, at full strength, rgb.
+    /// The lava cave's glow, at full strength, rgb; a: how much cave there is
+    /// here, so the shader can project a cave cliff off its face.
     pub glow: [f32; 4],
 }
 
@@ -87,19 +88,19 @@ fn shade(w: &World, x: f32, z: f32, normal: [f32; 3]) -> ([f32; 4], [f32; 4], [f
             0.0
         }
     };
-    let base = world::floor_albedo(&b);
+    let mut base = world::floor_albedo(&b);
     // The shader's `(1.0 - steep)`: how level this piece of floor is.
     let flat = 1.0 - smooth01(0.12, 0.40, 1.0 - normal[1]);
-    let noise = 0.65 + 0.5 * world::vnoise(x * 14.0, z * 14.0, 9);
+    let mut noise = 0.65 + 0.5 * world::vnoise(x * 14.0, z * 14.0, 9);
     let sand = presence(0) + 0.5 * presence(FOREST) + 0.5 * presence(ARCTIC);
-    let ripple = if sand > 0.0 {
+    let mut ripple = if sand > 0.0 {
         let r = ((x * 0.8 + z) * 26.0 + world::vnoise(x * 3.0, z * 3.0, 5) * 4.0).sin();
         0.16 * sand * smooth01(0.3, 1.0, r)
     } else {
         0.0
     };
     let paving = presence(ATLANTIS);
-    let pave = if paving > 0.0 {
+    let mut pave = if paving > 0.0 {
         let frac = |v: f32| v - v.floor();
         let row = (z * 4.0).floor();
         let joint = (frac(x * 3.0 + row * 0.5) - 0.5)
@@ -112,12 +113,40 @@ fn shade(w: &World, x: f32, z: f32, normal: [f32; 3]) -> ([f32; 4], [f32; 4], [f
     let cave = presence(CAVE);
     let mut glow = [0.0; 4];
     if cave > 0.0 {
-        let veins =
-            1.0 - smooth01(0.0, 0.04, (world::vnoise(x * 1.4, z * 1.9, 6) - 0.5).abs());
+        // Ledged basalt, not one dark sheet: flows of crust with ash drifted
+        // between them, mineral staining where water has run, and cooling
+        // cracks across the level ground. Baked per vertex, so the shader
+        // only applies the distance fade.
+        let mix3 = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|j| a[j] + (b[j] - a[j]) * t);
+        let crust = world::vnoise(x * 0.9 + 2.0, z * 1.3, 60);
+        let ash = smooth01(0.52, 0.78, world::vnoise(x * 3.1, z * 2.7 + 4.0, 61));
+        let rust = smooth01(0.60, 0.84, world::vnoise(x * 1.5, z * 1.9, 62));
+        let crust = [0.19 + 0.07 * crust, 0.115 + 0.045 * crust, 0.075];
+        let target = mix3(crust, [0.075, 0.078, 0.082], ash * 0.7);
+        let target = mix3(target, [0.22, 0.10, 0.055], rust * 0.35);
+        base = mix3(base, target, cave * 0.7);
+        let ledge = smooth01(0.54, 0.72, world::vnoise(x * 1.7, z * 2.1, 65));
+        let pitted = smooth01(0.58, 0.80, world::vnoise(x * 6.5, z * 6.0, 66));
+        noise *= (0.78 + 0.36 * ledge) * (1.0 - 0.24 * pitted);
+        let cooling = 1.0
+            - smooth01(
+                0.0,
+                0.030,
+                (world::vnoise(x * 2.4, z * 3.2, 63) - 0.5).abs(),
+            );
+        let cooling2 = 1.0
+            - smooth01(
+                0.0,
+                0.020,
+                (world::vnoise(x * 5.0, z * 4.0, 64) - 0.5).abs(),
+            );
+        ripple += 0.55 * cave * flat * cooling;
+        pave += 0.30 * cave * flat * cooling2;
+        let veins = 1.0 - smooth01(0.0, 0.04, (world::vnoise(x * 1.4, z * 1.9, 6) - 0.5).abs());
         let fine = 1.0 - smooth01(0.0, 0.03, (world::vnoise(x * 4.0, z * 5.0, 7) - 0.5).abs());
         let pools = smooth01(0.66, 0.74, world::vnoise(x * 0.55 + 7.0, z * 0.55, 8));
         let k = (veins * 0.9 + fine * 0.5 + pools * 1.4) * cave * flat;
-        glow = [k, 0.36 * k, 0.07 * k, 0.0];
+        glow = [k, 0.36 * k, 0.07 * k, cave];
     }
     (
         [base[0], base[1], base[2], LAYERS[b.a] as f32],
@@ -125,7 +154,6 @@ fn shade(w: &World, x: f32, z: f32, normal: [f32; 3]) -> ([f32; 4], [f32; 4], [f
         glow,
     )
 }
-
 
 /// One tile, by level and column and row of that level's tiles.
 type Key = (usize, i32, i32);

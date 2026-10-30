@@ -2602,11 +2602,13 @@ fn build_tunnel(w: &World, f: &mut Frame) {
             for i in 0..n {
                 let a = -0.2 * PI + i as f32 / AROUND as f32 * 1.4 * PI;
                 let (across, up, shade) = if outer {
-                    (
-                        TUNNEL * 1.9 + 1.7 * swell * a.cos().max(0.0),
-                        MASSIF * share * (0.85 + 0.3 * vnoise(x * 0.4, a, 5)),
-                        1.0,
-                    )
+                    let across = TUNNEL * 1.9 + 1.7 * swell * a.cos().max(0.0);
+                    let up = MASSIF * share * (0.85 + 0.3 * vnoise(x * 0.4, a, 5));
+                    // The massif's face is rock too: a broad, slowly changing
+                    // tone, so the cliff about each mouth is not one smooth
+                    // slab between the openings.
+                    let shade = 0.86 + 0.30 * vnoise(x * 1.1, a * 2.0, 29);
+                    (across, up, shade)
                 } else {
                     // Rougher than the radius the boat keeps clear of, but
                     // only ever outward from it; with ledges where one flow
@@ -2614,8 +2616,21 @@ fn build_tunnel(w: &World, f: &mut Frame) {
                     let r = Seabed::tunnel_radius(x, a);
                     let rough =
                         0.06 * vnoise(x * 7.0, a * 6.0, 21) + 0.03 * vnoise(x * 17.0, a * 13.0, 24);
-                    let ledge = 0.05 * smooth(0.55, 0.7, vnoise(x * 1.3, a * 4.0, 25));
-                    let shade = (1.0 - 4.0 * rough) * (0.8 + 0.35 * vnoise(x * 1.7, a * 2.3, 23));
+                    let ledge01 = smooth(0.55, 0.7, vnoise(x * 1.3, a * 4.0, 25));
+                    let ledge = 0.05 * ledge01;
+                    // The rock's own shade, baked per vertex: lava flow on
+                    // flow, pale ledges over pocked hollows and soot
+                    // collecting under the vault. The fragment shader only
+                    // multiplies it with the sampled texture; the fine grain
+                    // is the texture's, so the tunnel stays cheap to rebuild.
+                    let coarse = vnoise(x * 1.6 + 3.1, a * 2.2, 23);
+                    let pits = smooth(0.045, 0.085, rough);
+                    let soot = smooth(0.0, 0.9, a.sin());
+                    let shade = (1.0 - 3.0 * rough)
+                        * (0.80 + 0.80 * coarse)
+                        * (1.0 - 0.18 * pits)
+                        * (0.86 + 0.28 * ledge01)
+                        * (1.0 - 0.16 * soot);
                     let r = r + rough + ledge;
                     (r, 0.85 * r, shade)
                 };

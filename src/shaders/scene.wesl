@@ -682,6 +682,8 @@ struct Ground {
     @location(4) @interpolate(flat) layer: i32,
     @location(5) lod: f32,
     @location(6) world: vec3<f32>,
+    // How much of the lava cave is here, from the tile's baked glow.
+    @location(7) cave: f32,
 };
 
 @if(full_hd)
@@ -698,6 +700,7 @@ fn vs_terrain(
     out.fog = fog_at(world);
     out.uv = world.xz * 1.3;
     out.world = world;
+    out.cave = glow.a;
     out.layer = i32(baked.w + 0.5);
     out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
     let n = normalize(normal);
@@ -725,12 +728,22 @@ fn vs_terrain(
 @if(full_hd)
 @fragment
 fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
+    // The cave's massif is a cliff of rock, not a floor: projecting it from
+    // above would smear its grain straight up the face. Project world height
+    // and the horizontal along the wall instead. It is the same single sample,
+    // only a different pair of coordinates; the derivative normal is worked
+    // out once, outside the branch, and the level of detail is unchanged.
+    let face = cross(dpdx(in.world), dpdy(in.world));
+    var uv = in.uv;
+    if (in.cave > 0.02 && face.y * face.y < 0.30 * dot(face, face)) {
+        uv = vec2<f32>(in.world.x + in.world.z, in.world.y) * 1.3;
+    }
     var texture = vec3<f32>(0.6);
     if (!PLAIN_TEXTURES) {
         texture = textureSampleLevel(
             surfaces,
             surface_sampler,
-            in.uv,
+            uv,
             in.layer,
             in.lod,
         ).rgb * TEXTURE_RANGE;
@@ -1210,10 +1223,23 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     let p = in.world;
     let n = normalize(in.normal);
     let carried = in.surface.z > 0.5;
-    let uv = select(p, in.local, carried) * in.surface.y;
+    var uv = select(p, in.local, carried) * in.surface.y;
+    if (MATERIAL == VAULT) {
+        // The tunnel is a tube, not a floor: projecting straight down its y
+        // axis smears every wall into vertical stripes, and a diagonal
+        // projection still turns its flow bands on edge round the section.
+        // Take the horizontal round the section for u and world height for
+        // v, the same pair the cave's terrain wall uses, so the flow bands
+        // lie level along the tunnel and through its passages.
+        uv = vec3<f32>(p.x + p.z, 0.0, p.y) * (in.surface.y * 1.35);
+    }
     let layer = i32(in.surface.x + 0.5);
     let distance = length(p - g.camera.xyz);
-    let lod = clamp(log2(distance * 3.0), 0.0, 8.0);
+    // The tunnel is seen close up: its rock is one sample of a 0.5-unit tile,
+    // and the generic distance bias would blur the grain and the cracks away.
+    // Only the vault pipeline takes the sharper level; every model keeps the
+    // cheap one.
+    let lod = clamp(log2(distance * select(3.0, 1.0, MATERIAL == VAULT)), 0.0, 8.0);
     var texture = vec3<f32>(0.6);
     if (!PLAIN_TEXTURES) {
         texture = textureSampleLevel(
@@ -1235,17 +1261,30 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     var colour = albedo + in.albedo * in.glow;
     let t = g.camera.w;
     if (MATERIAL == VAULT) {
-        // Cheap tunnel light: baked passage colour, a banded rock tone, a low
-        // lava glow and a wet searchlight glint. No extra texture taps or
-        // noise over the full-screen tunnel.
+        // Cheap tunnel light: baked passage colour and rock shade, strata
+        // keyed to the world's height, a low lava glow and a wet searchlight
+        // glint. Still one texture tap and no per-pixel `vnoise` over the
+        // whole tunnel.
         let above = in.local.x;
-        let band = 0.80 + 0.20 * sin(p.y * 21.0 + sin(p.x * 3.0) * 2.0);
+        // The luminance of the one rock sample: its cracks and hollows read
+        // as darker, its ledges as paler, and the damp ones catch the lamp.
+        let tone = dot(texture, vec3<f32>(0.30, 0.50, 0.20));
+        let pit = 1.0 - smooth01(0.45, 1.05, tone);
+        // Two bands: the strata the tunnel was cut through, and the edges of
+        // the lava flows within them.
+        let strata = sin(p.y * 13.0 + sin(p.x * 2.7 + p.z * 1.3) * 3.2);
+        let seam = sin(p.y * 5.0 + p.z * 2.1 + 0.9);
+        colour *= (0.88 + 0.12 * strata) * (0.95 + 0.05 * seam) * 1.15;
+        // The sample itself, a little stronger than the plain multiply.
+        colour *= 0.80 + 0.28 * smooth01(0.25, 1.15, tone);
+        colour += in.local_normal * 0.45;
         let glow = (1.0 - smooth01(0.0, 1.2, above)) * (0.8 + 0.2 * sin(t * 1.9 + p.x));
-        colour *= band * 1.15;
-        colour += in.local_normal * 0.40;
-        colour += vec3<f32>(0.45, 0.10, 0.02) * glow * 0.8;
+        colour += vec3<f32>(0.45, 0.10, 0.02) * glow * (0.65 + 0.35 * pit);
+        // Wet rock, glistening where the searchlight strikes its hollows.
         let h = normalize(normalize(g.camera.xyz - p) - g.lamp.xyz);
-        colour += vec3<f32>(0.85, 0.82, 0.75) * pow(max(dot(n, h), 0.0), 20.0) * g.lamp.w * 0.3;
+        let wet = 0.25 + 0.75 * pit;
+        colour += vec3<f32>(0.85, 0.82, 0.75)
+            * pow(max(dot(n, h), 0.0), 20.0) * g.lamp.w * (0.18 + 0.22 * wet);
     }
     var coverage = in.fade;
     switch (select(in.material, u32(MATERIAL), MATERIAL >= 0)) {
