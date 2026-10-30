@@ -2718,3 +2718,31 @@ the LinuxKMS backend cannot carry the imported dive texture, and femtovg is
 the slower comparison renderer.
 
 ![deployed adaptive build](img/kiosk-adaptive-2026-10-30.png)
+
+## 24. Biome detail, cave crystals and encounter fades: the final Pi check
+
+This pass changed the look rather than adding a new pass: per-biome seabed
+shapes and baked floor detail, a faceted crystal gallery, a rougher basalt
+cave, a small encounter-reveal fade at the glass, seeded biome shuffling and a
+turning course. Terrain detail is baked into the same 72-byte tile vertices;
+the cave still takes one texture tap; the crystals add about 9.5 k triangles
+in one cave frame. The authoritative measurement is on the Pi 5, kiosk frozen,
+with `target/pi/spotify-round-tests` from the merged tree:
+
+```
+dive3d frame, shallows: mean 9.749 ms, scene building 1.956 ms, 1354 instances, 575 sprites
+dive3d frame, forest:   mean 9.790 ms, scene building 1.876 ms, 1902 instances, 576 sprites
+dive3d frame, wrecks:   mean 7.795 ms, scene building 1.610 ms,  742 instances, 640 sprites
+dive3d frame, atlantis: mean 8.454 ms, scene building 1.304 ms,  520 instances, 589 sprites
+dive3d frame, cave:     mean 10.019 ms, scene building 1.259 ms, 611 instances, 741 sprites
+dive3d frame, abyss:    mean 10.288 ms, scene building 0.965 ms, 248 instances, 772 sprites
+dive3d frame, arctic:   mean 6.757 ms, scene building 1.082 ms,  198 instances, 779 sprites
+dive3d frame, trench:   mean 6.691 ms, scene building 1.086 ms,  310 instances, 753 sprites
+dive3d frame: mean 8.693 ms
+```
+
+`frame_cost` (legs 1, 3 and 4, 20 frames each) is **9.68 ms**, down from
+**11.11 ms** on the pre-pass binary. The worst sampled hotspot is the cave
+leaving at **14.59 ms**; the next are the trench leaving (14.02) and Atlantis
+leaving (13.12). Every leg still fits inside the 16.67 ms 60 Hz budget.
+`DIVE3D_HOTSPOT_FRAMES=3 hotspots` was the source of the per-place numbers.
