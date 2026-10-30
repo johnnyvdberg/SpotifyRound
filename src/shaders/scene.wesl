@@ -218,8 +218,9 @@ fn by_biome(l: Leg, values: array<f32, 8>) -> f32 {
     return mix(v[l.a], v[l.b], l.w);
 }
 
-// The heightmap at (x, z), bilinear, exactly as `heightmap::sample`.
-fn relief(x: f32, z: f32) -> vec3<f32> {
+// The heightmap at (x, z), bilinear, exactly as `heightmap::sample`: height,
+// slopes, and the fine grain each biome shapes its floor with.
+fn relief(x: f32, z: f32) -> vec4<f32> {
     let u = x / RELIEF_PERIOD * f32(RELIEF_SIZE);
     let v = z / RELIEF_PERIOD * f32(RELIEF_SIZE);
     let fu = floor(u);
@@ -227,10 +228,10 @@ fn relief(x: f32, z: f32) -> vec3<f32> {
     let i = i32(fu);
     let j = i32(fv);
     let n = RELIEF_SIZE;
-    let a = textureLoad(relief_map, vec2<i32>(((i % n) + n) % n, ((j % n) + n) % n), 0).xyz;
-    let b = textureLoad(relief_map, vec2<i32>((((i + 1) % n) + n) % n, ((j % n) + n) % n), 0).xyz;
-    let c = textureLoad(relief_map, vec2<i32>(((i % n) + n) % n, (((j + 1) % n) + n) % n), 0).xyz;
-    let d = textureLoad(relief_map, vec2<i32>((((i + 1) % n) + n) % n, (((j + 1) % n) + n) % n), 0).xyz;
+    let a = textureLoad(relief_map, vec2<i32>(((i % n) + n) % n, ((j % n) + n) % n), 0).xyzw;
+    let b = textureLoad(relief_map, vec2<i32>((((i + 1) % n) + n) % n, ((j % n) + n) % n), 0).xyzw;
+    let c = textureLoad(relief_map, vec2<i32>(((i % n) + n) % n, (((j + 1) % n) + n) % n), 0).xyzw;
+    let d = textureLoad(relief_map, vec2<i32>((((i + 1) % n) + n) % n, (((j + 1) % n) + n) % n), 0).xyzw;
     let tu = u - fu;
     let tv = v - fv;
     return mix(mix(a, b, tu), mix(c, d, tu), tv);
@@ -246,20 +247,87 @@ fn ground(x: f32, z: f32) -> f32 {
 // The same in two parts: the massif under the lava cave, and the rest.
 fn ground_parts(x: f32, z: f32) -> vec2<f32> {
     let l = leg(voyage_x(x, z));
+    let r = relief(x, z);
     let base = -by_biome(l, array<f32, 8>(1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2));
-    let lift = by_biome(l, array<f32, 8>(0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30)) * relief(x, z).x;
+    let lift = by_biome(l, array<f32, 8>(0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30)) * r.x;
     let rough = by_biome(l, array<f32, 8>(0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05));
     let ridges = by_biome(l, array<f32, 8>(1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4));
     let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1u) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2u);
-    let off = abs(z - corridor(x));
+    let across = z - corridor(x);
+    let off = abs(across);
     let far = smooth01(7.0, 22.0, off) * (0.3 + ridges * vnoise(x * 0.16, z * 0.16 + 3.0, 4u));
     // The trench's terraces. Only vertex shaders find the ground, so no
     // pixel pays for them.
     var trench = presence(l, TRENCH);
     if (trench > 0.0) {
-        trench *= trench_profile(x, z - corridor(x));
+        trench *= trench_profile(x, across);
     }
-    return vec2<f32>(base + lift + rough * (n - 0.45) + far + trench, massif(x, z, l, off));
+    let shape = biome_shape(l, x, z, across, r.x, r.w);
+    return vec2<f32>(base + lift + shape + rough * (n - 0.45) + far + trench, massif(x, z, l, off));
+}
+
+// The shape each biome gives its own floor, over the shared heightmap: the
+// same function as `world::biome_shape`. Every term repeats over the
+// heightmap's 64 units, so the added shape repeats with it.
+fn biome_shape(l: Leg, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 {
+    var shape = 0.0;
+    let shallows = presence(l, SHALLOWS);
+    if (shallows > 0.0) {
+        // Low banks with sand waves breaking over them.
+        let banks = smooth01(0.45, 0.72, 0.5 + 0.5 * detail);
+        let waves = sin(TAU * (x * 0.25 + z * 0.125) + 1.4 * detail)
+            + 0.5 * sin(TAU * (x * 0.125 - z * 0.25) + 0.8 * detail);
+        shape += shallows * (0.10 * h + 0.10 * banks + 0.05 * waves);
+    }
+    let forest = presence(l, FOREST);
+    if (forest > 0.0) {
+        // A low silt flat, hummocked and pocked with the mounds roots raise.
+        let hummocks = sin(TAU * (x * 0.5 + z * 0.25) + 1.2 * detail)
+            + 0.6 * sin(TAU * (x * 0.25 - z * 0.5) + 0.7 * detail);
+        let mounds = smooth01(0.45, 0.75, 0.5 + 0.5 * detail);
+        shape += forest * (-0.05 * h + 0.12 * hummocks + 0.25 * detail + 0.30 * mounds);
+    }
+    let wrecks = presence(l, WRECKS);
+    if (wrecks > 0.0) {
+        // Sediment drifts running along the wreck field, with rock showing
+        // through where the drift is thin.
+        let drifts = sin(TAU * z * 0.125 + 0.8 * detail)
+            + 0.4 * sin(TAU * (z * 0.375 + x * 0.0625));
+        let rocks = smooth01(0.72, 0.90, 0.5 + 0.5 * detail);
+        shape += wrecks * (0.25 * h + 0.20 * drifts + 0.40 * rocks);
+    }
+    let atlantis = presence(l, ATLANTIS);
+    if (atlantis > 0.0) {
+        // Level city terraces, with soft risers between them.
+        let terrace_x = 2.0 * smooth01(-0.22, 0.22, sin(TAU * x * 0.25 + 0.25 * detail)) - 1.0;
+        let terrace_z = 2.0 * smooth01(-0.22, 0.22, sin(TAU * z * 0.5 + 0.25 * detail)) - 1.0;
+        shape += atlantis * (-0.11 * h + 0.22 * terrace_x + 0.18 * terrace_z + 0.02 * detail);
+    }
+    let cave = presence(l, CAVE);
+    if (cave > 0.0) {
+        // Ledged basalt round the tunnel's mouths, clear of the tunnel itself.
+        let ledges = 2.0 * smooth01(-0.35, 0.35, sin(TAU * abs(across) / 1.2 + 0.4 * detail)) - 1.0;
+        let near = smooth01(0.45, 0.9, abs(across));
+        shape += cave * near * (0.25 * ledges + 0.12 * detail);
+    }
+    let abyss = presence(l, ABYSS);
+    if (abyss > 0.0) {
+        // Folded rock: sharp ridges from the grain, cut by contour canyons.
+        let fold = 1.0 - 2.0 * abs(detail);
+        let canyon = 1.0 - smooth01(0.0, 0.09, abs(h - 0.25));
+        shape += abyss * (0.32 * h + 0.65 * (fold * fold - 0.35) - 0.45 * canyon);
+    }
+    let arctic = presence(l, ARCTIC);
+    if (arctic > 0.0) {
+        // Ice-scoured and flat: long shallow grooves, not banks.
+        let scour = 1.0 - smooth01(0.0, 0.22, abs(sin(TAU * z * 0.5 + 0.7 * detail)));
+        shape += arctic * (-0.10 * h + 0.06 * detail - 0.12 * scour);
+    }
+    let trench = presence(l, TRENCH);
+    if (trench > 0.0) {
+        shape += trench * (0.05 * h + 0.08 * detail);
+    }
+    return shape;
 }
 
 // The lava cave's massif, rising either side of its tunnel: the part of the
@@ -283,7 +351,9 @@ fn trench_profile(x: f32, across: f32) -> f32 {
     let back = 1.2 * smooth01(-1.9, -2.4, u) + 1.4 * smooth01(-3.6, -4.2, u);
     let cut = smooth01(0.55, 0.95, sin(x * 1.9 + 1.4 * sin(x * 0.61)));
     let gully = cut * (0.2 + 0.35 * smooth01(-1.2, 1.6, u)) * smooth01(-2.0, -1.2, u) * smooth01(2.8, 2.2, u);
-    return up + back - down - gully;
+    let strata = 2.0 * smooth01(-0.3, 0.3, sin(u * 9.0 + 0.8 * sin(x * 0.7))) - 1.0;
+    let ledge = 0.12 * strata * smooth01(1.2, 1.6, u) * (1.0 - smooth01(6.8, 7.4, u));
+    return up + back - down - gully + ledge;
 }
 
 // ---------------------------------------------------------------------------

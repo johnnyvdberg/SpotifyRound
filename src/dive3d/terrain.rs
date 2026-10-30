@@ -8,6 +8,7 @@
 //! where two levels meet. Only the tiles in view are drawn, nearest first.
 
 use std::collections::HashMap;
+use std::f32::consts::TAU;
 
 use super::world::{self, World};
 
@@ -62,10 +63,14 @@ pub struct Point {
 /// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt.
 const LAYERS: [usize; 8] = [12, 12, 13, 12, 10, 13, 12, 13];
 /// Biome ids, as the shader's constants.
+const SHALLOWS: usize = 0;
 const FOREST: usize = 1;
+const WRECKS: usize = 2;
 const ATLANTIS: usize = 3;
 const CAVE: usize = 4;
+const ABYSS: usize = 5;
 const ARCTIC: usize = 6;
+const TRENCH: usize = 7;
 
 /// `smoothstep` as the shader writes it.
 fn smooth01(a: f32, b: f32, v: f32) -> f32 {
@@ -76,7 +81,19 @@ fn smooth01(a: f32, b: f32, v: f32) -> f32 {
 /// What the vertex shader used to work out per vertex, every frame: the
 /// floor's colour and texture layer, how strongly its fine detail shows, and
 /// the lava cave's glow. All of it depends only on where the vertex is.
-fn shade(w: &World, x: f32, z: f32, normal: [f32; 3]) -> ([f32; 4], [f32; 4], [f32; 4]) {
+///
+/// The two noise fields are shared by every biome: `broad` patches the floor
+/// on a scale of a couple of units, `grain` is the fine speckle. Each biome
+/// weights them its own way — rust bleeding through the wreck field's silt,
+/// algae in the forest, veins in the marble, soot on the cave's basalt — and
+/// the ripples are strongest on the shallows' sand, faint on silt.
+fn shade(
+    w: &World,
+    x: f32,
+    z: f32,
+    normal: [f32; 3],
+    cavity: f32,
+) -> ([f32; 4], [f32; 4], [f32; 4]) {
     let b = w.seabed.biome(x, z);
     let t = b.w as f32;
     let presence = |id: usize| {
@@ -91,14 +108,86 @@ fn shade(w: &World, x: f32, z: f32, normal: [f32; 3]) -> ([f32; 4], [f32; 4], [f
     let mut base = world::floor_albedo(&b);
     // The shader's `(1.0 - steep)`: how level this piece of floor is.
     let flat = 1.0 - smooth01(0.12, 0.40, 1.0 - normal[1]);
-    let mut noise = 0.65 + 0.5 * world::vnoise(x * 14.0, z * 14.0, 9);
-    let sand = presence(0) + 0.5 * presence(FOREST) + 0.5 * presence(ARCTIC);
-    let mut ripple = if sand > 0.0 {
+    let across = z - world::corridor(x);
+    let broad = world::vnoise(x * 0.5, z * 0.5, 10);
+    let grain = world::vnoise(x * 14.0, z * 14.0, 9);
+    let mut noise = 0.65 + 0.5 * grain + 0.08 * cavity;
+    let mut tint = [0.0f32; 3];
+    let mut ripple = 0.0;
+
+    let shallows = presence(SHALLOWS);
+    if shallows > 0.0 {
+        // Sand: broad banks paler at their tops, finer speckle between.
+        noise += shallows * (0.10 * (broad - 0.5) + 0.04 * (grain - 0.5));
+        tint[0] += shallows * 0.06 * (broad - 0.5);
+        tint[1] += shallows * 0.045 * (broad - 0.5);
+        tint[2] += shallows * 0.02 * (broad - 0.5);
+    }
+    let forest = presence(FOREST);
+    if forest > 0.0 {
+        // Silt: darker where it lies deep, a green cast in the hollows.
+        noise += forest * (-0.08 + 0.06 * (broad - 0.5));
+        tint[0] -= forest * 0.06 * (broad - 0.5);
+        tint[1] += forest * 0.015 * (broad - 0.5);
+        tint[2] -= forest * 0.02 * (broad - 0.5);
+    }
+    let wrecks = presence(WRECKS);
+    if wrecks > 0.0 {
+        // Sediment drifts with rust bleeding through where they thin.
+        let rust = smooth01(0.62, 0.86, broad);
+        noise += wrecks * (0.10 * (broad - 0.5) + 0.05 * (grain - 0.5));
+        tint[0] += wrecks * 0.14 * rust;
+        tint[1] += wrecks * 0.05 * rust;
+        tint[2] += wrecks * 0.005 * rust;
+    }
+    let atlantis = presence(ATLANTIS);
+    if atlantis > 0.0 {
+        // Marble: pale stone crossed by darker veins.
+        let vein = smooth01(0.70, 0.88, grain);
+        noise += atlantis * 0.05 * (grain - 0.5);
+        tint[0] -= atlantis * 0.06 * vein;
+        tint[1] -= atlantis * 0.055 * vein;
+        tint[2] -= atlantis * 0.04 * vein;
+    }
+    let cave = presence(CAVE);
+    if cave > 0.0 {
+        // Basalt: pitted and sooted, its hollows darker than its faces.
+        let soot = smooth01(0.55, 0.80, broad);
+        noise += cave * (0.14 * (grain - 0.5) - 0.06 * soot);
+        tint[0] += cave * 0.05 * (grain - 0.5);
+        tint[1] += cave * 0.015 * (grain - 0.5);
+    }
+    let abyss = presence(ABYSS);
+    if abyss > 0.0 {
+        // Cold, hard rock, its grain showing strongly.
+        noise += abyss * (0.20 * (grain - 0.5) + 0.10 * (broad - 0.5));
+        tint[0] -= abyss * 0.02 * (broad - 0.5);
+        tint[1] += abyss * 0.015 * (broad - 0.5);
+        tint[2] += abyss * 0.04 * (broad - 0.5);
+    }
+    let arctic = presence(ARCTIC);
+    if arctic > 0.0 {
+        // Ice-scoured floor: pale streaks along the grooves.
+        let scour = 1.0 - smooth01(0.0, 0.22, (TAU * z * 0.5 + 0.7 * broad).sin().abs());
+        noise -= arctic * 0.06 * scour;
+        tint[0] += arctic * 0.04 * scour;
+        tint[1] += arctic * 0.05 * scour;
+        tint[2] += arctic * 0.055 * scour;
+    }
+    let trench = presence(TRENCH);
+    if trench > 0.0 {
+        // The trench's walls read as ledged rock, not a smooth slope.
+        let strata = 0.5 + 0.5 * ((across * 9.0 + 1.2 * (broad - 0.5)).sin());
+        noise += trench * 0.12 * (strata - 0.5);
+        tint[0] += trench * 0.05 * (strata - 0.5);
+        tint[1] += trench * 0.04 * (strata - 0.5);
+    }
+    let sand = shallows + 0.55 * forest + 0.35 * wrecks + 0.6 * arctic;
+    if sand > 0.0 {
+        // Ripples in patches, so the sand does not corrugate as one sheet.
         let r = ((x * 0.8 + z) * 26.0 + world::vnoise(x * 3.0, z * 3.0, 5) * 4.0).sin();
-        0.16 * sand * smooth01(0.3, 1.0, r)
-    } else {
-        0.0
-    };
+        ripple = 0.16 * sand * (0.5 + 0.5 * broad) * smooth01(0.3, 1.0, r);
+    }
     let paving = presence(ATLANTIS);
     let mut pave = if paving > 0.0 {
         let frac = |v: f32| v - v.floor();
@@ -110,7 +199,6 @@ fn shade(w: &World, x: f32, z: f32, normal: [f32; 3]) -> ([f32; 4], [f32; 4], [f
     } else {
         0.0
     };
-    let cave = presence(CAVE);
     let mut glow = [0.0; 4];
     if cave > 0.0 {
         // Ledged basalt, not one dark sheet: flows of crust with ash drifted
@@ -145,11 +233,23 @@ fn shade(w: &World, x: f32, z: f32, normal: [f32; 3]) -> ([f32; 4], [f32; 4], [f
         let veins = 1.0 - smooth01(0.0, 0.04, (world::vnoise(x * 1.4, z * 1.9, 6) - 0.5).abs());
         let fine = 1.0 - smooth01(0.0, 0.03, (world::vnoise(x * 4.0, z * 5.0, 7) - 0.5).abs());
         let pools = smooth01(0.66, 0.74, world::vnoise(x * 0.55 + 7.0, z * 0.55, 8));
-        let k = (veins * 0.9 + fine * 0.5 + pools * 1.4) * cave * flat;
+        let heat = 0.8 + 0.4 * world::vnoise(x * 0.8 + 7.0, z * 0.8, 11);
+        let k = (veins * 0.9 + fine * 0.5 + pools * 1.4) * cave * flat * heat;
         glow = [k, 0.36 * k, 0.07 * k, cave];
     }
+    // Hollows lie in their own shade and crests catch the light: a little
+    // baked ambient occlusion, so the relief reads even where the water is
+    // too deep for the sun to shape it. Rock takes more than sand.
+    let hard =
+        presence(WRECKS) + presence(ATLANTIS) + presence(CAVE) + presence(ABYSS) + presence(TRENCH);
+    let cavity = cavity * (0.10 + 0.10 * hard);
+    let colour = [
+        base[0] * (1.0 + tint[0]) * (1.0 + cavity),
+        base[1] * (1.0 + tint[1]) * (1.0 + cavity),
+        base[2] * (1.0 + tint[2]) * (1.0 + cavity),
+    ];
     (
-        [base[0], base[1], base[2], LAYERS[b.a] as f32],
+        [colour[0], colour[1], colour[2], LAYERS[b.a] as f32],
         [noise, flat, ripple, pave],
         glow,
     )
@@ -323,7 +423,18 @@ fn build(w: &World, s: f32, i: i32, j: i32) -> (Vec<Point>, [f32; 3], f32) {
             let normal = [n[0] / l, n[1] / l, n[2] / l];
             let x = (x0 + a as i32) as f32 * s;
             let z = (z0 + b as i32) as f32 * s;
-            let (albedo, shade, glow) = shade(w, x, z, normal);
+            // How much this vertex stands above or below its four
+            // neighbours: positive on a crest, negative in a hollow. The
+            // spacing cancels, so every level bakes the same strength.
+            let c = heights[(b + 1) * border + a + 1];
+            let bump = (4.0 * c
+                - heights[(b + 1) * border + a]
+                - heights[(b + 1) * border + a + 2]
+                - heights[b * border + a + 1]
+                - heights[(b + 2) * border + a + 1])
+                / (4.0 * s * s);
+            let cavity = (bump * 0.6).clamp(-1.0, 1.0);
+            let (albedo, shade, glow) = shade(w, x, z, normal, cavity);
             points.push(Point {
                 position: [x, h(a, b), z],
                 normal,

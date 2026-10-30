@@ -6,8 +6,10 @@
 //! grid by it and `world.rs` places things on it, both by the same bilinear
 //! lookup of the same numbers, so everything stands on the seabed.
 //!
-//! Each texel holds the height, in -1..1, and its slope along x and z, so the
-//! seabed's normals interpolate smoothly instead of showing the texel grid.
+//! Each texel holds the height, in -1..1, its slope along x and z, so the
+//! seabed's normals interpolate smoothly instead of showing the texel grid, and
+//! one more field of fine grain that each biome folds into its own floor: bank
+//! tops in the shallows, root mounds in the forest, the abyss's cut rock.
 
 use super::world::hash;
 
@@ -46,7 +48,7 @@ fn fbm(u: f32, v: f32, cells: i32, octaves: u32, salt: u32) -> f32 {
 }
 
 /// The heightmap for `seed`, as RGBA texels: height, slope along x, slope
-/// along z (both per world unit), unused.
+/// along z (both per world unit), and the floor's fine grain in -1..1.
 pub fn generate(seed: u64) -> Vec<[f32; 4]> {
     let salt = (seed % 1_000_003) as u32 * 16;
     let mut height = vec![0.0f32; SIZE * SIZE];
@@ -91,14 +93,20 @@ pub fn generate(seed: u64) -> Vec<[f32; 4]> {
             };
             let gx = (at(1, 0) - at(-1, 0)) / (2.0 * texel);
             let gz = (at(0, 1) - at(0, -1)) / (2.0 * texel);
-            out[j * SIZE + i] = [at(0, 0).clamp(-1.0, 1.0), gx, gz, 0.0];
+            // Fine grain, at one to four units a feature: fine enough to read
+            // as silt and pitted rock underfoot, coarse enough that every
+            // terrain level still samples it rather than aliasing it.
+            let (u, v) = (i as f32 / SIZE as f32, j as f32 / SIZE as f32);
+            let grain = 2.0 * fbm(u, v, 16, 3, salt + 60) - 1.0;
+            out[j * SIZE + i] = [at(0, 0).clamp(-1.0, 1.0), gx, gz, grain];
         }
     }
     out
 }
 
-/// Height and slopes at world (x, z), bilinear, exactly as `relief` in the shader.
-pub fn sample(map: &[[f32; 4]], x: f32, z: f32) -> [f32; 3] {
+/// Height, slopes and grain at world (x, z), bilinear, exactly as `relief` in
+/// the shader.
+pub fn sample(map: &[[f32; 4]], x: f32, z: f32) -> [f32; 4] {
     let u = x / PERIOD * SIZE as f32;
     let v = z / PERIOD * SIZE as f32;
     let (fu, fv) = (u.floor(), v.floor());
@@ -107,8 +115,8 @@ pub fn sample(map: &[[f32; 4]], x: f32, z: f32) -> [f32; 3] {
     let at = |i: i32, j: i32| map[(j.rem_euclid(n) * n + i.rem_euclid(n)) as usize];
     let (i, j) = (fu as i32, fv as i32);
     let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
-    let mut out = [0.0; 3];
-    for k in 0..3 {
+    let mut out = [0.0; 4];
+    for k in 0..4 {
         let top = a[k] + (b[k] - a[k]) * tu;
         let bottom = c[k] + (d[k] - c[k]) * tu;
         out[k] = top + (bottom - top) * tv;
@@ -127,11 +135,20 @@ mod tests {
         let lowest = heights.iter().cloned().fold(f32::MAX, f32::min);
         let highest = heights.iter().cloned().fold(f32::MIN, f32::max);
         assert!(highest - lowest > 0.8, "{lowest}..{highest} is too flat");
-        // The tile repeats seamlessly.
+        // The tile repeats seamlessly, grain and all.
         let a = sample(&map, 3.3, 7.7);
         let b = sample(&map, 3.3 + PERIOD, 7.7 - PERIOD);
-        assert!((a[0] - b[0]).abs() < 1e-5);
+        for k in 0..4 {
+            assert!((a[k] - b[k]).abs() < 1e-5);
+        }
+        // The grain varies over every texel, in -1..1.
+        let grains: Vec<f32> = map.iter().map(|t| t[3]).collect();
+        let low = grains.iter().cloned().fold(f32::MAX, f32::min);
+        let high = grains.iter().cloned().fold(f32::MIN, f32::max);
+        assert!(low > -1.0 && high < 1.0, "grain {low}..{high} out of range");
+        assert!(high - low > 0.6, "grain {low}..{high} is too flat");
         // Another visit, another seabed.
         assert_ne!(generate(43)[1000][0], map[1000][0]);
+        assert_ne!(generate(43)[1000][3], map[1000][3]);
     }
 }
