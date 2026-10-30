@@ -117,12 +117,12 @@ const BRISK: f32 = 3.0;
 pub const LOOK: f32 = 0.55;
 const CRAB_RATE: f32 = 0.008;
 /// How far round the helmsman swings the boat off its track in open water,
-/// either way, and the fastest he swings it: twenty degrees, so the window
-/// sees a third of the boat's way coming at it or falling away from it, at a
-/// quarter of a degree a second, so a whole swing from looking astern to
-/// looking ahead takes a couple of minutes. With the corridor's own bends it
-/// stays within the turning rate of a hull of its size.
-pub const SWING: f32 = 0.4;
+/// either way, and the fastest he swings it: sixteen degrees, so the window
+/// sees nearly a third of the boat's way coming at it or falling away from
+/// it, at a quarter of a degree a second, so a whole swing from looking
+/// astern to looking ahead takes a couple of minutes. With the corridor's own
+/// bends it stays within the turning rate of a hull of its size.
+pub const SWING: f32 = 0.28;
 const SWING_RATE: f32 = 0.005;
 /// How much lower than its cruise the boat runs while it looks ahead, and
 /// how much higher while it looks astern, as a share of its height over the
@@ -249,9 +249,19 @@ fn open(seabed: &Seabed, x: f32) -> f32 {
 /// the hull's ends would reach set farther across, so there it is held
 /// nearly straight; the forest's trunks keep well clear of the lane and need
 /// no such care. It is straight in the cave's tunnel, where the crab takes
-/// over.
+/// over. Atlantis is reckoned over the six units about and mostly ahead, so
+/// the room closes over that stretch rather than over the biome blend's short
+/// one: a swipe's passage crosses it in a couple of seconds, and the swing
+/// must come off smoothly, not snap straight.
 fn room(seabed: &Seabed, x: f32) -> f32 {
-    (1.0 - 0.9 * seabed.share(x, corridor(x), ATLANTIS)) * open(seabed, x)
+    let ruins = (-1..=5)
+        .map(|k| {
+            let at = x + k as f32;
+            seabed.share(at, corridor(at), ATLANTIS)
+        })
+        .sum::<f32>()
+        / 7.0;
+    (1.0 - 0.9 * smooth(0.0, 0.8, ruins)) * open(seabed, x)
 }
 
 /// Where the helmsman means to swing the boat at `x`, off its track, in
@@ -425,19 +435,16 @@ impl Helm {
             self.roll = Spring::default();
             self.crab = Spring::default();
         } else {
-            // The swing, slowly, and never farther than the place allows:
-            // where a swipe's passage carries the boat into the forest or
-            // towards the cave quicker than it could swing back, the bound
-            // brings it straight, over the passage's own few seconds. While
-            // the course is still coming round, after a passage or in the
-            // corridor's tighter bends, the swing waits on it, so the two
-            // together never turn the nose faster than the crab alone may.
+            // The swing, slowly, and never farther than the place allows.
+            // Bounding the target rather than the spring's state keeps the
+            // rate continuous: a hard clamp would snap the nose round in one
+            // frame where a swipe carries the boat past the columns, and the
+            // window would jolt. The bound is read several hull lengths
+            // ahead, so at cruising speed the boat has straightened before
+            // the place itself closes in.
             let spare = (CRAB_RATE - self.course.rate.abs()).clamp(0.1 * SWING_RATE, SWING_RATE);
-            self.swing.follow(swung, 0.12, attitude_dt, spare);
-            if self.swing.value.abs() > most {
-                self.swing.value = self.swing.value.clamp(-most, most);
-                self.swing.rate = 0.0;
-            }
+            self.swing
+                .follow(swung.clamp(-most, most), 0.12, attitude_dt, spare);
             self.cruise += (about - self.cruise) * (1.0 - (-voyage_dt / 4.0).exp());
         }
         let target = (self.cruise + alt).max(rise).min(roof).max(floor);

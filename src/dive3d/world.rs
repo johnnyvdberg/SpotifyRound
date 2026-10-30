@@ -248,21 +248,16 @@ fn bubble(index: i32, stream: i32, t: f32, life: f32) -> Bubble {
     }
 }
 
-/// The line the voyage follows across the seabed: a meander in z, long
-/// sweeps with a shorter bend laid over them, so the course swings through
-/// over twenty degrees either way and never runs straight for long. Its
-/// tightest bend is some eighteen units' radius, ten hull lengths, before the
-/// helm's own wander. Everything — the biome borders, the far mountains, the
-/// cave's tunnel and the lanes the swimmers keep to — is laid out about it.
+/// The line the voyage follows across the seabed: a gentle meander in z.
+/// Everything — the biome borders, the far mountains, the cave's tunnel and
+/// the lanes the swimmers keep to — is laid out about it.
 pub fn corridor(x: f32) -> f32 {
-    2.2 * (x * 0.11 + 0.7).sin() + 0.8 * (x * 0.031).sin() + 0.7 * (x * 0.2 + 2.1).sin()
+    2.2 * (x * 0.11 + 0.7).sin() + 0.8 * (x * 0.031).sin()
 }
 
 /// The corridor's slope, dz/dx.
 pub fn corridor_slope(x: f32) -> f32 {
-    2.2 * 0.11 * (x * 0.11 + 0.7).cos()
-        + 0.8 * 0.031 * (x * 0.031).cos()
-        + 0.7 * 0.2 * (x * 0.2 + 2.1).cos()
+    2.2 * 0.11 * (x * 0.11 + 0.7).cos() + 0.8 * 0.031 * (x * 0.031).cos()
 }
 
 pub fn voyage_x(x: f32, z: f32) -> f32 {
@@ -6363,11 +6358,7 @@ mod tests {
                 if side(k, 150) < 0.0 || hash(k, 0, 150) < 0.2 {
                     continue;
                 }
-                // Level with the middle of the party, which strings out over
-                // more of the window's width where the corridor bends across
-                // its line than where it runs straight.
-                let mid = x - 0.3;
-                let pose = Pose::level(mid, seabed.ground(mid, corridor(mid)) + 0.5);
+                let pose = Pose::level(x, seabed.ground(x, 0.6) + 0.5);
                 let world = World {
                     seabed: &seabed,
                     pose,
@@ -6592,19 +6583,13 @@ mod tests {
     /// off at the brass would leave a bright bubble with no neighbour.
     #[test]
     fn bubbles_never_pop() {
-        // Moments of visit 0 with a trail near the glass: a sister
-        // submarine in the coral garden, the forest's walking party, and a
-        // deep encounter on the way to the abyss. The exact seconds are the
-        // ones the encounters run on in the canonical circuit.
         // Moments of visit 0 with a trail near the glass: the forest's
-        // walking party, an encounter in the bloom, and a deep encounter on
-        // the way to the abyss. The exact seconds are the ones the longer
-        // five-minute legs put their bubbles at.
-        let scenes = [
-            ("diver helmets", 633.0),
-            ("bloom encounter", 3015.0),
-            ("deep trail", 3407.0),
-        ];
+        // walking party, and a sister submarine coming up on the shallows.
+        // The exact seconds are the ones the encounters run on in the
+        // canonical circuit; the helmsman's swing turns the window a little
+        // off the track, so a meeting that used to sit on the glass can move
+        // out of view, and these are the ones that still cross it.
+        let scenes = [("diver helmets", 630.0), ("shallows encounter", 840.0)];
         for (name, start) in scenes {
             let seed = 0.0f32;
             let seabed = Seabed::new(0, seed);
