@@ -497,6 +497,11 @@ fn build(w: &World, s: f32, i: i32, j: i32) -> (Vec<Point>, [f32; 3], f32) {
         }
     }
     let h = |a: usize, b: usize| heights[(b + 1) * border + a + 1];
+    // The drowned city's buildings near enough to light this tile, found
+    // once for all of its vertices.
+    let span = QUADS as f32 * s;
+    let (left, near) = (x0 as f32 * s, z0 as f32 * s);
+    let spills = world::city_spills(w, left, near, left + span, near + span);
     let mut points = Vec::with_capacity(VERTICES);
     for b in 0..SIDE {
         for a in 0..SIDE {
@@ -518,7 +523,27 @@ fn build(w: &World, s: f32, i: i32, j: i32) -> (Vec<Point>, [f32; 3], f32) {
                 - heights[(b + 2) * border + a + 1])
                 / (4.0 * s * s);
             let cavity = (bump * 0.6).clamp(-1.0, 1.0);
-            let (albedo, shade, glow) = shade(w, x, z, normal, cavity);
+            let (mut albedo, shade, mut glow) = shade(w, x, z, normal, cavity);
+            // Lamplight from the city's windows pooled on the floor about
+            // each building, and the shadow at its foot. The light goes in
+            // the glow, marked by a negative fourth so `vs_terrain` adds it
+            // to the light falling on the floor rather than to its colour;
+            // the lava cave's glow, where the two seas meet, keeps the slot.
+            if !spills.is_empty() && glow[3] <= 0.0 {
+                let mut light = [0.0f32; 3];
+                let mut dark = 0.0f32;
+                for spill in &spills {
+                    let (l, d) = spill.at(x, z);
+                    light = [0, 1, 2].map(|j| light[j] + l[j]);
+                    dark = dark.max(d);
+                }
+                for c in &mut albedo[..3] {
+                    *c *= 1.0 - dark;
+                }
+                if light.iter().any(|&c| c > 1e-3) {
+                    glow = [light[0], light[1], light[2], -1.0];
+                }
+            }
             points.push(Point {
                 position: [x, h(a, b), z],
                 normal,

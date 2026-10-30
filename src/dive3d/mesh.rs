@@ -2351,9 +2351,18 @@ fn city_part(m: &mut Mesh, mut part: Mesh, kind: f32) {
         if f.dot(Vec3::from_array(v.normal)) < 0.0 {
             v.normal = v.normal.map(|c| -c);
         }
-        v.aux = [kind, 0.0];
+        v.aux = [kind, polish(v.colour)];
     }
     m.append(part);
+}
+
+/// How much a city part of `colour` shines like polished brass, in `aux.y`
+/// for `city_light`: by how much warmer than blue it is, so the brass of
+/// the cornices, piers and fins shines fully, the bronzed iron a little and
+/// the crusted footings, verdigris, glass and neon not at all.
+fn polish(colour: [f32; 3]) -> f32 {
+    let warmth = (colour[0] - colour[2]) / colour[0].max(1e-3);
+    ((warmth - 0.2) / 0.3).clamp(0.0, 1.0)
 }
 
 /// `m` moved by `d`.

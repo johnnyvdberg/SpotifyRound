@@ -3557,10 +3557,17 @@ fn building(w: &World, ix: i32, iz: i32, far: bool) -> Option<Building> {
 
 /// Put one of the city's models, in its own material and with its neon's
 /// colour, which the shader finds in the instance's floor colour.
-fn city_put(f: &mut Frame, model: Model, rows: [[f32; 4]; 3], colour: [f32; 3], neon: [f32; 3]) {
+fn city_put(
+    f: &mut Frame,
+    model: Model,
+    rows: [[f32; 4]; 3],
+    colour: [f32; 3],
+    neon: [f32; 3],
+) -> &mut Instance {
     let i = f.put(model, rows, colour);
     i.material(material::CITY);
     i.floor = [neon[0], neon[1], neon[2], 0.0];
+    i
 }
 
 /// A shop or arcade on the avenue's frontage, between the tower blocks: a
@@ -3640,6 +3647,7 @@ fn city(w: &World, f: &mut Frame) {
         f.fade = fade(b.share, 0.3);
         if w.visible(centre, height * 0.55 + b.reach()) {
             place_building(w, f, &b);
+            crown_glow(f, &b);
         }
         // Walkways to the next block along the avenue and the next out from
         // it, between towers on the same side and low enough for both.
@@ -3716,6 +3724,7 @@ fn city(w: &World, f: &mut Frame) {
         }
         f.fade = fade(b.share, 0.3);
         place_building(w, f, &b);
+        crown_glow(f, &b);
     }
     // The great pipes, along the avenue on the window's side, a run to a
     // block where they surface.
@@ -3755,12 +3764,48 @@ fn place_building(_w: &World, f: &mut Frame, b: &Building) {
         tone * (0.94 + 0.08 * b.hash(9)),
         tone * (0.86 + 0.10 * b.hash(9)),
     ];
+    // The fourth of the floor colour says it stands on the seabed, so the
+    // shader silts and shades its foot (`city_light`).
     city_put(
         f,
         b.model,
         place([b.x, b.y, b.z], b.yaw, 0.0, 0.0, [b.s, b.s * b.tall, b.s]),
         tint,
         b.neon,
+    )
+    .floor[3] = 1.0;
+}
+
+/// The bloom round a building's neon, faked: soft additive glows over the
+/// beacon on its spire and, on a tower or a round tower, the neon band round
+/// its crown. A full-screen bloom would need a second render target and a
+/// blur pass over every pixel, which the Pi's tiler pays for in memory
+/// bandwidth; a few small sprites cover only the pixels that glow.
+fn crown_glow(f: &mut Frame, b: &Building) {
+    let show = f.fade;
+    let neon = b.neon.map(|c| c * show);
+    let up = b.s * b.tall;
+    let beacon = [b.x, b.top() - 0.03 * up, b.z];
+    f.glow_sprite(
+        beacon,
+        0.20 * b.s,
+        neon.map(|c| 0.40 * c + 0.10 * show),
+        b.hash(26) * TAU,
+        1.0,
+        1.0,
+    );
+    let band = match b.model {
+        Model::Tower => 3.62,
+        Model::Rotunda => 3.285,
+        _ => return,
+    };
+    f.glow_sprite(
+        [b.x, b.y + band * up, b.z],
+        0.62 * b.s,
+        neon.map(|c| 0.16 * c),
+        b.hash(27) * TAU,
+        1.0,
+        1.0,
     );
 }
 
@@ -3897,6 +3942,137 @@ fn city_beams(w: &World, f: &mut Frame) {
         });
         f.sprite(o, 0.12, [0.9 * show, 0.85 * show, 0.65 * show], GLOW);
     }
+}
+
+/// The light a building of the drowned city throws on the seabed about its
+/// foot, and the shadow it stands in, for `terrain` to bake into the floor's
+/// vertices when a tile is built. The seabed's grid is fine near the window
+/// (0.08 units), so a pool of lamplight spreading from each block and a dark
+/// line where wall meets silt come out smooth, and cost the GPU nothing: a
+/// tiler pays for every decal or light volume it blends over the floor, but
+/// a colour already in the vertex is free.
+pub struct Spill {
+    x: f32,
+    z: f32,
+    /// The footing's half width, and whether it is round or square.
+    half: f32,
+    round: bool,
+    yaw: f32,
+    /// The lamplight's colour at the foot, already as strong as the block
+    /// is tall and as far as it has faded in.
+    colour: [f32; 3],
+    /// How far from the wall the light still reaches.
+    reach: f32,
+}
+
+/// How far a pool of light reaches past its building's wall, at most.
+const SPILL_REACH: f32 = 1.8;
+
+impl Spill {
+    fn of(b: &Building) -> Self {
+        let (half, round) = match b.model {
+            Model::Rotunda => (0.64, true),
+            Model::Dome => (1.0, true),
+            Model::Theatre => (0.96, true),
+            Model::Arcade => (0.9, false),
+            Model::Factory => (0.82, false),
+            Model::Ziggurat => (0.6, false),
+            _ => (0.64, false),
+        };
+        // Taller blocks have more windows to light the street; the neon at
+        // its foot tints it a little.
+        let tall = ((b.top() - b.y) / 3.0).clamp(0.6, 1.0);
+        let k = tall * fade(b.share, 0.3);
+        let warm = [1.0, 0.58, 0.22];
+        Spill {
+            x: b.x,
+            z: b.z,
+            half: half * b.s,
+            round,
+            yaw: b.yaw,
+            colour: [0, 1, 2].map(|j| k * (1.2 * warm[j] + 0.35 * b.neon[j])),
+            reach: SPILL_REACH * (0.7 + 0.3 * tall),
+        }
+    }
+
+    /// How far (x, z) is outside the building's footing: negative inside.
+    fn outside(&self, x: f32, z: f32) -> f32 {
+        let (dx, dz) = (x - self.x, z - self.z);
+        if self.round {
+            return dx.hypot(dz) - self.half;
+        }
+        // Into the building's own frame, as `place` turns it.
+        let (s, c) = self.yaw.sin_cos();
+        let (u, v) = ((c * dx - s * dz).abs(), (s * dx + c * dz).abs());
+        let (qu, qv) = (u - self.half, v - self.half);
+        qu.max(0.0).hypot(qv.max(0.0)) + qu.max(qv).min(0.0)
+    }
+
+    /// The lamplight this building throws on the seabed at (x, z), and how
+    /// much of the floor's own light its bulk takes away there.
+    pub fn at(&self, x: f32, z: f32) -> ([f32; 3], f32) {
+        let d = self.outside(x, z);
+        if d > self.reach {
+            return ([0.0; 3], 0.0);
+        }
+        let shadow = 0.45 * (1.0 - smooth(0.0, 0.2, d.max(0.0)));
+        // The windows begin a floor up, so the light lands a little out from
+        // the wall and falls away from there.
+        let pool = smooth(0.0, 0.12, d)
+            * (-d.max(0.0) / (0.3 * self.reach)).exp()
+            * (1.0 - smooth(self.reach * 0.6, self.reach, d));
+        (self.colour.map(|c| c * pool), shadow)
+    }
+}
+
+/// Every building of the city whose pool of light can reach the square from
+/// (x0, z0) to (x1, z1): the same blocks, shops and far towers `city`
+/// places, found the same way, so the light on the floor is always under a
+/// building that is there.
+pub fn city_spills(w: &World, x0: f32, z0: f32, x1: f32, z1: f32) -> Vec<Spill> {
+    let mut out = Vec::new();
+    let corners = [
+        (x0, z0),
+        (x1, z0),
+        (x0, z1),
+        (x1, z1),
+        ((x0 + x1) * 0.5, (z0 + z1) * 0.5),
+    ];
+    if corners.iter().all(|&(x, z)| w.share(x, z, CITY) < 0.25) {
+        return out;
+    }
+    let m = SPILL_REACH + 1.6;
+    let grid = |size: f32| {
+        let i = ((x0 - m) / size).floor() as i32..=((x1 + m) / size).floor() as i32;
+        let j = ((z0 - m) / size).floor() as i32..=((z1 + m) / size).floor() as i32;
+        (i, j)
+    };
+    for (size, far) in [(CITY_NEAR, false), (CITY_FAR, true)] {
+        let (columns, rows) = grid(size);
+        for iz in rows {
+            for ix in columns.clone() {
+                if let Some(b) = building(w, ix, iz, far) {
+                    out.push(Spill::of(&b));
+                }
+            }
+        }
+    }
+    let (columns, rows) = grid(2.4);
+    for iz in rows {
+        for ix in columns.clone() {
+            let (x, z) = cell_point(ix, iz, 2.4, CITY_SALT + 120);
+            // The shops keep to a strip either side of the avenue: most cells
+            // are out of it, and are dropped before any building is sought.
+            let across = (z - corridor(x)).abs();
+            if !(AVENUE..AVENUE + 1.6).contains(&across) {
+                continue;
+            }
+            if let Some(b) = street_shop(w, ix, iz, x, z) {
+                out.push(Spill::of(&b));
+            }
+        }
+    }
+    out
 }
 
 /// The lava cave: basalt columns, stalactites dripping molten rock, and the

@@ -972,7 +972,7 @@ fn vs_terrain(
     out.fog = fog_at(world);
     out.uv = world.xz * 1.3;
     out.world = world;
-    out.cave = glow.a;
+    out.cave = max(glow.a, 0.0);
     out.layer = i32(baked.w + 0.5);
     out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
     let n = normalize(normal);
@@ -984,7 +984,10 @@ fn vs_terrain(
     scale *= 1.0 - shade.z * detail;
     scale *= 1.0 - shade.w * detail;
     let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + world.x * 3.0) * sin(g.camera.w * 2.9 + world.z * 2.0);
-    out.albedo = baked.rgb * scale + glow.rgb * (flicker * 0.35);
+    // A negative fourth marks the drowned city's lamplight pooled about its
+    // buildings (`world::Spill`): light on the floor, not a glow of its own.
+    let city = select(0.0, 1.0, glow.a < 0.0);
+    out.albedo = baked.rgb * scale + glow.rgb * (flicker * 0.35 * (1.0 - city));
     if (switched(8u)) {
         let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
         out.light = g.tint.rgb * (
@@ -994,8 +997,12 @@ fn vs_terrain(
     } else {
         out.light = light_at(world, n);
     }
+    out.light += glow.rgb * (city * CITY_SPILL);
     return out;
 }
+
+// How bright the city's lamplight is on the floor it pools on.
+const CITY_SPILL: f32 = 2.2;
 
 @if(full_hd)
 @fragment
@@ -1114,6 +1121,10 @@ struct Lit {
     @location(11) @interpolate(flat) floor: vec3<f32>,
     // `fog_at` the vertex.
     @location(10) fog: vec4<f32>,
+    // The drowned city's: the camera in the model's own units, so a window
+    // can look into the room behind it (`city_light`), and in w whether the
+    // building stands on the seabed, which darkens its foot.
+    @location(12) @interpolate(flat) eye: vec4<f32>,
 };
 
 // Bend a model where it lives: plants sway, fish sweep their tails sideways
@@ -1364,9 +1375,26 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // The city's parts mark what they are in the length of the normal they
     // carry (`city_light`), and the windows take a seed from where the
     // instance stands; its texture is the world's, so neither is missed.
+    out.eye = vec4<f32>(0.0);
     if (MATERIAL == CITY_LIGHTS) {
         out.local_normal = v.normal * (1.0 + f32(v.aux.x));
         out.surface.w = floor(fract(i.m0.w * 0.1731 + i.m2.w * 0.0913) * 4096.0);
+        // The camera taken back into the model's frame by the inverse of
+        // the instance's matrix, which is the cofactors above over the
+        // determinant: a few products a vertex, and every pixel of a window
+        // then has its view ray in the units its grid of rooms is laid out
+        // in. The ray is affine across a triangle, so the fragment needs
+        // only the flat eye and its own `local` to rebuild it exactly.
+        let d = g.camera.xyz - vec3<f32>(i.m0.w, i.m1.w, i.m2.w);
+        let det = dot(c0, cross(c1, c2));
+        out.eye = vec4<f32>(
+            vec3<f32>(dot(cross(c1, c2), d), dot(cross(c2, c0), d), dot(cross(c0, c1), d)) / det,
+            i.floor.w,
+        );
+        // How much a part shines like polished brass, from its colour
+        // (`mesh::city_part`), per vertex in the slot a grounded model keeps
+        // its seabed's height in: a city model is never grounded.
+        out.floor_y = f32(v.aux.y);
     }
     return out;
 }
@@ -1423,67 +1451,203 @@ const VAULT: i32 = 5;
 // windows' pattern is seeded by where the instance stands.
 const CITY_LIGHTS: i32 = 11;
 
-// The light a city surface gives out by itself, rgb, and how much its own
-// colour is kept, a: the dark glass of an unlit window takes away a little.
-// `local` and `marked` are the model's position and its marked normal, `p`
-// the world position, `seed` the instance's and `neon` its sign colour.
-fn city_light(
-    p: vec3<f32>,
-    local: vec3<f32>,
-    marked: vec3<f32>,
-    seed: f32,
-    neon: vec3<f32>,
-    distance: f32,
-    t: f32,
-) -> vec4<f32> {
-    let kind = length(marked) - 1.0;
-    if (kind < 0.5) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    }
+// What a city surface adds to its own lit colour, and how much of that it
+// keeps: `lamps` is the light it gives out, laid on after the fog so a far
+// window still glows; `sheen` is what it mirrors of the water and the haze
+// round its edges, fogged with the surface; `keep` scales its own colour,
+// for the dark glass of an unlit window and the silted, shadowed foot of a
+// building. Everything here is arithmetic on what the vertex already
+// carries: no texture, no extra pass, nothing blended, which is what the
+// Pi's tiler is good at, and the rooms behind the windows are the only part
+// with any length to it, worked out only where a lit pane is near enough to
+// be seen as more than a dot.
+struct City {
+    lamps: vec3<f32>,
+    sheen: vec3<f32>,
+    keep: f32,
+};
+
+// The water a polished or glazed city surface mirrors along `r`: lighter
+// overhead, dark below, and the city's own windows as a warm band low along
+// the horizon, as `water_at` has them without the searchlight's beam. An
+// analytic environment map: a gradient keyed to the reflected direction,
+// where a cube map would be a dependent texture read for every pixel.
+fn city_mirror(r: vec3<f32>) -> vec3<f32> {
+    var c = mix(g.deep.rgb, g.water.rgb * 1.6, smooth01(-0.5, 0.6, r.y));
+    c += vec3<f32>(0.32, 0.17, 0.05) * g.levels.w * (1.0 - smooth01(0.0, 0.22, abs(r.y - 0.06)));
+    return c;
+}
+
+// The drowned city's surfaces. `n` is the surface's world normal and `v`
+// the way to the camera, both unit length; `distance` how far off it is.
+fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> City {
+    var out: City;
+    out.lamps = vec3<f32>(0.0);
+    out.keep = 1.0;
+    let seed = in.surface.w;
+    let local = in.local;
+    let kind = length(in.local_normal) - 1.0;
+    let facing = clamp(dot(n, v), 0.0, 1.0);
+    let edge = 1.0 - facing;
+    let fresnel = edge * edge * edge;
+    let r = reflect(-v, n);
+    // The haze the water scatters round every silhouette: a rim of the
+    // water's own colour where a surface turns away, so a dark tower stands
+    // off the dark water behind it instead of merging with it.
+    out.sheen = in.fog.rgb * fresnel * 0.7;
     if (kind > 2.3) {
-        // Neon: a steady buzz and, a few times a minute, a stutter.
+        // Neon: a steady buzz and, a few times a minute, a stutter. Its tube
+        // is white-hot where it faces the window and its own colour round
+        // its edges, the way a lit glass tube reads in a photograph.
         let slot = floor(t * 6.0 + seed);
         let stutter = select(1.0, 0.2, fract(sin(slot * 12.9898 + seed) * 43758.5) < 0.05);
-        return vec4<f32>(neon * (1.9 + 0.2 * sin(t * 37.0 + seed)) * stutter, 1.0);
+        let core = facing * facing;
+        out.lamps = (in.floor * (1.9 + 0.2 * sin(t * 37.0 + seed)) + vec3<f32>(0.30) * core * core) * stutter;
+        return out;
     }
     if (kind > 1.4) {
         // Glass panes leaded in an iron lattice, lit warm from within. The
         // lattice is in the world, so a walkway stretched between two towers
-        // keeps square panes; far off the leading is too fine to see.
-        let q = abs(fract(p * 5.5) - vec3<f32>(0.5));
+        // keeps square panes; far off the leading is too fine to see. The
+        // glass mirrors the water, most where it is seen edge on.
+        let q = abs(fract(in.world * 5.5) - vec3<f32>(0.5));
         let lead = min(min(q.x, q.y), q.z);
         let pane = mix(smooth01(0.03, 0.08, lead), 0.8, smooth01(10.0, 22.0, distance));
-        return vec4<f32>(vec3<f32>(0.95, 0.64, 0.30) * (0.06 + 0.32 * pane), 0.55);
+        out.lamps = vec3<f32>(0.95, 0.64, 0.30) * (0.06 + 0.32 * pane);
+        out.sheen += city_mirror(r) * (0.12 + 0.9 * fresnel) * pane;
+        out.keep = 0.55;
+        return out;
+    }
+    // A building's foot, silted and in its own shadow: darker towards the
+    // seabed it stands on, over its plinth and its first floor. Baked
+    // ambient occlusion in all but name, from the model's own height, so it
+    // costs a smoothstep and no vertices.
+    let foot = (1.0 - smooth01(-0.35, 0.95, local.y)) * in.eye.w;
+    out.keep = 1.0 - 0.55 * foot;
+    // Polished brass mirrors the water above and the glow along the
+    // horizon, with a bright band where the surface turns it to the light
+    // over the city: a matcap worked out from the reflected ray.
+    let brass = in.floor_y;
+    if (brass > 0.01) {
+        let band = exp(-60.0 * (r.y - 0.30) * (r.y - 0.30));
+        out.sheen += vec3<f32>(1.0, 0.74, 0.40) * brass * (1.0 - foot)
+            * (city_mirror(r) * (0.22 + 0.9 * fresnel) + vec3<f32>(0.06, 0.05, 0.04) * band);
+    }
+    if (kind < 0.5) {
+        return out;
     }
     // A wall of windows on a grid of floors, in the model's own units, on
     // whichever of its vertical faces this is; the roofs and ledges have none.
-    let n = marked / (kind + 1.0);
-    let wall = 1.0 - smooth01(0.35, 0.6, abs(n.y));
+    let nl = in.local_normal / (kind + 1.0);
+    let wall = 1.0 - smooth01(0.35, 0.6, abs(nl.y));
     if (wall <= 0.0) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return out;
     }
-    let side = abs(n.x) > abs(n.z);
+    let side = abs(nl.x) > abs(nl.z);
     let u = select(local.x, local.z, side);
-    let face = select(select(0u, 1u, n.z > 0.0), select(2u, 3u, n.x > 0.0), side);
+    let face = select(select(0u, 1u, nl.z > 0.0), select(2u, 3u, nl.x > 0.0), side);
     let cell = vec2<f32>(u / 0.11, local.y / 0.16);
     let c = floor(cell);
     let f = cell - c;
     let h = hash(i32(c.x), i32(c.y), u32(seed) * 4u + face);
-    let lit = step(0.55, h);
+    var lit = step(0.55, h);
     let pane = smooth01(0.10, 0.18, f.x) * smooth01(0.90, 0.82, f.x)
         * smooth01(0.14, 0.24, f.y) * smooth01(0.86, 0.78, f.y);
     // Mostly lamplight; now and then a cold, greenish strip-lit room.
-    let warm = mix(vec3<f32>(1.0, 0.58, 0.22), vec3<f32>(0.70, 0.90, 0.66), step(0.93, h));
+    var warm = mix(vec3<f32>(1.0, 0.58, 0.22), vec3<f32>(0.70, 0.90, 0.66), step(0.93, h));
     var bright = 0.45 + 0.75 * fract(h * 7.31);
     // A few windows flicker, each at its own rate, as failing lamps do.
     let fault = fract(h * 13.7);
     if (fault < 0.07) {
         bright *= step(0.35, fract(sin(floor(t * (3.0 + fault * 90.0)) + h * 91.0) * 43758.5));
     }
+    // A lift in its shaft up some faces: one column of dark windows with a
+    // lit car riding up and down it, slow, pausing at the ends of its run.
+    let shaft = hash(i32(face), -7, u32(seed));
+    if (shaft < 0.55 && c.x == floor(fract(shaft * 9.7) * 5.0) - 2.0) {
+        let ride = 1.5 + 9.0 * smooth01(-0.8, 0.8, sin(t * 0.21 + shaft * 40.0));
+        lit = 1.0 - smooth01(0.30, 0.55, abs(cell.y - 0.5 - ride));
+        bright = 1.25;
+        warm = vec3<f32>(0.85, 0.92, 1.0);
+    }
     // Far off the grid is finer than the pixels: its average, steady.
     let far = smooth01(22.0, 45.0, distance);
-    let glow = mix(lit * pane * bright, 0.22, far) * wall;
-    return vec4<f32>(warm * glow, 1.0 - 0.45 * pane * wall * (1.0 - lit) * (1.0 - far));
+    var room = vec3<f32>(1.0);
+    if (lit * pane > 0.001 && far < 0.999) {
+        room = city_room(in, nl, side, f, h, t);
+    }
+    let glow = mix(lit * pane * bright * room, vec3<f32>(0.22), far) * wall;
+    out.lamps = warm * glow;
+    // Dark glass where a room is unlit, mirroring the water; a lit pane
+    // mirrors it faintly over its own light.
+    let glass = pane * wall * (1.0 - far);
+    out.keep *= 1.0 - 0.45 * glass * (1.0 - lit);
+    out.sheen += city_mirror(r) * (0.10 + 0.8 * fresnel) * glass * (1.0 - 0.7 * lit);
+    return out;
+}
+
+// The room behind a lit window, by interior mapping: the view ray is
+// followed from the pane into a box a window wide, a floor high and about as
+// deep as wide, and whichever of its back wall, floor, ceiling or sides it
+// reaches first is shaded, all analytically, with no texture. `f` is where
+// in its cell the pane is struck, `h` the window's own hash. Each room is
+// furnished from that hash: the lamp hangs to one side or the other, the
+// wallpaper is its own colour, some have their curtains half drawn or a
+// blind half down, and in a few someone paces the back wall. The result is
+// a tint about 1 on average, so the city's far, averaged glow is unchanged.
+fn city_room(in: Lit, nl: vec3<f32>, side: bool, f: vec2<f32>, h: f32, t: f32) -> vec3<f32> {
+    // The ray into the wall in the model's units, in cells: across the face,
+    // up it and into it, a room 0.10 deep.
+    let ray = in.local - in.eye.xyz;
+    let out_x = select(nl.z, nl.x, side);
+    let into = -sign(out_x) * select(ray.z, ray.x, side);
+    var d = vec3<f32>(select(ray.x, ray.z, side) / 0.11, ray.y / 0.16, max(into, 1e-4) / 0.10);
+    d = select(d, vec3<f32>(1e-5), abs(d) < vec3<f32>(1e-5));
+    let walls = (step(vec2<f32>(0.0), d.xy) - f) / d.xy;
+    let back = 1.0 / d.z;
+    let reach = min(min(walls.x, walls.y), back);
+    let hit = vec3<f32>(f + d.xy * reach, reach * d.z);
+    let on_back = step(back, min(walls.x, walls.y));
+    let level = (1.0 - on_back) * step(walls.y, walls.x);
+    let on_side = (1.0 - on_back) * (1.0 - level);
+    let up = step(0.0, d.y);
+    // The lamp, high on the back wall to one side, lights the ceiling over
+    // it and leaves the floor and the depths of the room darker.
+    let lamp = 0.30 + 0.40 * fract(h * 3.13);
+    let spot = exp(-9.0 * ((hit.x - lamp) * (hit.x - lamp) + (hit.y - 0.80) * (hit.y - 0.80)));
+    var shade = on_back * (0.95 + 1.0 * spot)
+        + level * mix(0.60, 1.40 + 1.0 * spot, up)
+        + on_side * (0.85 + 0.5 * spot);
+    shade *= 1.40 - 0.40 * hit.z;
+    // Someone at home, pacing slowly across the back wall: a dark shape
+    // against the lit paper.
+    if (fract(h * 23.1) < 0.08) {
+        let x = 0.3 + 0.4 * (0.5 + 0.5 * sin(t * 0.23 + h * 50.0));
+        let body = (1.0 - smooth01(0.11, 0.15, abs(hit.x - x) + 0.25 * max(hit.y - 0.45, 0.0)))
+            * (1.0 - smooth01(0.56, 0.60, hit.y));
+        let head = 1.0 - smooth01(0.08, 0.10, length(vec2<f32>(hit.x - x, (hit.y - 0.69) * 0.8)));
+        shade *= 1.0 - 0.85 * max(body, head) * on_back;
+    }
+    // The wallpaper: rose, sage or cream.
+    let paper = fract(h * 5.71);
+    var colour = mix(vec3<f32>(1.0, 0.82, 0.78), vec3<f32>(0.82, 1.0, 0.80), step(0.33, paper));
+    colour = mix(colour, vec3<f32>(1.05, 0.98, 0.86), step(0.66, paper));
+    colour = mix(vec3<f32>(1.0), colour, on_back + on_side) * shade;
+    // Curtains half drawn across some windows, lit through and coloured; a
+    // slatted blind half down others. Both hang in the pane itself.
+    let style = fract(h * 9.13);
+    if (style < 0.30) {
+        let gap = 0.10 + 0.22 * fract(h * 17.9);
+        let drawn = smooth01(gap, gap + 0.05, abs(f.x - 0.5));
+        let cloth = mix(vec3<f32>(1.1, 0.42, 0.30), vec3<f32>(0.55, 0.85, 0.45), step(0.15, style))
+            * (0.75 + 0.25 * sin(f.x * 40.0));
+        colour = mix(colour, cloth, drawn);
+    } else if (style < 0.45) {
+        let down = 0.35 + 0.4 * fract(h * 31.7);
+        let blind = 0.55 + 0.35 * step(0.5, fract(f.y * 9.0));
+        colour = mix(colour, vec3<f32>(blind * 1.1), step(down, f.y));
+    }
+    return colour;
 }
 
 // The tunnel's rock: basalt laid down flow on flow, wet where the
@@ -1561,9 +1725,9 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // carries it when there are more.
     var lamps = vec3<f32>(0.0);
     if (MATERIAL == CITY_LIGHTS) {
-        let city = city_light(p, in.local, in.local_normal, in.surface.w, in.floor, length(p - g.camera.xyz), t);
-        colour *= city.a;
-        lamps = city.rgb;
+        let city = city_light(in, n, to_camera, length(p - g.camera.xyz), t);
+        colour = colour * city.keep + city.sheen;
+        lamps = city.lamps;
     }
     var coverage = in.fade;
     // Per-vertex fog would be the far corners' fog on these four-vertex
@@ -1858,9 +2022,9 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     var lamps = vec3<f32>(0.0);
     if (MATERIAL == CITY_LIGHTS) {
-        let city = city_light(p, in.local, in.local_normal, in.surface.w, in.floor, length(p - g.camera.xyz), t);
-        colour *= city.a;
-        lamps = city.rgb;
+        let city = city_light(in, n, normalize(g.camera.xyz - p), distance, t);
+        colour = colour * city.keep + city.sheen;
+        lamps = city.lamps;
     }
     var coverage = in.fade;
     // Per-vertex fog would be the far corners' fog on these four-vertex
