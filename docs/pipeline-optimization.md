@@ -2371,3 +2371,41 @@ struct conversion in `Library::build`, the shader decoding f16/i8/u8, the
 previews gate.
 
 ![surface subset: nine-placer / subset / difference](branch-surface-subset.png)
+
+## 60. Vertex format: the exact 14-byte layout and the decode
+
+The current `Vertex` is 44 B (3+3+3+2 f32s). The packed record:
+
+```rust
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Vertex {
+    pub pos: [u16; 3],    // f16 bits, 6 B
+    pub normal: [i8; 3],  // snorm8, 3 B
+    pub colour: [u8; 3],  // unorm8, 3 B
+    pub aux: [u8; 2],     // unorm8, 2 B
+}                         // 14 B, align 2
+```
+
+- `half = "2"` returns to `Cargo.toml` for the conversion only:
+  `Vertex { pos: v.pos.map(|c| f16::from_f32(c).to_bits()), normal: ..., }`.
+- The `Mesh` keeps the f32 `Vertex` for its geometry work; the conversion
+  happens at `Library::build`'s upload collection, so the mesh code (loft,
+  extrude, `between`, `animate`-adjacent math) is untouched.
+- Shader `Model` becomes `pos: vec3<f16>`, and `normal/colour/aux` stay
+  `vec3<f32>`/`vec2<f32>` because `Snorm8x3`/`Unorm8x3`/`Unorm8x2` are
+  already decoded to floats by the vertex fetch. The only shader change is
+  `let p0 = vec3<f32>(v.pos);` feeding `animate`.
+- wgpu layouts: `0 => Float16x3`, `1 => Snorm8x3`, `2 => Unorm8x3`,
+  `3 => Unorm8x2`; `array_stride` 14.
+
+Quantisation cost: the fish are ~2 units long, so f16 pos is 1e-3 relative;
+the normals' snorm8 is ~0.4 degree; the colours' unorm8 is 1/255. These are
+below the accepted §19 fish-branch diff (0.016 mean, 199 max). The previews
+are the gate.
+
+Expected: the audit's 0.1-0.2 ms Pi; the fetch drops from 44 B to 14 B per
+vertex, which is 150k vertices x 30 B = 4.5 MB/frame less.
+
+Not applied this round; the scheme above is the complete edit set (Cargo,
+mesh.rs, shader, mod.rs layout).
