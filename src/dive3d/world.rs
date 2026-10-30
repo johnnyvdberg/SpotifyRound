@@ -35,6 +35,9 @@ pub const SARGASSO: usize = 9;
 pub const VENTS: usize = 10;
 pub const BRINE: usize = 11;
 pub const BLOOM: usize = 12;
+/// The drowned city, added after the five: brass-and-iron towers lit from
+/// within, standing in rows either side of the avenue the Nautilus takes.
+pub const CITY: usize = 13;
 
 /// Height of the cave's vault above its floor, and the ice's thickness.
 pub const CAVE_ROOF: f32 = 1.6;
@@ -85,6 +88,8 @@ pub const FLOOR_ALBEDO: [[f32; 3]; BIOMES] = [
     [0.74, 0.73, 0.68],
     // Bloom: soft blue-grey ooze.
     [0.20, 0.20, 0.24],
+    // The drowned city: grey-green silt over its paving.
+    [0.25, 0.27, 0.23],
 ];
 
 /// The colour of the seabed where `b` is, blended across a biome border.
@@ -161,6 +166,9 @@ pub mod material {
     pub const GOLD: f32 = 8.0;
     /// A comb jelly: clear, with rainbow light running down its comb rows.
     pub const COMB: f32 = 10.0;
+    /// The drowned city's brass and iron, its windows, lit glass and neon:
+    /// `city_light` in `scene.wesl`, marked part by part (`mesh::city`).
+    pub const CITY: f32 = 11.0;
 }
 
 // Sprite kinds.
@@ -423,6 +431,19 @@ fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f
         let mounds = smooth(0.40, 0.72, 0.5 + 0.5 * detail);
         shape += bloom * (-0.05 * h + 0.10 * ooze + 0.22 * mounds);
     }
+    let city = weight(CITY);
+    if city > 0.0 {
+        // Level city blocks: broad plazas stepped down in long, low terraces
+        // and scarcely touched by the heightmap, so the towers stand on
+        // level ground and their plinths need not be buried deep.
+        let step =
+            2.0 * smooth(
+                -0.3,
+                0.3,
+                (TAU * (x * 0.0625 + z * 0.125) + 0.3 * detail).sin(),
+            ) - 1.0;
+        shape += city * (-0.06 * h + 0.10 * step + 0.015 * detail);
+    }
     shape
 }
 
@@ -578,20 +599,20 @@ fn corridor_point(p: [f32; 3], floor: f32) -> [f32; 3] {
 /// units; here they are compressed, so the drop into the abyss is a steep
 /// shelf rather than a gulf. The gauge undoes this (`helm::depth_reading`).
 pub const SEABED: [f32; BIOMES] = [
-    1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2, 2.2, 3.4, 8.2, 6.3, 10.2,
+    1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2, 2.2, 3.4, 8.2, 6.3, 10.2, 7.2,
 ];
 /// How strongly the heightmap's relief shows in each biome: rugged in the
-/// abyss, nearly flat under the paved city of Atlantis and the salt of the
-/// brine flats.
+/// abyss, nearly flat under the paved city of Atlantis, the salt of the
+/// brine flats and the drowned city's streets.
 pub const RELIEF: [f32; BIOMES] = [
-    0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30, 0.45, 0.30, 0.90, 0.06, 0.35,
+    0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30, 0.45, 0.30, 0.90, 0.06, 0.35, 0.08,
 ];
 
 /// The seabed of one visit: its heightmap and the biome sequence's seed.
 pub struct Seabed {
     pub map: Vec<[f32; 4]>,
     pub seed: f32,
-    /// This visit's thirteen-leg circuit, as [`crate::voyage::order_for`].
+    /// This visit's fourteen-leg circuit, as [`crate::voyage::order_for`].
     pub order: [usize; BIOMES],
 }
 
@@ -628,13 +649,13 @@ impl Seabed {
         let rough = Self::by_biome(
             &b,
             [
-                0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05, 0.06, 0.05, 0.08, 0.02, 0.04,
+                0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05, 0.06, 0.05, 0.08, 0.02, 0.04, 0.02,
             ],
         );
         let ridges = Self::by_biome(
             &b,
             [
-                1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0,
+                1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0, 1.2,
             ],
         );
         let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2);
@@ -642,7 +663,8 @@ impl Seabed {
         let off = across.abs();
         // Far mountains, kept low and broken up by a second noise octave; the
         // brine flats almost leave them out, so the salt plain runs to the
-        // water instead of ending at a sharp pyramid.
+        // water instead of ending at a sharp pyramid, and the drowned city
+        // keeps them low, so its far towers stand where the hills would.
         let far = smooth(9.0, 26.0, off)
             * (0.15
                 + 0.65
@@ -652,7 +674,7 @@ impl Seabed {
             * Self::by_biome(
                 &b,
                 [
-                    1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.15, 1.0,
+                    1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.15, 1.0, 0.3,
                 ],
             );
         // The lava cave's massif, rising either side of its tunnel.
@@ -1294,6 +1316,10 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::Tree => carried(Surface::Kelp, 2.0),
         Model::Submarine => carried(Surface::Plates, 5.0),
         Model::Screw => carried(Surface::Copper, 1.0),
+        Model::Tower | Model::Rotunda | Model::Dome | Model::Pipework => {
+            fixed(Surface::Plates, 3.0)
+        }
+        Model::Walkway | Model::Sign => fixed(Surface::Copper, 3.0),
         _ => None,
     }
 }
@@ -1524,7 +1550,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body, the jellyfish's swimming and the
     // four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 11] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 12] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
@@ -1536,9 +1562,11 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (kelp, None),
         (forest, algae),
         (drifters, None),
+        (city, None),
     ];
-    let steps: [(Placer, Option<[f32; 4]>); 12] = [
+    let steps: [(Placer, Option<[f32; 4]>); 13] = [
         (planes, None),
+        (city_beams, None),
         (tunnel, None),
         (vents, basalt),
         (ice, None),
@@ -1552,13 +1580,14 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 11] = [
+    const STATIC_NAMES: [&str; 12] = [
         "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "cave", "polar", "kelp", "forest",
-        "drifters",
+        "drifters", "city",
     ];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 12] = [
+    const STEP_NAMES: [&str; 13] = [
         "planes",
+        "city_beams",
         "tunnel",
         "vents",
         "ice",
@@ -1740,8 +1769,9 @@ fn rocks(w: &World, f: &mut Frame) {
         }
         // Big boulders lie farther off; right by the glass only stones.
         let size = 0.05 + 0.20 * hash(ix, iz, 13).powf(2.0);
-        // Boulders lie off the boat's course; only stones in its way.
-        if size > 0.1 && (z - corridor(x)).abs() < 0.7 {
+        // Boulders lie off the boat's course; only stones in its way, and
+        // only stones in the drowned city's swept streets.
+        if size > 0.1 && ((z - corridor(x)).abs() < 0.7 || w.share(x, z, CITY) > 0.3) {
             continue;
         }
         let y = w.ground(x, z);
@@ -1754,7 +1784,7 @@ fn rocks(w: &World, f: &mut Frame) {
         let tone = World::by_biome(
             &b,
             [
-                0.32, 0.24, 0.22, 0.30, 0.12, 0.14, 0.26, 0.27, 0.34, 0.30, 0.16, 0.55, 0.23,
+                0.32, 0.24, 0.22, 0.30, 0.12, 0.14, 0.26, 0.27, 0.34, 0.30, 0.16, 0.55, 0.23, 0.24,
             ],
         );
         let model =
@@ -3198,6 +3228,427 @@ fn ruins(w: &World, f: &mut Frame) {
     }
 }
 
+/// The drowned city's grids: a near one of blocks either side of the avenue,
+/// out to [`CITY_SPLIT`] units across from it, and a far one of wider blocks
+/// beyond, whose towers stand as silhouettes and lit windows in the haze.
+/// The split is across the corridor, fixed in the world, so the two grids
+/// never put a tower in the same place whichever way the window turns.
+const CITY_NEAR: f32 = 3.2;
+const CITY_FAR: f32 = 6.0;
+const CITY_SPLIT: f32 = 12.0;
+const CITY_SALT: u32 = 800;
+const CITY_FAR_SALT: u32 = 840;
+/// How far either side of the corridor the city leaves its avenue clear. The
+/// helm keeps the hull off the seabed but knows nothing of buildings, and
+/// its track wanders a little over half a unit off the corridor at most, so
+/// nothing the city builds comes within this of the corridor's line.
+const AVENUE: f32 = 2.3;
+/// The highest a tower's spire may reach: under the water a sister keeps
+/// below as she rises over one (`tall_things`).
+const CITY_CEILING: f32 = -0.9;
+/// A tower's height to the tip of its spire, and its crown's, at unit
+/// scale, as `mesh::tower` builds it; the round tower's are a little lower.
+const TOWER_TALL: f32 = 4.78;
+const TOWER_CROWN: f32 = 3.9;
+const ROTUNDA_CROWN: f32 = 3.5;
+/// The colours its signs and spires are lit in: sea green, rose, amber and
+/// a cold violet blue.
+const NEON: [[f32; 3]; 4] = [
+    [0.20, 0.95, 0.80],
+    [1.00, 0.32, 0.52],
+    [1.00, 0.60, 0.18],
+    [0.52, 0.60, 1.00],
+];
+
+/// One building of the drowned city.
+struct Building {
+    x: f32,
+    z: f32,
+    /// The ground under it: the lowest under its footing, so no side of the
+    /// plinth hangs in the water.
+    y: f32,
+    model: Model,
+    /// Its scale across, and how far it is stretched upward beyond that.
+    s: f32,
+    tall: f32,
+    yaw: f32,
+    /// Signed distance from the corridor, positive to port.
+    across: f32,
+    share: f32,
+    neon: [f32; 3],
+    /// The building's own salt for whatever else it has.
+    seed: (i32, i32, u32),
+}
+
+impl Building {
+    /// Its height to the top of its crown, and to the tip of its spire.
+    fn crown(&self) -> f32 {
+        let at = match self.model {
+            Model::Rotunda => ROTUNDA_CROWN,
+            Model::Dome => 1.2,
+            _ => TOWER_CROWN,
+        };
+        self.y + at * self.s * self.tall
+    }
+
+    fn top(&self) -> f32 {
+        let at = if self.model == Model::Dome {
+            1.6
+        } else {
+            TOWER_TALL
+        };
+        self.y + at * self.s * self.tall
+    }
+
+    /// The radius of its footing, however it is turned.
+    fn reach(&self) -> f32 {
+        if self.model == Model::Dome {
+            1.05 * self.s
+        } else {
+            0.92 * self.s
+        }
+    }
+
+    fn hash(&self, n: u32) -> f32 {
+        hash(self.seed.0, self.seed.1, self.seed.2 + n)
+    }
+}
+
+/// The building in block (ix, iz) of the near grid or, if `far`, the far
+/// one: none in a square left open, in the avenue or the other grid's
+/// half, or outside the city. Each block holds one building a little off its
+/// middle, so neighbours never stand in each other.
+fn building(w: &World, ix: i32, iz: i32, far: bool) -> Option<Building> {
+    let (size, salt) = if far {
+        (CITY_FAR, CITY_FAR_SALT)
+    } else {
+        (CITY_NEAR, CITY_SALT)
+    };
+    let h = |n: u32| hash(ix, iz, salt + n);
+    let x = (ix as f32 + 0.5 + (h(0) - 0.5) * 0.3) * size;
+    let z = (iz as f32 + 0.5 + (h(1) - 0.5) * 0.3) * size;
+    let across = z - corridor(x);
+    if far != (across.abs() >= CITY_SPLIT) || h(2) < if far { 0.3 } else { 0.2 } {
+        return None;
+    }
+    let share = w.share(x, z, CITY);
+    if share < 0.3 {
+        return None;
+    }
+    let model = if far {
+        if h(4) < 0.4 {
+            Model::Rotunda
+        } else {
+            Model::Tower
+        }
+    } else if h(4) < 0.2 {
+        Model::Dome
+    } else if h(4) < 0.5 {
+        Model::Rotunda
+    } else {
+        Model::Tower
+    };
+    let s = match (model, far) {
+        (Model::Dome, _) => 0.55 + 0.5 * h(3),
+        (_, false) => 0.75 + 0.45 * h(3),
+        (_, true) => 1.0 + 0.3 * h(3),
+    };
+    let reach = if model == Model::Dome { 1.05 } else { 0.92 } * s;
+    if across.abs() < AVENUE + reach {
+        return None;
+    }
+    let foot = 0.64 * s;
+    let y = [
+        (0.0, 0.0),
+        (foot, 0.0),
+        (-foot, 0.0),
+        (0.0, foot),
+        (0.0, -foot),
+    ]
+    .iter()
+    .map(|&(dx, dz)| w.ground(x + dx, z + dz))
+    .fold(f32::MAX, f32::min);
+    let tall = if model == Model::Dome {
+        1.0
+    } else {
+        let room = (CITY_CEILING - y) / (TOWER_TALL * s);
+        (0.85 + 0.4 * h(5)).min(room)
+    };
+    if tall < 0.5 {
+        return None;
+    }
+    Some(Building {
+        x,
+        z,
+        y,
+        model,
+        s,
+        tall,
+        // Squared to the avenue, give or take.
+        yaw: -corridor_slope(x).atan() + (h(6) - 0.5) * 0.35,
+        across,
+        share,
+        neon: NEON[((h(7) * 4.0) as usize).min(3)],
+        seed: (ix, iz, salt + 20),
+    })
+}
+
+/// Put one of the city's models, in its own material and with its neon's
+/// colour, which the shader finds in the instance's floor colour.
+fn city_put(f: &mut Frame, model: Model, rows: [[f32; 4]; 3], colour: [f32; 3], neon: [f32; 3]) {
+    let i = f.put(model, rows, colour);
+    i.material(material::CITY);
+    i.floor = [neon[0], neon[1], neon[2], 0.0];
+}
+
+/// The drowned city: towers of brass and iron stepped back in cornices and
+/// lit from within, round towers under glass cupolas and glass domes over
+/// halls, standing in blocks either side of a clear avenue and on into the
+/// haze, where only their windows show; glass walkways strung between them,
+/// neon on their facades, great pipes along the avenue, kelp and bubbles at
+/// their feet. All of it stays put, so it is placed once per camera cell,
+/// and everything that moves — the windows' flicker, the neon's buzz, the
+/// bubbles, the kelp — is the shader's.
+fn city(w: &World, f: &mut Frame) {
+    let c = w.pose.pos;
+    for &(ix, iz, _, _) in &cells(w, CITY_NEAR, 0.5, 20.0, CITY_SALT) {
+        let Some(b) = building(w, ix, iz, false) else {
+            continue;
+        };
+        let height = b.top() - b.y;
+        let centre = [b.x, b.y + height * 0.5, b.z];
+        f.fade = fade(b.share, 0.3);
+        if w.visible(centre, height * 0.55 + b.reach()) {
+            place_building(w, f, &b);
+        }
+        // Walkways to the next block along the avenue and the next out from
+        // it, between towers on the same side and low enough for both.
+        for (dx, dz, n) in [(1, 0, 11), (0, 1, 12)] {
+            if b.model == Model::Dome || b.hash(n) > 0.55 {
+                continue;
+            }
+            let Some(o) = building(w, ix + dx, iz + dz, false) else {
+                continue;
+            };
+            if o.model == Model::Dome || o.across.signum() != b.across.signum() {
+                continue;
+            }
+            let lift =
+                b.y.min(o.y) + (b.s * b.tall).min(o.s * o.tall) * (1.0 + 0.9 * b.hash(n + 2));
+            let (from, to) = ([b.x, lift, b.z], [o.x, lift, o.z]);
+            let mid = [(b.x + o.x) * 0.5, lift, (b.z + o.z) * 0.5];
+            if (mid[2] - corridor(mid[0])).abs() < AVENUE + 0.3 {
+                continue;
+            }
+            let span = distance(from, to);
+            if !w.visible(mid, span * 0.5 + 0.2) {
+                continue;
+            }
+            f.fade = fade(b.share.min(o.share), 0.3);
+            city_put(
+                f,
+                Model::Walkway,
+                between(from, to, 0.07 + 0.03 * b.hash(n + 4)),
+                [0.95, 0.92, 0.85],
+                b.neon,
+            );
+        }
+        // Kelp, bubbles, a sign and its light only near the window.
+        let near = (b.x - c[0]).hypot(b.z - c[2]);
+        if near > 11.0 || !w.visible(centre, height * 0.55 + b.reach() + 0.6) {
+            continue;
+        }
+        f.fade = fade(b.share, 0.3);
+        building_life(w, f, &b);
+    }
+    for &(ix, iz, _, _) in &cells(w, CITY_FAR, 8.0, 60.0, CITY_FAR_SALT) {
+        let Some(b) = building(w, ix, iz, true) else {
+            continue;
+        };
+        let height = b.top() - b.y;
+        if !w.visible([b.x, b.y + height * 0.5, b.z], height * 0.55 + b.reach()) {
+            continue;
+        }
+        f.fade = fade(b.share, 0.3);
+        place_building(w, f, &b);
+    }
+    // The great pipes, along the avenue on the window's side, a run to a
+    // block where they surface.
+    for &(ix, iz, x, z) in &cells(w, 2.0, 0.5, 14.0, CITY_SALT + 60) {
+        let share = w.share(x, z, CITY);
+        let across = z - corridor(x);
+        if share < 0.4 || hash(ix, iz, CITY_SALT + 61) < 0.45 || !(1.5..2.3).contains(&across) {
+            continue;
+        }
+        let s = 0.8 + 0.4 * hash(ix, iz, CITY_SALT + 62);
+        let y = w.ground(x - s * 0.8, z).min(w.ground(x + s * 0.8, z)) - 0.02;
+        if !w.visible([x, y + 0.3, z], s + 0.4) {
+            continue;
+        }
+        f.fade = fade(share, 0.4);
+        let yaw = -corridor_slope(x).atan()
+            + if hash(ix, iz, CITY_SALT + 63) < 0.5 {
+                0.0
+            } else {
+                PI
+            };
+        city_put(
+            f,
+            Model::Pipework,
+            place([x, y, z], yaw, 0.0, 0.0, [s; 3]),
+            [0.9, 0.95, 0.9],
+            [0.0; 3],
+        );
+    }
+}
+
+/// A building of the city, as its model, tinted brass to bronze to dark iron.
+fn place_building(_w: &World, f: &mut Frame, b: &Building) {
+    let tone = 0.80 + 0.35 * b.hash(8);
+    let tint = [
+        tone,
+        tone * (0.94 + 0.08 * b.hash(9)),
+        tone * (0.86 + 0.10 * b.hash(9)),
+    ];
+    city_put(
+        f,
+        b.model,
+        place([b.x, b.y, b.z], b.yaw, 0.0, 0.0, [b.s, b.s * b.tall, b.s]),
+        tint,
+        b.neon,
+    );
+}
+
+/// What lives about a building near the window: a sign on the facade it
+/// turns to the avenue and the light it throws, kelp at its foot and a
+/// stream of bubbles from a vent beside it.
+fn building_life(w: &World, f: &mut Frame, b: &Building) {
+    let show = f.fade;
+    let toward = -b.across.signum();
+    // The face toward the avenue: the model's -z face for a tower to port.
+    let (sy, cy) = b.yaw.sin_cos();
+    let normal = [toward * sy, toward * cy];
+    if b.model != Model::Dome && b.hash(13) < 0.6 {
+        let wall = if b.model == Model::Rotunda {
+            0.47
+        } else {
+            0.53
+        };
+        let up = b.y + b.s * b.tall * (1.0 + 0.9 * b.hash(14));
+        let out = wall * b.s + 0.08 * b.s;
+        let at = [b.x + normal[0] * out, up, b.z + normal[1] * out];
+        city_put(
+            f,
+            Model::Sign,
+            place(at, normal[0].atan2(normal[1]), 0.0, 0.0, [b.s * 0.9; 3]),
+            [0.9; 3],
+            b.neon,
+        );
+        let glow = [b.neon[0] * show, b.neon[1] * show, b.neon[2] * show];
+        let front = [at[0] + normal[0] * 0.05, at[1], at[2] + normal[1] * 0.05];
+        f.glow_sprite(
+            front,
+            0.45 * b.s,
+            [glow[0] * 0.30, glow[1] * 0.30, glow[2] * 0.30],
+            b.hash(15) * TAU,
+            2.3,
+            1.0,
+        );
+        f.light_flicker(
+            front,
+            1.3,
+            [glow[0] * 0.55, glow[1] * 0.55, glow[2] * 0.55],
+            b.hash(16) * TAU + 0.5,
+        );
+    }
+    // Kelp rooted in the silt drifted against its foot.
+    if b.hash(17) < 0.7 {
+        let fronds = 2 + (b.hash(18) * 4.0) as i32;
+        for k in 0..fronds {
+            let a = b.hash(30 + k as u32) * TAU;
+            let r = b.reach() * 0.85 + 0.1 * b.hash(40 + k as u32);
+            let (x, z) = (b.x + a.cos() * r, b.z + a.sin() * r);
+            if (z - corridor(x)).abs() < AVENUE {
+                continue;
+            }
+            let height = 0.5 + 0.7 * b.hash(50 + k as u32);
+            f.put(
+                Model::Kelp,
+                place([x, w.ground(x, z), z], a, 0.0, 0.0, [0.9, height, 0.9]),
+                [0.30, 0.42, 0.16],
+            )
+            .moving(anim::SWAY, a * 3.0, 0.08, 0.8)
+            .grounded();
+        }
+    }
+    // A stream of bubbles from a vent at its foot, rising past its windows.
+    if b.hash(19) < 0.5 {
+        let a = b.hash(20) * TAU;
+        let r = b.reach() + 0.12;
+        let foot = [b.x + a.cos() * r, b.y + 0.05, b.z + a.sin() * r];
+        let rise = (b.top() - foot[1]).min(3.5);
+        for k in 0..10 {
+            let size = 0.010 + 0.008 * b.hash(60 + k);
+            f.ember_sprite(
+                foot,
+                size,
+                [0.30 * show, 0.42 * show, 0.42 * show],
+                k as f32 / 10.0 + 0.05 * b.hash(70 + k),
+                0.09 + 0.03 * b.hash(80 + k),
+                rise,
+            );
+        }
+    }
+}
+
+/// The searchlights the city's towers still sweep across the water from
+/// their crowns, each round at its own pace. They move, so they are placed
+/// every frame, from the same blocks as the towers.
+fn city_beams(w: &World, f: &mut Frame) {
+    if w.share(w.camera(), w.pose.pos[2], CITY) < 0.05 {
+        return;
+    }
+    for &(ix, iz, _, _) in &cells(w, CITY_NEAR, 1.0, 22.0, CITY_SALT) {
+        let Some(b) = building(w, ix, iz, false) else {
+            continue;
+        };
+        if b.model == Model::Dome || b.hash(21) > 0.3 {
+            continue;
+        }
+        let show = fade(b.share, 0.3);
+        let o = [b.x, b.crown() + 0.05, b.z];
+        let way = if b.hash(22) < 0.5 { -1.0 } else { 1.0 };
+        let yaw = b.hash(23) * TAU + w.t * (0.18 + 0.14 * b.hash(24)) * way;
+        let pitch = -0.30 - 0.25 * b.hash(25);
+        let dir = [
+            pitch.cos() * yaw.cos(),
+            pitch.sin(),
+            pitch.cos() * yaw.sin(),
+        ];
+        let reach = 5.5;
+        let run = [dir[0] * reach, dir[1] * reach, dir[2] * reach];
+        let middle = add(o, [run[0] * 0.5, run[1] * 0.5, run[2] * 0.5]);
+        if !w.visible(middle, reach * 0.5 + 0.8) {
+            continue;
+        }
+        // A pale core, and a wide faint halo scattered off it.
+        let k = 0.45 * show;
+        let spread = 0.22 * reach;
+        f.beams.push(Sprite {
+            place: [o[0], o[1], o[2], 0.03],
+            tint: [k, 0.95 * k, 0.80 * k, spread],
+            stretch: [run[0], run[1], run[2], 0.0],
+        });
+        let h = 0.35 * k;
+        f.beams.push(Sprite {
+            place: [o[0], o[1], o[2], 0.08],
+            tint: [h, 0.95 * h, 0.85 * h, spread * 2.4],
+            stretch: [run[0], run[1], run[2], 0.0],
+        });
+        f.sprite(o, 0.12, [0.9 * show, 0.85 * show, 0.65 * show], GLOW);
+    }
+}
+
 /// The lava cave: basalt columns, stalactites dripping molten rock, and the
 /// glow of the pools.
 fn cave(w: &World, f: &mut Frame) {
@@ -4415,7 +4866,7 @@ const SPECIES: [Species; 5] = [
         band: (0.6, 1.4),
         back: [0.22, 0.26, 0.28],
         gate: [
-            1.0, 0.8, 1.0, 1.0, 0.0, 0.0, 0.5, 0.8, 0.8, 0.5, 0.1, 0.3, 0.4,
+            1.0, 0.8, 1.0, 1.0, 0.0, 0.0, 0.5, 0.8, 0.8, 0.5, 0.1, 0.3, 0.4, 0.6,
         ],
         salt: 200,
     },
@@ -4427,7 +4878,7 @@ const SPECIES: [Species; 5] = [
         band: (0.3, 0.9),
         back: [0.30, 0.36, 0.38],
         gate: [
-            1.0, 1.0, 0.8, 0.6, 0.15, 0.0, 0.8, 0.7, 1.0, 0.7, 0.2, 0.4, 0.9,
+            1.0, 1.0, 0.8, 0.6, 0.15, 0.0, 0.8, 0.7, 1.0, 0.7, 0.2, 0.4, 0.9, 1.0,
         ],
         salt: 210,
     },
@@ -4439,7 +4890,7 @@ const SPECIES: [Species; 5] = [
         band: (0.10, 0.35),
         back: [0.48, 0.40, 0.20],
         gate: [
-            1.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.4, 0.0, 0.1, 0.0,
+            1.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.4, 0.0, 0.1, 0.0, 0.7,
         ],
         salt: 220,
     },
@@ -4451,7 +4902,7 @@ const SPECIES: [Species; 5] = [
         band: (0.06, 0.25),
         back: [0.32, 0.42, 0.46],
         gate: [
-            1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.6, 0.4, 1.0, 0.6, 0.2, 0.5, 0.3,
+            1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.6, 0.4, 1.0, 0.6, 0.2, 0.5, 0.3, 0.4,
         ],
         salt: 230,
     },
@@ -4463,7 +4914,7 @@ const SPECIES: [Species; 5] = [
         band: (0.4, 1.0),
         back: [0.52, 0.42, 0.16],
         gate: [
-            0.6, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0, 0.1, 0.8, 1.0, 0.0, 0.2, 0.3,
+            0.6, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0, 0.1, 0.8, 1.0, 0.0, 0.2, 0.3, 0.2,
         ],
         salt: 240,
     },
@@ -5550,9 +6001,9 @@ impl Meeting {
 }
 
 /// The great things standing near the box from (x0, z0) to (x1, z1) that a
-/// submarine must rise over, as (x, z, radius, top): Atlantis' temples and
-/// the galleons' hulls and masts, from the cells `ruins` and `wrecks` place
-/// them in, and the kelp of the shallows. The forest's trees and the city's
+/// submarine must rise over, as (x, z, radius, top): Atlantis' temples, the
+/// galleons' hulls and masts and the drowned city's towers, from the cells
+/// `ruins`, `wrecks` and `city` place them in, and the kelp of the shallows. The forest's trees and the city's
 /// columns stand too thick to weave between, so she keeps above them
 /// throughout (`cruise`).
 fn tall_things(w: &World, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(f32, f32, f32, f32)> {
@@ -5586,6 +6037,14 @@ fn tall_things(w: &World, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(f32, f32, 
             found.push((x, z, 0.6 * s, w.ground(x, z) + 0.9 * s));
         }
     });
+    for far in [false, true] {
+        let size = if far { CITY_FAR } else { CITY_NEAR };
+        scan(size, 0, &mut |ix, iz, _, _| {
+            if let Some(b) = building(w, ix, iz, far) {
+                found.push((b.x, b.z, b.reach(), b.top()));
+            }
+        });
+    }
     scan(2.4, 60, &mut |ix, iz, x, z| {
         if w.share(x, z, WRECKS) < 0.5 || hash(ix, iz, 61) < 0.35 || (z - corridor(x)).abs() < 1.2 {
             return;
@@ -6488,6 +6947,7 @@ mod tests {
             (VENTS, Model::Vent),
             (BRINE, Model::Hex),
             (BLOOM, Model::Sponge),
+            (CITY, Model::Tower),
         ];
         for (leg, model) in landmarks {
             let mut found = 0;
@@ -6817,11 +7277,12 @@ mod tests {
         // Moments of visit 0 with a trail near the glass: the forest's
         // walking party, an encounter in the bloom, and a deep encounter on
         // the way to the abyss. The exact seconds are the ones the longer
-        // five-minute legs put their bubbles at.
+        // five-minute legs put their bubbles at, with the drowned city's leg
+        // in the circuit ahead of the bloom and the abyss.
         let scenes = [
             ("diver helmets", 633.0),
-            ("bloom encounter", 3015.0),
-            ("deep trail", 3407.0),
+            ("bloom encounter", 3556.0),
+            ("deep trail", 3810.0),
         ];
         for (name, start) in scenes {
             let seed = 0.0f32;
@@ -6921,7 +7382,7 @@ mod tests {
         // Every sprite's own drift is under a hundredth of a unit between
         // these frames, so the 0.03 pop threshold still holds.
         let step = 1.0 / 30.0;
-        // All thirteen legs, then the swipe's passage and the sea beyond it.
+        // All fourteen legs, then the swipe's passage and the sea beyond it.
         let sail = span * crate::voyage::BIOMES as f64;
         let swipe = ((sail - 5.0) / step) as i32;
         let frames = ((sail + 8.0 - 5.0) / step) as i32;
@@ -7100,12 +7561,22 @@ mod tests {
                 let mounds = smooth(0.40, 0.72, 0.5 + 0.5 * detail);
                 shape += bloom * (-0.05 * h + 0.10 * ooze + 0.22 * mounds);
             }
+            let city = presence(CITY);
+            if city > 0.0 {
+                let step =
+                    2.0 * smooth(
+                        -0.3,
+                        0.3,
+                        (TAU * (x * 0.0625 + z * 0.125) + 0.3 * detail).sin(),
+                    ) - 1.0;
+                shape += city * (-0.06 * h + 0.10 * step + 0.015 * detail);
+            }
             shape
         }
 
         let ids = [
             SHALLOWS, FOREST, WRECKS, ATLANTIS, CAVE, ABYSS, ARCTIC, TRENCH, CORAL, SARGASSO,
-            VENTS, BRINE, BLOOM,
+            VENTS, BRINE, BLOOM, CITY,
         ];
         let weights = [0.0, 0.2, 0.5, 0.8, 1.0];
         for &a in &ids {

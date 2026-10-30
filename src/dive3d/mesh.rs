@@ -571,10 +571,29 @@ pub enum Model {
     /// A comb jelly: a small ribbed egg of clear jelly whose comb rows the
     /// shader runs with rainbow light.
     Comb,
+    /// A tower of the drowned city: square, stepped back twice in brass
+    /// cornices, ribbed with piers and crowned with a spire, its walls a grid
+    /// of windows (`city::WINDOWS`). One instance a tower.
+    Tower,
+    /// The drowned city's round tower: a ribbed drum stepped back once, its
+    /// crown a lit glass cupola under a needle.
+    Rotunda,
+    /// A glass dome on a windowed drum, lit from within, with a lantern on
+    /// top: the city's halls and gardens.
+    Dome,
+    /// A glass walkway between two towers: a tube of lit panes ringed with
+    /// brass, from y = 0 to 1 with a radius of 1, for `world::between`.
+    Walkway,
+    /// A run of the city's great pipes, lying along x from -1 to 1 on its
+    /// saddles, flanged, with a riser and a valve wheel.
+    Pipework,
+    /// A neon roundel on an iron plate, facing +z: a ring with a bar
+    /// through it, in the instance's colour.
+    Sign,
 }
 
 impl Model {
-    pub const ALL: [Model; 54] = [
+    pub const ALL: [Model; 60] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -629,6 +648,12 @@ impl Model {
         Model::SeaWhip,
         Model::JellyFringe,
         Model::Comb,
+        Model::Tower,
+        Model::Rotunda,
+        Model::Dome,
+        Model::Walkway,
+        Model::Pipework,
+        Model::Sign,
     ];
 
     pub fn index(self) -> usize {
@@ -913,6 +938,12 @@ impl Model {
             Model::SeaWhip => sea_whip(),
             Model::JellyFringe => jelly_fringe(),
             Model::Comb => comb(),
+            Model::Tower => tower(),
+            Model::Rotunda => rotunda(),
+            Model::Dome => dome(),
+            Model::Walkway => walkway(),
+            Model::Pipework => pipework(),
+            Model::Sign => sign(),
         }
     }
 }
@@ -2258,6 +2289,505 @@ fn tree() -> Mesh {
         ));
     }
     m.with_aux(|p| [0.0, p[1].clamp(0.0, 1.0)])
+}
+
+/// What each part of a drowned-city model is, carried in `aux.x` to
+/// `city_light` in `scene.wesl`: the city's material (`world::material::CITY`)
+/// lights windows, panes and neon by it.
+pub mod city {
+    pub const PLAIN: f32 = 0.0;
+    pub const WINDOWS: f32 = 1.0;
+    pub const PANES: f32 = 2.0;
+    pub const NEON: f32 = 3.0;
+}
+
+/// Add `part` to `m`, turned to face outward and marked as `kind` of city
+/// surface. Every part of a city model is closed, and wound counter-clockwise
+/// seen from outside with its normals pointing out, so the whole model is
+/// sealed and its back faces culled however its parts were built or mirrored.
+fn city_part(m: &mut Mesh, mut part: Mesh, kind: f32) {
+    let pos = |v: &Vertex| Vec3::from_array(v.pos);
+    let mut volume = 0.0f32;
+    for t in part.indices.as_chunks::<3>().0 {
+        let [a, b, c] = t.map(|i| pos(&part.vertices[i as usize]));
+        volume += a.dot(b.cross(c));
+    }
+    if volume < 0.0 {
+        for t in part.indices.as_chunks_mut::<3>().0 {
+            t.swap(1, 2);
+        }
+    }
+    // Normals that were worked out from the old winding point in; turn
+    // each to agree with the faces about it.
+    let mut faces = vec![Vec3::ZERO; part.vertices.len()];
+    for t in part.indices.as_chunks::<3>().0 {
+        let [a, b, c] = t.map(|i| pos(&part.vertices[i as usize]));
+        let n = (b - a).cross(c - a);
+        for &i in t {
+            faces[i as usize] += n;
+        }
+    }
+    for (v, f) in part.vertices.iter_mut().zip(faces) {
+        if f.dot(Vec3::from_array(v.normal)) < 0.0 {
+            v.normal = v.normal.map(|c| -c);
+        }
+        v.aux = [kind, 0.0];
+    }
+    m.append(part);
+}
+
+/// `m` moved by `d`.
+fn moved(m: Mesh, d: [f32; 3]) -> Mesh {
+    m.map(move |p| [p[0] + d[0], p[1] + d[1], p[2] + d[2]], |n| n)
+}
+
+/// `m` turned by `angle` about y.
+fn turned(m: Mesh, angle: f32) -> Mesh {
+    let (s, c) = angle.sin_cos();
+    let spin = move |p: [f32; 3]| [c * p[0] - s * p[2], p[1], s * p[0] + c * p[2]];
+    m.map(spin, spin)
+}
+
+/// `m` laid along x: its y axis turned to x. A mirror, which `city_part`
+/// winds back out.
+fn along_x(m: Mesh) -> Mesh {
+    m.map(|p| [p[1], p[0], p[2]], |n| [n[1], n[0], n[2]])
+}
+
+/// An upright cylinder of radius `r` from `y0` to `y1`, with flat ends and
+/// hard edges round them: `segments` round, coarsening to `least`.
+fn drum(r: f32, y0: f32, y1: f32, segments: usize, least: usize, colour: [f32; 3]) -> Mesh {
+    let n = fewer(segments, least);
+    let mut m = Mesh::default();
+    let round = |s: usize| {
+        let a = s as f32 / n as f32 * TAU;
+        (a.cos(), a.sin())
+    };
+    let push = |m: &mut Mesh, pos: [f32; 3], normal: [f32; 3]| {
+        m.vertices.push(Vertex {
+            pos,
+            normal,
+            colour,
+            aux: [0.0; 2],
+        });
+        m.vertices.len() as u32 - 1
+    };
+    let side: Vec<(u32, u32)> = (0..n)
+        .map(|s| {
+            let (c, sn) = round(s);
+            let normal = [c, 0.0, sn];
+            (
+                push(&mut m, [r * c, y0, r * sn], normal),
+                push(&mut m, [r * c, y1, r * sn], normal),
+            )
+        })
+        .collect();
+    for s in 0..n {
+        let t = (s + 1) % n;
+        m.quad(side[s].0, side[s].1, side[t].1, side[t].0);
+    }
+    for (y, up) in [(y0, -1.0), (y1, 1.0)] {
+        let centre = push(&mut m, [0.0, y, 0.0], [0.0, up, 0.0]);
+        let rim: Vec<u32> = (0..n)
+            .map(|s| {
+                let (c, sn) = round(s);
+                push(&mut m, [r * c, y, r * sn], [0.0, up, 0.0])
+            })
+            .collect();
+        for s in 0..n {
+            let t = (s + 1) % n;
+            if up > 0.0 {
+                m.tri(centre, rim[t], rim[s]);
+            } else {
+                m.tri(centre, rim[s], rim[t]);
+            }
+        }
+    }
+    m
+}
+
+/// A ring of tube: a torus about y of radius `big`, its tube `small` thick.
+fn ring(big: f32, small: f32, segments: usize, colour: [f32; 3]) -> Mesh {
+    let around = fewer(6, 4);
+    let profile: Vec<(f32, f32)> = (0..=around)
+        .map(|k| {
+            let a = k as f32 / around as f32 * TAU;
+            (big + small * a.cos(), small * a.sin())
+        })
+        .collect();
+    lathe_down_to(
+        &profile,
+        segments,
+        6,
+        |_, _| 1.0,
+        move |_, _| colour,
+        |_| [0.0; 2],
+    )
+}
+
+/// A pointed cap about y: a cone of radius `r` at its foot and `h` tall.
+fn point(r: f32, h: f32, segments: usize, least: usize, colour: [f32; 3]) -> Mesh {
+    lathe_down_to(
+        &[(0.0, 0.0), (r, 0.0), (0.0, h)],
+        segments,
+        least,
+        |_, _| 1.0,
+        move |_, _| colour,
+        |_| [0.0; 2],
+    )
+}
+
+/// A dome about y, `r` across and `h` tall, closed underneath.
+fn cupola(r: f32, h: f32, segments: usize, least: usize, colour: [f32; 3]) -> Mesh {
+    let steps = fewer(8, 3);
+    let mut profile = vec![(0.0, 0.0)];
+    profile.extend((0..=steps).map(|k| {
+        let a = k as f32 / steps as f32 * PI * 0.5;
+        (r * a.cos(), h * a.sin())
+    }));
+    lathe_down_to(
+        &profile,
+        segments,
+        least,
+        |_, _| 1.0,
+        move |_, _| colour,
+        |_| [0.0; 2],
+    )
+}
+
+/// A beacon: a small sphere of neon, `r` across, at `at`.
+fn beacon(m: &mut Mesh, r: f32, at: [f32; 3]) {
+    let ball = sphere_with(1, |_| 1.0, |_| WHITE).scaled([r; 3]);
+    city_part(m, moved(ball, at), city::NEON);
+}
+
+/// Brass and iron, as the city's models are built of: bronzed iron walls,
+/// brass cornices and piers, verdigris pipes and barnacled footings, and lit
+/// glass. The instance's colour tints them all; neon is white here and takes
+/// its colour from the instance.
+const IRON: [f32; 3] = [0.44, 0.39, 0.31];
+const BRASS: [f32; 3] = [0.78, 0.60, 0.32];
+const PIER: [f32; 3] = [0.58, 0.46, 0.28];
+const VERDIGRIS: [f32; 3] = [0.34, 0.50, 0.40];
+const CRUST: [f32; 3] = [0.34, 0.38, 0.29];
+const BARNACLE: [f32; 3] = [0.62, 0.60, 0.52];
+const GLASS: [f32; 3] = [0.55, 0.70, 0.62];
+const WHITE: [f32; 3] = [1.0; 3];
+
+/// The barnacle clumps round a footing of half-width `r`, square or
+/// `round`; only at full detail, as they are too small to miss further off.
+fn barnacles(m: &mut Mesh, r: f32, round: bool) {
+    if COARSER.get() > 0 {
+        return;
+    }
+    for k in 0..8 {
+        let a = k as f32 / 8.0 * TAU + 0.3;
+        let reach = if round {
+            r
+        } else {
+            r / a.cos().abs().max(a.sin().abs())
+        };
+        let size = 0.05 + 0.025 * ((k * 5) % 3) as f32;
+        let clump = sphere_with(0, |_| 1.0, |_| BARNACLE).scaled([size, size * 0.7, size]);
+        city_part(
+            m,
+            moved(
+                clump,
+                [
+                    a.cos() * reach,
+                    0.10 + 0.04 * (k % 2) as f32,
+                    a.sin() * reach,
+                ],
+            ),
+            city::PLAIN,
+        );
+    }
+}
+
+/// The drowned city's square tower, about four and three quarter units tall
+/// at unit scale: three tiers of windowed wall, each stepped back behind a
+/// brass cornice, ribbed with piers that rise past it into pinnacles; neon up
+/// the middle tier's corners and round the crown; a stepped crown, a spire
+/// and a beacon. Pipes climb its first tier and barnacles crust its foot. The
+/// piers thin out at each coarser level, which is most of what it loses.
+fn tower() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(
+        &mut m,
+        block([0.64, 0.25, 0.64], [0.0, -0.13, 0.0], CRUST),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        block([0.515, 0.17, 0.515], [0.0, 0.27, 0.0], CRUST),
+        city::PLAIN,
+    );
+    barnacles(&mut m, 0.52, false);
+    let tiers = [
+        (0.50, 0.10, 2.20, 4),
+        (0.38, 2.20, 3.20, 3),
+        (0.26, 3.20, 3.80, 2),
+    ];
+    for (k, &(hw, y0, y1, piers)) in tiers.iter().enumerate() {
+        let mid = (y0 + y1) * 0.5;
+        let half = (y1 - y0) * 0.5;
+        city_part(
+            &mut m,
+            block([hw, half, hw], [0.0, mid, 0.0], IRON),
+            city::WINDOWS,
+        );
+        city_part(
+            &mut m,
+            block([hw + 0.03, 0.03, hw + 0.03], [0.0, y1, 0.0], BRASS),
+            city::PLAIN,
+        );
+        // Piers down each face, between the columns of windows.
+        let n = fewer(piers, 1);
+        for i in 0..n {
+            let u = if n == 1 {
+                0.0
+            } else {
+                -0.72 * hw + i as f32 * 1.44 * hw / (n - 1) as f32
+            };
+            for face in 0..4 {
+                let pier = block([0.02, half, 0.014], [hw + 0.012, mid, u], PIER);
+                city_part(&mut m, turned(pier, face as f32 * PI * 0.5), city::PLAIN);
+            }
+        }
+        // Corner piers, rising past the cornice into pinnacles; on the middle
+        // tier they are neon.
+        let (corner, colour) = if k == 1 {
+            (city::NEON, WHITE)
+        } else {
+            (city::PLAIN, BRASS)
+        };
+        for (sx, sz) in [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)] {
+            city_part(
+                &mut m,
+                block(
+                    [0.035, half + 0.06, 0.035],
+                    [sx * hw, mid + 0.06, sz * hw],
+                    colour,
+                ),
+                corner,
+            );
+        }
+    }
+    // Pipes up the first tier, either side of the middle pier.
+    for z in [-0.27, 0.27] {
+        city_part(
+            &mut m,
+            moved(drum(0.035, 0.10, 2.20, 8, 8, VERDIGRIS), [0.55, 0.0, z]),
+            city::PLAIN,
+        );
+    }
+    // The crown: a neon band, two brass steps, the spire and its beacon.
+    city_part(
+        &mut m,
+        block([0.272, 0.022, 0.272], [0.0, 3.62, 0.0], WHITE),
+        city::NEON,
+    );
+    city_part(
+        &mut m,
+        block([0.19, 0.06, 0.19], [0.0, 3.86, 0.0], BRASS),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        block([0.12, 0.06, 0.12], [0.0, 3.98, 0.0], BRASS),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        moved(point(0.06, 0.7, 8, 4, BRASS), [0.0, 4.04, 0.0]),
+        city::PLAIN,
+    );
+    beacon(&mut m, 0.035, [0.0, 4.74, 0.0]);
+    m
+}
+
+/// The drowned city's round tower: a ribbed drum of windows stepped back
+/// once behind a brass cornice, a neon band round its upper drum, a lit
+/// glass cupola and a needle with its beacon.
+fn rotunda() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(&mut m, drum(0.64, -0.38, 0.12, 20, 8, CRUST), city::PLAIN);
+    city_part(&mut m, drum(0.475, 0.10, 0.42, 20, 8, CRUST), city::PLAIN);
+    barnacles(&mut m, 0.48, true);
+    for (r, y0, y1, ribs) in [(0.45, 0.10, 2.60, 12), (0.34, 2.60, 3.50, 8)] {
+        city_part(&mut m, drum(r, y0, y1, 24, 8, IRON), city::WINDOWS);
+        city_part(
+            &mut m,
+            drum(r + 0.05, y1 - 0.04, y1 + 0.04, 24, 8, BRASS),
+            city::PLAIN,
+        );
+        let n = fewer(ribs, 4);
+        for k in 0..n {
+            let rib = block(
+                [0.016, (y1 - y0) * 0.5, 0.02],
+                [r + 0.008, (y0 + y1) * 0.5, 0.0],
+                PIER,
+            );
+            city_part(
+                &mut m,
+                turned(rib, (k as f32 + 0.5) / n as f32 * TAU),
+                city::PLAIN,
+            );
+        }
+    }
+    city_part(&mut m, drum(0.352, 3.26, 3.31, 24, 8, WHITE), city::NEON);
+    for a in [0.8f32, -0.8] {
+        city_part(
+            &mut m,
+            moved(
+                drum(0.035, 0.10, 2.56, 8, 8, VERDIGRIS),
+                [0.50 * a.cos(), 0.0, 0.50 * a.sin()],
+            ),
+            city::PLAIN,
+        );
+    }
+    // The cupola: lit panes from the cornice up.
+    city_part(
+        &mut m,
+        moved(cupola(0.30, 0.34, 20, 6, GLASS), [0.0, 3.54, 0.0]),
+        city::PANES,
+    );
+    city_part(
+        &mut m,
+        moved(point(0.035, 0.75, 8, 4, BRASS), [0.0, 3.84, 0.0]),
+        city::PLAIN,
+    );
+    beacon(&mut m, 0.03, [0.0, 4.58, 0.0]);
+    m
+}
+
+/// A glass dome a unit across on a windowed drum, lit from within, with a
+/// brass lantern and its beacon on top.
+fn dome() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(&mut m, drum(1.0, -0.35, 0.34, 28, 10, IRON), city::WINDOWS);
+    city_part(&mut m, drum(1.04, 0.31, 0.38, 28, 10, BRASS), city::PLAIN);
+    city_part(
+        &mut m,
+        moved(cupola(0.97, 0.80, 28, 8, GLASS), [0.0, 0.38, 0.0]),
+        city::PANES,
+    );
+    city_part(&mut m, drum(0.12, 1.10, 1.30, 10, 5, BRASS), city::PLAIN);
+    city_part(
+        &mut m,
+        moved(point(0.15, 0.2, 10, 5, BRASS), [0.0, 1.30, 0.0]),
+        city::PLAIN,
+    );
+    beacon(&mut m, 0.04, [0.0, 1.54, 0.0]);
+    m
+}
+
+/// A glass walkway: a tube of lit panes from y = 0 to 1, a unit in radius,
+/// ringed with brass. Stretched between two towers by `world::between`.
+fn walkway() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(&mut m, drum(1.0, 0.0, 1.0, 14, 6, GLASS), city::PANES);
+    let rings = fewer(8, 3);
+    for k in 0..rings {
+        let y = (k as f32 + 0.5) / rings as f32;
+        city_part(
+            &mut m,
+            drum(1.14, y - 0.012, y + 0.012, 14, 6, BRASS),
+            city::PLAIN,
+        );
+    }
+    m
+}
+
+/// A run of the great pipes: one along x from -1 to 1, lying on two saddles
+/// with its flanges, a riser with a cap, and a valve wheel on its stem.
+fn pipework() -> Mesh {
+    let mut m = Mesh::default();
+    let r = 0.07;
+    city_part(
+        &mut m,
+        moved(along_x(drum(r, -1.0, 1.0, 12, 6, VERDIGRIS)), [0.0, r, 0.0]),
+        city::PLAIN,
+    );
+    for x in [-0.92, -0.35, 0.35, 0.92] {
+        city_part(
+            &mut m,
+            moved(
+                along_x(drum(r * 1.35, -0.025, 0.025, 12, 6, BRASS)),
+                [x, r, 0.0],
+            ),
+            city::PLAIN,
+        );
+    }
+    for x in [-0.62, 0.62] {
+        city_part(
+            &mut m,
+            block([0.03, 0.04, 0.09], [x, 0.04, 0.0], IRON),
+            city::PLAIN,
+        );
+    }
+    city_part(
+        &mut m,
+        moved(drum(0.05, r, 0.75, 10, 5, VERDIGRIS), [0.62, 0.0, 0.0]),
+        city::PLAIN,
+    );
+    city_part(
+        &mut m,
+        moved(drum(0.07, 0.72, 0.80, 10, 5, BRASS), [0.62, 0.0, 0.0]),
+        city::PLAIN,
+    );
+    city_part(&mut m, drum(0.016, 0.12, 0.30, 6, 4, BRASS), city::PLAIN);
+    city_part(
+        &mut m,
+        moved(ring(0.085, 0.012, 14, BRASS), [0.0, 0.30, 0.0]),
+        city::PLAIN,
+    );
+    for a in [0.0, PI * 0.5] {
+        city_part(
+            &mut m,
+            turned(block([0.085, 0.006, 0.006], [0.0, 0.30, 0.0], BRASS), a),
+            city::PLAIN,
+        );
+    }
+    m
+}
+
+/// A neon sign: a ring with a bar through it and a chevron under, on an
+/// iron plate bracketed off a wall, facing +z.
+fn sign() -> Mesh {
+    let mut m = Mesh::default();
+    city_part(
+        &mut m,
+        block([0.24, 0.30, 0.012], [0.0, 0.0, -0.02], [0.20, 0.18, 0.15]),
+        city::PLAIN,
+    );
+    let roundel = ring(0.17, 0.014, 20, WHITE).map(|p| [p[0], p[2], p[1]], |n| [n[0], n[2], n[1]]);
+    city_part(&mut m, roundel, city::NEON);
+    city_part(
+        &mut m,
+        block([0.016, 0.27, 0.014], [0.0, 0.0, 0.0], WHITE),
+        city::NEON,
+    );
+    for side in [-1.0f32, 1.0] {
+        let (s, c) = (side * 0.5).sin_cos();
+        let bar = block([0.07, 0.012, 0.012], [0.0, 0.0, 0.0], WHITE).map(
+            move |p| {
+                [
+                    c * p[0] - s * p[1] + side * 0.06,
+                    s * p[0] + c * p[1] - 0.20,
+                    p[2],
+                ]
+            },
+            move |n| [c * n[0] - s * n[1], s * n[0] + c * n[1], n[2]],
+        );
+        city_part(&mut m, bar, city::NEON);
+        city_part(
+            &mut m,
+            block([0.02, 0.02, 0.04], [side * 0.18, 0.24, -0.06], IRON),
+            city::PLAIN,
+        );
+    }
+    m
 }
 
 /// A plain box of half-extents `size` about `centre`: straps, buckles and

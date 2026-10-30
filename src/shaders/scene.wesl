@@ -34,7 +34,8 @@ struct Globals {
     deep: vec4<f32>,
     // xyz: the searchlight's direction; w: its strength.
     lamp: vec4<f32>,
-    // x: surface height; y: the cave vault's; z: the ice's.
+    // x: surface height; y: the cave vault's; z: the ice's; w: how much of
+    // the drowned city's glow is in the water.
     levels: vec4<f32>,
     // x: world seed; y: lava glow; z: share of the lava cave; w: share of ice.
     world: vec4<f32>,
@@ -47,7 +48,7 @@ struct Globals {
     ice: vec4<f32>,
     lights: array<vec4<f32>, 8>,
     light_colours: array<vec4<f32>, 8>,
-    // This visit's thirteen-leg biome circuit, four legs a vector.
+    // This visit's fourteen-leg biome circuit, four legs a vector.
     order: array<vec4<f32>, 4>,
     // The biome mix at the window and how much of this sea has a sky over
     // it: xy is the pair, z the blend, w the sky's strength there.
@@ -114,7 +115,7 @@ const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
 const LEG: f32 = 16.5;
 const BLEND: f32 = 0.10;
-const BIOMES: i32 = 13;
+const BIOMES: i32 = 14;
 const SHALLOWS: i32 = 0;
 const FOREST: i32 = 1;
 const WRECKS: i32 = 2;
@@ -128,6 +129,7 @@ const SARGASSO: i32 = 9;
 const VENTS: i32 = 10;
 const BRINE: i32 = 11;
 const BLOOM: i32 = 12;
+const CITY: i32 = 13;
 
 // One component of a four-leg vector. A dynamic index into a uniform vector
 // is not worth the risk on every shader the Pi compiles, so this is unrolled.
@@ -233,7 +235,7 @@ fn presence(l: Leg, id: i32) -> f32 {
     return select(0.0, 1.0 - l.w, l.a == id) + select(0.0, l.w, l.b == id);
 }
 
-fn by_biome(l: Leg, values: array<f32, 13>) -> f32 {
+fn by_biome(l: Leg, values: array<f32, 14>) -> f32 {
     var v = values;
     return mix(v[l.a], v[l.b], l.w);
 }
@@ -268,10 +270,10 @@ fn ground(x: f32, z: f32) -> f32 {
 fn ground_parts(x: f32, z: f32) -> vec2<f32> {
     let l = leg(voyage_x(x, z));
     let r = relief(x, z);
-    let base = -by_biome(l, array<f32, 13>(1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2, 2.2, 3.4, 8.2, 6.3, 10.2));
-    let lift = by_biome(l, array<f32, 13>(0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30, 0.45, 0.30, 0.90, 0.06, 0.35)) * r.x;
-    let rough = by_biome(l, array<f32, 13>(0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05, 0.06, 0.05, 0.08, 0.02, 0.04));
-    let ridges = by_biome(l, array<f32, 13>(1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0));
+    let base = -by_biome(l, array<f32, 14>(1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2, 2.2, 3.4, 8.2, 6.3, 10.2, 7.2));
+    let lift = by_biome(l, array<f32, 14>(0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30, 0.45, 0.30, 0.90, 0.06, 0.35, 0.08)) * r.x;
+    let rough = by_biome(l, array<f32, 14>(0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05, 0.06, 0.05, 0.08, 0.02, 0.04, 0.02));
+    let ridges = by_biome(l, array<f32, 14>(1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0, 1.2));
     let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1u) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2u);
     let across = z - corridor(x);
     let off = abs(across);
@@ -283,8 +285,8 @@ fn ground_parts(x: f32, z: f32) -> vec2<f32> {
                     + 0.35 * vnoise(x * 0.47, z * 0.43, 6u)))
         * by_biome(
             l,
-            array<f32, 13>(
-                1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.15, 1.0,
+            array<f32, 14>(
+                1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.15, 1.0, 0.3,
             ),
         );
     // The trench's terraces. Only vertex shaders find the ground, so no
@@ -399,6 +401,12 @@ fn biome_shape(l: Leg, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 
         let mounds = smooth01(0.40, 0.72, 0.5 + 0.5 * detail);
         shape += bloom * (-0.05 * h + 0.10 * ooze + 0.22 * mounds);
     }
+    let city = presence(l, CITY);
+    if (city > 0.0) {
+        // Level city blocks, stepped down in long, low terraces.
+        let step = 2.0 * smooth01(-0.3, 0.3, sin(TAU * (x * 0.0625 + z * 0.125) + 0.3 * detail)) - 1.0;
+        shape += city * (-0.06 * h + 0.10 * step + 0.015 * detail);
+    }
     return shape;
 }
 
@@ -460,6 +468,9 @@ fn water_at(dir: vec3<f32>) -> vec3<f32> {
     c *= 1.0 + 0.6 * g.sun.w * smooth01(0.0, 0.6, dir.y);
     let beam = smooth01(0.80, 0.98, dot(dir, g.lamp.xyz));
     c += vec3<f32>(0.55, 0.52, 0.42) * beam * g.lamp.w * 0.10;
+    // The drowned city's windows, too many and too far to tell apart,
+    // scattered through the water as a warm glow low along the horizon.
+    c += vec3<f32>(0.16, 0.085, 0.025) * g.levels.w * (1.0 - smooth01(0.0, 0.5, abs(dir.y - 0.04)));
     return c;
 }
 
@@ -861,7 +872,7 @@ fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> 
 }
 
 fn floor_albedo(l: Leg) -> vec3<f32> {
-    var albedos = array<vec3<f32>, 13>(
+    var albedos = array<vec3<f32>, 14>(
         vec3<f32>(0.62, 0.56, 0.42),
         vec3<f32>(0.40, 0.36, 0.26),
         vec3<f32>(0.32, 0.30, 0.26),
@@ -875,14 +886,16 @@ fn floor_albedo(l: Leg) -> vec3<f32> {
         vec3<f32>(0.08, 0.07, 0.07),
         vec3<f32>(0.74, 0.73, 0.68),
         vec3<f32>(0.20, 0.20, 0.24),
+        vec3<f32>(0.25, 0.27, 0.23),
     );
     return mix(albedos[l.a], albedos[l.b], l.w);
 }
 
 fn surface_of(l: Leg) -> vec2<i32> {
     // Sand, sand, silt, sand, basalt, silt, sand, silt, then sand, silt,
-    // basalt, salt (ice's crystalline layer) and ooze (silt): by biome.
-    var layers = array<i32, 13>(12, 12, 13, 12, 10, 13, 12, 13, 12, 13, 10, 11, 13);
+    // basalt, salt (ice's crystalline layer), ooze (silt) and the drowned
+    // city's silted paving: by biome.
+    var layers = array<i32, 14>(12, 12, 13, 12, 10, 13, 12, 13, 12, 13, 10, 11, 13, 13);
     return vec2<i32>(layers[l.a], layers[l.b]);
 }
 
@@ -1304,6 +1317,13 @@ fn vs_model(v: Model, i: Instance) -> Lit {
         out.local = vec3<f32>(f32(v.aux.x), 0.0, 0.0);
         out.local_normal = v.colour;
     }
+    // The city's parts mark what they are in the length of the normal they
+    // carry (`city_light`), and the windows take a seed from where the
+    // instance stands; its texture is the world's, so neither is missed.
+    if (MATERIAL == CITY_LIGHTS) {
+        out.local_normal = v.normal * (1.0 + f32(v.aux.x));
+        out.surface.w = floor(fract(i.m0.w * 0.1731 + i.m2.w * 0.0913) * 4096.0);
+    }
     return out;
 }
 
@@ -1349,6 +1369,78 @@ fn triplanar(at: vec3<f32>, facing: vec3<f32>, layer: i32) -> vec3<f32> {
 // The lava cave's tunnel and its passages (`world::tunnel`), a material of
 // its own: its pipeline compiles only this, and no other pays for it.
 const VAULT: i32 = 5;
+
+// The drowned city's towers, domes and signs (`world::material::CITY`), a
+// material of its own for the same reason. Each part of a model says what it
+// is in `aux.x`, which the vertex shader carries to the pixel as the length
+// of the local normal: 1 plain brass and iron, 2 a wall of windows, 3 glass
+// panes lit from within, 4 neon. The neon's colour is the instance's own, in
+// its `floor` (a city model never stands on the seabed's blend), and the
+// windows' pattern is seeded by where the instance stands.
+const CITY_LIGHTS: i32 = 11;
+
+// The light a city surface gives out by itself, rgb, and how much its own
+// colour is kept, a: the dark glass of an unlit window takes away a little.
+// `local` and `marked` are the model's position and its marked normal, `p`
+// the world position, `seed` the instance's and `neon` its sign colour.
+fn city_light(
+    p: vec3<f32>,
+    local: vec3<f32>,
+    marked: vec3<f32>,
+    seed: f32,
+    neon: vec3<f32>,
+    distance: f32,
+    t: f32,
+) -> vec4<f32> {
+    let kind = length(marked) - 1.0;
+    if (kind < 0.5) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    if (kind > 2.3) {
+        // Neon: a steady buzz and, a few times a minute, a stutter.
+        let slot = floor(t * 6.0 + seed);
+        let stutter = select(1.0, 0.2, fract(sin(slot * 12.9898 + seed) * 43758.5) < 0.05);
+        return vec4<f32>(neon * (1.9 + 0.2 * sin(t * 37.0 + seed)) * stutter, 1.0);
+    }
+    if (kind > 1.4) {
+        // Glass panes leaded in an iron lattice, lit warm from within. The
+        // lattice is in the world, so a walkway stretched between two towers
+        // keeps square panes; far off the leading is too fine to see.
+        let q = abs(fract(p * 5.5) - vec3<f32>(0.5));
+        let lead = min(min(q.x, q.y), q.z);
+        let pane = mix(smooth01(0.03, 0.08, lead), 0.8, smooth01(10.0, 22.0, distance));
+        return vec4<f32>(vec3<f32>(0.95, 0.64, 0.30) * (0.06 + 0.32 * pane), 0.55);
+    }
+    // A wall of windows on a grid of floors, in the model's own units, on
+    // whichever of its vertical faces this is; the roofs and ledges have none.
+    let n = marked / (kind + 1.0);
+    let wall = 1.0 - smooth01(0.35, 0.6, abs(n.y));
+    if (wall <= 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    let side = abs(n.x) > abs(n.z);
+    let u = select(local.x, local.z, side);
+    let face = select(select(0u, 1u, n.z > 0.0), select(2u, 3u, n.x > 0.0), side);
+    let cell = vec2<f32>(u / 0.11, local.y / 0.16);
+    let c = floor(cell);
+    let f = cell - c;
+    let h = hash(i32(c.x), i32(c.y), u32(seed) * 4u + face);
+    let lit = step(0.55, h);
+    let pane = smooth01(0.10, 0.18, f.x) * smooth01(0.90, 0.82, f.x)
+        * smooth01(0.14, 0.24, f.y) * smooth01(0.86, 0.78, f.y);
+    // Mostly lamplight; now and then a cold, greenish strip-lit room.
+    let warm = mix(vec3<f32>(1.0, 0.58, 0.22), vec3<f32>(0.70, 0.90, 0.66), step(0.93, h));
+    var bright = 0.45 + 0.75 * fract(h * 7.31);
+    // A few windows flicker, each at its own rate, as failing lamps do.
+    let fault = fract(h * 13.7);
+    if (fault < 0.07) {
+        bright *= step(0.35, fract(sin(floor(t * (3.0 + fault * 90.0)) + h * 91.0) * 43758.5));
+    }
+    // Far off the grid is finer than the pixels: its average, steady.
+    let far = smooth01(22.0, 45.0, distance);
+    let glow = mix(lit * pane * bright, 0.22, far) * wall;
+    return vec4<f32>(warm * glow, 1.0 - 0.45 * pane * wall * (1.0 - lit) * (1.0 - far));
+}
 
 // The tunnel's rock: basalt laid down flow on flow, wet where the
 // searchlight catches it, glowing red low down where the lava lights it and
@@ -1422,6 +1514,12 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // Fading things out as their biome passes: the pipeline blends the
     // coverage over the water when there is one sample, or alpha-to-coverage
     // carries it when there are more.
+    var lamps = vec3<f32>(0.0);
+    if (MATERIAL == CITY_LIGHTS) {
+        let city = city_light(p, in.local, in.local_normal, in.surface.w, in.floor, length(p - g.camera.xyz), t);
+        colour *= city.a;
+        lamps = city.rgb;
+    }
     var coverage = in.fade;
     // Per-vertex fog would be the far corners' fog on these four-vertex
     // planes; the ice overrides this with its own pixel distance.
@@ -1473,6 +1571,11 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
     }
     var shaded = mix(colour, in.fog.rgb, haze);
+    // Lights show further through the water than what they light: the
+    // windows of a tower the haze has all but hidden still glow.
+    if (MATERIAL == CITY_LIGHTS) {
+        shaded += lamps * (1.0 - 0.8 * haze);
+    }
     if (switched(32u)) {
         let t = in.fog.a;
         let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
@@ -1665,6 +1768,12 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         colour += vec3<f32>(0.85, 0.82, 0.75)
             * pow(max(dot(n, h), 0.0), 20.0) * g.lamp.w * (0.18 + 0.22 * wet);
     }
+    var lamps = vec3<f32>(0.0);
+    if (MATERIAL == CITY_LIGHTS) {
+        let city = city_light(p, in.local, in.local_normal, in.surface.w, in.floor, length(p - g.camera.xyz), t);
+        colour *= city.a;
+        lamps = city.rgb;
+    }
     var coverage = in.fade;
     // Per-vertex fog would be the far corners' fog on these four-vertex
     // planes; the ice overrides this with its own pixel distance.
@@ -1716,6 +1825,11 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
     }
     var shaded = mix(colour, in.fog.rgb, haze);
+    // Lights show further through the water than what they light: the
+    // windows of a tower the haze has all but hidden still glow.
+    if (MATERIAL == CITY_LIGHTS) {
+        shaded += lamps * (1.0 - 0.8 * haze);
+    }
     if (switched(32u)) {
         let t = in.fog.a;
         let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));

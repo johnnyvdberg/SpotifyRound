@@ -43,7 +43,8 @@ Spotify **Premium** account.
   atmosphere. The **Nautilus** is the view from its salon window on a Jules Verne voyage, drawn as a 3D scene: the boat
   travels from sunlit kelp shallows and a bright coral garden, through the submarine forest of Crespo,
   the golden sargasso, the terraced trench and the galleons of Vigo Bay, past smoking hydrothermal
-  vents, the ruins of Atlantis and the salt flats of a brine lake, into a lava cave, through a bloom
+  vents, the ruins of Atlantis, the lit towers of a drowned city of brass and iron and the salt flats
+  of a brine lake, into a lava cave, through a bloom
   of jellyfish, down to the abyss and its giant squid, then up under the aurora-lit polar ice.
   Each shallow sea has its own water ceiling overhead; the sky itself only shows where a ray can
   leave the water, through Snell's window or a lead in the polar ice. Swipe down on the
@@ -551,16 +552,17 @@ Earth textures: NASA **Blue Marble** (day) and **Black Marble** (night lights), 
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). They live in `assets/earth/`.
 
 **The Nautilus.** The view from the Nautilus' salon window, after *Twenty Thousand Leagues Under the
-Seas*, drawn as a real 3D scene in `dive3d/`. The boat travels on through thirteen legs of five
+Seas*, drawn as a real 3D scene in `dive3d/`. The boat travels on through fourteen legs of five
 minutes each: sunlit kelp shallows, a coral garden, the submarine forest of Crespo, the golden
 sargasso, a trench, the galleons of Vigo Bay, smoking hydrothermal vents, the ruins of Atlantis,
-salt flats and brine pools, a lava cave, a bloom of jellyfish, the abyss, and the underside of the
+a drowned city — a Milliard City sunk off its propeller island, its art-deco towers of brass and
+iron still lit — salt flats and brine pools, a lava cave, a bloom of jellyfish, the abyss, and the underside of the
 polar ice. A swipe to the left carries it on to the next leg in a short surge — the passage is
 scaled with the leg, so the boat keeps the same speed through it as before — and a swipe to the
 right back to the last; `voyage.rs` steers it, and every visit joins a new seabed on a
-circuit whose thirteen legs are shuffled by the visit's seed (`order_for`; seed 0 is the canonical
-reference circuit; the original eight keep their ids, and the five newer seas take the end of every
-per-biome table). The course weaves so each boundary is crossed in the middle of a real turn, and the weave is eased out
+circuit whose fourteen legs are shuffled by the visit's seed (`order_for`; seed 0 is the canonical
+reference circuit; the original eight keep their ids, and the six newer seas take the end of every
+per-biome table, the drowned city last of all, as biome 13). The course weaves so each boundary is crossed in the middle of a real turn, and the weave is eased out
 over five units before the cave's mouth, where the tunnel leaves no room for it. Encounters — a
 school, a party of divers, a whale, the sister submarine — fade over the rim of the glass as they
 come into the window instead of appearing at full strength.
@@ -570,7 +572,7 @@ surface as a soft caustic shimmer, slow swells and the sun's sheen, kept low-con
 a backdrop rather than a second scene. The sky is only what that water
 opens on to, and only where a ray can actually leave it: inside Snell's window overhead, which a
 level salon window rarely sees, and through the polar ice's leads, where the aurora shows. The cave,
-the vents, the bloom and the abyss have no sky at all, only water. The palettes are one small set in
+the vents, the bloom, the drowned city and the abyss have no sky at all, only water. The palettes are one small set in
 `sky_at`, used only where the physics opens a way out: the Snell window and the polar leads
 (`g.sky` in `scene.wesl`).
 
@@ -647,7 +649,16 @@ writhing tentacles, in five species from the pale moon jelly to the glowing crys
 and the soft tissues are separate materials in the additive glass pass, so the rim, the canals, the
 stomach and the tentacle tips are lit differently instead of reading as one flat translucent dome.
 The new seas add their own life: branching reef coral, floating sargassum rafts, black smokers with
-tube worms, salt spires over brine pans, and the bloom's dense drift of jellyfish. The seabed is
+tube worms, salt spires over brine pans, and the bloom's dense drift of jellyfish. The drowned city
+stands in blocks either side of a clear avenue the boat follows, so its towers pass at every
+distance: square towers stepped back behind brass cornices and round ones under glass cupolas, glass
+domes over its halls, lit walkways strung between them, great pipes and valves along the avenue,
+neon roundels on the facades, searchlights sweeping from the crowns, kelp and barnacles at their feet
+and bubbles rising past their windows; far off across the teal-green water only their lit windows
+and a warm glow on the horizon show. Each tower is a single instance: its windows, panes and neon
+are one material of its own (`city_light` in `scene.wesl`), which reads what each part of the model
+is from its vertices and lights a grid of windows in the shader, some of them flickering, rather
+than placing a window at a time. The seabed is
 built by `terrain.rs` from the same heightmap `world.rs` places things with, so everything stands on it, and anything on the seabed takes on its sand where it meets it. It
 comes in tiles, built on the CPU the first time each comes into view and forgotten once the boat has
 left it behind, at three levels of detail nested around the boat: fine for at least five units,
@@ -701,7 +712,7 @@ down over the edge. Slabs of rock jut over each drop, sediment spills from some 
 down, sponges, sea fans and tube worms cling to the far wall, faintly glowing sea pens and
 crinoids stand on the terraces, lights blink in the dark at the bottom, and the water is clear
 enough for sunlight to slant down into it. The biomes' tables keep their numbers and their original
-ids, with the five newer seas after them; `voyage::ORDER` (and `order` in the shader) says the order
+ids, with the six newer seas after them; `voyage::ORDER` (and `order` in the shader) says the order
 the legs come in.
 The seabed is a random heightmap made afresh on every visit — rolling ground, folded ridges and the
 odd canyon, 64 units to a tile — shown more strongly in the rugged abyss than under the paved city;
