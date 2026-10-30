@@ -3714,7 +3714,7 @@ fn cave(w: &World, f: &mut Frame) {
         f.put(
             Model::Cone,
             between([x, top, z], [x, top - len - 0.08, z], r),
-            [0.09, 0.08, 0.08],
+            [0.13, 0.10, 0.09],
         );
         if hash(ix, iz, 113) > 0.75 {
             let pulse = 0.7 + 0.3 * (w.t * 3.0 + ix as f32).sin();
@@ -3924,7 +3924,18 @@ fn build_tunnel(w: &World, f: &mut Frame) {
                     let rough =
                         0.06 * vnoise(x * 7.0, a * 6.0, 21) + 0.03 * vnoise(x * 17.0, a * 13.0, 24);
                     let ledge01 = smooth(0.55, 0.7, vnoise(x * 1.3, a * 4.0, 25));
-                    let ledge = 0.05 * ledge01;
+                    // A lava tube's benches: where the flow that cut it
+                    // stood for a while, its crust lined the walls, and the
+                    // wall above that line stands back from the shelf. Two
+                    // of them, wandering in height along the tunnel, on the
+                    // walls only, so the arch the stalactites hang from is
+                    // where it was.
+                    let height = 0.85 * r * a.sin();
+                    let walls = smooth(0.62, 0.45, a.sin());
+                    let bench = |at: f32| smooth(at - 0.04, at + 0.04, height);
+                    let benches = 0.05 * bench(-0.05 + 0.10 * vnoise(x * 0.7, 3.0, 30))
+                        + 0.04 * bench(0.25 + 0.12 * vnoise(x * 0.5, 7.0, 30));
+                    let ledge = 0.05 * ledge01 + benches * walls;
                     // The rock's own shade, baked per vertex: lava flow on
                     // flow, pale ledges over pocked hollows and soot
                     // collecting under the vault. The fragment shader only

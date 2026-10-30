@@ -2093,7 +2093,7 @@ impl Nautilus {
                 colour: [0.15, 0.13, 0.12, 0.0],
                 anim: [0.0; 4],
                 extra: [world::material::VAULT, 0.0, 1.0, 0.0],
-                surface: [textures::Surface::Basalt.layer(), 1.5, 0.0, 0.0],
+                surface: [textures::Surface::Vault.layer(), 1.5, 0.0, 0.0],
                 floor: [0.0; 4],
             });
         }

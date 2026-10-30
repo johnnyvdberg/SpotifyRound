@@ -31,10 +31,15 @@ pub enum Surface {
     Silt,
     Plates,
     Brain,
+    /// The lava cave's tunnel, which is not a colour at all: its rock's tone,
+    /// the slopes of its relief and its molten cracks, one per channel
+    /// ([`paint_vault`]), so the tunnel's single texture tap carries all
+    /// three.
+    Vault,
 }
 
 impl Surface {
-    pub const ALL: [Surface; 16] = [
+    pub const ALL: [Surface; 17] = [
         Surface::Plain,
         Surface::Rock,
         Surface::Wood,
@@ -51,6 +56,7 @@ impl Surface {
         Surface::Silt,
         Surface::Plates,
         Surface::Brain,
+        Surface::Vault,
     ];
 
     pub fn layer(self) -> f32 {
@@ -335,22 +341,107 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             let c = grey(grain * (0.35 + 0.65 * seam) + 0.45 * rivets);
             mix(c, [0.85, 0.45, 0.25], rust * 0.35)
         }
+        // Not a colour: painted whole, with its relief, by `paint_vault`.
+        Surface::Vault => grey(1.0),
     }
+}
+
+/// How steep a slope of the tunnel's relief its channel holds, in heights
+/// per tile: `SLOPE` is stored as 1, `-SLOPE` as 0, and anything steeper is
+/// clipped. `VAULT_RELIEF` in `scene.wesl` reads them back.
+pub const SLOPE: f32 = 10.0;
+
+/// The tunnel's rock, as stored and not as seen: r its tone, as in any other
+/// layer; g and b the slopes of its relief across the tile and up it; a the
+/// cracks that run molten. The tunnel's walls fill the window from a hand's
+/// breadth away, and one colour there reads as a smear; with the slopes the
+/// shader lights a rough face, ledges and joints and all, from the same one
+/// sample.
+///
+/// The rock is lava laid down flow on flow: each flow rises slowly to a sharp
+/// lip, so the walls are ledged; pillowed and grained within a flow, broken
+/// into blocks by cooling joints, pocked with vesicles, and here and there
+/// glazed over by pale flowstone that has run down the face and smoothed the
+/// cracks it crossed. Every field wraps, so the tile is seamless.
+fn paint_vault() -> Vec<[f32; 4]> {
+    use std::f32::consts::TAU;
+    let n = SIZE;
+    let mut height = vec![0.0f32; n * n];
+    let mut texels = vec![[0.0f32; 4]; n * n];
+    for (i, texel) in texels.iter_mut().enumerate() {
+        let (u, v) = (
+            ((i % n) as f32 + 0.5) / n as f32,
+            ((i / n) as f32 + 0.5) / n as f32,
+        );
+        let flow = fbm(u, v, 4, 3, 140);
+        // Two flows a tile, each a slow rise to a lip at its top.
+        let rise = (v * 2.0 + 0.6 * flow).fract();
+        let terrace = 0.8 * rise - 0.8 * smooth(0.84, 1.0, rise);
+        let laminae = 0.03 * (TAU * (v * 9.0 + flow * 2.0)).sin();
+        let pillows = fbm(u, v, 6, 3, 142);
+        let grain = fbm(u, v, 16, 4, 141);
+        let grit = fbm(u, v, 48, 2, 147);
+        // The joints wander: the cells are bent by the flow, so the blocks
+        // are not a mosaic of straight-edged tiles.
+        let edge = cell_edge(
+            u + 0.10 * (fbm(u, v, 5, 2, 148) - 0.5),
+            v + 0.10 * (fbm(u, v, 5, 2, 149) - 0.5),
+            6,
+            143,
+        );
+        // Not every joint has opened: some blocks are still one with the
+        // next, so the face is not a mosaic either.
+        let opened = smooth(0.30, 0.55, fbm(u, v, 3, 2, 150));
+        let edge = edge + 0.08 * (1.0 - opened);
+        let joint = smooth(0.06, 0.0, edge);
+        let fine = smooth(0.03, 0.0, cell_edge(u, v, 11, 144));
+        let vesicle = smooth(0.045, 0.015, cells(u, v, 28, 145));
+        // Flowstone: streaks six times as long as they are wide, down the face.
+        let streak = smooth(0.60, 0.74, fbm(u * 6.0, v, 4, 3, 146));
+        let body = 0.30 * terrace + 0.12 * pillows;
+        let rough = body + 0.08 * grain + 0.04 * grit + laminae - 0.20 * joint - 0.08 * vesicle;
+        height[i] = rough + (body + 0.04 - rough) * streak * 0.8;
+        let mut tone = (0.74 + 0.55 * grain)
+            * (0.90 + 0.20 * grit)
+            * (0.88 + 0.20 * pillows)
+            * (0.82 + 0.30 * rise)
+            * (1.0 - 0.60 * joint)
+            * (1.0 - 0.15 * fine)
+            * (1.0 - 0.40 * vesicle);
+        tone += (1.30 - tone) * streak * 0.55;
+        let molten = smooth(0.035, 0.0, edge) * (1.0 - streak);
+        *texel = [tone / RANGE, 0.0, 0.0, molten];
+    }
+    let at = |x: usize, y: usize| height[(y % n) * n + x % n];
+    for (i, texel) in texels.iter_mut().enumerate() {
+        let (x, y) = (i % n, i / n);
+        let across = (at(x + 1, y) - at(x + n - 1, y)) * n as f32 * 0.5;
+        let up = (at(x, y + 1) - at(x, y + n - 1)) * n as f32 * 0.5;
+        texel[1] = 0.5 + 0.5 * (across / SLOPE).clamp(-1.0, 1.0);
+        texel[2] = 0.5 + 0.5 * (up / SLOPE).clamp(-1.0, 1.0);
+    }
+    texels
 }
 
 /// Every layer with its mip chain: `levels[mip][layer]` as RGBA8 texels.
 pub fn paint_all() -> Vec<Vec<Vec<u8>>> {
-    let base: Vec<Vec<[f32; 3]>> = Surface::ALL
+    // Every layer as stored, 0..1 a channel: colours scaled down by `RANGE`,
+    // and an opaque alpha but for the tunnel's own.
+    let base: Vec<Vec<[f32; 4]>> = Surface::ALL
         .iter()
         .map(|&surface| {
+            if surface == Surface::Vault {
+                return paint_vault();
+            }
             (0..SIZE * SIZE)
                 .map(|i| {
                     let (x, y) = (i % SIZE, i / SIZE);
-                    paint(
+                    let c = paint(
                         surface,
                         (x as f32 + 0.5) / SIZE as f32,
                         (y as f32 + 0.5) / SIZE as f32,
-                    )
+                    );
+                    [c[0] / RANGE, c[1] / RANGE, c[2] / RANGE, 1.0]
                 })
                 .collect()
         })
@@ -365,10 +456,7 @@ pub fn paint_all() -> Vec<Vec<Vec<u8>>> {
                 .map(|layer| {
                     layer
                         .iter()
-                        .flat_map(|c| {
-                            let q = |v: f32| (v.clamp(0.0, RANGE) / RANGE * 255.0).round() as u8;
-                            [q(c[0]), q(c[1]), q(c[2]), 255]
-                        })
+                        .flat_map(|c| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
                         .collect()
                 })
                 .collect(),
@@ -383,10 +471,10 @@ pub fn paint_all() -> Vec<Vec<Vec<u8>>> {
                 (0..half * half)
                     .map(|i| {
                         let (x, y) = (i % half * 2, i / half * 2);
-                        let mut sum = [0.0f32; 3];
+                        let mut sum = [0.0f32; 4];
                         for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                             let c = layer[(y + dy) * size + x + dx];
-                            for k in 0..3 {
+                            for k in 0..4 {
                                 sum[k] += c[k] * 0.25;
                             }
                         }
@@ -413,6 +501,34 @@ mod tests {
     fn the_reef_layers_are_where_the_shader_looks() {
         assert_eq!(Surface::Coral.layer(), 8.0, "CORAL_LAYER in scene.wesl");
         assert_eq!(Surface::Brain.layer(), 15.0, "BRAIN_LAYER in scene.wesl");
+    }
+
+    /// The cave's cliffs name the tunnel's layer in the shader by number.
+    #[test]
+    fn the_shader_knows_the_vaults_layer() {
+        let shader = include_str!("../shaders/scene.wesl");
+        let line = format!("const VAULT_LAYER: i32 = {};", Surface::Vault as usize);
+        assert!(shader.contains(&line), "scene.wesl wants `{line}`");
+        assert!(
+            shader.contains(&format!("const VAULT_RELIEF: f32 = 2.0 * {SLOPE:.1} *")),
+            "VAULT_RELIEF reads the slopes back by `SLOPE`"
+        );
+    }
+
+    /// The tunnel's relief is stored as slopes, clipped at `SLOPE`: if most
+    /// of the tile were clipped, its ledges would light as one flat facet.
+    #[test]
+    fn the_vaults_slopes_mostly_fit() {
+        let texels = paint_vault();
+        let clipped = texels
+            .iter()
+            .filter(|t| t[1] <= 0.0 || t[1] >= 1.0 || t[2] <= 0.0 || t[2] >= 1.0)
+            .count();
+        assert!(
+            clipped * 10 < texels.len(),
+            "{clipped} of {} texels clipped",
+            texels.len()
+        );
     }
 
     /// The tunnel and the cave floor project this one layer in world space, so

@@ -284,7 +284,12 @@ fn shade(
         let crust = [0.19 + 0.07 * crust, 0.115 + 0.045 * crust, 0.075];
         let target = mix3(crust, [0.075, 0.078, 0.082], ash * 0.7);
         let target = mix3(target, [0.22, 0.10, 0.055], rust * 0.35);
-        base = mix3(base, target, cave * 0.7);
+        // The massif rises wherever there is any cave at all, while the floor
+        // about it is still mostly the last sea's: its faces are basalt
+        // however little of the cave the blend has reached, so the cliff over
+        // the tunnel's mouth is not a hill of pale sand or marble.
+        let cliff = (1.0 - flat) * smooth01(0.0, 0.12, cave);
+        base = mix3(base, target, (cave * 0.7).max(cliff * 0.9));
         let ledge = smooth01(0.54, 0.72, world::vnoise(x * 1.7, z * 2.1, 65));
         let pitted = smooth01(0.58, 0.80, world::vnoise(x * 6.5, z * 6.0, 66));
         noise *= (0.78 + 0.36 * ledge) * (1.0 - 0.24 * pitted);

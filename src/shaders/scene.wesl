@@ -567,6 +567,14 @@ fn light_at(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let d = length(to);
     let cone = smooth01(0.82, 0.95, dot(to / d, g.lamp.xyz));
     light += vec3<f32>(1.0, 0.92, 0.76) * g.lamp.w * cone * (max(dot(n, -to / d), 0.0) * 0.8 + 0.2) / (1.0 + d * d * 0.05) * 2.2;
+    return light + point_lights(p, n);
+}
+
+// The point lights alone on a surface at `p` facing `n`: lava pools, lamps
+// and the glows the scene places. `light_at` adds them to the sun and the
+// searchlight; the cave's tunnel takes them by themselves (`vs_model`).
+fn point_lights(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
     // Four nearest-enough lights are enough for the window's scale: the
     // fifth and beyond were mostly behind the camera or beyond their range.
     let count = min(i32(g.counts.x), 4);
@@ -995,25 +1003,42 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     // The cave's massif is a cliff of rock, not a floor: projecting it from
     // above would smear its grain straight up the face. Project world height
     // and the horizontal along the wall instead. It is the same single sample,
-    // only a different pair of coordinates; the derivative normal is worked
-    // out once, outside the branch, and the level of detail is unchanged.
+    // only a different pair of coordinates and the tunnel's own layer; the
+    // derivative normal is worked out once, outside the branch, and the level
+    // of detail is unchanged.
     let face = cross(dpdx(in.world), dpdy(in.world));
+    let cliff = in.cave > 0.02 && face.y * face.y < 0.30 * dot(face, face);
     var uv = in.uv;
-    if (in.cave > 0.02 && face.y * face.y < 0.30 * dot(face, face)) {
-        uv = vec2<f32>(in.world.x + in.world.z, in.world.y) * 1.3;
+    var layer = in.layer;
+    if (cliff) {
+        // At the tunnel's own scale (its 1.5 repeats, `vs_model`'s 1.35),
+        // so where the massif shows inside the arch its rock is the same.
+        uv = vec2<f32>(in.world.x + in.world.z, in.world.y) * 2.0;
+        layer = VAULT_LAYER;
     }
-    var texture = vec3<f32>(0.6);
+    var sample = vec4<f32>(0.6 / TEXTURE_RANGE, 0.5, 0.5, 0.0);
     if (!PLAIN_TEXTURES) {
-        texture = textureSampleLevel(
+        sample = textureSampleLevel(
             surfaces,
             surface_sampler,
             uv,
-            in.layer,
+            layer,
             in.lod,
-        ).rgb * TEXTURE_RANGE;
+        );
+    }
+    var texture = sample.rgb * TEXTURE_RANGE;
+    var glow = vec3<f32>(0.0);
+    if (cliff) {
+        // The tunnel's rock (`vault_hd`) without its lighting: its tone,
+        // brighter on the ledges that face up to the water's light and
+        // darker under their lips, and the odd crack still running molten,
+        // so the massif reads as ledged lava and not a smooth brown hill.
+        let relief = 0.75 + 1.6 * (sample.b - 0.5) + 0.5 * (sample.g - 0.5);
+        texture = vec3<f32>(sample.r * TEXTURE_RANGE * relief);
+        glow = vec3<f32>(1.0, 0.32, 0.05) * (sample.a * in.cave * 0.45);
     }
     var albedo = in.albedo * mix(vec3<f32>(1.0), texture, 0.85);
-    let colour = albedo * in.light;
+    let colour = albedo * in.light + glow;
     var shaded = mix(
         colour,
         in.fog.rgb,
@@ -1314,8 +1339,27 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // their colour (`world::tunnel`).
     if (MATERIAL == VAULT) {
         out.albedo = i.colour.rgb * f32(v.aux.y);
-        out.local = vec3<f32>(f32(v.aux.x), 0.0, 0.0);
-        out.local_normal = v.colour;
+        // No sun reaches in here, and the searchlight is the fragment's: the
+        // walls take only the lava pools' light, summed here once a vertex
+        // and carried with the passages' baked spill, both to be laid over
+        // the rock's tone per pixel. The arch's normals face into the rock,
+        // so they are turned toward the window first, as the fragment does.
+        var facing = normalize(n);
+        if (dot(facing, g.camera.xyz - world) < 0.0) {
+            facing = -facing;
+        }
+        out.local_normal = v.colour + point_lights(world, facing) * out.albedo * 1.2;
+        // Where the rock still runs hot: broad patches whose cracks glow,
+        // most of them low down, where the lava flowed last. A noise a
+        // vertex, so no pixel pays for it.
+        let above = f32(v.aux.x);
+        let heat = smooth01(0.45, 0.70, vnoise(world.x * 0.9 + world.z * 0.5, world.y * 2.2, 31u))
+            * (1.0 - 0.75 * smooth01(0.15, 1.1, above));
+        out.local = vec3<f32>(above, heat, 0.0);
+        // Hot water hangs in the tunnel: the far end of it fades into a dull
+        // red glow instead of the cold sea, so the passage ahead reads as
+        // deep and lit, and the near rock stands out dark against it.
+        out.fog = vec4<f32>(mix(out.fog.rgb, vec3<f32>(0.20, 0.07, 0.03), 0.65 * g.world.z), out.fog.a);
     }
     // The city's parts mark what they are in the length of the normal they
     // carry (`city_light`), and the windows take a seed from where the
@@ -1457,7 +1501,8 @@ fn vault(in: Lit) -> vec3<f32> {
     if (dot(n, to_camera) < 0.0) {
         n = -n;
     }
-    let texture = triplanar(p * in.surface.y, n, i32(in.surface.x + 0.5));
+    // The tunnel's layer keeps its tone in red; the rest is for `vault_hd`.
+    let texture = vec3<f32>(triplanar(p * in.surface.y, n, i32(in.surface.x + 0.5)).x);
     let rock = vnoise(p.x * 5.0, p.z * 5.0, 12u) * 0.6 + vnoise(p.y * 7.0 + p.x, p.z * 13.0, 13u) * 0.4;
     // Strata: paler and darker bands, one flow of lava on the last.
     let band = 0.78 + 0.22 * sin(p.y * 21.0 + rock * 5.0);
@@ -1687,6 +1732,69 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
 }
 
 
+// The tunnel's slopes as stored, read back as heights a world unit
+// (`textures::SLOPE`, either way of the middle of the channel), and drawn
+// a little shallower than the tile's own: enough for a ledge's lip or a joint
+// to catch the light across the window, not so much that the rock boils.
+// The tunnel's layer of `surfaces` (`textures::Surface::Vault`), which the
+// cave's cliffs borrow.
+const VAULT_LAYER: i32 = 16;
+const VAULT_RELIEF: f32 = 2.0 * 10.0 * 0.22;
+
+// The full-HD tunnel: lava rock lit as rock, from its one texture tap. The
+// layer's slopes tilt the arch's smooth normal into ledges, joints and
+// vesicles, and the light that falls on them is what reads as relief: the
+// searchlight from its mount above the window, strongest on what faces it
+// and falling off with distance, and the lava's red from the floor, caught
+// by whatever faces down. Rock right at the glass lies in the boat's own
+// shadow, so a near wall is darker than the passage beyond it and never one
+// flat sheet of colour. Cracks in the hotter patches (`vs_model`) glow, and
+// the wet rock glints where the beam strikes it. The pools' light and the
+// passages' come summed per vertex; nothing here loops over lights or runs a
+// noise.
+@if(full_hd)
+fn vault_hd(in: Lit, rock: vec4<f32>, distance: f32) -> vec3<f32> {
+    let p = in.world;
+    let t = g.camera.w;
+    let above = in.local.x;
+    let heat = in.local.y;
+    let view = (g.camera.xyz - p) / distance;
+    var n = normalize(in.normal);
+    if (dot(n, view) < 0.0) {
+        n = -n;
+    }
+    // The tile runs across the section by x + z and up it by height: a slope
+    // in each is a rise along those directions, and only its part along the
+    // surface tilts the normal.
+    let slope = (rock.gb - 0.5) * VAULT_RELIEF;
+    let rise = vec3<f32>(slope.x, slope.y, slope.x);
+    let bumped = normalize(n - (rise - n * dot(n, rise)));
+    let tone = rock.r * TEXTURE_RANGE;
+    // The searchlight, a little spill outside its cone.
+    let to_lamp = g.lamp_origin.xyz - p;
+    let reach = length(to_lamp);
+    let l = to_lamp / reach;
+    let cone = 0.15 + 0.85 * smooth01(0.72, 0.95, -dot(l, g.lamp.xyz));
+    let lamp = g.lamp.w * cone * max(dot(bumped, l), 0.0) / (1.0 + reach * reach * 0.12);
+    // The lava's glow from the floor, breathing, on what faces down to it.
+    let low = 1.0 - smooth01(0.0, 1.3, above);
+    let bounce = low * (0.6 - 0.4 * bumped.y) * (0.85 + 0.15 * sin(t * 1.9 + p.x));
+    let near = 0.45 + 0.55 * smooth01(0.25, 1.6, distance);
+    var colour = in.albedo * tone * (
+        (vec3<f32>(0.30, 0.24, 0.22) + vec3<f32>(1.1, 0.33, 0.09) * bounce) * near
+            + vec3<f32>(1.0, 0.92, 0.78) * (lamp * (0.5 + 1.0 * near))
+    );
+    colour += in.local_normal * tone;
+    // Molten cracks, and the rock about them warmed a dull red.
+    let pulse = 0.7 + 0.3 * sin(t * 1.3 + p.x * 2.0 + p.y * 3.0);
+    colour += vec3<f32>(1.0, 0.32, 0.05) * (rock.a * heat * pulse * 1.6)
+        + vec3<f32>(0.30, 0.06, 0.01) * (heat * 0.25);
+    // Wet rock, glistening where the beam strikes it.
+    let shine = pow(max(dot(bumped, normalize(view + l)), 0.0), 16.0);
+    colour += vec3<f32>(0.85, 0.82, 0.75) * (shine * lamp * 0.15);
+    return colour;
+}
+
 // The full-HD profile's models: one texture projection, a sun/ambient light
 // worked out per pixel, no point-light loop, caustics, triplanar blend or
 // per-material switch. Enough for the silhouette and colour; the 448 build
@@ -1714,16 +1822,19 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // Only the vault pipeline takes the sharper level; every model keeps the
     // cheap one.
     let lod = clamp(log2(distance * select(3.0, 1.0, MATERIAL == VAULT)), 0.0, 8.0);
-    var texture = vec3<f32>(0.6);
+    // The tunnel's layer is not a colour (`textures::paint_vault`): its
+    // channels are read raw, and only the others' are scaled to a colour.
+    var sample = vec4<f32>(0.6 / TEXTURE_RANGE, 0.5, 0.5, 0.0);
     if (!PLAIN_TEXTURES) {
-        texture = textureSampleLevel(
+        sample = textureSampleLevel(
             surfaces,
             surface_sampler,
             uv.xz,
             layer,
             lod,
-        ).rgb * TEXTURE_RANGE;
+        );
     }
+    let texture = sample.rgb * TEXTURE_RANGE;
     var albedo = in.albedo * texture;
     // Bedded in the sand: the foot of anything on the seabed takes its colour.
     if (GROUNDED) {
@@ -1743,30 +1854,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     let t = g.camera.w;
     if (MATERIAL == VAULT) {
-        // Cheap tunnel light: baked passage colour and rock shade, strata
-        // keyed to the world's height, a low lava glow and a wet searchlight
-        // glint. Still one texture tap and no per-pixel `vnoise` over the
-        // whole tunnel.
-        let above = in.local.x;
-        // The luminance of the one rock sample: its cracks and hollows read
-        // as darker, its ledges as paler, and the damp ones catch the lamp.
-        let tone = dot(texture, vec3<f32>(0.30, 0.50, 0.20));
-        let pit = 1.0 - smooth01(0.45, 1.05, tone);
-        // Two bands: the strata the tunnel was cut through, and the edges of
-        // the lava flows within them.
-        let strata = sin(p.y * 13.0 + sin(p.x * 2.7 + p.z * 1.3) * 3.2);
-        let seam = sin(p.y * 5.0 + p.z * 2.1 + 0.9);
-        colour *= (0.88 + 0.12 * strata) * (0.95 + 0.05 * seam) * 1.15;
-        // The sample itself, a little stronger than the plain multiply.
-        colour *= 0.80 + 0.28 * smooth01(0.25, 1.15, tone);
-        colour += in.local_normal * 0.45;
-        let glow = (1.0 - smooth01(0.0, 1.2, above)) * (0.8 + 0.2 * sin(t * 1.9 + p.x));
-        colour += vec3<f32>(0.45, 0.10, 0.02) * glow * (0.65 + 0.35 * pit);
-        // Wet rock, glistening where the searchlight strikes its hollows.
-        let h = normalize(normalize(g.camera.xyz - p) - g.lamp.xyz);
-        let wet = 0.25 + 0.75 * pit;
-        colour += vec3<f32>(0.85, 0.82, 0.75)
-            * pow(max(dot(n, h), 0.0), 20.0) * g.lamp.w * (0.18 + 0.22 * wet);
+        colour = vault_hd(in, sample, distance);
     }
     var lamps = vec3<f32>(0.0);
     if (MATERIAL == CITY_LIGHTS) {
@@ -1915,6 +2003,7 @@ fn vs_sprite(
     // the shader reproduces the trail's offset/fade so the placer can cache.
     var p = place.xyz;
     var bubble_fade = 1.0;
+    var ember = vec3<f32>(1.0);
     if (stretch.z > 0.0) {
         if (kind == 2u) {
             let t = g.camera.w;
@@ -1934,10 +2023,20 @@ fn vs_sprite(
             p.z += 0.35 * age + spread * 0.5 * cos(stretch.y * 1.7);
             bubble_fade = smooth01(0.0, 0.1, age) * (1.0 - age);
         } else if (kind == 3u) {
-            // EMBER: rise from the floor, fade out as it rises.
+            // EMBER: rise from the floor, fade out as it rises, wavering on
+            // the shimmering water as it goes.
             let rise = fract(g.camera.w * stretch.z + stretch.y);
+            let waver = g.camera.w * 2.3 + stretch.y * TAU;
             p.y += rise * stretch.w;
+            p.x += 0.05 * rise * sin(waver);
+            p.z += 0.04 * rise * cos(waver * 0.7);
             bubble_fade = (1.0 - rise) * smooth01(0.0, 0.1, rise);
+            // A warm ember leaves the pool white-hot and cools to red as it
+            // climbs, flickering; the arctic's and the abyss's cold flecks
+            // keep their colour.
+            let warm = smooth01(0.0, 0.3, tint.r - tint.b);
+            ember = mix(vec3<f32>(1.0), vec3<f32>(1.0, 0.75 - 0.45 * rise, 1.6 - 1.5 * rise), warm)
+                * (1.0 + warm * (0.6 * (1.0 - rise) + 0.25 * sin(waver * 3.1)));
         } else {
             let cycle = g.camera.w / stretch.z + stretch.y;
             let age = (cycle - floor(cycle)) * stretch.z;
@@ -1965,7 +2064,7 @@ fn vs_sprite(
         let cone = smooth01(0.80, 0.95, dot(normalize(to), g.lamp.xyz));
         lit = 0.25 + 2.5 * cone * g.lamp.w / (1.0 + dot(to, to) * 0.08) + g.sun.w * 0.6;
     }
-    out.colour = tint.rgb * lit * (1.0 - fog_of(d)) * bubble_fade;
+    out.colour = tint.rgb * ember * lit * (1.0 - fog_of(d)) * bubble_fade;
     out.kind = kind;
     return out;
 }
