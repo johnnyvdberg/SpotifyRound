@@ -190,6 +190,44 @@ impl Mesh {
         self.tri(base, base + 1, base + 2);
     }
 
+    /// A quad with its own vertices and one flat normal across both
+    /// triangles: a facet, with a colour at each corner.
+    fn facet(&mut self, p: [[f32; 3]; 4], colour: [[f32; 3]; 4], aux: [f32; 2]) {
+        let n = (Vec3::from_array(p[2]) - Vec3::from_array(p[0]))
+            .cross(Vec3::from_array(p[3]) - Vec3::from_array(p[1]))
+            .normalize_or_zero()
+            .to_array();
+        let base = self.vertices.len() as u32;
+        for (pos, colour) in p.into_iter().zip(colour) {
+            self.vertices.push(Vertex {
+                pos,
+                normal: n,
+                colour,
+                aux,
+            });
+        }
+        self.quad(base, base + 1, base + 2, base + 3);
+    }
+
+    /// A triangle with its own vertices, one flat normal and a colour at
+    /// each corner.
+    fn facet_tri(&mut self, p: [[f32; 3]; 3], colour: [[f32; 3]; 3], aux: [f32; 2]) {
+        let n = (Vec3::from_array(p[1]) - Vec3::from_array(p[0]))
+            .cross(Vec3::from_array(p[2]) - Vec3::from_array(p[0]))
+            .normalize_or_zero()
+            .to_array();
+        let base = self.vertices.len() as u32;
+        for (pos, colour) in p.into_iter().zip(colour) {
+            self.vertices.push(Vertex {
+                pos,
+                normal: n,
+                colour,
+                aux,
+            });
+        }
+        self.tri(base, base + 1, base + 2);
+    }
+
     pub fn append(&mut self, other: Mesh) {
         let base = self.vertices.len() as u32;
         self.vertices.extend(other.vertices);
@@ -483,10 +521,14 @@ pub enum Model {
     Turtle,
     Submarine,
     Screw,
+    /// A hero formation of large intergrown crystal points.
+    Crystal,
+    /// A cluster of crystal points fanning out of one pocket of rock.
+    CrystalCluster,
 }
 
 impl Model {
-    pub const ALL: [Model; 39] = [
+    pub const ALL: [Model; 41] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -526,6 +568,8 @@ impl Model {
         Model::Turtle,
         Model::Submarine,
         Model::Screw,
+        Model::Crystal,
+        Model::CrystalCluster,
     ];
 
     pub fn index(self) -> usize {
@@ -774,8 +818,255 @@ impl Model {
                 |y, _| if y > 0.95 { [0.4, 0.35, 0.3] } else { [1.0; 3] },
                 |y| [0.0, y],
             ),
+            Model::Crystal => crystal(),
+            Model::CrystalCluster => crystal_cluster(),
         }
     }
+}
+
+/// A crystal point from `base` to `tip`, `radius` thick at its foot: a
+/// tapered, ridged prism with a pyramidal termination, its facets given their
+/// own flat normals and their own colours. The colours run from a deep violet
+/// foot through a saturated middle to a warm white tip, with each facet a
+/// little brighter or cooler than its neighbours, so the additive glass
+/// shader gets its facets from the vertices alone.
+#[allow(clippy::too_many_arguments)]
+fn crystal_point(
+    m: &mut Mesh,
+    base: [f32; 3],
+    tip: [f32; 3],
+    radius: f32,
+    phase: f32,
+    foot: [f32; 3],
+    crown: [f32; 3],
+    seed: u32,
+) {
+    // Twelve sides with every other one pulled in: six broad faces, each
+    // broken by a ridge down its length so a big point never reads as a flat
+    // oval. Coarser, they halve to eight.
+    let sides = fewer(12, 8);
+    let axis = Vec3::from_array(tip) - Vec3::from_array(base);
+    let length = axis.length().max(1e-4);
+    let up = axis / length;
+    let reference = if up.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+    let across = up.cross(reference).normalize_or_zero();
+    let through = across.cross(up);
+    let mid = [
+        (foot[0] * 1.8 + 0.12).min(1.0),
+        foot[1] * 1.8 + 0.05,
+        (foot[2] * 0.7 + 0.55).min(1.0),
+    ];
+    let shade = |t: f32, facet: usize| {
+        let t = t.clamp(0.0, 1.0);
+        let body = if t < 0.55 {
+            mix3(foot, mid, t / 0.55)
+        } else {
+            mix3(
+                mid,
+                crown,
+                ((t - 0.55) / 0.45).powi(2) * 0.75 + (t - 0.55) / 0.45 * 0.25,
+            )
+        };
+        // Alternate facets catch the light differently: the refraction a real
+        // crystal shows even where nothing else lights it.
+        let grain = jitter(seed, 30 + facet as u32);
+        let gain = 0.78 + 0.36 * grain + 0.07 * (facet as f32 * 2.4 + seed as f32).sin();
+        let warm = (grain - 0.5) * 0.10;
+        [
+            (body[0] * gain + warm).clamp(0.0, 1.0),
+            (body[1] * gain).clamp(0.0, 1.0),
+            (body[2] * gain - warm * 0.5).clamp(0.0, 1.0),
+        ]
+    };
+    let angle = |s: usize| phase + s as f32 / sides as f32 * TAU;
+    let ridge = |s: usize| 1.0 - 0.07 * (s % 2) as f32 - 0.04 * jitter(seed, 40 + s as u32);
+    // The point wanders a little off its axis as it grows, so its broad faces
+    // break into bands of different normals instead of one long, flat plane.
+    let wander = |t: f32| {
+        (across * (t * 3.7 + seed as f32 * 0.6).sin()
+            + through * (t * 4.3 + seed as f32 * 0.7).cos())
+            * (radius * 0.09)
+    };
+    let ring = |t: f32, r: f32, s: usize| {
+        let c = Vec3::from_array(base) + up * (length * t) + wander(t);
+        let a = angle(s);
+        let rr = radius * r * ridge(s);
+        (c + (across * a.cos() + through * a.sin()) * rr).to_array()
+    };
+    // A foot a little inside the rock, growth rings along the body with a
+    // bulge midway, then the point.
+    let lower = -0.10;
+    let top = 0.74 + 0.10 * jitter(seed, 6);
+    let top_r = 0.78 + 0.06 * jitter(seed, 7);
+    let rings = [
+        (lower, 1.0),
+        (0.10 + 0.06 * jitter(seed, 1), 1.0),
+        (0.28 + 0.06 * jitter(seed, 2), 1.0),
+        (0.46 + 0.06 * jitter(seed, 3), 0.98),
+        (0.62 + 0.06 * jitter(seed, 4), 0.94),
+        (top, top_r),
+    ];
+    for s in 0..sides {
+        let t = (s + 1) % sides;
+        for w in rings.windows(2) {
+            let (t0, r0) = w[0];
+            let (t1, r1) = w[1];
+            let p = [
+                ring(t0, r0, s),
+                ring(t1, r1, s),
+                ring(t1, r1, t),
+                ring(t0, r0, t),
+            ];
+            let c = [shade(t0, s), shade(t1, s), shade(t1, t), shade(t0, t)];
+            m.facet(p, c, [0.0, t1]);
+        }
+    }
+    // The termination: a spire a little off the axis, so no two points end
+    // alike.
+    let lean = radius * 0.22;
+    let point = Vec3::from_array(tip)
+        + across * ((seed as f32 * 0.7 + phase).cos() * lean)
+        + through * ((seed as f32 * 0.7 + phase).sin() * lean);
+    for s in 0..sides {
+        let t = (s + 1) % sides;
+        let p = [ring(top, top_r, s), ring(top, top_r, t), point.to_array()];
+        let c = [shade(top, s), shade(top, t), crown];
+        m.facet_tri(p, c, [1.0, 1.0]);
+    }
+    // A cap buried in the rock, so the point is a closed solid.
+    let centre = (Vec3::from_array(base) + up * (length * lower) + wander(lower)).to_array();
+    for s in 0..sides {
+        let t = (s + 1) % sides;
+        let p = [centre, ring(lower, 1.0, t), ring(lower, 1.0, s)];
+        m.facet_tri(p, [foot, foot, foot], [0.0, 0.0]);
+    }
+}
+
+/// The gallery's hero: a large point intergrown with three smaller ones, the
+/// tallest near the middle, so the formation reads as crystals rather than as
+/// one broad face.
+fn crystal() -> Mesh {
+    let mut m = Mesh::default();
+    let foot = [0.12, 0.035, 0.34];
+    let crown = [1.0, 0.92, 0.78];
+    crystal_point(
+        &mut m,
+        [0.0, -0.03, 0.0],
+        [0.06, 0.97, -0.06],
+        0.62,
+        0.35,
+        foot,
+        crown,
+        7,
+    );
+    crystal_point(
+        &mut m,
+        [0.32, -0.02, 0.12],
+        [0.82, 0.60, 0.32],
+        0.42,
+        1.15,
+        [0.10, 0.03, 0.30],
+        [0.86, 0.82, 0.98],
+        8,
+    );
+    crystal_point(
+        &mut m,
+        [-0.30, -0.02, 0.14],
+        [-0.66, 0.48, 0.34],
+        0.30,
+        2.05,
+        [0.09, 0.03, 0.26],
+        [0.82, 0.80, 1.0],
+        9,
+    );
+    crystal_point(
+        &mut m,
+        [0.08, -0.02, 0.24],
+        [0.20, 0.34, 0.58],
+        0.20,
+        2.8,
+        [0.08, 0.025, 0.24],
+        [0.80, 0.80, 1.0],
+        10,
+    );
+    m
+}
+
+/// The gallery's satellites: a handful of points of different sizes and
+/// bearings growing from one pocket, the tallest near the middle.
+fn crystal_cluster() -> Mesh {
+    // A point's base, tip and thickness, its facet phase and seed, and the
+    // colour of its termination.
+    type Point = ([f32; 3], [f32; 3], f32, f32, u32, [f32; 3]);
+    let mut m = Mesh::default();
+    let foot = [0.07, 0.025, 0.22];
+    let points: [Point; 7] = [
+        (
+            [0.0, -0.06, 0.0],
+            [0.05, 0.94, 0.08],
+            0.30,
+            0.4,
+            21,
+            [1.0, 0.94, 0.86],
+        ),
+        (
+            [-0.18, 0.0, 0.04],
+            [-0.54, 0.50, -0.06],
+            0.17,
+            0.9,
+            22,
+            [0.86, 0.84, 1.0],
+        ),
+        (
+            [0.17, 0.0, 0.05],
+            [0.52, 0.66, 0.18],
+            0.20,
+            1.5,
+            23,
+            [1.0, 0.90, 0.82],
+        ),
+        (
+            [0.01, 0.0, 0.17],
+            [0.16, 0.40, 0.56],
+            0.13,
+            2.1,
+            24,
+            [0.80, 0.80, 1.0],
+        ),
+        (
+            [-0.09, 0.0, -0.16],
+            [-0.22, 0.34, -0.52],
+            0.12,
+            2.7,
+            25,
+            [0.84, 0.84, 1.0],
+        ),
+        (
+            [0.25, 0.0, -0.12],
+            [0.40, 0.32, 0.10],
+            0.10,
+            3.3,
+            26,
+            [0.90, 0.86, 1.0],
+        ),
+        (
+            [-0.27, 0.0, -0.09],
+            [-0.34, 0.25, 0.28],
+            0.09,
+            3.9,
+            27,
+            [0.84, 0.82, 1.0],
+        ),
+    ];
+    for (base, tip, radius, phase, seed, crown) in points {
+        crystal_point(&mut m, base, tip, radius, phase, foot, crown, seed);
+    }
+    m
+}
+
+/// Blend two colours.
+fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
 }
 
 fn kelp() -> Mesh {

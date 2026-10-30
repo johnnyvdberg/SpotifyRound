@@ -502,8 +502,8 @@ mod effect {
         (
             "cave hexes",
             CAVE_HEX,
-            "Hex",
-            "basalt columns, glass crystals",
+            "Hex, Crystal, CrystalCluster",
+            "basalt columns, crystal points and clusters",
         ),
         (
             "cones",
@@ -584,7 +584,7 @@ fn model_bit(model: usize) -> u64 {
         Model::Cylinder => effect::CYLINDERS,
         Model::Box => effect::BOXES,
         Model::Sphere => effect::SPHERES,
-        Model::Hex => effect::CAVE_HEX,
+        Model::Hex | Model::Crystal | Model::CrystalCluster => effect::CAVE_HEX,
         Model::Cone => effect::CONES,
         Model::Diver | Model::DiverHelmet | Model::DiverLimb | Model::DiverBoot => effect::DIVERS,
         Model::Shark => effect::SHARKS,
