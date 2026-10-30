@@ -26,13 +26,26 @@
 //! the tunnel so the window looks up it, no farther than the hull clears both
 //! walls, and swings it straight again beyond the far mouth.
 //!
+//! In open water the helmsman lets the boat crab the same way, slowly and a
+//! good deal less: every couple of minutes he swings the nose off the track,
+//! so the window looks a little ahead or a little astern, and the boat dips
+//! a little as it looks ahead and lifts as it looks back. The scenery then
+//! comes at the glass, or falls away from it, on the diagonal, rather than
+//! only sliding past it, and the voyage is seen in depth as well as across
+//! and up and down. He keeps the swing small among the city's columns,
+//! which stand close beside the corridor, and takes it
+//! out before the cave, where the tunnel's walls leave room only for his
+//! look up it.
+//!
 //! Seen from the salon window, which looks out to port, the boat's pitch turns
 //! the view about its own axis, its roll tips the view up and down, and its
 //! heading pans it.
 
 use std::f32::consts::TAU;
 
-use super::world::{CAVE, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope};
+use super::world::{
+    ATLANTIS, CAVE, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope,
+};
 use crate::voyage::{Position, SPEED};
 
 /// The boat's pose for one frame.
@@ -43,6 +56,12 @@ pub struct Pose {
     pub basis: [[f32; 3]; 3],
     /// How fast the boat is going, in world units a second.
     pub vel: [f32; 3],
+    /// Level and outward, the way the window would look were the helmsman
+    /// not swinging the boat off its track, in world x and z. Things that
+    /// keep their distance from the track keep their distance along this
+    /// however the boat swings, so what the window is kept clear of stays
+    /// clear rather than vanishing as the boat swings towards it.
+    pub abeam: [f32; 2],
     /// Depth below the surface, for the manometer, in the voyage's units.
     pub depth: f64,
 }
@@ -55,6 +74,7 @@ impl Pose {
             pos: [x, y, corridor(x)],
             basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             vel: [0.0; 3],
+            abeam: [0.0, 1.0],
             depth: depth_reading(y),
         }
     }
@@ -96,6 +116,18 @@ const BRISK: f32 = 3.0;
 /// where they close in or the boat rides high under the vault.
 pub const LOOK: f32 = 0.55;
 const CRAB_RATE: f32 = 0.008;
+/// How far round the helmsman swings the boat off its track in open water,
+/// either way, and the fastest he swings it: sixteen degrees, so the window
+/// sees nearly a third of the boat's way coming at it or falling away from
+/// it, at a quarter of a degree a second, so a whole swing from looking
+/// astern to looking ahead takes a couple of minutes. With the corridor's own
+/// bends it stays within the turning rate of a hull of its size.
+pub const SWING: f32 = 0.28;
+const SWING_RATE: f32 = 0.005;
+/// How much lower than its cruise the boat runs while it looks ahead, and
+/// how much higher while it looks astern, as a share of its height over the
+/// ground: it dips into the scenery it is turning towards.
+const DIP: f32 = 0.3;
 /// How far the boat heels to port along the trench's rim, so the window
 /// looks down over its edge: a few degrees, all a heavy hull will give.
 pub const PEER: f32 = 0.07;
@@ -201,6 +233,56 @@ fn track(x: f32, phase: f32, open: f32) -> (f32, f32) {
     )
 }
 
+/// How open the water is at `x` for the gate's weave and the helmsman's
+/// swing: nothing in the cave's tunnel, easing back over the five units
+/// either side of it, a lane change the hull can make, rather than following
+/// the biome blend's own short ramp into the tunnel.
+fn open(seabed: &Seabed, x: f32) -> f32 {
+    cave_start(seabed, x).map_or(1.0, |cave| {
+        let out = (cave - x).max(x - (cave + 5.2)).max(0.0);
+        smooth(0.0, 5.0, out)
+    })
+}
+
+/// How far, as a share of [`SWING`], the boat may be swung off its track at
+/// `x`. The city's columns stand within half a unit of the corridor, which
+/// the hull's ends would reach set farther across, so there it is held
+/// nearly straight; the forest's trunks keep well clear of the lane and need
+/// no such care. It is straight in the cave's tunnel, where the crab takes
+/// over. Atlantis is reckoned over the six units about and mostly ahead, so
+/// the room closes over that stretch rather than over the biome blend's short
+/// one: a swipe's passage crosses it in a couple of seconds, and the swing
+/// must come off smoothly, not snap straight.
+fn room(seabed: &Seabed, x: f32) -> f32 {
+    let ruins = (-1..=5)
+        .map(|k| {
+            let at = x + k as f32;
+            seabed.share(at, corridor(at), ATLANTIS)
+        })
+        .sum::<f32>()
+        / 7.0;
+    (1.0 - 0.9 * smooth(0.0, 0.8, ruins)) * open(seabed, x)
+}
+
+/// Where the helmsman means to swing the boat at `x`, off its track, in
+/// radians (positive turns the window ahead), and the most he will allow
+/// there. The swing is a long, uneven weave of the voyage's own, so the same
+/// stretch of sea is always seen the same way, saturating a little so it
+/// holds its angle for a while between swings. He reads the room several
+/// hull lengths ahead, a minute and more at cruising speed, so he has
+/// straightened up by the time the columns close in, rather than being
+/// brought straight by them.
+fn swing(seabed: &Seabed, x: f32, phase: f32) -> (f32, f32) {
+    let weave = 0.8 * (x * TAU / 19.0 + phase * 0.9).sin()
+        + 0.5 * (x * TAU / 8.3 + phase * 2.1).sin()
+        + 0.1;
+    let most = SWING * room(seabed, x);
+    let ahead = [1.5, 3.0, 4.5]
+        .iter()
+        .fold(most, |least, &d| least.min(SWING * room(seabed, x + d)));
+    ((SWING * (1.8 * weave).tanh()).clamp(-ahead, ahead), most)
+}
+
 /// How far up the boat can come from rest within `seconds`, climbing as
 /// briskly as it may, with a margin for the last few seconds' easing in.
 fn reach(seconds: f32) -> f32 {
@@ -236,10 +318,12 @@ pub struct Helm {
     target: f32,
     drift: f32,
     /// The hull's middle's height, the heading of its nose along the track,
-    /// how far it is set across the track in the cave, its pitch and roll.
+    /// how far it is set across the track in the cave and swung off it in
+    /// open water, its pitch and roll.
     height: Spring,
     course: Spring,
     crab: Spring,
+    swing: Spring,
     pitch: Spring,
     roll: Spring,
 }
@@ -270,24 +354,23 @@ impl Helm {
 
         // A heavy boat holds its way: only a slow swing of a few percent.
         let x = voyage.x as f32 + 0.025 * (t * TAU / 75.0 + phase).sin();
-        // Ease the weave out over the five units before the mouth, a lane
-        // change the hull can make, rather than following the biome blend's
-        // own short ramp into the tunnel.
-        let open = if let Some(cave) = cave_start(seabed, x) {
-            let out = (cave - x).max(x - (cave + 5.2)).max(0.0);
-            smooth(0.0, 5.0, out)
-        } else {
-            1.0
-        };
+        // Ease the weave out over the five units before the mouth.
+        let open = open(seabed, x);
         let (z, slope) = track(x, phase, open);
         let heading = -slope.atan();
         // How fast the track bends, per unit along it, for the bank.
         let bend =
             -(track(x + 0.05, phase, open).1.atan() - track(x - 0.05, phase, open).1.atan()) / 0.1;
 
-        let alt = (voyage.altitude as f32 * 0.8).max(RADIUS + KEEL + 0.05);
+        let (swung, most) = swing(seabed, x, phase);
+        if fresh {
+            self.swing = Spring::at(swung);
+        }
+        // Dipping as it swings to look ahead, lifting as it looks astern.
+        let dip = 1.0 - DIP * self.swing.value / SWING;
+        let alt = (voyage.altitude as f32 * 0.8 * dip).max(RADIUS + KEEL + 0.05);
         let pitch = self.pitch.value;
-        let (sy, cy) = (self.course.value + self.crab.value).sin_cos();
+        let (sy, cy) = (self.course.value + self.crab.value + self.swing.value).sin_cos();
         // The hull's floor: the ground under every station from stern to
         // bow, across its beam, with its girth and its pitch.
         let mut floor = f32::MIN;
@@ -352,6 +435,16 @@ impl Helm {
             self.roll = Spring::default();
             self.crab = Spring::default();
         } else {
+            // The swing, slowly, and never farther than the place allows.
+            // Bounding the target rather than the spring's state keeps the
+            // rate continuous: a hard clamp would snap the nose round in one
+            // frame where a swipe carries the boat past the columns, and the
+            // window would jolt. The bound is read several hull lengths
+            // ahead, so at cruising speed the boat has straightened before
+            // the place itself closes in.
+            let spare = (CRAB_RATE - self.course.rate.abs()).clamp(0.1 * SWING_RATE, SWING_RATE);
+            self.swing
+                .follow(swung.clamp(-most, most), 0.12, attitude_dt, spare);
             self.cruise += (about - self.cruise) * (1.0 - (-voyage_dt / 4.0).exp());
         }
         let target = (self.cruise + alt).max(rise).min(roof).max(floor);
@@ -441,7 +534,11 @@ impl Helm {
         let heave = 0.045 * swell * (0.6 * wave(9.3, 1.0) + 0.4 * wave(13.7, 2.3));
         let roll = self.roll.value + 0.008 * swell * wave(11.1, 0.7);
         let pitch = self.pitch.value + 0.004 * swell * wave(9.3, 1.9);
-        let basis = basis(self.course.value + self.crab.value, pitch, roll);
+        let basis = basis(
+            self.course.value + self.crab.value + self.swing.value,
+            pitch,
+            roll,
+        );
         // The window is on the hull's side, a girth out from its middle.
         let out = basis[2];
         let pos = [
@@ -460,10 +557,12 @@ impl Helm {
         };
         self.last = Some(seconds);
         self.last_pos = pos;
+        let (sa, ca) = (self.course.value + self.crab.value).sin_cos();
         Pose {
             pos,
             basis,
             vel,
+            abeam: [sa, ca],
             depth: depth_reading(pos[1]),
         }
     }
@@ -476,7 +575,7 @@ impl Helm {
         // farther than the tunnel will take it.
         let wide = TUNNEL * 0.91 - KEEL;
         let high = 0.85 * TUNNEL * 0.91 - KEEL;
-        let course = self.course.value;
+        let course = self.course.value + self.swing.value;
         let c0 = course.cos();
         let centres = STATIONS.map(|along| {
             let px = x + along * c0;

@@ -1482,9 +1482,16 @@ impl<'a> IntoIterator for &'a Cells {
 /// `far` from the window, as (column, row, x, z) with the point jittered
 /// within its cell. The grid is fixed in the world, so the same rock is
 /// always in the same place however the boat turns.
+///
+/// `near` is reckoned abeam, square to the boat's way rather than along the
+/// window's look: the helmsman's swing turns the window towards things
+/// ahead or astern, and they come at it on the diagonal, but their distance
+/// abeam holds, so nothing kept off the glass appears or vanishes as the
+/// boat swings. The footprint is taken from half as near, to hold them.
 fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
-    let ([x0, x1, z0, z1], o, r) = footprint(w, near, far);
+    let ([x0, x1, z0, z1], o, r) = footprint(w, near * 0.5, far);
     let c = w.pose.pos;
+    let abeam = w.pose.abeam;
     let mut out = CELLS
         .with(|pool| pool.borrow_mut().pop())
         .unwrap_or_default();
@@ -1494,7 +1501,7 @@ fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
             let (x, z) = cell_point(ix, iz, size, salt);
             let (dx, dz) = (x - c[0], z - c[2]);
             let depth = dx * o[0] + dz * o[1];
-            if depth < near || depth > far {
+            if depth < 0.0 || dx * abeam[0] + dz * abeam[1] < near || depth > far {
                 continue;
             }
             if (dx * r[0] + dz * r[1]).abs() > depth * VIEW * 1.3 + size + 0.6 {
@@ -7281,20 +7288,16 @@ mod tests {
     /// off at the brass would leave a bright bubble with no neighbour.
     #[test]
     fn bubbles_never_pop() {
-        // Moments of visit 0 with a trail near the glass: a sister
-        // submarine in the coral garden, the forest's walking party, and a
-        // deep encounter on the way to the abyss. The exact seconds are the
-        // ones the encounters run on in the canonical circuit.
         // Moments of visit 0 with a trail near the glass: the forest's
-        // walking party, an encounter in the bloom, and a deep encounter on
-        // the way to the abyss. The exact seconds are the ones the longer
-        // five-minute legs put their bubbles at, with the drowned city's leg
-        // in the circuit ahead of the bloom and the abyss.
-        let scenes = [
-            ("diver helmets", 633.0),
-            ("bloom encounter", 3556.0),
-            ("deep trail", 3810.0),
-        ];
+        // Moments of visit 0 with a trail near the glass: the forest's
+        // walking party, and a sister submarine coming up on the shallows.
+        // The exact seconds are the ones the encounters run on in the
+        // canonical circuit; the helmsman's swing turns the window a little
+        // off the track, so a meeting that used to sit on the glass can move
+        // out of view, and these are the ones that still cross it. Both are
+        // early legs, so the drowned city later in the circuit does not move
+        // them.
+        let scenes = [("diver helmets", 630.0), ("shallows encounter", 840.0)];
         for (name, start) in scenes {
             let seed = 0.0f32;
             let seabed = Seabed::new(0, seed);
