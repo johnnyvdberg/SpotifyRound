@@ -129,3 +129,83 @@ Review these in particular; they are the places where two agents' work met.
   but it has had the least visual play-testing of the five.
 - No motion capture of the new path was made. The survey numbers and the
   scene sheet are the evidence.
+
+## Second pass: cave nooks and city types (2026-10-30 evening)
+
+Commit **`5b49068`** adds a second visual pass on top of the merge above.
+
+### Cave
+
+- Three shallow nooks per cave, between the five secret passages:
+  - **camp**: two crates, a bedroll, a lost diver's helmet, a lantern still
+    burning and a pick against the wall;
+  - **crystal**: seven crystal points growing out of the wall, with a violet
+    light and a twinkle;
+  - **ember**: a still lava pool, a rim of cooled rock and embers rising.
+- `Seabed::nooks()`/`NookKind`/`Nook` define them; `tunnel_radius_with_nooks()`
+  stands the wall back over each, so the hollow and its props always agree.
+  The bump is outward only, so the hull keeps its clearance.
+- Stalagmites and rubble now gather along the walls between the nooks, and
+  three screenshot places (`10-cave-nook-camp`, `-crystal`, `-ember`) were
+  added so the nooks can be inspected.
+- **These are not finished to the same standard as the rest.** The nook
+  frames at the exact centres are mostly wall (the window looks sideways into
+  the hollow), and the camp frame is a close jumble of crates. The camp reads
+  best in `10-cave-passages-2`; the crystal and ember nooks have not yet been
+  seen clearly in a shot. Scale, placement and camera moments need another
+  pass.
+
+### City
+
+- Four new building models, appended after `Sign` (`Model::ALL` is now 64):
+  - **Ziggurat**: a stepped art-deco pyramid with neon string courses;
+  - **Arcade**: a low two-storey hall with a colonnade, lit canopy and neon
+    marquee;
+  - **Factory**: a riveted works hall with sawtooth skylights, two banded
+    stacks, pipes and a glowing furnace;
+  - **Theatre**: a round picture palace with brass fins, a glass marquee and
+    a lit cupola (toned down from an over-bright first version).
+- Denser placement: near blocks have an 8% empty chance (was 20%), far 18%
+  (was 30%); the avenue frontage is biased towards the low types and a row of
+  small street shops fills the pavement between blocks.
+- New `effect::CITY_BLOCKS` group and `MATERIALS`/model registrations.
+- **The density and the four types are in, but the city's Pi cost is not
+  measured.** More instances and draw calls are expected.
+
+### Verification for this pass
+
+- `cargo fmt` and `cargo clippy --release --all-targets`: clean.
+- `cargo test --release`: **121 passed, 22 ignored**.
+- Scene sheet regenerated for **84 places** (the three nook places added).
+
+### Benchmark pending — Claude, please run it
+
+No Pi measurement has been made for `5b49068`. The table earlier in this file
+is for the merge at `653f3f1`, not this pass. The user explicitly asked for a
+benchmark and for you to repeat it in case. Suggested:
+
+```sh
+cd .worktrees/finish
+deploy/build-for-pi.sh --tests
+scp target/pi/spotify-round-tests john@192.168.0.33:/tmp/srt-finish2
+ssh john@192.168.0.33 '
+  P=$(pgrep -x spotify-round); kill -STOP $P; trap "kill -CONT $P" EXIT
+  mkdir -p /tmp/hot-fin2; cd /tmp
+  DIVE3D_HOTSPOT_SEEDS=0,500000 DIVE3D_HOTSPOT_FRAMES=8 \
+  DIVE3D_HOTSPOT_DIR=/tmp/hot-fin2 \
+    ./srt-finish2 dive3d::tests::hotspots --ignored --nocapture'
+```
+
+Compare against `/tmp/srt-5fed499` (still on the Pi) with the same settings.
+The important numbers are the city leg, the cave leg, coral and the overall
+median. Put the fresh table in `docs/handoff/pi/` and report whether the new
+city density keeps every place under the 16.6 ms frame budget.
+
+### Other rough edges for the next pass
+
+- The city's new foreground types need a look in motion; the theatre's neon
+  is now calmer, but the factory stacks and the shop row have not been judged
+  from a moving window.
+- The nook camera places were added at the nook centres and are not yet good
+  screenshots; tune their offsets or add a nook-specific view.
+- The scene sheet is otherwise current.
