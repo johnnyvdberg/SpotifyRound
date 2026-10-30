@@ -2576,3 +2576,35 @@ The count-scaling term for the future larger scenes is the **CPU build
 instance record. Reducing those means changing what a placer does per
 instance (fewer per-instance branches, direct writes into the staging
 buffer), which is a bigger change than the branches taken so far.
+
+## 67. The count-scaling term, quantified on the Pi
+
+The desktop audit measured 152 ns to build an instance and 85 ns to stage it
+(237 ns). The Pi runs give the honest number for the device that matters.
+Dividing each leg's `scene building` by its instance count:
+
+| leg | instances | scene building | ns/instance |
+|---|---|---|---|
+| shallows | 1463 | 1.582 ms | 1081 |
+| forest | 2114 | 1.642 ms | 777 |
+| trench | 998 | 1.440 ms | 1443 |
+| wrecks | 786 | 1.191 ms | 1515 |
+| atlantis | 641 | 1.164 ms | 1816 |
+| cave | 248 | 0.869 ms | 3504 |
+| abyss | 192 | 1.007 ms | 5245 |
+| arctic | 369 | 1.337 ms | 3623 |
+
+The small legs are sprite-dominated (700-780 sprites), which is why their
+per-instance figure explodes; the instance-heavy legs sit at **~0.8-1.1 us
+per instance** on the Pi, roughly **4x the desktop's 237 ns**.
+
+Consequence for the goal: at the current 1.5-2.1k instances the scene build
+is 0.9-1.6 ms of the 8.45 ms frame. Doubling the instance count to 3-4k adds
+**0.8-2.0 ms** on the Pi — the single largest growth term, well ahead of the
+draw count (~0.18 ms) and the instance upload (~0.1 ms). It is CPU branches
+and Vec pushes in the placers, not GPU work.
+
+That is the next thing to attack if the counts grow: write instances straight
+into the staging buffer with fewer per-instance branches, rather than
+per-model `Vec`s that are copied again. It is a larger change than the
+branches taken so far and is not attempted here.
