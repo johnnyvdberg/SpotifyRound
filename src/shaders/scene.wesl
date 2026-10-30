@@ -204,7 +204,7 @@ fn vnoise(x: f32, z: f32, salt: u32) -> f32 {
 // never run as straight lines to the vanishing point.
 // The line the voyage follows across the seabed, as `world::corridor`.
 fn corridor(x: f32) -> f32 {
-    return 2.2 * sin(x * 0.11 + 0.7) + 0.8 * sin(x * 0.031);
+    return 2.2 * sin(x * 0.11 + 0.7) + 0.8 * sin(x * 0.031) + 0.7 * sin(x * 0.2 + 2.1);
 }
 
 fn voyage_x(x: f32, z: f32) -> f32 {

@@ -248,16 +248,21 @@ fn bubble(index: i32, stream: i32, t: f32, life: f32) -> Bubble {
     }
 }
 
-/// The line the voyage follows across the seabed: a gentle meander in z.
-/// Everything — the biome borders, the far mountains, the cave's tunnel and
-/// the lanes the swimmers keep to — is laid out about it.
+/// The line the voyage follows across the seabed: a meander in z, long
+/// sweeps with a shorter bend laid over them, so the course swings through
+/// over twenty degrees either way and never runs straight for long. Its
+/// tightest bend is some eighteen units' radius, ten hull lengths, before the
+/// helm's own wander. Everything — the biome borders, the far mountains, the
+/// cave's tunnel and the lanes the swimmers keep to — is laid out about it.
 pub fn corridor(x: f32) -> f32 {
-    2.2 * (x * 0.11 + 0.7).sin() + 0.8 * (x * 0.031).sin()
+    2.2 * (x * 0.11 + 0.7).sin() + 0.8 * (x * 0.031).sin() + 0.7 * (x * 0.2 + 2.1).sin()
 }
 
 /// The corridor's slope, dz/dx.
 pub fn corridor_slope(x: f32) -> f32 {
-    2.2 * 0.11 * (x * 0.11 + 0.7).cos() + 0.8 * 0.031 * (x * 0.031).cos()
+    2.2 * 0.11 * (x * 0.11 + 0.7).cos()
+        + 0.8 * 0.031 * (x * 0.031).cos()
+        + 0.7 * 0.2 * (x * 0.2 + 2.1).cos()
 }
 
 pub fn voyage_x(x: f32, z: f32) -> f32 {
@@ -1433,9 +1438,16 @@ impl<'a> IntoIterator for &'a Cells {
 /// `far` from the window, as (column, row, x, z) with the point jittered
 /// within its cell. The grid is fixed in the world, so the same rock is
 /// always in the same place however the boat turns.
+///
+/// `near` is reckoned abeam, square to the boat's way rather than along the
+/// window's look: the helmsman's swing turns the window towards things
+/// ahead or astern, and they come at it on the diagonal, but their distance
+/// abeam holds, so nothing kept off the glass appears or vanishes as the
+/// boat swings. The footprint is taken from half as near, to hold them.
 fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
-    let ([x0, x1, z0, z1], o, r) = footprint(w, near, far);
+    let ([x0, x1, z0, z1], o, r) = footprint(w, near * 0.5, far);
     let c = w.pose.pos;
+    let abeam = w.pose.abeam;
     let mut out = CELLS
         .with(|pool| pool.borrow_mut().pop())
         .unwrap_or_default();
@@ -1445,7 +1457,7 @@ fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
             let (x, z) = cell_point(ix, iz, size, salt);
             let (dx, dz) = (x - c[0], z - c[2]);
             let depth = dx * o[0] + dz * o[1];
-            if depth < near || depth > far {
+            if depth < 0.0 || dx * abeam[0] + dz * abeam[1] < near || depth > far {
                 continue;
             }
             if (dx * r[0] + dz * r[1]).abs() > depth * VIEW * 1.3 + size + 0.6 {
@@ -6351,7 +6363,11 @@ mod tests {
                 if side(k, 150) < 0.0 || hash(k, 0, 150) < 0.2 {
                     continue;
                 }
-                let pose = Pose::level(x, seabed.ground(x, 0.6) + 0.5);
+                // Level with the middle of the party, which strings out over
+                // more of the window's width where the corridor bends across
+                // its line than where it runs straight.
+                let mid = x - 0.3;
+                let pose = Pose::level(mid, seabed.ground(mid, corridor(mid)) + 0.5);
                 let world = World {
                     seabed: &seabed,
                     pose,

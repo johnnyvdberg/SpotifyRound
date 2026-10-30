@@ -61,6 +61,15 @@ pub struct Summary {
     pub top: f32,
     /// The window's least height above the ground right under it, metres.
     pub eye: f32,
+    /// Cruising: the fastest the window closes on what it looks at, or draws
+    /// away from it, m/s, and the most the boat's way is off its nose, either
+    /// way, in degrees: how far it crabs.
+    pub toward: f32,
+    pub crab: f32,
+    /// How far any point of the hull comes from the corridor's middle, in
+    /// world units, in each biome (the one it is mostly in): the lane the
+    /// world keeps clear must be wider.
+    pub sweep: [f32; crate::voyage::BIOMES],
     /// The helm's mean and worst time a step, microseconds.
     pub step_us: f32,
     pub worst_us: f32,
@@ -162,7 +171,7 @@ pub fn sail(trip: &Voyaging, mut log: Option<&mut String>) -> Summary {
     if let Some(log) = log.as_deref_mut() {
         log.push_str(
             "t,x,y,z,knots,yaw_deg,pitch_deg,roll_deg,yaw_rate_dps,radius_lengths,\
-             climb_ms,keel_m,wall_m,top_m,passage\n",
+             climb_ms,keel_m,wall_m,top_m,passage,toward_ms,crab_deg\n",
         );
     }
     let angle_rate = |i: usize, j: usize, k: usize| {
@@ -177,9 +186,11 @@ pub fn sail(trip: &Voyaging, mut log: Option<&mut String>) -> Summary {
     let mut previous_spin: Option<[f32; 3]> = None;
     for i in w..frames.saturating_sub(w) {
         let pose = &poses[i];
-        // Within a passage, or a few seconds either side of one.
+        // Within a passage, or a few seconds either side of one: the course
+        // comes round through as much as the corridor's bends in a leg or
+        // two, and finishes coming round as the passage settles.
         let near = |k: usize| paces[k] > (SPEED as f32) * 1.3;
-        let passage = (i.saturating_sub(240)..(i + 240).min(frames)).any(near);
+        let passage = (i.saturating_sub(360)..(i + 360).min(frames)).any(near);
         let (a, b) = (&poses[i - w], &poses[i + w]);
         let v = [
             (b.pos[0] - a.pos[0]) * 60.0 / (2 * w) as f32,
@@ -231,6 +242,17 @@ pub fn sail(trip: &Voyaging, mut log: Option<&mut String>) -> Summary {
             top = top.min(ice - p[1]);
         }
         let eye = pose.pos[1] - seabed.ground(pose.pos[0], pose.pos[2]);
+        // The way, in the window's own axes: along the hull and out of it.
+        let [nose, _, out] = pose.basis;
+        let ahead = v[0] * nose[0] + v[2] * nose[2];
+        let toward = v[0] * out[0] + v[1] * out[1] + v[2] * out[2];
+        let crab = toward.atan2(ahead);
+        let biome = seabed.biome(pose.pos[0], corridor(pose.pos[0]));
+        let biome = if biome.w < 0.5 { biome.a } else { biome.b };
+        for p in hull(pose) {
+            let off = (p[2] - corridor(p[0])).abs();
+            s.sweep[biome] = s.sweep[biome].max(off);
+        }
         s.keel = s.keel.min(keel * METRES);
         s.wall = s.wall.min(wall * METRES);
         s.top = s.top.min(top * METRES);
@@ -250,6 +272,8 @@ pub fn sail(trip: &Voyaging, mut log: Option<&mut String>) -> Summary {
             s.heave = s.heave.max(accel(1).abs() * METRES);
             s.pitch_rate = s.pitch_rate.max(pitch_rate.abs().to_degrees());
             s.roll_rate = s.roll_rate.max(roll_rate.abs().to_degrees());
+            s.toward = s.toward.max(toward.abs() * METRES);
+            s.crab = s.crab.max(crab.abs().to_degrees());
         }
         if let Some(log) = log.as_deref_mut()
             && i % 15 == 0
@@ -262,7 +286,7 @@ pub fn sail(trip: &Voyaging, mut log: Option<&mut String>) -> Summary {
             };
             let _ = writeln!(
                 log,
-                "{:.2},{:.3},{:.3},{:.3},{:.2},{:.2},{:.2},{:.2},{:.3},{:.1},{:.3},{:.2},{:.2},{:.2},{}",
+                "{:.2},{:.3},{:.3},{:.3},{:.2},{:.2},{:.2},{:.2},{:.3},{:.1},{:.3},{:.2},{:.2},{:.2},{},{:.3},{:.1}",
                 trip.from + i as f64 / 60.0,
                 pose.pos[0],
                 pose.pos[1],
@@ -278,6 +302,8 @@ pub fn sail(trip: &Voyaging, mut log: Option<&mut String>) -> Summary {
                 wall,
                 top * METRES,
                 u8::from(passage),
+                toward * METRES,
+                crab.to_degrees(),
             );
         }
     }
