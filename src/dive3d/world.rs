@@ -121,6 +121,9 @@ pub mod anim {
 pub mod material {
     pub const LAVA: f32 = 1.0;
     pub const COPPER: f32 = 2.0;
+    /// Faceted glass in a passage's wall: `fs_glass` gives it a crystal's
+    /// key highlight and warm core.
+    pub const CRYSTAL: f32 = 3.0;
     pub const SURFACE: f32 = 4.0;
     pub const VAULT: f32 = 5.0;
     pub const ICE: f32 = 6.0;
@@ -316,7 +319,7 @@ impl Secret {
         match self {
             Secret::Ember => ([1.0, 0.33, 0.06], 1.2),
             Secret::Grotto => ([0.12, 0.85, 0.62], 0.75),
-            Secret::Crystal => ([0.55, 0.32, 1.0], 0.75),
+            Secret::Crystal => ([0.44, 0.38, 1.0], 0.50),
             Secret::Door => ([1.0, 0.72, 0.30], 0.9),
             Secret::Chimney => ([0.42, 0.68, 1.0], 0.85),
         }
@@ -2880,9 +2883,16 @@ fn passages(w: &World, f: &mut Frame) {
         let tint = |k: f32| light.map(|c| c * k);
         let id = (o.x * 10.0).round() as i32;
         // The water in a side passage's mouth, hazed with its light, so it
-        // shows from along the tunnel as well as from in front.
+        // shows from along the tunnel as well as from in front. The crystal
+        // gallery is luminous enough on its own and its mouth is kept clear
+        // of haze, so the points stay the focus.
         if o.side() {
-            f.sprite(p.centre(0.12), 0.32, tint(0.16), GLOW);
+            let (size, strength) = if o.kind == Secret::Crystal {
+                (0.20, 0.07)
+            } else {
+                (0.32, 0.16)
+            };
+            f.sprite(p.centre(0.12), size, tint(strength), GLOW);
         }
         let h = |k: i32, salt: u32| hash(id, k, salt);
         match o.kind {
@@ -2914,31 +2924,129 @@ fn passages(w: &World, f: &mut Frame) {
                 }
             }
             Secret::Crystal => {
-                f.sprite(p.centre(0.85), 0.45, tint(0.28), GLOW);
-                f.light(p.centre(0.4), 0.5, tint(0.5));
-                // Crystals grown out of the walls toward the passage's middle,
-                // glinting in turn.
-                for k in 0..14 {
-                    let s = 0.2 + 0.6 * h(k, 821);
-                    let a = PI
-                        * if k % 2 == 0 {
-                            -0.12 + 0.35 * h(k, 822)
-                        } else {
-                            0.77 + 0.35 * h(k, 822)
-                        };
-                    let base = p.wall(s, a);
+                // A violet fill in the seam and a dim warm key from the
+                // mouth: the points get facets from both, the basalt round
+                // them keeps its own colour, and neither light floods the
+                // passage.
+                f.light(p.centre(0.45), 0.26, [0.10, 0.08, 0.22]);
+                f.light(p.centre(0.28), 0.26, [0.10, 0.08, 0.055]);
+                let basalt = [0.30, 0.29, 0.31];
+                let rocks = [Model::Rock0, Model::Rock2, Model::Rock1];
+                // A point growing out of a pocket of the far wall, aimed up
+                // and across the mouth so the window sees a long face rather
+                // than an end; a slab of basalt hides its foot.
+                let sprout = |f: &mut Frame,
+                                  k: i32,
+                                  model: Model,
+                                  s: f32,
+                                  a: f32,
+                                  length: f32,
+                                  width: f32,
+                                  up: f32,
+                                  lateral: f32,
+                                  glow: f32| {
+                    let wall = p.wall(s, a);
                     let c = p.centre(s);
-                    let inward = norm([c[0] - base[0], c[1] - base[1] + 0.3, c[2] - base[2]]);
-                    let len = 0.05 + 0.10 * h(k, 823);
-                    let tip = add(base, inward.map(|v| v * len));
-                    f.glass(
-                        Model::Hex,
-                        between(base, tip, 0.012 + 0.012 * h(k, 824)),
-                        [0.55, 0.40, 1.0],
-                    )
-                    .glowing(0.35);
-                    let twinkle = (t * 1.3 + k as f32 * 2.1).sin().max(0.0).powi(8);
-                    f.sprite(tip, 0.03, tint(0.3 + 1.2 * twinkle), GLOW);
+                    let inward = norm([c[0] - wall[0], 0.0, c[2] - wall[2]]);
+                    let base = [
+                        wall[0] - inward[0] * 0.02,
+                        wall[1] - 0.015,
+                        wall[2] - inward[2] * 0.02,
+                    ];
+                    let side = (h(k, 823) - 0.5) * lateral;
+                    let dir = norm([
+                        inward[0] * 0.45 + side,
+                        inward[1] * 0.45 + up,
+                        inward[2] * 0.45,
+                    ]);
+                    let tip = add(base, dir.map(|v| v * length));
+                    // Never below the passage's lip, where the point would
+                    // grow through the rock.
+                    let tip = [tip[0], tip[1].max(p.floor + 0.10), tip[2]];
+                    f.glass(model, between(base, tip, width), [0.42, 0.34, 0.95])
+                        .material(material::CRYSTAL)
+                        .glowing(glow);
+                    // The basalt the point grew out of: small, flat, half-
+                    // buried lumps, so the seam reads as rock splitting
+                    // rather than hovering glass.
+                    let tangent = norm(cross([0.0, 1.0, 0.0], inward));
+                    let count = if model == Model::Crystal { 2 } else { 1 };
+                    for n in 0..count {
+                        let r = (0.009 + 0.007 * h(k, 840 + n))
+                            * if model == Model::Crystal { 1.25 } else { 1.0 };
+                        let spread = if count == 1 { 0.0 } else { n as f32 - 0.5 };
+                        let q = [
+                            base[0] - inward[0] * r * 1.0 + tangent[0] * spread * r * 3.0,
+                            base[1] - r * 0.20,
+                            base[2] - inward[2] * r * 1.0 + tangent[2] * spread * r * 3.0,
+                        ];
+                        f.put(
+                            rocks[(k + n as i32).rem_euclid(3) as usize],
+                            place(
+                                q,
+                                h(k, 842 + n) * TAU,
+                                0.0,
+                                h(k, 844 + n) * TAU,
+                                [r * 1.9, r * (0.70 + 0.25 * h(k, 846 + n)), r * 1.3],
+                            ),
+                            basalt,
+                        )
+                        .textured(Surface::Basalt, 6.0);
+                    }
+                    // The point catches the passage's light and the
+                    // searchlight now and then. Only the heroes and every
+                    // third cluster glint, so the wall is not a sky of sparks.
+                    if model == Model::Crystal || k % 3 == 0 {
+                        let twinkle = (t * 1.3 + k as f32 * 2.1).sin().max(0.0).powi(8);
+                        let warm = 0.8 + 1.1 * twinkle;
+                        f.sprite(
+                            tip,
+                            0.016 + 0.010 * h(k, 831),
+                            [warm, 0.74 * warm, 0.64 * warm],
+                            GLOW,
+                        );
+                    }
+                };
+                // Three heroes: a tall point at the mouth, one on the far
+                // wall and one standing out of the seam a little way in.
+                for (k, s, a, length, width, up, lateral, glow) in [
+                    (0, 0.22, 0.32, 0.19, 0.034, 1.05, 0.70, 0.32),
+                    (1, 0.40, 0.70, 0.18, 0.030, 0.95, 0.80, 0.30),
+                    (2, 0.60, 0.20, 0.16, 0.028, 1.20, 0.70, 0.28),
+                ] {
+                    sprout(f, k, Model::Crystal, s, a, length, width, up, lateral, glow);
+                }
+                // Smaller points packed around the heroes and along the seam,
+                // their sizes and bearings varied by hash. They are spread
+                // down the passage and up the far wall so the gallery reads
+                // as separate pockets, not one bright column.
+                for (k, s, a) in [
+                    (10, 0.14, 0.20),
+                    (11, 0.20, 0.55),
+                    (12, 0.29, 0.32),
+                    (13, 0.36, 0.72),
+                    (14, 0.45, 0.42),
+                    (15, 0.54, 0.18),
+                    (16, 0.64, 0.60),
+                    (17, 0.78, 0.30),
+                ] {
+                    let length = 0.10 + 0.05 * h(k, 825);
+                    let width = 0.060 + 0.030 * h(k, 826);
+                    let up = 0.55 + 0.55 * h(k, 832);
+                    let lateral = 0.55 + 0.55 * h(k, 833);
+                    let glow = 0.18 + 0.12 * h(k, 834);
+                    sprout(
+                        f,
+                        k,
+                        Model::CrystalCluster,
+                        s,
+                        a,
+                        length,
+                        width,
+                        up,
+                        lateral,
+                        glow,
+                    );
                 }
             }
             Secret::Door => {

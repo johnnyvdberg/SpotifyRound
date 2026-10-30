@@ -1181,7 +1181,23 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
     let v = normalize(g.camera.xyz - p);
     let rim = 1.0 - abs(dot(n, v));
     let lit = light_at(p, v) * 0.25 + vec3<f32>(0.3);
-    let glow = in.albedo * (0.15 + 0.85 * rim * rim) * lit + in.albedo * in.glow;
+    var glow = in.albedo * (0.15 + 0.85 * rim * rim) * lit + in.albedo * in.glow;
+    if (in.material == 3u) {
+        // A crystal: its facets are read by a warm key from the searchlight,
+        // or from the passage's mouth where the beam does not reach, and a
+        // violet heart where the point faces the window.
+        let to_lamp = normalize(lamp_origin() - p);
+        let cone = smooth01(0.78, 0.96, dot(-to_lamp, g.lamp.xyz));
+        let key = normalize(mix(vec3<f32>(0.10, 0.55, -0.95), to_lamp, cone));
+        let half = normalize(v + key);
+        let spec = pow(max(dot(n, half), 0.0), 26.0);
+        let core = pow(max(dot(n, v), 0.0), 3.0);
+        let tip = smooth01(0.22, 0.92, in.local.y);
+        glow += vec3<f32>(0.10, 0.05, 0.26) * in.glow * (1.0 - 0.6 * tip)
+            + vec3<f32>(1.0, 0.72, 0.45) * tip * (0.08 + 0.7 * in.glow)
+            + vec3<f32>(1.0, 0.90, 0.76) * spec * (0.10 + 0.4 * cone)
+            + vec3<f32>(0.45, 0.30, 0.85) * core * in.glow * 0.10;
+    }
     return vec4<f32>(glow * in.fade * (1.0 - fog_of(length(p - g.camera.xyz))) * SEA_SCALE, 0.0);
 }
 
@@ -1349,8 +1365,29 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
     let v = normalize(g.camera.xyz - p);
     let rim = 1.0 - abs(dot(n, v));
-    let colour = in.albedo * (0.2 + 0.8 * rim * rim) * 1.25
+    var colour = in.albedo * (0.2 + 0.8 * rim * rim) * 1.25
         + in.albedo * in.glow;
+    if (in.material == 3u) {
+        // A crystal: the facets' own normals and baked violet-to-warm
+        // colours, a glance of the searchlight where its cone reaches the
+        // seam, and a violet heart where the point faces the window. No
+        // texture tap and one `pow`: the glass pass stays additive.
+        let to_lamp = normalize(lamp_origin() - p);
+        let cone = smooth01(0.78, 0.96, dot(-to_lamp, g.lamp.xyz));
+        let key = normalize(mix(vec3<f32>(0.10, 0.55, -0.95), to_lamp, cone));
+        let half = normalize(v + key);
+        let spec = pow(max(dot(n, half), 0.0), 26.0);
+        let core = pow(max(dot(n, v), 0.0), 3.0);
+        // How far up its point this fragment is: the violet foot gives way
+        // to the warm tip, whether or not a light reaches the seam.
+        let tip = smooth01(0.22, 0.92, in.local.y);
+        colour = in.albedo * (0.16 + 0.66 * rim * rim)
+            + in.albedo * in.glow * 0.9
+            + vec3<f32>(0.10, 0.05, 0.26) * in.glow * (1.0 - 0.6 * tip)
+            + vec3<f32>(1.0, 0.72, 0.45) * tip * (0.10 + 0.8 * in.glow)
+            + vec3<f32>(1.0, 0.90, 0.76) * spec * (0.14 + 0.45 * cone) * (0.18 + 0.8 * in.glow)
+            + vec3<f32>(0.45, 0.30, 0.85) * core * in.glow * 0.15;
+    }
     return vec4<f32>(
         mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE,
         0.0,
