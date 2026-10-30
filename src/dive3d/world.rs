@@ -123,6 +123,10 @@ pub mod anim {
     pub const SWIM: f32 = 2.0;
     pub const FLUKE: f32 = 3.0;
     pub const WRITHE: f32 = 4.0;
+    /// A medusa's bell swimming: a quick contraction that narrows the margin
+    /// and lengthens the bell, a slow relaxation, and the animal rising on
+    /// each stroke and sinking between. Amplitude is how far the margin
+    /// narrows; frequency is the stroke's, in radians a second.
     pub const PULSE: f32 = 5.0;
     /// A tridacna shell hinged at its base, opening and closing.
     pub const SHELL: f32 = 6.0;
@@ -132,6 +136,13 @@ pub mod anim {
     pub const FLAP: f32 = 8.0;
     /// A narwhal's body: a slow bob and yaw, with the fluke's beat.
     pub const NARWHAL: f32 = 9.0;
+    /// A medusa's oral arms or tentacles, placed like its bell and given the
+    /// same phase, amplitude and frequency: they rise and sink with it, the
+    /// margin pulls their roots in, and the stroke travels down them as a
+    /// wave that lags toward the tips.
+    pub const TRAIL: f32 = 10.0;
+    /// A comb jelly gliding on its cilia: a slow bob, sway and turn.
+    pub const GLIDE: f32 = 11.0;
 }
 
 /// Materials, as the fragment shader knows them.
@@ -148,6 +159,8 @@ pub mod material {
     /// The thinner jelly tissues, which take a softer, veined glow.
     pub const JELLY_SOFT: f32 = 9.0;
     pub const GOLD: f32 = 8.0;
+    /// A comb jelly: clear, with rainbow light running down its comb rows.
+    pub const COMB: f32 = 10.0;
 }
 
 // Sprite kinds.
@@ -1206,6 +1219,10 @@ trait Tweak {
     fn glowing(&mut self, glow: f32) -> &mut Self;
     /// Textured in world space: for things that stay put.
     fn textured(&mut self, surface: Surface, repeats: f32) -> &mut Self;
+    /// A glass model's pattern, which `fs_glass` reads where a solid model
+    /// keeps its texture: glass is never textured. The fourth component,
+    /// the instance's longest axis, is kept.
+    fn patterned(&mut self, pattern: [f32; 3]) -> &mut Self;
 }
 
 impl Tweak for Instance {
@@ -1227,6 +1244,10 @@ impl Tweak for Instance {
     }
     fn textured(&mut self, surface: Surface, repeats: f32) -> &mut Self {
         self.surface = [surface.layer(), repeats, 0.0, 0.0];
+        self
+    }
+    fn patterned(&mut self, pattern: [f32; 3]) -> &mut Self {
+        self.surface = [pattern[0], pattern[1], pattern[2], self.surface[3]];
         self
     }
 }
@@ -1501,8 +1522,9 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     let skin = carried(Surface::Skin, 3.0);
     // The placers whose every placement-time and sprite-time motion is now
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
-    // the penguin flap, the narwhal body and the four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 10] = [
+    // the penguin flap, the narwhal body, the jellyfish's swimming and the
+    // four sprite kinds.
+    let static_steps: [(Placer, Option<[f32; 4]>); 11] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
@@ -1513,8 +1535,9 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (polar, None),
         (kelp, None),
         (forest, algae),
+        (drifters, None),
     ];
-    let steps: [(Placer, Option<[f32; 4]>); 13] = [
+    let steps: [(Placer, Option<[f32; 4]>); 12] = [
         (planes, None),
         (tunnel, None),
         (vents, basalt),
@@ -1524,17 +1547,17 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (great_swimmers, None),
         (gliders, None),
         (squid, skin),
-        (drifters, None),
         (submarines, None),
         (shafts, None),
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 10] = [
+    const STATIC_NAMES: [&str; 11] = [
         "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "cave", "polar", "kelp", "forest",
+        "drifters",
     ];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 13] = [
+    const STEP_NAMES: [&str; 12] = [
         "planes",
         "tunnel",
         "vents",
@@ -1544,7 +1567,6 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "great_swimmers",
         "gliders",
         "squid",
-        "drifters",
         "submarines",
         "shafts",
         "particles",
@@ -4931,7 +4953,10 @@ fn squid(w: &World, f: &mut Frame) {
     }
 }
 
-/// Jellyfish drifting where the water carries them.
+/// Jellyfish drifting where the water carries them. Every motion of theirs —
+/// the swimming stroke, the rise and sink, the wander and the tentacles'
+/// trailing wave — is the vertex shader's, from the camera clock and each
+/// animal's phase, so the placer is camera-static and sits in the cache.
 fn drifters(w: &World, f: &mut Frame) {
     // The wide-sea drifters: wrecks, ice and abyss, with a few straying into
     // the coral and the sargasso.
@@ -4992,10 +5017,7 @@ fn drifter_here(w: &World, x: f32, z: f32) -> f32 {
         + 0.25 * b.weight(SARGASSO)) as f32
 }
 
-/// One jellyfish: its bell, its four frilled oral arms and its trailing
-/// tentacles, in one of five species. The bell's material is its own, so the
-/// glass pipeline can shade its veins, rim and stomach separately from the
-/// crystals and the plain translucent props.
+/// Where one jellyfish might be, and how welcome it is there.
 struct JellySite {
     ix: i32,
     iz: i32,
@@ -5006,6 +5028,110 @@ struct JellySite {
     needs: f32,
 }
 
+/// One kind of medusa: what its bell, arms and tentacles look like and how
+/// it swims.
+struct Medusa {
+    /// The bell's tint, and its tentacles' and oral arms'.
+    bell: [f32; 3],
+    fringe: [f32; 3],
+    arms: [f32; 3],
+    /// The bell's size against the site's, and its height against its width.
+    size: f32,
+    height: f32,
+    /// The tentacles' and the oral arms' length, in bell radii.
+    tentacles: f32,
+    arms_long: f32,
+    /// How far a stroke narrows the margin, and strokes a second.
+    stroke: f32,
+    rate: f32,
+    glow: f32,
+    /// What `fs_glass` paints on the bell: how many radial canals or stripes,
+    /// how strongly the gonads show through the crown, and how bright the
+    /// bioluminescent spots that run round the margin are.
+    pattern: [f32; 3],
+}
+
+/// The medusae of the dive. The moon jelly is the bloom's own: a flat, clear
+/// saucer with four violet gonad rings and a short fringe. The lion's mane
+/// is the largest, amber-red and slow, trailing long tentacles and curtains
+/// of arms. The crystal jelly is clear, finely canalled and ringed with
+/// green-blue light; the sea nettle is rose, striped, quick and long-armed;
+/// the helmet jelly is the abyss's, a tall violet cone ringed with light.
+const MEDUSAE: [Medusa; 5] = [
+    Medusa {
+        bell: [0.60, 0.76, 0.95],
+        fringe: [0.62, 0.80, 0.92],
+        arms: [0.70, 0.70, 0.95],
+        size: 1.0,
+        height: 0.72,
+        tentacles: 0.55,
+        arms_long: 0.95,
+        stroke: 0.20,
+        rate: 0.55,
+        glow: 0.16,
+        pattern: [8.0, 1.0, 0.15],
+    },
+    Medusa {
+        bell: [0.98, 0.56, 0.24],
+        fringe: [1.00, 0.42, 0.18],
+        arms: [1.00, 0.64, 0.34],
+        size: 1.35,
+        height: 0.80,
+        tentacles: 5.5,
+        arms_long: 2.2,
+        stroke: 0.16,
+        rate: 0.32,
+        glow: 0.22,
+        pattern: [16.0, 0.35, 0.0],
+    },
+    Medusa {
+        bell: [0.50, 0.86, 0.86],
+        fringe: [0.40, 0.85, 0.80],
+        arms: [0.52, 0.82, 0.86],
+        size: 0.85,
+        height: 0.70,
+        tentacles: 1.7,
+        arms_long: 0.6,
+        stroke: 0.18,
+        rate: 0.45,
+        glow: 0.50,
+        pattern: [32.0, 0.0, 1.0],
+    },
+    Medusa {
+        bell: [0.94, 0.50, 0.70],
+        fringe: [0.96, 0.55, 0.62],
+        arms: [1.00, 0.70, 0.80],
+        size: 0.95,
+        height: 0.92,
+        tentacles: 3.4,
+        arms_long: 2.6,
+        stroke: 0.24,
+        rate: 0.62,
+        glow: 0.28,
+        pattern: [16.0, 0.25, 0.25],
+    },
+    Medusa {
+        bell: [0.62, 0.30, 0.80],
+        fringe: [0.70, 0.34, 0.62],
+        arms: [0.74, 0.36, 0.70],
+        size: 1.0,
+        height: 1.45,
+        tentacles: 1.0,
+        arms_long: 0.5,
+        stroke: 0.09,
+        rate: 0.26,
+        glow: 0.50,
+        pattern: [12.0, 0.7, 0.8],
+    },
+];
+
+/// One jellyfish, or now and then a comb jelly in its place. A medusa is
+/// three instances placed alike — the bell, its four oral arms and its
+/// fringe of tentacles — sharing one swimming phase and rate, so the
+/// shader can pulse the bell and send the stroke down the arms and threads
+/// in step. The bell's material is its own, so the glass pipeline can shade
+/// its canals, gonads and rim separately from the crystals and the plain
+/// translucent props.
 fn jelly(w: &World, f: &mut Frame, site: JellySite) {
     let JellySite {
         ix,
@@ -5017,109 +5143,84 @@ fn jelly(w: &World, f: &mut Frame, site: JellySite) {
         needs,
     } = site;
     let phase = hash(ix, iz, 353) * TAU;
-    let y = w.ground(x, z)
-        + 0.3
-        + hash(ix, iz, 354) * (0.3 * z + 0.3)
-        + 0.04 * (w.t * 0.13 + phase).sin();
-    let p = [x + 0.03 * (w.t * 0.09 + phase).sin(), y, z];
-    let to_eye = [
-        p[0] - w.pose.pos[0],
-        p[1] - w.pose.pos[1],
-        p[2] - w.pose.pos[2],
-    ];
-    if to_eye[0] * to_eye[0] + to_eye[1] * to_eye[1] + to_eye[2] * to_eye[2] < 0.36 * 0.36 {
-        return;
-    }
+    let y = w.ground(x, z) + 0.3 + hash(ix, iz, 354) * (0.3 * z + 0.3);
+    let p = [x, y, z];
     let show = w.reveal(p, s * 4.0);
     if show <= 0.001 {
         return;
     }
     f.fade = fade(here, needs) * show;
-    // Moon, lion's mane, crystal, rose and helmet jellies. The four numbers
-    // are the tint, the tentacle count, the size scale and the glow.
-    let kinds: [([f32; 3], i32, f32, f32); 5] = [
-        ([0.52, 0.74, 0.92], 11, 1.00, 0.20),
-        ([0.88, 0.58, 0.26], 15, 1.28, 0.24),
-        ([0.30, 0.82, 0.80], 8, 0.80, 0.65),
-        ([0.84, 0.42, 0.72], 10, 0.94, 0.38),
-        ([0.42, 0.58, 0.94], 13, 1.10, 0.32),
+    // Which kind: the abyss keeps to helmet and crystal jellies and the comb
+    // jellies' rainbows; elsewhere the moon jelly is commonest.
+    let deep = w.share(x, z, ABYSS);
+    let pick = hash(ix, iz, 355);
+    let comb = pick < 0.12 + 0.18 * deep;
+    let odds: [f32; 5] = [
+        0.36 * (1.0 - deep),
+        0.16 * (1.0 - deep),
+        0.18 + 0.20 * deep,
+        0.20 * (1.0 - deep),
+        0.10 + 0.50 * deep,
     ];
-    let kind = kinds[(hash(ix, iz, 355) * 5.0) as usize % 5];
-    let (tint, tentacles, scale, glow) = kind;
-    let s = s * scale;
-    let tilt = (hash(ix, iz, 356) - 0.5) * 0.35;
-    let roll = (hash(ix, iz, 357) - 0.5) * 0.35;
+    let total: f32 = odds.iter().sum();
+    let mut ticket = hash(ix, iz, 362) * total;
+    let kind = odds
+        .iter()
+        .position(|&o| {
+            ticket -= o;
+            ticket < 0.0
+        })
+        .unwrap_or(0);
+    let tilt = (hash(ix, iz, 356) - 0.5) * 0.30;
+    let roll = (hash(ix, iz, 357) - 0.5) * 0.30;
+    if comb {
+        // A comb jelly: small, clear and glowing, gliding on its cilia. Its
+        // rainbow is the shader's (`material::COMB`), its glide too.
+        let s = s * 0.45;
+        f.glass(
+            Model::Comb,
+            place(p, phase, tilt, roll, [s * 0.75, s * 1.15, s * 0.75]),
+            [0.72, 0.86, 1.0],
+        )
+        .moving(anim::GLIDE, phase, 0.25, 0.30 + 0.20 * hash(ix, iz, 358))
+        .material(material::COMB)
+        .glowing(0.35);
+        return;
+    }
+    let m = &MEDUSAE[kind];
+    let s = s * m.size;
+    // Each animal keeps its own stroke, a little off its kind's.
+    let rate = TAU * m.rate * (0.85 + 0.30 * hash(ix, iz, 358));
+    let fold = |c: [f32; 3], k: f32| [c[0] * k, c[1] * k, c[2] * k];
     f.glass(
         Model::Bell,
-        place(p, phase, tilt, roll, [s, s * 0.95, s]),
-        tint,
+        place(p, phase, tilt, roll, [s, s * m.height, s]),
+        m.bell,
     )
-    .moving(anim::PULSE, phase, 0.18, 0.95 + 0.35 * hash(ix, iz, 358))
+    .moving(anim::PULSE, phase, m.stroke, rate)
     .material(material::JELLY)
-    .glowing(glow);
-    // Oral arms: four frilled ribbons, shorter than the tentacles and much
-    // wider, hanging just inside the rim.
-    for a in 0..4 {
-        let ang = a as f32 / 4.0 * TAU + phase * 0.1;
-        let root = add(p, [ang.cos() * s * 0.58, -s * 0.02, ang.sin() * s * 0.58]);
-        let tip = add(
-            root,
-            [
-                ang.cos() * s * 0.35,
-                -s * (1.7 + 0.7 * hash(ix, iz + a, 359)),
-                ang.sin() * s * 0.35,
-            ],
-        );
-        f.glass(
-            Model::JellyArm,
-            between(root, tip, s * 0.62),
-            [tint[0] * 0.80, tint[1] * 0.88, tint[2] * 0.92],
-        )
-        .moving(anim::WRITHE, ang + phase, s * 0.55, 1.45)
-        .material(material::JELLY_SOFT)
-        .glowing(glow * 0.35);
-    }
-    // Tentacles: a fringe of very fine threads, some long, some short, all
-    // trailing from the rim and writhing on their own phase.
-    for a in 0..tentacles {
-        let ang = a as f32 / tentacles as f32 * TAU + phase * 0.07;
-        let root = add(p, [ang.cos() * s * 0.98, -s * 0.03, ang.sin() * s * 0.98]);
-        let len = s * (2.8 + 2.6 * hash(ix * 13 + a, iz, 360));
-        let tip = add(root, [ang.cos() * s * 0.22, -len, ang.sin() * s * 0.22]);
-        f.glass(
-            Model::Tube,
-            between(root, tip, s * 0.014),
-            [tint[0] * 0.55, tint[1] * 0.82, tint[2] * 0.88],
-        )
-        .moving(anim::WRITHE, ang + phase, s * 0.5, 2.1)
-        .material(material::JELLY_SOFT)
-        .glowing(glow * 0.20);
-        // The crystal jelly's tentacle tips light up along their length.
-        if glow > 0.7 && a % 2 == 0 {
-            let lit = add(tip, [0.0, -0.01, 0.0]);
-            f.sprite(
-                lit,
-                s * 0.10,
-                [
-                    tint[0] * glow * 0.8,
-                    tint[1] * glow * 0.8,
-                    tint[2] * glow * 0.8,
-                ],
-                GLOW,
-            );
-        }
-    }
+    .glowing(m.glow)
+    .patterned(m.pattern);
+    f.glass(
+        Model::JellyArm,
+        place(p, phase, tilt, roll, [s, s * m.arms_long, s]),
+        fold(m.arms, 0.9),
+    )
+    .moving(anim::TRAIL, phase, m.stroke, rate)
+    .material(material::JELLY_SOFT)
+    .glowing(m.glow * 0.45);
+    let long = m.tentacles * (0.8 + 0.4 * hash(ix, iz, 360));
+    f.glass(
+        Model::JellyFringe,
+        place(p, phase, tilt, roll, [s, s * long, s]),
+        fold(m.fringe, 0.85),
+    )
+    .moving(anim::TRAIL, phase, m.stroke, rate)
+    .material(material::JELLY_SOFT)
+    .glowing(m.glow * 0.30);
     // A large jelly throws its own faint light on the water around it.
     if s > 0.13 && hash(ix, iz, 361) < 0.45 {
-        f.light(
-            p,
-            s * 5.5,
-            [
-                tint[0] * glow * 0.4,
-                tint[1] * glow * 0.4,
-                tint[2] * glow * 0.4,
-            ],
-        );
+        f.light(p, s * 5.5, fold(m.bell, m.glow * 0.4));
     }
 }
 

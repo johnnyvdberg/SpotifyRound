@@ -1079,7 +1079,8 @@ struct Lit {
 };
 
 // Bend a model where it lives: plants sway, fish sweep their tails sideways
-// and whales beat their flukes up and down, tentacles writhe and bells pulse.
+// and whales beat their flukes up and down, and tentacles writhe. The jellies
+// swim in `swim`.
 fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
     var p = p_in;
     let kind = u32(anim.x + 0.5);
@@ -1101,12 +1102,6 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
         let along = aux.x;
         p.x += anim.z * along * sin(t - along * 5.0);
         p.z += anim.z * along * cos(t * 0.8 - along * 4.0 + 1.3);
-    } else if (kind == 5u) {
-        let beat = 0.5 + 0.5 * sin(t);
-        let squeeze = 1.0 - anim.z * beat * (1.0 - aux.y * 0.6);
-        p.x *= squeeze;
-        p.z *= squeeze;
-        p.y *= 1.0 + anim.z * 0.6 * beat;
     } else if (kind == 6u) {
         // A shell hinged at its base. The placement used to bake this from
         // w.t; the shader does it from the same clock, so the instance is
@@ -1146,10 +1141,119 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
     return p;
 }
 
+// A medusa swimming, and a comb jelly gliding: the vertex in the model's
+// own frame, how far the whole animal has risen in the water's, in bell
+// radii, and how hard the bell is contracted where this vertex is.
+struct Swim {
+    pos: vec3<f32>,
+    rise: vec3<f32>,
+    beat: f32,
+};
+
+// How far through its stroke a medusa is, from 0 to 1, `lag` strokes late.
+fn stroke_at(anim: vec4<f32>, lag: f32) -> f32 {
+    return fract((g.camera.w * anim.w + anim.y) / TAU - lag);
+}
+
+// The bell's contraction through a stroke: a quick squeeze over the first
+// quarter, then a slow relaxation, as the coronal muscle snaps and the
+// jelly springs back.
+fn squeeze_of(u: f32) -> f32 {
+    return smoothstep(0.0, 0.26, u) * (1.0 - smoothstep(0.26, 1.0, u));
+}
+
+// The animal's height through a stroke, in bell radii: it shoots up on the
+// contraction and coasts, then sinks slowly while the bell refills. Over a
+// whole stroke the two cancel, so the drift stays where it was placed.
+fn rise_of(u: f32) -> f32 {
+    return 0.55 * (smoothstep(0.04, 0.50, u) - u);
+}
+
+// The kinds `world::anim` calls PULSE (5), TRAIL (10) and GLIDE (11). The
+// three parts of one medusa share its phase and rate, so the bell, its oral
+// arms and its fringe of tentacles keep the one stroke: the arms and threads
+// take it late, the further down them the later, so the stroke travels down
+// them and their tips trail the bell as it rises.
+// `stretch` is how many bell radii long the part is drawn: a lion's mane's
+// tentacles wave wider than a moon jelly's short fringe.
+fn swim(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>, kind: u32, stretch: f32) -> Swim {
+    var out: Swim;
+    var p = p_in;
+    let clock = g.camera.w;
+    // The water's slow set and swell, which the stroke rides on.
+    out.rise = vec3<f32>(0.30 * sin(clock * 0.09 + anim.y), 0.35 * sin(clock * 0.13 + anim.y * 1.7), 0.0);
+    if (kind == 11u) {
+        // A comb jelly turns slowly about its long axis and bobs, nodding a
+        // little as it goes; its cilia's rainbow is the fragment's.
+        let a = clock * anim.w + anim.y;
+        let c = cos(a);
+        let s = sin(a);
+        p = vec3<f32>(p.x * c + p.z * s, p.y, -p.x * s + p.z * c);
+        let nod = anim.z * 0.4 * sin(clock * 0.7 + anim.y);
+        p.x += nod * (p.y - 0.5);
+        out.rise.y += anim.z * sin(clock * 0.8 + anim.y * 2.0);
+        out.pos = p;
+        out.beat = 0.5 + 0.5 * sin(clock * 1.9 + anim.y);
+        return out;
+    }
+    // How far down an arm or thread this vertex hangs; the bell is all root.
+    let along = select(0.0, aux.x, kind == 10u);
+    let u = stroke_at(anim, along * 0.38);
+    let c = squeeze_of(u);
+    out.beat = c;
+    out.rise.y += rise_of(u);
+    if (kind == 5u) {
+        // The bell: the margin narrows most, the crown hardly at all, and
+        // the bell grows taller as it narrows; the margin's lip flicks in
+        // and down at the height of the stroke.
+        let h = aux.y;
+        let narrow = 1.0 - anim.z * c * (1.0 - 0.75 * h);
+        p.x *= narrow;
+        p.z *= narrow;
+        p.y *= 1.0 + 1.3 * anim.z * c;
+        p.y -= 0.35 * anim.z * c * (1.0 - smoothstep(0.0, 0.18, h));
+    } else {
+        // An arm or a thread: the margin pulls its root in with the stroke,
+        // the pull reaching further down it the later; it streams in the
+        // water's set, and the stroke's wave runs down it, sideways and
+        // out, growing toward the tip. Each thread's own bearing round the
+        // bell staggers its wave, so the fringe never moves as one comb.
+        let pull = 1.0 - anim.z * c * (1.0 - 0.3 * along);
+        p.x *= pull;
+        p.z *= pull;
+        let bearing = atan2(p_in.z, p_in.x);
+        let t = clock * anim.w + anim.y;
+        let k = t - along * 7.0 + bearing * 2.0;
+        let reach = along * (0.10 + 0.16 * along) * (0.7 + 0.6 * c) * (0.6 + 0.4 * stretch);
+        p.x += reach * sin(k) + 0.20 * along * along * sin(clock * 0.31 + anim.y);
+        p.z += reach * cos(k * 0.9 + 1.1) + 0.14 * along * along * cos(clock * 0.23 + anim.y * 1.3);
+    }
+    out.pos = p;
+    return out;
+}
+
 @vertex
 fn vs_model(v: Model, i: Instance) -> Lit {
-    let p = animate(v.pos, vec2<f32>(v.aux), i.anim);
-    let world = vec3<f32>(dot(i.m0, vec4<f32>(p, 1.0)), dot(i.m1, vec4<f32>(p, 1.0)), dot(i.m2, vec4<f32>(p, 1.0)));
+    let kind = u32(i.anim.x + 0.5);
+    var p = v.pos;
+    var rise = vec3<f32>(0.0);
+    var beat = 0.0;
+    let swimming = kind == 5u || kind == 10u || kind == 11u;
+    if (swimming) {
+        let across = length(vec3<f32>(i.m0.x, i.m1.x, i.m2.x));
+        let stretch = length(vec3<f32>(i.m0.y, i.m1.y, i.m2.y)) / max(across, 1e-6);
+        let s = swim(v.pos, vec2<f32>(v.aux), i.anim, kind, stretch);
+        p = s.pos;
+        rise = s.rise;
+        beat = s.beat;
+    } else {
+        p = animate(v.pos, vec2<f32>(v.aux), i.anim);
+    }
+    var world = vec3<f32>(dot(i.m0, vec4<f32>(p, 1.0)), dot(i.m1, vec4<f32>(p, 1.0)), dot(i.m2, vec4<f32>(p, 1.0)));
+    // The rise is the water's, not the model's: the bell and everything
+    // hanging from it climb together, whatever each part's own stretch. Its
+    // unit is the bell's radius, which every part's first axis carries.
+    world += rise * length(vec3<f32>(i.m0.x, i.m1.x, i.m2.x));
     // Normals by the cofactor matrix, which is right for any scale.
     let c0 = vec3<f32>(i.m0.x, i.m1.x, i.m2.x);
     let c1 = vec3<f32>(i.m0.y, i.m1.y, i.m2.y);
@@ -1184,6 +1288,14 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // once per instance.
     out.floor_y = i.extra.w;
     out.floor = i.floor.rgb;
+    // Nothing that swims is grounded, so the glass pass reads these two
+    // slots as how hard the bell is contracted here (the light of the stroke
+    // runs down the arms and threads with it) and as the animal's own tint
+    // before the water's light.
+    if (swimming) {
+        out.floor_y = beat;
+        out.floor = i.colour.rgb;
+    }
     // The tunnel's vertices carry their height over its floor and how dark
     // their rock is in `aux`, and the light its passages throw on them as
     // their colour (`world::tunnel`).
@@ -1375,6 +1487,69 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FADE_OPAQUE));
 }
 
+// The jellies' tissues, for both profiles' glass pass. `in.floor_y` is how
+// hard the bell is contracted at this vertex (`vs_model`), late down the
+// arms and threads; `in.floor` is the animal's own tint, unlit, so its glow
+// keeps its colour in water whose light is all one blue; `in.surface`
+// carries a bell's pattern (`world::Medusa`): how many radial canals or
+// stripes, how strongly its gonads show and how bright the lights round its
+// margin are.
+fn jelly_glass(in: Lit, n: vec3<f32>, v: vec3<f32>, rim: f32) -> vec3<f32> {
+    let beat = in.floor_y;
+    let own = in.floor * in.glow * 0.5;
+    let clock = g.camera.w;
+    let q = in.local;
+    let ang = atan2(q.z, q.x);
+    if (in.material == 7u) {
+        // A medusa's bell: clear jelly whose edges glow (Fresnel) and whose
+        // margin is a bright ring, veined with radial canals that fade
+        // toward the margin; the gonads show through the crown, and the
+        // whole bell brightens as it contracts.
+        let h = clamp(q.y / 0.80, 0.0, 1.0);
+        let r = length(q.xz);
+        let canal = pow(max(cos(ang * in.surface.x), 0.0), 10.0) * smooth01(0.06, 0.40, h);
+        let margin = 1.0 - smooth01(0.0, 0.09, h);
+        // Four horseshoe gonads round the stomach, folded into one quadrant.
+        let fold = abs(length(abs(q.xz) - vec2<f32>(0.22)) - 0.11);
+        let gonad = (1.0 - smooth01(0.02, 0.055, fold)) * smooth01(0.35, 0.65, h) * in.surface.y;
+        let stomach = (1.0 - smooth01(0.06, 0.22, r)) * smooth01(0.45, 0.80, h);
+        let breath = 0.80 + 0.45 * beat;
+        let edge = rim * rim;
+        // Bioluminescent spots round the margin, and two waves of light
+        // running round it, faster while the bell beats.
+        let spots = pow(max(cos(ang * 24.0), 0.0), 4.0) * margin;
+        let seed = in.world.x * 3.1 + in.world.z * 1.7;
+        let run = pow(0.5 + 0.5 * cos(ang * 2.0 - clock * 1.6 - seed), 6.0);
+        let lights = spots * (0.25 + 0.75 * run) * (0.6 + 0.6 * beat) * in.surface.z;
+        return in.albedo * (0.06 + 0.62 * edge + 0.10 * canal + 0.45 * margin) * breath
+            + own * (0.12 + 0.55 * edge + 0.80 * margin) * breath
+            + vec3<f32>(0.55, 0.85, 1.0) * canal * 0.05 * breath
+            + mix(vec3<f32>(0.80, 0.42, 0.95), in.floor, 0.3) * gonad * (0.10 + 0.12 * beat) * (0.5 + in.glow)
+            + vec3<f32>(1.0, 0.86, 0.70) * stomach * (0.04 + 0.20 * in.glow)
+            + vec3<f32>(0.35, 1.0, 0.78) * lights * 0.55;
+    }
+    if (in.material == 10u) {
+        // A comb jelly: almost invisible jelly, its eight comb rows lit by
+        // the beating cilia, whose rainbow runs from pole to pole.
+        let y = clamp(q.y, 0.0, 1.0);
+        let row = pow(max(cos(ang * 8.0), 0.0), 5.0) * sin(y * PI);
+        let hue = fract(y * 1.6 - clock * 0.7 + ang * 0.16);
+        let rainbow = 0.55 + 0.45 * cos(TAU * (hue + vec3<f32>(0.0, 0.33, 0.67)));
+        let plates = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(y * 46.0 - clock * 8.0), 2.0);
+        let core = pow(abs(dot(n, v)), 3.0);
+        return in.albedo * (0.03 + 0.40 * rim * rim) * (0.85 + 0.3 * beat)
+            + own * (0.06 + 0.20 * core)
+            + rainbow * rainbow * row * plates * (0.75 + 0.5 * rim);
+    }
+    // The oral arms and tentacles: the same tissue, finer and dimmer, veined
+    // with light that runs down them, and brightening as the stroke reaches
+    // each part of them.
+    let along = clamp(-q.y, 0.0, 1.0);
+    let vein = 0.72 + 0.28 * sin(q.y * 16.0 + q.x * 9.0 + clock * 1.3);
+    return in.albedo * (0.10 + 0.45 * rim * rim) * vein * (0.80 + 0.50 * beat)
+        + own * (0.18 + 0.35 * along) * (0.85 + 0.40 * beat);
+}
+
 // Translucent models — jellyfish bells and tentacles — add light, brightest at
 // their rims, and fade with distance.
 @if(!full_hd)
@@ -1402,27 +1577,8 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
             + vec3<f32>(1.0, 0.90, 0.76) * spec * (0.10 + 0.4 * cone)
             + vec3<f32>(0.45, 0.30, 0.85) * core * in.glow * 0.10;
     }
-    // A jellyfish's bell: translucent at the rim, veined with eight radial
-    // canals, warm at the stomach, and breathing with its pulse.
-    if (in.material == 7u) {
-        let y = clamp(in.local.y / 0.82, 0.0, 1.0);
-        let ang = atan2(in.local.z, in.local.x);
-        let canal = pow(max(cos(ang * 8.0), 0.0), 14.0);
-        let crown = smooth01(0.0, 0.75, y);
-        let stomach = smooth01(0.30, 0.44, y) * smooth01(0.62, 0.46, y);
-        let pulse = 0.82 + 0.18 * sin(g.camera.w * 1.15 + in.world.x * 2.1);
-        glow = in.albedo * (0.10 + 0.55 * rim * rim + 0.10 * canal) * (0.55 + 0.45 * crown) * pulse
-            + in.albedo * in.glow * (0.18 + 0.50 * rim)
-            + vec3<f32>(0.50, 0.84, 1.0) * canal * crown * 0.08 * pulse
-            + vec3<f32>(1.0, 0.88, 0.72) * stomach * (0.10 + 0.35 * in.glow);
-    }
-    // The oral arms and tentacles: the same tissue, finer and dimmer, with
-    // the light running down their length.
-    if (in.material == 9u) {
-        let along = clamp(0.5 - 0.5 * in.local.y, 0.0, 1.0);
-        let vein = 0.72 + 0.28 * sin(in.local.y * 16.0 + in.local.x * 9.0 + g.camera.w * 1.3);
-        glow = in.albedo * (0.06 + 0.38 * rim * rim) * vein
-            + in.albedo * in.glow * (0.15 + 0.35 * along);
+    if (in.material == 7u || in.material == 9u || in.material == 10u) {
+        glow = jelly_glass(in, n, v, rim);
     }
     return vec4<f32>(glow * in.fade * (1.0 - fog_of(length(p - g.camera.xyz))) * SEA_SCALE, 0.0);
 }
@@ -1604,27 +1760,12 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
             + vec3<f32>(1.0, 0.90, 0.76) * spec * (0.14 + 0.45 * cone) * (0.18 + 0.8 * in.glow)
             + vec3<f32>(0.45, 0.30, 0.85) * core * in.glow * 0.15;
     }
-    // A jellyfish's bell: translucent at the rim, veined with eight radial
-    // canals, warm at the stomach, and breathing with its pulse.
-    if (in.material == 7u) {
-        let y = clamp(in.local.y / 0.82, 0.0, 1.0);
-        let ang = atan2(in.local.z, in.local.x);
-        let canal = pow(max(cos(ang * 8.0), 0.0), 14.0);
-        let crown = smooth01(0.0, 0.75, y);
-        let stomach = smooth01(0.30, 0.44, y) * smooth01(0.62, 0.46, y);
-        let pulse = 0.82 + 0.18 * sin(g.camera.w * 1.15 + in.world.x * 2.1);
-        colour = in.albedo * (0.10 + 0.55 * rim * rim + 0.10 * canal) * (0.55 + 0.45 * crown) * pulse
-            + in.albedo * in.glow * (0.18 + 0.50 * rim)
-            + vec3<f32>(0.50, 0.84, 1.0) * canal * crown * 0.08 * pulse
-            + vec3<f32>(1.0, 0.88, 0.72) * stomach * (0.10 + 0.35 * in.glow);
-    }
-    // The oral arms and tentacles: the same tissue, finer and dimmer, with
-    // the light running down their length.
-    if (in.material == 9u) {
-        let along = clamp(0.5 - 0.5 * in.local.y, 0.0, 1.0);
-        let vein = 0.72 + 0.28 * sin(in.local.y * 16.0 + in.local.x * 9.0 + g.camera.w * 1.3);
-        colour = in.albedo * (0.06 + 0.38 * rim * rim) * vein
-            + in.albedo * in.glow * (0.15 + 0.35 * along);
+    if (in.material == 7u || in.material == 9u || in.material == 10u) {
+        // A jelly glows the fog's colour far off, which is what makes a
+        // shoal of them shine down the bloom; near, its own colours show.
+        // It fades in with its placement, as the other profile's glass does.
+        let own = jelly_glass(in, n, v, rim);
+        return vec4<f32>(mix(own, in.fog.rgb, in.fog.a) * in.fade * SEA_SCALE, 0.0);
     }
     return vec4<f32>(
         mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE,

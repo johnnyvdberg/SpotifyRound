@@ -565,10 +565,16 @@ pub enum Model {
     Anemone,
     /// A clump of sea whips: long, thin gorgonian rods.
     SeaWhip,
+    /// A jellyfish's fringe of tentacles, all in the bell's frame: one
+    /// instance per animal, bent by the shader from the bell's pulse.
+    JellyFringe,
+    /// A comb jelly: a small ribbed egg of clear jelly whose comb rows the
+    /// shader runs with rainbow light.
+    Comb,
 }
 
 impl Model {
-    pub const ALL: [Model; 52] = [
+    pub const ALL: [Model; 54] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -621,6 +627,8 @@ impl Model {
         Model::CoralBrain,
         Model::Anemone,
         Model::SeaWhip,
+        Model::JellyFringe,
+        Model::Comb,
     ];
 
     pub fn index(self) -> usize {
@@ -734,54 +742,50 @@ impl Model {
             Model::Penguin => penguin(),
             Model::Mantle => mantle(),
             Model::Bell => {
-                // A medusa bell: a domed crown, a slight waist and a flared,
-                // scalloped rim, with the radial canals picked out in vertex
-                // colour. The inner shell and the stomach give the additive
-                // glass shader something to glow through.
+                // A medusa bell: a domed crown, a slight waist and a margin
+                // flared into sixteen lappets, the rim the shader lights. The
+                // inner shell, the subumbrella, gives the additive glass two
+                // layers to glow through; the stomach and gonads are painted
+                // by `fs_glass` from the local position rather than modelled,
+                // which pays for the lappets' finer ring. `aux.y` runs from
+                // the margin (0) to the crown (1): the pulse squeezes the
+                // margin hardest (`animate`, kind 5).
                 let profile = [
-                    (0.98, 0.000),
-                    (1.00, 0.030),
-                    (0.985, 0.085),
-                    (0.94, 0.160),
-                    (0.875, 0.250),
-                    (0.79, 0.350),
-                    (0.69, 0.455),
-                    (0.575, 0.560),
-                    (0.45, 0.655),
-                    (0.315, 0.735),
-                    (0.17, 0.795),
-                    (0.00, 0.820),
+                    (0.97, 0.000),
+                    (1.00, 0.035),
+                    (0.975, 0.100),
+                    (0.925, 0.190),
+                    (0.85, 0.290),
+                    (0.75, 0.400),
+                    (0.62, 0.510),
+                    (0.47, 0.610),
+                    (0.31, 0.700),
+                    (0.15, 0.770),
+                    (0.00, 0.800),
                 ];
                 let radius = |y: f32, a: f32| {
                     let rim = (1.0 - y / 0.10).clamp(0.0, 1.0);
-                    let scallop = 1.0 + 0.055 * (a * 8.0).sin() * rim;
-                    let lobes = 1.0 + 0.012 * (a * 16.0).sin() * (1.0 - rim);
-                    scallop * lobes
+                    1.0 + 0.045 * (a * 16.0).cos() * rim
                 };
-                let colour = |y: f32, a: f32| {
+                let colour = |y: f32, _: f32| {
                     let rim = (1.0 - y / 0.12).clamp(0.0, 1.0);
-                    let canal = 0.5 + 0.5 * (a * 8.0).sin();
-                    [1.0, 1.0 - 0.10 * rim, 1.0 - 0.10 * rim - 0.07 * canal * rim]
+                    [1.0, 1.0 - 0.06 * rim, 1.0 - 0.02 * rim]
                 };
-                let mut m = lathe(&profile, 24, radius, colour, |y| {
-                    [0.0, (y / 0.68).clamp(0.0, 1.0)]
-                });
-                // The inner bell, a little smaller and lifted, so the rim
-                // reads as two translucent layers.
+                let mut m = lathe(&profile, 32, radius, colour, |_| [0.0, 0.0]);
+                // The subumbrella, a little smaller and lifted, a shade
+                // warmer, so the rim reads as two translucent layers.
                 m.append(
-                    lathe(&profile, 20, radius, colour, |y| {
-                        [0.0, (y / 0.82).clamp(0.0, 1.0)]
-                    })
-                    .scaled([0.86, 0.84, 0.86])
-                    .map(|p| [p[0], p[1] + 0.045, p[2]], |n| n),
+                    lathe(
+                        &profile,
+                        16,
+                        |_, _| 1.0,
+                        |_, _| [1.0, 0.86, 0.90],
+                        |_| [0.0, 0.0],
+                    )
+                    .scaled([0.86, 0.80, 0.86])
+                    .map(|p| [p[0], p[1] + 0.04, p[2]], |n| n),
                 );
-                // The stomach: a warm pearl hanging under the crown.
-                m.append(
-                    sphere_with(1, |_| 1.0, |_| [1.0, 0.90, 0.80])
-                        .scaled([0.25, 0.17, 0.25])
-                        .map(|p| [p[0], p[1] + 0.52, p[2]], |n| n),
-                );
-                m.with_aux(|p| [0.0, (p[1] / 0.82).clamp(0.0, 1.0)])
+                m.with_aux(|p| [0.0, (p[1] / 0.80).clamp(0.0, 1.0)])
             }
             Model::Shaft => {
                 // A Doric shaft with twenty flutes and a slight entasis.
@@ -907,6 +911,8 @@ impl Model {
             Model::CoralBrain => coral_brain(),
             Model::Anemone => anemone(),
             Model::SeaWhip => sea_whip(),
+            Model::JellyFringe => jelly_fringe(),
+            Model::Comb => comb(),
         }
     }
 }
@@ -2010,37 +2016,140 @@ fn sargassum() -> Mesh {
     m.with_aux(|_p| [0.0, 0.5])
 }
 
-/// A frilled oral arm hanging from a jellyfish's bell: a tapered ribbon with a
-/// ruffle in its edge, animated by the same writhing wave as the tentacles.
+/// A jellyfish's four frilled oral arms in one model, hanging from the mouth
+/// under the bell in the bell's own frame, so one instance placed like the
+/// bell carries all four and the shader bends them with it. Each arm is a
+/// ribbon turned edge-on to the bell's axis, tapering and twisting as it
+/// falls, its two edges ruffled into frills that the middle of the ribbon
+/// does not share. `aux.x` runs from the root (0) to the tip (1): the
+/// trailing wave (`animate`, kind 10) grows and lags down it.
 fn jelly_arm() -> Mesh {
-    let segments = fewer(10, 4);
+    let segments = fewer(14, 5);
     let across = 3;
     let mut m = Mesh::default();
-    let mut rows = Vec::with_capacity(segments + 1);
-    for i in 0..=segments {
-        let t = i as f32 / segments as f32;
-        let y = -t;
-        let w = 0.16 * (1.0 - 0.85 * t) * (0.75 + 0.25 * (t * 9.0).sin()).max(0.35);
-        let mut row = Vec::with_capacity(across + 1);
-        for j in 0..=across {
-            let u = j as f32 / across as f32 * 2.0 - 1.0;
-            let x = u * w * (1.0 + 0.15 * (t * 12.0).sin());
-            let z = 0.06 * (t * 11.0 + u * 2.0).sin() * t;
-            row.push(m.vertex([x, y, z], [1.0; 3], [t, 0.0]));
+    for k in 0..4u32 {
+        let ang = (k as f32 + 0.5) / 4.0 * TAU;
+        let (out, side) = ([ang.cos(), 0.0, ang.sin()], [-ang.sin(), 0.0, ang.cos()]);
+        let len = 1.05 + 0.30 * jitter(k, 41);
+        let mut rows = Vec::with_capacity(segments + 1);
+        for i in 0..=segments {
+            let t = i as f32 / segments as f32;
+            // The arm's spine leaves the mouth and leans out a little.
+            let r = 0.07 + 0.16 * t;
+            let centre = [out[0] * r, 0.10 - t * len, out[2] * r];
+            let w = 0.21 * (1.0 - 0.70 * t) * (0.80 + 0.20 * (t * 9.0 + k as f32).sin());
+            // A slow twist down the arm: the ribbon's breadth turns from
+            // the radial plane toward the tangent.
+            let twist = t * 1.6 + k as f32 * 0.4;
+            let (c, sn) = (twist.cos(), twist.sin());
+            let breadth = [out[0] * c + side[0] * sn, 0.0, out[2] * c + side[2] * sn];
+            let normal = [-out[0] * sn + side[0] * c, 0.0, -out[2] * sn + side[2] * c];
+            let mut row = Vec::with_capacity(across + 1);
+            for j in 0..=across {
+                let u = j as f32 / across as f32 * 2.0 - 1.0;
+                // The frill: the edges ruffle out of the ribbon's plane,
+                // ever tighter toward the tip.
+                let frill = 0.085
+                    * (t * (20.0 + 6.0 * t) + u * 1.7 + k as f32).sin()
+                    * u.abs().powf(1.5)
+                    * (0.5 + t);
+                let x = u * w;
+                let pos = [
+                    centre[0] + breadth[0] * x + normal[0] * frill,
+                    centre[1] + 0.02 * u.abs() * (t * 13.0).sin(),
+                    centre[2] + breadth[2] * x + normal[2] * frill,
+                ];
+                let pale = 1.0 - 0.18 * (1.0 - u.abs());
+                row.push(m.vertex(pos, [pale, pale, 1.0], [t, 0.0]));
+            }
+            rows.push(row);
         }
-        rows.push(row);
-    }
-    for i in 0..segments {
-        for j in 0..across {
-            m.quad(
-                rows[i][j],
-                rows[i][j + 1],
-                rows[i + 1][j + 1],
-                rows[i + 1][j],
-            );
+        for i in 0..segments {
+            for j in 0..across {
+                m.quad(
+                    rows[i][j],
+                    rows[i][j + 1],
+                    rows[i + 1][j + 1],
+                    rows[i + 1][j],
+                );
+            }
         }
     }
     m.smooth()
+}
+
+/// A jellyfish's fringe of tentacles in one model: twelve fine threads
+/// hanging from just inside the bell's margin, in the bell's frame, every
+/// other one shorter. Placed like the bell with its height stretched to the
+/// species' tentacle length, it costs one instance where a dozen tubes did,
+/// and the shader can bend every thread from the bell's pulse: the margin
+/// pulls the roots in and the stroke runs down them. Three-sided, which
+/// reads as round at a thread's width. `aux.x` is how far down the longest
+/// thread a vertex hangs, so the wave keeps step across long and short.
+fn jelly_fringe() -> Mesh {
+    const THREADS: u32 = 12;
+    let segments = fewer(10, 3);
+    let sides = 3;
+    let mut m = Mesh::default();
+    for k in 0..THREADS {
+        let ang = (k as f32 + 0.5) / THREADS as f32 * TAU + 0.12 * (jitter(k, 43) - 0.5);
+        let (cx, cz) = (ang.cos(), ang.sin());
+        let len = if k % 2 == 0 {
+            0.80 + 0.20 * jitter(k, 44)
+        } else {
+            0.45 + 0.25 * jitter(k, 45)
+        };
+        let mut rings = Vec::with_capacity(segments + 1);
+        for i in 0..=segments {
+            let t = i as f32 / segments as f32;
+            let r = 0.94 + 0.10 * t;
+            let y = 0.012 - t * len;
+            let thick = 0.028 * (1.0 - 0.65 * t);
+            let ring: Vec<u32> = (0..sides)
+                .map(|s| {
+                    let a = s as f32 / sides as f32 * TAU + ang;
+                    // The cross-section in the thread's own horizontal frame.
+                    let (dx, dz) = (a.cos() * thick, a.sin() * thick);
+                    m.vertex([cx * r + dx, y, cz * r + dz], [1.0; 3], [t * len, 0.0])
+                })
+                .collect();
+            rings.push(ring);
+        }
+        for w in rings.windows(2) {
+            for s in 0..sides {
+                let n = (s + 1) % sides;
+                m.quad(w[0][s], w[1][s], w[1][n], w[0][n]);
+            }
+        }
+    }
+    m.smooth()
+}
+
+/// A comb jelly: a small ctenophore, an egg of clear jelly ribbed by eight
+/// comb rows from pole to pole, along which `fs_glass` runs the cilia's
+/// travelling rainbow. No bell and no pulse: it glides (`animate`, kind 11).
+/// `aux.y` runs from the lower pole (0) to the upper (1).
+fn comb() -> Mesh {
+    let profile = [
+        (0.00, 0.00),
+        (0.30, 0.05),
+        (0.50, 0.18),
+        (0.60, 0.36),
+        (0.62, 0.55),
+        (0.56, 0.74),
+        (0.42, 0.89),
+        (0.22, 0.98),
+        (0.00, 1.00),
+    ];
+    lathe_down_to(
+        &profile,
+        16,
+        6,
+        // The eight comb rows stand a little proud of the body.
+        |y, a| 1.0 + 0.07 * (a * 8.0).cos().max(0.0).powi(4) * (y * PI).sin(),
+        |y, _| [1.0, 0.94 + 0.06 * y, 1.0],
+        |y| [0.0, y],
+    )
 }
 
 /// A craggy hydrothermal chimney, hollow at the mouth. The outside climbs
