@@ -710,7 +710,7 @@ dive3d::world::tests::submarines` holds the motion to those rates.
 It renders at 1080 × 1080 with one sample and a reversed depth buffer, then goes through the
 the full-panel sea: the 3D sea is handed to Slint directly, with no bezel or other overlay. On the
 Pi 5 `frame_time` measures 8.7 ms on average, 10.0 ms on the heaviest leg, and 14.6 ms at the worst
-sampled hotspot; `frame_cost` measures 9.68 ms on its three legs (11.11 ms before this pass). On a
+sampled hotspot; `frame_cost` measures 9.69 ms on its three legs (11.11 ms before this pass). On a
 desktop GPU it is about 2 ms, with the scene built in about 0.4 ms of CPU. `cargo test --release
 dive3d::tests::frame_time -- --ignored --nocapture` times it and `DIVE3D_PREVIEW_DIR=<dir> cargo
 test --release dive3d::tests::previews -- --ignored` writes a frame from each leg; add

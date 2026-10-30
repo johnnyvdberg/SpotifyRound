@@ -2741,7 +2741,7 @@ dive3d frame, trench:   mean 6.691 ms, scene building 1.086 ms,  310 instances, 
 dive3d frame: mean 8.693 ms
 ```
 
-`frame_cost` (legs 1, 3 and 4, 20 frames each) is **9.68 ms**, down from
+`frame_cost` (legs 1, 3 and 4, 20 frames each) is **9.69 ms**, down from
 **11.11 ms** on the pre-pass binary. The worst sampled hotspot is the cave
 leaving at **14.59 ms**; the next are the trench leaving (14.02) and Atlantis
 leaving (13.12). Every leg still fits inside the 16.67 ms 60 Hz budget.
