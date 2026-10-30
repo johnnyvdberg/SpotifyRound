@@ -721,8 +721,28 @@ impl World<'_> {
     }
 }
 
+/// The least water between a bubble and the salon window: any nearer and a
+/// bubble a few centimetres across is a ring across the glass. Bubbles fade
+/// out over [`BUBBLE_FADE`] units before they reach it, so one that drifts in
+/// is gone before it is huge.
+const BUBBLE_CLEAR: f32 = 1.2;
+const BUBBLE_FADE: f32 = 0.1;
+
+/// How clear of the window's near water a bubble anchored at `p` is: nothing
+/// within [`BUBBLE_CLEAR`], easing in to one by [`BUBBLE_CLEAR`] +
+/// [`BUBBLE_FADE`].
+fn window_near(w: &World, p: [f32; 3]) -> f32 {
+    let d = [
+        p[0] - w.pose.pos[0],
+        p[1] - w.pose.pos[1],
+        p[2] - w.pose.pos[2],
+    ];
+    let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    smooth(BUBBLE_CLEAR, BUBBLE_CLEAR + BUBBLE_FADE, distance)
+}
+
 /// How much of a bubble at `p` is inside the window: one well within it, easing
-/// to nothing just before the cone's side or the near plane, so a bubble that
+/// to nothing just before the cone's side or the near water, so a bubble that
 /// drifts across the brass fades rather than blinking out of the sprite list.
 fn window_fade(w: &World, p: [f32; 3], radius: f32) -> f32 {
     let d = [
@@ -738,7 +758,7 @@ fn window_fade(w: &World, p: [f32; 3], radius: f32) -> f32 {
     }
     let reach = VIEW * z.max(0.0) * 1.08 + radius * 1.1;
     let lateral = dot(right).hypot(dot(up));
-    smooth(reach, 0.9 * reach, lateral) * smooth(0.08, 0.16, z + radius)
+    smooth(reach, 0.9 * reach, lateral) * window_near(w, p)
 }
 
 /// The lengths of a frame's lists at one moment.
@@ -3951,11 +3971,20 @@ fn polar(w: &World, f: &mut Frame) {
             // (bubble_sprite), so the trail is camera-static and cacheable.
             let was0 = px - 0.04;
             let y0 = top - 0.25 - hash(k, d + 6, 360) * 0.45 + 0.06 * (was0 * 3.5 + phase).sin();
+            let anchor = [was0, y0, p[2]];
+            // The same fade the other trails get: the bubbles come in with
+            // the window's edge as the boat turns, rather than all at once
+            // the frame the penguin's body first falls inside the cone; and
+            // with the penguin itself, when its pod is fading in.
+            let fade = window_fade(w, anchor, 0.012) * show;
+            if fade <= 0.001 {
+                continue;
+            }
             for b in 0..5 {
                 f.bubble_sprite(
-                    [was0, y0, p[2]],
+                    anchor,
                     0.005 + 0.0015 * b as f32,
-                    [0.45, 0.65, 0.70],
+                    [0.45 * fade, 0.65 * fade, 0.70 * fade],
                     b as f32 / 5.0,
                     1.05,
                     phase,
@@ -4837,9 +4866,9 @@ fn particles(w: &World, f: &mut Frame) {
             }
         }
     }
-    // Bubbles shed by the hull below the window: released into the water,
-    // they rise into view from the bottom of the glass and drift aft, fading
-    // in and out rather than appearing.
+    // The Nautilus sheds no bubbles of her own: a hull stream just below the
+    // glass put rings across it. The water's way past the window is read from
+    // the sea itself, and the speed of a passage from the rush below.
     let [right, up, out] = w.pose.basis;
     let v = w.pose.vel;
     let in_boat = |a: f32, b: f32, d: f32| {
@@ -4849,34 +4878,11 @@ fn particles(w: &World, f: &mut Frame) {
             c[2] + right[2] * a + up[2] * b + out[2] * d,
         ]
     };
-    for k in 0..24 {
-        let life = 7.0;
-        let shed = bubble(k, 24, w.t, life);
-        let age = shed.age;
-        let n = shed.cohort;
-        let d = 0.45 + hash(n, k, 411) * 0.5;
-        let start = in_boat((hash(n, k, 410) - 0.4) * 1.2 * d, -VIEW * d - 0.06, d);
-        // Left where the hull was when it let go: the boat's way carries the
-        // start away from the bubble while it rises.
-        let p = [
-            start[0] - v[0] * age,
-            start[1] + age * 0.06 - v[1] * age,
-            start[2] - v[2] * age,
-        ];
-        let alpha = shed.fade * window_fade(w, p, 0.02);
-        if alpha > 0.001 {
-            f.sprite(
-                p,
-                0.004 + 0.006 * hash(k, 0, 412),
-                [0.32 * alpha, 0.62 * alpha, 0.65 * alpha],
-                BUBBLE,
-            );
-        }
-    }
-    // In a fast passage the hull throws off a rush of bubbles that streak past
-    // the glass, and hides the sea rushing by behind them. The stream keeps a
-    // fixed shape as its strength grows and ebbs: no bubble is re-phased by
-    // the count changing, and the cut-off end only ever fades in or out.
+    // In a fast passage the water streams past the glass: a rush of bubbles
+    // beyond the near water, streaking across the window instead of blooming
+    // on it. The stream keeps a fixed shape as its strength grows and ebbs: no
+    // bubble is re-phased by the count changing, and the cut-off end only ever
+    // fades in or out.
     let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     let rush = smooth(0.08, 0.5, speed);
     if rush > 0.0 {
@@ -4887,7 +4893,9 @@ fn particles(w: &World, f: &mut Frame) {
             let shed = bubble(k, stream, w.t * 1.7, life);
             let age = shed.age;
             let n = shed.cohort;
-            let d = 0.25 + hash(n, k, 420) * 0.7;
+            let d = BUBBLE_CLEAR + 0.25 + hash(n, k, 420) * 1.1;
+            // The spread grows with the distance, so the rush keeps the angles
+            // it had when it was close and still crosses the whole window.
             let start = in_boat(
                 (hash(n, k, 421) - 0.3) * 1.6 * d,
                 (hash(n, k, 422) - 0.5) * 1.6 * VIEW * d,
@@ -4900,12 +4908,14 @@ fn particles(w: &World, f: &mut Frame) {
             ];
             let edge = smooth(count as f32, (count - 24).max(1) as f32, k as f32);
             let alpha = rush * edge * shed.fade * window_fade(w, p, 0.01);
-            f.streak(
-                p,
-                0.006 + 0.01 * hash(k, n, 423),
-                [0.35 * alpha, 0.55 * alpha, 0.58 * alpha],
-                1.0 + speed * 20.0,
-            );
+            if alpha > 0.001 {
+                f.streak(
+                    p,
+                    0.008 + 0.014 * hash(k, n, 423),
+                    [0.35 * alpha, 0.55 * alpha, 0.58 * alpha],
+                    1.0 + speed * 20.0,
+                );
+            }
         }
     }
 }
@@ -5385,19 +5395,20 @@ mod tests {
 
     /// Bubbles never pop in or out of view. Over a few seconds of the divers'
     /// helmet trails, a flight of penguins' flipper trails and a submarine's
-    /// screw wake, every bright bubble has a bright bubble of the frame before
-    /// within its own drift: a lifecycle that recycled a visible bubble, a
-    /// trail snapping back to its emitter, or a sprite cut off at the brass
-    /// would leave a bright bubble with no neighbour.
+    /// screw wake, every bright bubble near the window has a bright bubble of
+    /// the frame before within its own drift: a lifecycle that recycled a
+    /// visible bubble, a trail snapping back to its emitter, or a sprite cut
+    /// off at the brass would leave a bright bubble with no neighbour.
     #[test]
     fn bubbles_never_pop() {
         let span = crate::voyage::LEG / crate::voyage::SPEED;
-        // The forest has the divers' exhaust; 7.55 legs in, a flight of
-        // penguins crosses the arctic window; 200 s into visit 0, a sister
-        // submarine is shedding from her screw.
+        // A hundred seconds in, the forest's divers walk past the window;
+        // 7.55 legs in, a flight of penguins crosses the arctic window; 612 s
+        // into visit 0, a sister submarine stands off far enough that her
+        // screw's trail is in view.
         let scenes = [
-            ("submarine wake", 200.0),
-            ("diver helmets", span * 1.45),
+            ("submarine wake", 612.0),
+            ("diver helmets", 100.0),
             ("penguin flight", span * 7.55),
         ];
         for (name, start) in scenes {
@@ -5437,7 +5448,19 @@ mod tests {
                     .collect();
                 seen += now.len();
                 if i > 0 {
-                    for &(p, _bright) in now.iter().filter(|(_, bright)| *bright > 0.15) {
+                    for &(p, _) in now.iter().filter(|(_, bright)| *bright > 0.15) {
+                        // Far from the window nothing is on the glass: a
+                        // sister's distant screw or a party walking in at the
+                        // edge of its range may enter whole, which is the
+                        // placer, not a bubble bursting. The near ones are
+                        // what this holds.
+                        let cam = ((p[0] - pose.pos[0]).powi(2)
+                            + (p[1] - pose.pos[1]).powi(2)
+                            + (p[2] - pose.pos[2]).powi(2))
+                        .sqrt();
+                        if cam > 3.5 {
+                            continue;
+                        }
                         let d = last
                             .iter()
                             .map(|q| {
@@ -5450,7 +5473,10 @@ mod tests {
                         if d > 0.03 {
                             pops += 1;
                             worst = worst.max(d);
-                            println!("{name} at {at:.2} s: a bright bubble jumped {d:.3}");
+                            println!(
+                                "{name} at {at:.2} s: a bright bubble jumped {d:.3} \
+                                 ({cam:.2} from the window)"
+                            );
                         }
                     }
                 }
@@ -5462,5 +5488,101 @@ mod tests {
             );
             assert_eq!(pops, 0, "{name}: {pops} bubbles popped, worst {worst:.3}");
         }
+    }
+
+    /// No bubble is ever drawn on the glass. Over every leg of the circuit and
+    /// a swipe's passage, every BUBBLE sprite stands at least [`BUBBLE_CLEAR`]
+    /// from the window, and every bright one has one of the frame before
+    /// within its own drift — the `bubbles_never_pop` pattern — so dropping the
+    /// hull's stream left the other trails whole.
+    #[test]
+    fn bubbles_keep_off_the_glass() {
+        let seed = 0.0f32;
+        let seabed = Seabed::new(0, seed);
+        let mut voyage = Voyage::default();
+        let mut helm = super::super::helm::Helm::default();
+        let mut frame = Frame::new();
+        let span = crate::voyage::LEG / crate::voyage::SPEED;
+        // Every sprite's own drift is under a hundredth of a unit between
+        // these frames, so the 0.03 pop threshold still holds.
+        let step = 1.0 / 30.0;
+        // All eight legs, then the swipe's passage and the sea beyond it.
+        let sail = span * crate::voyage::BIOMES as f64;
+        let swipe = ((sail - 5.0) / step) as i32;
+        let frames = ((sail + 8.0 - 5.0) / step) as i32;
+        let mut last: Vec<([f32; 3], f32)> = Vec::new();
+        let (mut seen, mut nearest, mut pops) = (0usize, f32::MAX, 0usize);
+        let mut worst = 0.0f32;
+        for i in 0..frames {
+            let seconds = 5.0 + f64::from(i) * step;
+            if i == swipe {
+                voyage.travel(2, seconds);
+            }
+            let at = voyage.advance(seconds, seed);
+            let pose = helm.steer(&seabed, at, seconds);
+            let speed = (pose.vel[0].powi(2) + pose.vel[1].powi(2) + pose.vel[2].powi(2)).sqrt();
+            let world = World {
+                seabed: &seabed,
+                pose,
+                t: seconds as f32,
+            };
+            build(&world, &mut frame, &mut StaticCache::default());
+            let now: Vec<([f32; 3], f32)> = frame
+                .sprites
+                .iter()
+                .filter(|s| (s.tint[3] - BUBBLE).abs() < 0.5)
+                .map(|s| {
+                    (
+                        [s.place[0], s.place[1], s.place[2]],
+                        s.tint[0].max(s.tint[1]).max(s.tint[2]),
+                    )
+                })
+                .collect();
+            seen += now.len();
+            for &(p, _) in &now {
+                let d = ((p[0] - pose.pos[0]).powi(2)
+                    + (p[1] - pose.pos[1]).powi(2)
+                    + (p[2] - pose.pos[2]).powi(2))
+                .sqrt();
+                nearest = nearest.min(d);
+                assert!(
+                    d >= BUBBLE_CLEAR - 1e-4,
+                    "a bubble {d:.3} from the window at {seconds:.1} s"
+                );
+            }
+            // A swipe runs the voyage's clock fast, so the whole sea moves
+            // under the window; only the cruise is held to a bubble's drift.
+            if i > 0 && speed < 0.2 {
+                for &(p, _) in now.iter().filter(|(_, bright)| *bright > 0.15) {
+                    let cam = ((p[0] - pose.pos[0]).powi(2)
+                        + (p[1] - pose.pos[1]).powi(2)
+                        + (p[2] - pose.pos[2]).powi(2))
+                    .sqrt();
+                    // A party walking in at the edge of its seven-unit range
+                    // appears whole, which is the placer, not a bubble bursting.
+                    if cam > 3.5 {
+                        continue;
+                    }
+                    let d = last
+                        .iter()
+                        .map(|q| {
+                            ((p[0] - q.0[0]).powi(2)
+                                + (p[1] - q.0[1]).powi(2)
+                                + (p[2] - q.0[2]).powi(2))
+                            .sqrt()
+                        })
+                        .fold(f32::MAX, f32::min);
+                    if d > 0.03 {
+                        pops += 1;
+                        worst = worst.max(d);
+                        println!("a bright bubble jumped {d:.3} at {seconds:.2} s");
+                    }
+                }
+            }
+            last = now;
+        }
+        assert!(seen > 500, "only {seen} bubbles in the whole circuit");
+        println!("nearest bubble {nearest:.3} from the window, {seen} seen");
+        assert_eq!(pops, 0, "{pops} bubbles jumped, worst {worst:.3}");
     }
 }
