@@ -97,6 +97,30 @@ fn cells(u: f32, v: f32, n: i32, salt: u32) -> f32 {
     best
 }
 
+/// How near (u, v) is to the crack between two cells of a wrapped jittered
+/// grid: 0 on the crack, larger inside a cell. The same cells as [`cells`],
+/// so a texture can use both the pits and their edges.
+fn cell_edge(u: f32, v: f32, n: i32, salt: u32) -> f32 {
+    let (x, y) = (u * n as f32, v * n as f32);
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let (mut best, mut second) = (9.0f32, 9.0f32);
+    for dj in -1..=1 {
+        for di in -1..=1 {
+            let (ci, cj) = (ix + di, iy + dj);
+            let px = ci as f32 + hash(ci.rem_euclid(n), cj.rem_euclid(n), salt);
+            let py = cj as f32 + hash(ci.rem_euclid(n), cj.rem_euclid(n), salt + 1);
+            let d = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+            if d < best {
+                second = best;
+                best = d;
+            } else if d < second {
+                second = d;
+            }
+        }
+    }
+    second - best
+}
+
 fn grey(v: f32) -> [f32; 3] {
     [v, v, v]
 }
@@ -202,10 +226,39 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             mix(c, [1.2, 1.15, 0.7], rib * 0.5)
         }
         Surface::Basalt => {
-            // Fine-grained dark rock, pocked with the vesicles of escaped gas.
-            let vesicle = smooth(0.05, 0.02, cells(u, v, 48, 92));
-            let streak = 0.9 + 0.1 * fbm(u * 0.2, v * 2.0, 16, 2, 91);
-            grey((0.70 + 0.35 * fbm(u, v, 10, 4, 93)) * streak * (1.0 - 0.35 * vesicle))
+            // Basalt laid down flow on flow: pale ledges over darker
+            // underhangs, finer laminae within a flow, cross-cut by cooling
+            // cracks, pocked with the vesicles of escaped gas and stained by
+            // minerals and soot. Every field wraps, so the tile is seamless
+            // however the shader projects it.
+            let flow = fbm(u, v * 2.0, 8, 4, 91);
+            let band = 0.5 + 0.5 * (std::f32::consts::TAU * (v * 6.0 + flow * 2.0)).sin();
+            let laminae = 0.5 + 0.5 * (std::f32::consts::TAU * (v * 19.0 + flow * 3.0)).sin();
+            let grain = fbm(u, v, 24, 4, 93);
+            let major = smooth(0.055, 0.0, cell_edge(u, v, 7, 94));
+            let minor = smooth(0.040, 0.0, cell_edge(u, v, 13, 95));
+            let fracture = smooth(0.012, 0.0, (fbm(u * 3.0, v, 9, 3, 96) - 0.5).abs());
+            let crack = (0.55 * major).max(0.45 * minor).max(0.35 * fracture);
+            let vesicle = smooth(0.06, 0.015, cells(u, v, 36, 92))
+                .max(0.65 * smooth(0.045, 0.01, cells(u, v, 64, 96)));
+            let stain = smooth(0.55, 0.82, fbm(u, v, 4, 3, 97));
+            let mineral = smooth(0.62, 0.86, fbm(u * 2.0, v, 7, 3, 98));
+            let ledge = smooth(0.55, 0.92, band);
+            let hollow = smooth(0.45, 0.08, band);
+            let mut tone = (0.85 + 0.55 * grain)
+                * (0.95 + 0.10 * band)
+                * (0.94 + 0.10 * laminae)
+                * (0.94 + 0.14 * ledge)
+                * (1.0 - 0.16 * hollow);
+            tone *= 1.0 - 0.70 * crack;
+            tone *= 1.0 - 0.45 * vesicle;
+            tone *= 1.0 - 0.24 * stain;
+            // Calcite crust in some seams, a cold damp stain in others.
+            mix(
+                mix(grey(tone), [1.10, 1.03, 0.87], mineral * 0.4),
+                [0.72, 0.82, 0.72],
+                stain * 0.3,
+            )
         }
         Surface::Ice => {
             let bubble = smooth(0.08, 0.04, cells(u, v, 20, 100));
@@ -318,3 +371,35 @@ pub fn paint_all() -> Vec<Vec<Vec<u8>>> {
 /// The texture array stores 0..1.6 as 0..255, so textures can brighten as well
 /// as darken; the shader scales back by this.
 pub const RANGE: f32 = 1.6;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tunnel and the cave floor project this one layer in world space, so
+    /// a seam in it would run across the rock wherever the tile repeats.
+    #[test]
+    fn the_basalt_tile_joins_itself() {
+        let eps = 2e-3;
+        for i in 0..SIZE {
+            let t = (i as f32 + 0.5) / SIZE as f32;
+            for (a, b) in [
+                (
+                    paint(Surface::Basalt, 0.0, t),
+                    paint(Surface::Basalt, 1.0, t),
+                ),
+                (
+                    paint(Surface::Basalt, t, 0.0),
+                    paint(Surface::Basalt, t, 1.0),
+                ),
+            ] {
+                for k in 0..3 {
+                    assert!(
+                        (a[k] - b[k]).abs() <= eps,
+                        "a seam at {t}: {a:?} meets {b:?}"
+                    );
+                }
+            }
+        }
+    }
+}
