@@ -1362,6 +1362,9 @@ fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
 pub struct StaticCache {
     frame: Frame,
     cell: Option<[i32; 2]>,
+    /// The window's heading, in sectors: a turn brings new cells into view
+    /// before the camera has moved a cell, and the cached set must follow.
+    heading: Option<i32>,
     seed: f32,
 }
 
@@ -1370,6 +1373,7 @@ impl Default for StaticCache {
         Self {
             frame: Frame::new(),
             cell: None,
+            heading: None,
             seed: f32::NAN,
         }
     }
@@ -1470,7 +1474,13 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (world.pose.pos[2] / CACHE_CELL).floor() as i32,
     ];
     let seed = world.seabed.seed;
-    let stale = !cache.seed.eq(&seed) || cache.cell != Some(camera);
+    // A turn of a few degrees changes which cells are in the window even
+    // while the boat is still in the same position cell.
+    let out = world.pose.basis[2];
+    let heading = (out[0].atan2(out[2]) / 0.08).floor() as i32;
+    let stale = !cache.seed.eq(&seed)
+        || cache.cell != Some(camera)
+        || cache.heading != Some(heading);
     #[cfg(test)]
     let show_steps = std::env::var_os("DIVE3D_BUILD_STEPS").is_some();
     if stale {
@@ -1510,6 +1520,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
             }
         }
         cache.cell = Some(camera);
+        cache.heading = Some(heading);
         cache.seed = seed;
     }
     for (m, src) in cache.frame.solid.iter().enumerate() {
