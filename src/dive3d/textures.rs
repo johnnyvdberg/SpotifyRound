@@ -3,7 +3,7 @@
 //! Each layer of one texture array is a tileable pattern made from wrapping
 //! noise: grained rock, planking, veined marble, fish scales, wrinkled whale
 //! skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt and
-//! riveted iron plating.
+//! riveted iron plating, and the meanders of a brain coral.
 //! They are mostly tone, close to white on average, so a model's own colour
 //! still decides its hue and the texture adds the detail. The shader projects
 //! them along three axes, so no model needs texture coordinates.
@@ -30,10 +30,11 @@ pub enum Surface {
     Sand,
     Silt,
     Plates,
+    Brain,
 }
 
 impl Surface {
-    pub const ALL: [Surface; 15] = [
+    pub const ALL: [Surface; 16] = [
         Surface::Plain,
         Surface::Rock,
         Surface::Wood,
@@ -49,6 +50,7 @@ impl Surface {
         Surface::Sand,
         Surface::Silt,
         Surface::Plates,
+        Surface::Brain,
     ];
 
     pub fn layer(self) -> f32 {
@@ -218,6 +220,36 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             let blotch = fbm(u, v, 5, 4, 71);
             grey((0.55 + 0.45 * pore) * (0.8 + 0.35 * blotch))
         }
+        Surface::Brain => {
+            // A brain coral's meanders. Waves of one wavelength running every
+            // which way, with random phases, add up to a field whose zero
+            // line winds, forks and dead-ends at an even spacing: the
+            // labyrinth of a brain coral's valleys, with rounded ridges
+            // between. Every wave fits the tile a whole number of times, so
+            // the tile joins itself.
+            let tau = std::f32::consts::TAU;
+            let (mut field, mut waves) = (0.0f32, 0.0f32);
+            for b in 0..=5i32 {
+                for a in -5..=5i32 {
+                    let k = ((a * a + b * b) as f32).sqrt();
+                    if !(4.5..=5.5).contains(&k) || (b == 0 && a < 0) {
+                        continue;
+                    }
+                    let phase = hash(a, b, 151) * tau;
+                    let weight = 0.6 + 0.8 * hash(a, b, 152);
+                    field += weight * (tau * (a as f32 * u + b as f32 * v) + phase).cos();
+                    waves += weight * weight;
+                }
+            }
+            let field = field / (waves * 0.5).sqrt();
+            // Dark, narrow valleys along the zero line, and the pale ridges
+            // rounding up between them.
+            let valley = smooth(0.42, 0.0, field.abs());
+            let ridge = smooth(0.2, 1.2, field.abs());
+            let grain = 0.92 + 0.12 * fbm(u, v, 32, 2, 153);
+            let c = grey((0.78 + 0.40 * ridge) * (1.0 - 0.62 * valley) * grain);
+            mix(c, [0.60, 0.66, 0.56], valley * 0.35)
+        }
         Surface::Kelp => {
             let rib = smooth(0.04, 0.0, (u - 0.5).abs());
             let veins = 0.9 + 0.1 * ((v * 60.0 + (u - 0.5).abs() * 20.0).sin());
@@ -375,6 +407,13 @@ pub const RANGE: f32 = 1.6;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The model shader gives the reef's two layers their glow by number.
+    #[test]
+    fn the_reef_layers_are_where_the_shader_looks() {
+        assert_eq!(Surface::Coral.layer(), 8.0, "CORAL_LAYER in scene.wesl");
+        assert_eq!(Surface::Brain.layer(), 15.0, "BRAIN_LAYER in scene.wesl");
+    }
 
     /// The tunnel and the cave floor project this one layer in world space, so
     /// a seam in it would run across the rock wherever the tile repeats.

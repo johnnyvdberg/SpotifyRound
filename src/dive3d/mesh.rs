@@ -557,10 +557,18 @@ pub enum Model {
     /// A submarine forest tree: a leaning trunk, forking branches and a
     /// clustered canopy, all one model so a tree costs one instance.
     Tree,
+    /// A bushy coral: short, stubby branches packed into a rounded head.
+    CoralBush,
+    /// A brain coral: a low boulder dome wearing meandering grooves.
+    CoralBrain,
+    /// A sea anemone: a column ringed by curling, swaying tentacles.
+    Anemone,
+    /// A clump of sea whips: long, thin gorgonian rods.
+    SeaWhip,
 }
 
 impl Model {
-    pub const ALL: [Model; 48] = [
+    pub const ALL: [Model; 52] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -609,6 +617,10 @@ impl Model {
         Model::JellyArm,
         Model::Vent,
         Model::Tree,
+        Model::CoralBush,
+        Model::CoralBrain,
+        Model::Anemone,
+        Model::SeaWhip,
     ];
 
     pub fn index(self) -> usize {
@@ -891,6 +903,10 @@ impl Model {
             Model::JellyArm => jelly_arm(),
             Model::Vent => vent(),
             Model::Tree => tree(),
+            Model::CoralBush => coral_bush(),
+            Model::CoralBrain => coral_brain(),
+            Model::Anemone => anemone(),
+            Model::SeaWhip => sea_whip(),
         }
     }
 }
@@ -1451,104 +1467,305 @@ fn rod(a: [f32; 3], b: [f32; 3], r0: f32, r1: f32, colour: [f32; 3]) -> Mesh {
     )
 }
 
-/// A tapered branch from `a` to `b`, `r0` thick at its foot and `r1` at its
-/// end, swelling into a rounded polyp there if `knob`, its colour running
-/// from `foot` to `tip`. `segments` round, coarsening to three.
+/// One knot of a [`tube`]: where its centre is, how thick it is there, its
+/// colour and its animation coordinates.
+#[derive(Clone, Copy)]
+struct Knot {
+    at: Vec3,
+    radius: f32,
+    colour: [f32; 3],
+    aux: [f32; 2],
+}
+
+/// A tube through `knots`, closed at its first and rounded off just past its
+/// last, its rings turned along the path by parallel transport so a curved
+/// limb does not twist: a coral's branch, an anemone's tentacle, a sea whip.
+/// `segments` round, coarsening to `least`. Each ring is shared by the two
+/// spans either side of it, so a bent limb is one smooth surface rather than
+/// straight pieces meeting at a crease.
+fn tube(knots: &[Knot], segments: usize, least: usize) -> Mesh {
+    let segments = fewer(segments, least);
+    let mut m = Mesh::default();
+    let n = knots.len();
+    let along = |i: usize| {
+        let a = knots[i.saturating_sub(1)].at;
+        let b = knots[(i + 1).min(n - 1)].at;
+        (b - a).normalize_or(Vec3::Y)
+    };
+    let first = along(0);
+    let reference = if first.y.abs() < 0.9 {
+        Vec3::Y
+    } else {
+        Vec3::X
+    };
+    let mut x = first.cross(reference).normalize();
+    let ring = |m: &mut Mesh, centre: Vec3, t: Vec3, x: Vec3, r: f32, k: &Knot| {
+        let z = x.cross(t);
+        (0..segments)
+            .map(|s| {
+                let a = s as f32 / segments as f32 * TAU;
+                let p = centre + (x * a.cos() + z * a.sin()) * r;
+                m.vertex(p.to_array(), k.colour, k.aux)
+            })
+            .collect::<Vec<u32>>()
+    };
+    let foot = m.vertex(knots[0].at.to_array(), knots[0].colour, knots[0].aux);
+    let mut rings = Vec::with_capacity(n + 1);
+    let mut t = first;
+    for (i, k) in knots.iter().enumerate() {
+        t = along(i);
+        x = (x - t * x.dot(t)).normalize_or(x);
+        rings.push(ring(&mut m, k.at, t, x, k.radius, k));
+    }
+    // The rounded end: one narrower ring a little past the last knot, then
+    // its pole.
+    let last = knots[n - 1];
+    rings.push(ring(
+        &mut m,
+        last.at + t * last.radius * 0.55,
+        t,
+        x,
+        last.radius * 0.8,
+        &last,
+    ));
+    let tip = m.vertex(
+        (last.at + t * last.radius * 1.05).to_array(),
+        last.colour,
+        last.aux,
+    );
+    for s in 0..segments {
+        let u = (s + 1) % segments;
+        m.tri(foot, rings[0][s], rings[0][u]);
+        for w in rings.windows(2) {
+            m.quad(w[0][s], w[1][s], w[1][u], w[0][u]);
+        }
+        let end = &rings[rings.len() - 1];
+        m.tri(end[s], tip, end[u]);
+    }
+    m.smooth()
+}
+
+/// How a branching coral grows: how many trunks leave its foot, how often
+/// and how widely they fork, how they taper and how hard they turn up
+/// toward the light.
+struct Habit {
+    /// Trunks out of the foot.
+    trunks: usize,
+    /// Forks below each trunk at full detail.
+    depth: u32,
+    /// Children at each fork.
+    forks: usize,
+    /// The chance a limb forks at all, so no two colonies' crowns match.
+    fork_chance: f32,
+    /// A trunk's length, and each generation's length as a share of its
+    /// parent's.
+    length: f32,
+    shrink: f32,
+    /// A trunk's radius at its foot, and the share it keeps to its end.
+    radius: f32,
+    taper: f32,
+    /// How far the trunks lean out from upright, and the children from their
+    /// parent, in radians.
+    spread: f32,
+    fork_angle: f32,
+    /// How much each limb bends up toward the vertical along its length.
+    rise: f32,
+    /// Sides round a trunk, and round a twig at the tips.
+    sides: usize,
+    twig_sides: usize,
+    salt: u32,
+}
+
+/// Grow one limb of a branching coral from `start` along `dir`, and its
+/// children after it. Its colour runs from the colony's shaded `foot` to its
+/// pale growing tips, each tip a little different. Coarser, the forks go
+/// from the tips inward and each limb that no longer forks reaches as far as
+/// its children would have, so the colony keeps its size and outline.
 #[allow(clippy::too_many_arguments)]
-fn branch(
-    a: [f32; 3],
-    b: [f32; 3],
-    r0: f32,
-    r1: f32,
-    knob: bool,
+fn grow(
+    m: &mut Mesh,
+    habit: &Habit,
+    start: Vec3,
+    dir: Vec3,
+    length: f32,
+    radius: f32,
+    level: u32,
     foot: [f32; 3],
-    tip: [f32; 3],
-    segments: usize,
-) -> Mesh {
-    let d = Vec3::from_array(b) - Vec3::from_array(a);
-    let length = d.length().max(1e-5);
-    let y = d / length;
-    let reference = if y.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
-    let x = y.cross(reference).normalize_or_zero();
-    let z = x.cross(y);
-    let knobbed = [
-        (0.0, 0.0),
-        (r0, 0.0),
-        (r1, 0.80),
-        (r1 * 1.7, 0.92),
-        (0.0, 1.0),
+    count: &mut u32,
+) {
+    *count += 1;
+    let id = *count;
+    let random = |salt: u32| jitter(id, habit.salt.wrapping_add(salt));
+    // The first step coarser keeps every fork and loses only sides; the
+    // next loses the last generation of twigs.
+    let deepest = habit.depth.saturating_sub(COARSER.get().saturating_sub(1));
+    let forks = level < deepest && random(1) < habit.fork_chance;
+    // A limb that stops forking early reaches as far as the generations it
+    // stands for, a little short of the full sum so the crown stays round.
+    let mut reach = length;
+    if !forks {
+        let mut child = length;
+        for _ in level..habit.depth {
+            child *= habit.shrink;
+            reach += child * 0.8;
+        }
+    }
+    let knots = if COARSER.get() >= 2 || level == habit.depth {
+        2
+    } else {
+        3
+    };
+    let generations = (habit.depth + 1) as f32;
+    // The colour of the growing tip: pale, and warmer or cooler by a shade.
+    let shade = 0.88 + 0.12 * random(2);
+    let tip = [
+        shade,
+        shade * (0.94 + 0.06 * random(3)),
+        shade * (0.92 + 0.10 * random(4)),
     ];
-    let plain = [(0.0, 0.0), (r0, 0.0), (r1, 1.0), (0.0, 1.0)];
-    let profile: &[(f32, f32)] = if knob { &knobbed } else { &plain };
-    lathe_down_to(
-        profile,
-        segments,
-        3,
-        |_, _| 1.0,
-        move |t, _| [0, 1, 2].map(|c| foot[c] + (tip[c] - foot[c]) * t),
-        |_| [0.0; 2],
+    let mut path = Vec::with_capacity(knots);
+    let mut at = start;
+    let mut heading = dir;
+    let wobble = Vec3::new(random(5) - 0.5, 0.0, random(6) - 0.5) * 0.25;
+    let end_radius = radius
+        * if forks {
+            habit.taper
+        } else {
+            habit.taper * 0.8
+        };
+    for k in 0..knots {
+        let f = k as f32 / (knots - 1) as f32;
+        let age = ((level as f32 + f * reach / length) / generations).min(1.0);
+        let pale = smooth(0.35, 1.0, age);
+        let colour = [0, 1, 2].map(|c| foot[c] + (tip[c] - foot[c]) * pale);
+        path.push(Knot {
+            at,
+            radius: radius + (end_radius - radius) * f,
+            colour,
+            aux: [0.0; 2],
+        });
+        heading = (heading + (Vec3::Y * habit.rise + wobble) / (knots - 1) as f32).normalize();
+        at += heading * reach / (knots - 1) as f32;
+    }
+    let sides = if level == 0 {
+        habit.sides
+    } else {
+        habit.twig_sides
+    };
+    m.append(tube(&path, sides, 3));
+    if !forks {
+        return;
+    }
+    let end = path[knots - 1].at;
+    let out = (path[knots - 1].at - path[knots - 2].at).normalize();
+    let side = out.cross(Vec3::Y).normalize_or(Vec3::X);
+    for c in 0..habit.forks {
+        // Children turn away from their parent's line about axes spaced
+        // round it, the first set toward the outside of the colony.
+        let round = c as f32 / habit.forks as f32 * TAU + random(7 + c as u32) * 0.8;
+        let axis = glam::Quat::from_axis_angle(out, round) * side;
+        let bend = habit.fork_angle * (0.75 + 0.5 * random(11 + c as u32));
+        let child = glam::Quat::from_axis_angle(axis, bend) * out;
+        grow(
+            m,
+            habit,
+            end - out * end_radius * 0.6,
+            child,
+            length * habit.shrink * (0.85 + 0.3 * random(15 + c as u32)),
+            end_radius * 0.9,
+            level + 1,
+            foot,
+            count,
+        );
+    }
+}
+
+/// A coral colony of `habit` on a low, lumpy crust of its own dead skeleton,
+/// which the shader beds into the sand.
+fn colony(habit: &Habit, foot: [f32; 3], crust: [f32; 3]) -> Mesh {
+    let salt = habit.salt;
+    let mut m = sphere_with(
+        1,
+        move |p| 1.0 + 0.18 * (p[0] * 6.0 + salt as f32).sin() * (p[2] * 5.0).cos(),
+        move |_| crust,
     )
-    .map(
-        move |p| {
-            let q = x * p[0] + y * (p[1] * length) + z * p[2];
-            [a[0] + q.x, a[1] + q.y, a[2] + q.z]
+    .scaled([0.12, 0.04, 0.11]);
+    let mut count = 0;
+    for k in 0..habit.trunks {
+        let a = k as f32 / habit.trunks as f32 * TAU + jitter(k as u32, salt) * 0.9;
+        let lean = habit.spread * (0.6 + 0.6 * jitter(k as u32, salt + 1));
+        // The central trunks stand straighter.
+        let lean = if k == 0 { lean * 0.3 } else { lean };
+        let dir = Vec3::new(a.cos() * lean.sin(), lean.cos(), a.sin() * lean.sin());
+        let from = Vec3::new(a.cos() * 0.04, 0.0, a.sin() * 0.04);
+        let length = habit.length * (0.8 + 0.4 * jitter(k as u32, salt + 2));
+        grow(
+            &mut m,
+            habit,
+            from,
+            dir,
+            length,
+            habit.radius,
+            0,
+            foot,
+            &mut count,
+        );
+    }
+    let top = m.vertices.iter().map(|v| v.pos[1]).fold(0.1, f32::max);
+    m.with_aux(move |p| [0.0, (p[1] / top).clamp(0.0, 1.0)])
+}
+
+/// A branching reef coral, staghorn-like: a handful of trunks leaning out
+/// of a low crust and forking twice into tapering, upturned antlers, pale at
+/// every tip. About half a unit tall and as wide.
+fn coral() -> Mesh {
+    colony(
+        &Habit {
+            trunks: 5,
+            depth: 2,
+            forks: 2,
+            fork_chance: 0.9,
+            length: 0.20,
+            shrink: 0.74,
+            radius: 0.036,
+            taper: 0.72,
+            spread: 0.85,
+            fork_angle: 0.60,
+            rise: 0.16,
+            sides: 6,
+            twig_sides: 5,
+            salt: 17,
         },
-        move |n| {
-            let q = x * n[0] + y * n[1] + z * n[2];
-            [q.x, q.y, q.z]
-        },
+        [0.62, 0.55, 0.52],
+        [0.55, 0.52, 0.48],
     )
 }
 
-/// A branching reef coral: a knobbly foot, nine arms forking up and out of
-/// it, and a round polyp at every tip. Coarser, the arms lose their sides
-/// and then their forks, each arm one branch from the foot to its tip.
-fn coral() -> Mesh {
-    let stem = [0.92, 0.86, 0.80];
-    let pale = [1.0, 0.97, 0.93];
-    let coarse = COARSER.get();
-    let mut m = branch(
-        [0.0, -0.04, 0.0],
-        [0.0, 0.16, 0.0],
-        0.15,
-        0.10,
-        false,
-        stem,
-        stem,
-        6,
-    );
-    // A knobbly foot, so it grows out of the sand rather than being stuck in
-    // it.
-    m.append(
-        sphere_with(1, |p| 1.0 + 0.12 * (p[0] * 7.0).sin(), |_| stem).scaled([0.16, 0.075, 0.15]),
-    );
-    for k in 0..9 {
-        let a = k as f32 / 9.0 * TAU + 0.2;
-        let lift = 0.24 + 0.16 * (k as f32 * 2.3).sin().abs();
-        let reach = 0.13 + 0.055 * (k as f32 * 1.7).cos().abs();
-        let mid = [
-            a.cos() * reach * 0.62,
-            0.14 + lift * 0.52,
-            a.sin() * reach * 0.62,
-        ];
-        let tip = [a.cos() * reach * 1.28, 0.14 + lift, a.sin() * reach * 1.28];
-        let root = [0.0, 0.12, 0.0];
-        if coarse >= 2 {
-            m.append(branch(root, tip, 0.055, 0.016, true, stem, pale, 3));
-            continue;
-        }
-        m.append(branch(root, mid, 0.060, 0.038, false, stem, stem, 5));
-        m.append(branch(mid, tip, 0.038, 0.012, true, stem, pale, 5));
-        // One fork off each arm, bent away from its neighbour.
-        let b = a + if k % 2 == 0 { 0.75 } else { -0.75 };
-        let fork = [
-            mid[0] + b.cos() * 0.12,
-            mid[1] + 0.10 + 0.03 * (k as f32).sin(),
-            mid[2] + b.sin() * 0.12,
-        ];
-        m.append(branch(mid, fork, 0.026, 0.009, true, pale, pale, 4));
-    }
-    m.with_aux(|p| [0.0, ((p[1] + 0.10) / 0.62).clamp(0.0, 1.0)])
+/// A bushy coral, like cauliflower or bird's-nest coral: many short, stubby
+/// branches packed into a rounded head, each forking into three blunt
+/// twigs. Lower and denser than [`coral`], so a thicket of both reads as
+/// more than one species.
+fn coral_bush() -> Mesh {
+    colony(
+        &Habit {
+            trunks: 7,
+            depth: 1,
+            forks: 3,
+            fork_chance: 0.9,
+            length: 0.16,
+            shrink: 0.75,
+            radius: 0.042,
+            taper: 0.85,
+            spread: 0.85,
+            fork_angle: 0.50,
+            rise: 0.35,
+            sides: 5,
+            twig_sides: 4,
+            salt: 41,
+        },
+        [0.66, 0.58, 0.55],
+        [0.58, 0.55, 0.50],
+    )
 }
 
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
@@ -1557,63 +1774,197 @@ fn smooth(a: f32, b: f32, v: f32) -> f32 {
 }
 
 /// A table coral: a plate of acropora spread flat on a short stout stem,
-/// its rim wavy and pale with new growth, its underside in shade. One unit
-/// across and about two thirds of a unit tall.
+/// its rim lobed, wavy and pale with new growth, its underside in shade and
+/// ribbed with the radial branches it grew from. One unit across and about
+/// two thirds of a unit tall.
 fn coral_table() -> Mesh {
     // Cupped: the plate rises to its rim, so it is never a bare line
     // seen edge on.
     let profile = [
         (0.0, 0.0),
-        (0.16, 0.0),
-        (0.10, 0.25),
-        (0.16, 0.42),
-        (0.60, 0.50),
+        (0.18, 0.0),
+        (0.11, 0.20),
+        (0.12, 0.38),
+        (0.30, 0.47),
+        (0.62, 0.53),
         (1.0, 0.66),
-        (0.95, 0.73),
-        (0.58, 0.60),
-        (0.0, 0.53),
+        (0.97, 0.72),
+        (0.62, 0.62),
+        (0.28, 0.56),
+        (0.0, 0.54),
     ];
     lathe(
         &profile,
-        14,
+        28,
         |y, a| {
-            let wave = 0.09 * (a * 5.0).sin() + 0.05 * (a * 11.0 + 1.3).sin();
+            // Lobes of every size, so the outline is no regular polygon.
+            let wave = 0.10 * (a * 3.0 + 0.7).sin()
+                + 0.07 * (a * 7.0 + 1.3).sin()
+                + 0.035 * (a * 13.0 + 2.1).sin();
             1.0 + wave * smooth(0.3, 0.6, y)
         },
         |y, a| {
-            let rim = smooth(0.60, 0.68, y) * (1.0 - smooth(0.70, 0.74, y));
-            let v = 0.82 + 0.10 * (a * 23.0).sin();
-            let under = if y < 0.5 { 0.75 } else { 1.0 };
-            let top = [v * under, v * under * 0.96, v * under * 0.92];
+            let rim = smooth(0.62, 0.69, y) * (1.0 - smooth(0.70, 0.73, y));
+            let ribs = 0.5 + 0.5 * (a * 31.0).sin();
+            let v = 0.72 + 0.10 * ribs;
+            let under = if y < 0.55 { 0.66 + 0.14 * ribs } else { 1.0 };
+            let stem = 1.0 - smooth(0.25, 0.45, y);
+            let top = [v * under, v * under * 0.95, v * under * 0.90];
+            let top = [0, 1, 2].map(|c| top[c] * (1.0 - 0.25 * stem));
             [0, 1, 2].map(|c| top[c] + (1.0 - top[c]) * rim * 0.8)
         },
         |_| [0.0; 2],
     )
 }
 
-/// Finger coral: a clump of upright, blunt-tipped fingers out of one foot.
-/// Coarser, three of the fingers go.
+/// Finger coral: a clump of upright, blunt fingers, some forked once, out of
+/// one low crust. Coarser, the forks and then a few fingers go.
 fn coral_finger() -> Mesh {
-    let base = [0.88, 0.84, 0.80];
-    let pale = [1.0, 0.98, 0.94];
-    let coarse = COARSER.get();
-    let mut m =
-        sphere_with(1, |p| 1.0 + 0.10 * (p[2] * 9.0).sin(), |_| base).scaled([0.20, 0.08, 0.20]);
-    let fingers = if coarse >= 2 { 4 } else { 7 };
-    for k in 0..fingers {
-        let a = k as f32 * 2.4;
-        let r = if k == 0 {
-            0.0
-        } else {
-            0.10 + 0.04 * (k as f32 * 1.9).sin().abs()
-        };
-        let foot = [a.cos() * r, 0.02, a.sin() * r];
-        let h = 0.32 + 0.22 * (k as f32 * 3.1).cos().abs();
-        let lean = 0.35 * r;
-        let tip = [foot[0] + a.cos() * lean, h, foot[2] + a.sin() * lean];
-        m.append(branch(foot, tip, 0.045, 0.034, true, base, pale, 5));
+    colony(
+        &Habit {
+            trunks: if COARSER.get() >= 2 { 6 } else { 9 },
+            depth: 1,
+            forks: 2,
+            fork_chance: 0.35,
+            length: 0.30,
+            shrink: 0.55,
+            radius: 0.048,
+            taper: 0.92,
+            spread: 0.38,
+            fork_angle: 0.38,
+            rise: 0.45,
+            sides: 6,
+            twig_sides: 5,
+            salt: 63,
+        },
+        [0.70, 0.64, 0.60],
+        [0.60, 0.56, 0.52],
+    )
+}
+
+/// A brain coral: a low, lumpy boulder dome on a flat foot, a unit across
+/// and three quarters of one tall. Its meandering
+/// ridges and grooves are the [`Surface::Brain`] texture's, which the model
+/// carries; the mesh adds the boulder's own swell and a shaded skirt.
+fn coral_brain() -> Mesh {
+    let mut m = sphere_with(
+        3,
+        |p| {
+            1.0 + 0.07 * (p[0] * 4.0 + 1.0).sin() * (p[2] * 3.0).cos()
+                + 0.04 * (p[1] * 5.0 + p[0] * 2.0).sin()
+        },
+        |p| {
+            // In shade toward its foot.
+            let v = 0.70 + 0.30 * smooth(-0.6, 0.5, p[1]);
+            [v, v * 0.97, v * 0.94]
+        },
+    );
+    // Flattened underneath, where it sits on the reef.
+    for v in &mut m.vertices {
+        if v.pos[1] < 0.0 {
+            v.pos[1] *= 0.2;
+        }
+        v.pos[1] = v.pos[1] * 0.65 + 0.1;
+        v.aux = [0.0, 0.0];
     }
-    m.with_aux(|p| [0.0, (p[1] / 0.55).clamp(0.0, 1.0)])
+    m.smooth()
+}
+
+/// A sea anemone: a short column under a disc, ringed by tentacles that curl
+/// out and up, pale and bright at their tips. The tentacles carry `aux.y`
+/// from root to tip, so the sway waves them and leaves the column still.
+/// Coarser, the inner ring goes and then half the outer.
+fn anemone() -> Mesh {
+    let coarse = COARSER.get();
+    let mut m = lathe(
+        &[
+            (0.0, 0.0),
+            (0.13, 0.0),
+            (0.11, 0.10),
+            (0.13, 0.18),
+            (0.17, 0.22),
+            (0.0, 0.23),
+        ],
+        10,
+        |_, _| 1.0,
+        |y, _| {
+            let v = 0.55 + 0.25 * smooth(0.0, 0.2, y);
+            [v, v * 0.92, v * 0.9]
+        },
+        |_| [0.0; 2],
+    );
+    let rings: &[(usize, f32, f32, f32)] = match coarse {
+        0 => &[(16, 0.15, 0.30, 0.95), (9, 0.08, 0.24, 0.35)],
+        1 => &[(14, 0.15, 0.30, 0.90)],
+        _ => &[(9, 0.15, 0.30, 0.90)],
+    };
+    for (r, &(count, from, length, lean)) in rings.iter().enumerate() {
+        for k in 0..count {
+            let i = (r * 32 + k) as u32;
+            let a = (k as f32 + 0.5 * r as f32) / count as f32 * TAU + 0.2 * jitter(i, 5);
+            let out = Vec3::new(a.cos(), 0.0, a.sin());
+            let length = length * (0.8 + 0.4 * jitter(i, 6));
+            let root = out * from + Vec3::Y * 0.22;
+            // Out over the rim, then curling back up.
+            let mid = root + (out * lean.sin() + Vec3::Y * lean.cos()) * length * 0.5;
+            let end = mid + (out * 0.45 + Vec3::Y).normalize() * length * 0.5;
+            let knots: Vec<Knot> = if coarse >= 2 {
+                vec![(root, 0.0), (end, 1.0)]
+            } else {
+                vec![(root, 0.0), (mid, 0.5), (end, 1.0)]
+            }
+            .into_iter()
+            .map(|(at, f)| {
+                let pale = smooth(0.3, 1.0, f);
+                let tip = 0.9 + 0.1 * jitter(i, 7);
+                Knot {
+                    at,
+                    radius: 0.024 * (1.0 - 0.45 * f),
+                    colour: [
+                        0.78 + (tip - 0.78) * pale,
+                        0.74 + (tip - 0.74) * pale,
+                        0.74 + (tip - 0.74) * pale,
+                    ],
+                    aux: [0.0, 0.25 + 0.75 * f],
+                }
+            })
+            .collect();
+            m.append(tube(&knots, 4, 3));
+        }
+    }
+    m
+}
+
+/// A clump of sea whips: long, thin gorgonian rods rising from one holdfast,
+/// each gently curved and swaying from the top. Six of them, four coarser.
+fn sea_whip() -> Mesh {
+    let coarse = COARSER.get();
+    let mut m = sphere_with(0, |_| 1.0, |_| [0.55, 0.50, 0.48]).scaled([0.05, 0.03, 0.05]);
+    let whips = if coarse >= 2 { 4 } else { 6 };
+    let knots = if coarse >= 1 { 3 } else { 5 };
+    for k in 0..whips {
+        let i = k as u32;
+        let a = k as f32 / whips as f32 * TAU + jitter(i, 21);
+        let lean = 0.10 + 0.30 * jitter(i, 22);
+        let height = 0.65 + 0.35 * jitter(i, 23);
+        let out = Vec3::new(a.cos(), 0.0, a.sin());
+        let path: Vec<Knot> = (0..knots)
+            .map(|j| {
+                let f = j as f32 / (knots - 1) as f32;
+                // Leaning out more toward the top, in a soft curve.
+                let at = out * (0.02 + lean * f * f * height) + Vec3::Y * height * f;
+                let v = 0.72 + 0.28 * smooth(0.2, 1.0, f);
+                Knot {
+                    at,
+                    radius: 0.016 * (1.0 - 0.5 * f),
+                    colour: [v, v * 0.96, v * 0.94],
+                    aux: [0.0, f],
+                }
+            })
+            .collect();
+        m.append(tube(&path, 4, 3));
+    }
+    m
 }
 
 /// A clump of sargassum weed: a flattened, lobed raft of fronds with tendrils

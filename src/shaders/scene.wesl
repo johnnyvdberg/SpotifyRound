@@ -77,6 +77,9 @@ const RELIEF_PERIOD: f32 = 64.0;
 const TEXTURE_RANGE: f32 = 1.6;
 // log2 of the surfaces' size, `textures::SIZE`.
 const SURFACE_LOD: f32 = 8.0;
+// The coral and brain coral layers of the surfaces, `textures::Surface`.
+const CORAL_LAYER: i32 = 8;
+const BRAIN_LAYER: i32 = 15;
 
 // Whether this models pipeline draws things that are fading in or out. Only
 // that one may discard fragments: the Pi's tile-based GPU skips hidden
@@ -1471,6 +1474,14 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
     }
     var colour = albedo + in.albedo * in.glow;
+    // Coral and the reef's other living tissue let light through where it
+    // is thin: a soft glow round each branch's silhouette, in its own
+    // colour, so the reef reads as flesh over stone rather than painted
+    // plaster. It costs a dot product, and only the reef's surfaces pay it.
+    if (layer == CORAL_LAYER || layer == BRAIN_LAYER) {
+        let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
+        colour += in.albedo * (rim * rim * 0.5);
+    }
     let t = g.camera.w;
     if (MATERIAL == VAULT) {
         // Cheap tunnel light: baked passage colour and rock shade, strata
@@ -1835,16 +1846,19 @@ fn fs_beam(in: Shaft) -> @location(0) vec4<f32> {
 // Coral too far off for its branches to be told apart, drawn as one cut-out
 // card standing on the seabed and turned about the vertical to face the
 // window: `place` is its foot and its height, `tint` its colour and a seed
-// for its shape, `stretch.x` its half width and `stretch.y` its form
-// (0 branching, 1 a table, 2 fingers). It is opaque and writes depth, so it
-// hides what is behind it like the models it stands in for.
+// for its shape, `stretch.x` its half width, `stretch.y` its form (0
+// staghorn, 1 a table, 2 fingers, 3 a brain coral's dome, 4 a bushy head)
+// and `stretch.z`, if not zero, how near the window the card begins to
+// dissolve into the model that takes over from it. It is opaque and writes
+// depth, so it hides what is behind it like the models it stands in for.
 struct Impostor {
     @builtin(position) position: vec4<f32>,
     // Across from -1 to 1 in units of its height, and up from 0 to 1.
     @location(0) at: vec2<f32>,
     @location(1) colour: vec3<f32>,
     @location(2) fog: vec4<f32>,
-    @location(3) @interpolate(flat) shape: vec3<f32>,
+    // Its seed, form, half width over height, and how much of it is there.
+    @location(3) @interpolate(flat) shape: vec4<f32>,
 };
 
 @vertex
@@ -1863,68 +1877,128 @@ fn vs_impostor(
     let to = g.camera.xyz - foot;
     let side = normalize(vec3<f32>(-to.z, 0.0, to.x) + vec3<f32>(1e-5, 0.0, 0.0));
     // Sunk a little, so the foot meets the sand however the ground slopes.
-    let p = foot + side * corner.x * stretch.x + vec3<f32>(0.0, corner.y * place.w - 0.01, 0.0);
+    let p = foot + side * corner.x * stretch.x + vec3<f32>(0.0, corner.y * place.w - 0.015, 0.0);
     var out: Impostor;
     out.position = project(p);
     out.at = vec2<f32>(corner.x * stretch.x / place.w, corner.y);
     let middle = foot + vec3<f32>(0.0, place.w * 0.5, 0.0);
     let facing = normalize(vec3<f32>(to.x, length(to.xz) * 0.8, to.z));
-    out.colour = tint.rgb * (light_at(middle, facing) * 0.8 + vec3<f32>(0.2));
+    // Lit as the models are: their sun and ambient light, and the glow the
+    // reef's corals are given.
+    out.colour = tint.rgb * (light_at(middle, facing) * 0.85 + vec3<f32>(0.24));
     out.fog = fog_at(middle);
-    out.shape = vec3<f32>(tint.w, stretch.y, stretch.x / place.w);
+    // Dissolving over the unit after `stretch.z`, where the model stands too.
+    let there = select(1.0, smooth01(stretch.z, stretch.z + 1.0, length(to.xz)), stretch.z > 0.0);
+    out.shape = vec4<f32>(tint.w, stretch.y, stretch.x / place.w, there);
     return out;
 }
 
-// How far `p` is outside a branch from `a` to `b`, `r` thick: negative inside.
-fn branch_out(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+// How far `p` is outside a limb from `a` to `b`, `ra` thick at `a` and `rb`
+// at `b`, its ends rounded: negative inside.
+fn limb_out(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, ra: f32, rb: f32) -> f32 {
     let ab = b - a;
     let t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
-    return length(p - a - ab * t) - r * (1.0 - 0.35 * t);
+    return length(p - a - ab * t) - mix(ra, rb, t);
+}
+
+fn seeded(seed: f32, k: f32) -> f32 {
+    return fract(sin(seed * 12.9898 + k * 78.233) * 43758.547);
 }
 
 @fragment
 fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
     let p = in.at;
     let seed = in.shape.x;
+    let form = in.shape.y;
     let wide = in.shape.z;
     var d = 1e3;
+    // How pale it is with new growth, how far round toward the window its
+    // surface faces, and how deep in a groove, for a little relief on a flat
+    // card.
     var tip = 0.0;
-    if (in.shape.y < 0.5) {
-        // Branching: arms fanning up and out of one foot, a round tip on each.
-        for (var k = 0; k < 6; k = k + 1) {
-            let f = f32(k);
-            let h = fract(sin(seed * 12.9898 + f * 78.233) * 43758.547);
-            let x = (f / 5.0 - 0.5) * 1.7 * wide + (h - 0.5) * 0.25 * wide;
-            let top = vec2<f32>(x, 0.62 + 0.38 * h);
-            let knee = vec2<f32>(x * 0.45, 0.30 + 0.15 * h);
-            d = min(d, branch_out(p, vec2<f32>(0.0, 0.0), knee, 0.11));
-            d = min(d, branch_out(p, knee, top, 0.075));
-            tip = max(tip, 1.0 - smooth01(0.0, 0.12, length(p - top)));
-        }
-    } else if (in.shape.y < 1.5) {
-        // A table: a broad plate on a short stem.
-        // A broad cupped plate on a short stem, its rim lifted.
-        let lift = 0.18 * (p.x / wide) * (p.x / wide);
-        let plate = length(vec2<f32>(p.x / wide, (p.y - 0.70 - lift) / 0.17)) - 1.0;
-        let rim = 0.05 * sin(p.x * 23.0 + seed * 7.0);
-        d = min(plate + rim, branch_out(p, vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.7), 0.10));
-        tip = smooth01(0.6, 0.95, abs(p.x / wide)) * step(0.55, p.y);
-    } else {
-        // Fingers: blunt and upright, close together.
+    var round = 1.0;
+    var groove = 0.0;
+    if (form < 0.5) {
+        // Staghorn: trunks leaning out of one foot, each forking into two
+        // upturned antlers with a pale tip, as the model grows them.
         for (var k = 0; k < 5; k = k + 1) {
             let f = f32(k);
-            let h = fract(sin(seed * 39.425 + f * 11.135) * 24634.633);
-            let x = (f / 4.0 - 0.5) * 1.5 * wide;
-            let top = vec2<f32>(x * 1.1, 0.55 + 0.45 * h);
-            d = min(d, branch_out(p, vec2<f32>(x * 0.7, 0.0), top, 0.13));
-            tip = max(tip, 1.0 - smooth01(0.0, 0.15, length(p - top)));
+            let h = seeded(seed, f);
+            let a = (f / 4.0 - 0.5) * 1.5 + (h - 0.5) * 0.35;
+            let foot = vec2<f32>(a * 0.10 * wide, 0.0);
+            let knee = vec2<f32>(sin(a) * 0.62 * wide, 0.36 + 0.12 * h);
+            d = min(d, limb_out(p, foot, knee, 0.075, 0.055));
+            for (var c = 0; c < 2; c = c + 1) {
+                let turn = a * 0.55 + (f32(c) - 0.5) * (0.7 + 0.3 * h);
+                let reach = 0.42 + 0.16 * seeded(seed, f + f32(c) * 5.0 + 9.0);
+                let end = knee + vec2<f32>(sin(turn) * reach * wide * 0.95, cos(turn) * reach);
+                d = min(d, limb_out(p, knee, end, 0.05, 0.032));
+                tip = max(tip, 1.0 - smooth01(0.0, 0.16, length(p - end)));
+            }
+        }
+        round = smooth01(0.0, 0.05, -d);
+    } else if (form < 1.5) {
+        // A table: a broad cupped plate on a short stem, its rim lifted and
+        // lobed, its underside in shade.
+        let x = p.x / wide;
+        let lift = 0.14 * x * x;
+        let rim = 0.04 * sin(x * 7.0 + seed * 7.0) + 0.02 * sin(x * 17.0 + seed);
+        let thick = 0.16 * (1.0 - 0.55 * x * x);
+        let plate = length(vec2<f32>(x * (1.0 + rim), (p.y - 0.66 - lift) / thick)) - 1.0;
+        let stem = limb_out(p, vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.62), 0.11, 0.07);
+        d = min(plate * thick, stem);
+        tip = smooth01(0.7, 0.98, abs(x)) * step(0.6, p.y);
+        round = select(0.55, 1.0, p.y > 0.66 + lift - thick * 0.2);
+    } else if (form < 2.5) {
+        // Fingers: blunt, upright and close together, of uneven height.
+        for (var k = 0; k < 7; k = k + 1) {
+            let f = f32(k);
+            let h = seeded(seed, f + 3.0);
+            let x = (f / 6.0 - 0.5) * 1.5 * wide;
+            let top = vec2<f32>(x * 1.25, 0.55 + 0.42 * h);
+            d = min(d, limb_out(p, vec2<f32>(x * 0.6, 0.0), top, 0.105, 0.09));
+            tip = max(tip, 1.0 - smooth01(0.0, 0.14, length(p - top)));
+        }
+        round = smooth01(0.0, 0.07, -d);
+    } else {
+        // A dome: a brain coral's low boulder, or a bushy head of short
+        // branches, its outline lumpy with them.
+        let bush = form > 3.5;
+        let q = vec2<f32>(p.x / wide, p.y / 0.97);
+        let angle = atan2(q.y, q.x);
+        let lumps = select(
+            0.025 * sin(angle * 7.0 + seed),
+            0.07 * sin(angle * 13.0 + seed) + 0.04 * sin(angle * 23.0 + seed * 3.0),
+            bush,
+        );
+        let r = length(q);
+        d = (r - 1.0 - lumps) * min(wide, 0.97);
+        // The dome's surface facing: up and out from its centre.
+        let z = sqrt(max(1.0 - r * r, 0.0));
+        round = 0.35 + 0.65 * clamp(q.y * 0.6 + z * 0.6, 0.0, 1.0);
+        if (bush) {
+            // Paler where its branch ends crowd the rim of the head.
+            tip = smooth01(0.6, 1.0, r) * 0.6;
+        } else {
+            // A hint of its meandering grooves: broad, as anything finer
+            // would only crawl a few pixels off.
+            let meander = sin(q.x * 9.0 + 2.0 * sin(q.y * 7.0 + seed) + seed);
+            groove = smooth01(0.3, 1.0, meander) * 0.22;
+            tip = 0.15;
         }
     }
-    if (d > 0.0) {
+    // Coverage across the edge, about a pixel wide, and how much of the card
+    // is there, are both dithered: there is no blending in this pass, and a
+    // hard cut leaves jagged, crawling edges. Interleaved gradient noise
+    // spreads the dots evenly, so a half-covered pixel reads as a soft edge.
+    let edge = clamp(0.5 - d / max(fwidth(d), 1e-4), 0.0, 1.0);
+    let dither = fract(52.982918 * fract(dot(in.position.xy, vec2<f32>(0.06711056, 0.00583715))));
+    if (edge * in.shape.w <= dither) {
         discard;
     }
-    // In shade at the foot, the paler new growth at the tips.
-    let shade = 0.55 + 0.45 * smooth01(0.0, 0.8, p.y);
-    let colour = mix(in.colour * shade, in.colour * 1.25 + vec3<f32>(0.04), tip * 0.6);
+    // In shade at the foot, darker round each branch's sides and in the
+    // grooves, the paler new growth at the tips.
+    let shade = (0.50 + 0.50 * smooth01(0.0, 0.8, p.y)) * (0.62 + 0.38 * round) * (1.0 - groove);
+    let colour = mix(in.colour * shade, in.colour * 1.2 + vec3<f32>(0.05), tip * 0.55);
     return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 0.0);
 }

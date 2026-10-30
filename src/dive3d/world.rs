@@ -1264,7 +1264,9 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::DiverBoot => carried(Surface::Plates, 6.0),
         Model::Manta => carried(Surface::Skin, 3.0),
         Model::Turtle => carried(Surface::Skin, 2.0),
-        Model::Coral | Model::CoralFinger => carried(Surface::Coral, 2.0),
+        Model::Coral | Model::CoralFinger | Model::CoralBush => carried(Surface::Coral, 2.0),
+        Model::CoralBrain => carried(Surface::Brain, 1.0),
+        Model::Anemone | Model::SeaWhip => carried(Surface::Skin, 3.0),
         Model::CoralTable => carried(Surface::Coral, 3.0),
         Model::Sargassum => carried(Surface::Kelp, 2.0),
         Model::Vent => fixed(Surface::Basalt, 2.5),
@@ -2028,12 +2030,61 @@ fn gardens(w: &World, f: &mut Frame) {
     }
 }
 
+/// The reef's colours: rose, ochre, lilac, cream, pink, sage, the olive tan
+/// of the commonest acropora and the blue of its tips, muted as living coral
+/// is under water rather than the saturated hues of a picture of it.
+const REEF_HUES: [[f32; 3]; 8] = [
+    [0.95, 0.42, 0.48],
+    [0.96, 0.62, 0.30],
+    [0.64, 0.48, 0.88],
+    [0.95, 0.86, 0.62],
+    [0.96, 0.66, 0.68],
+    [0.52, 0.78, 0.62],
+    [0.80, 0.70, 0.42],
+    [0.50, 0.68, 0.88],
+];
+
+/// One colony's colour: a hue of the reef's, a little lighter or darker and
+/// warmer or cooler than its neighbours', so a thicket of one species is not
+/// a row of identical copies.
+fn reef_hue(ix: i32, iz: i32, salt: u32) -> [f32; 3] {
+    let hue = REEF_HUES[(hash(ix, iz, salt) * REEF_HUES.len() as f32) as usize % REEF_HUES.len()];
+    let light = 0.86 + 0.20 * hash(ix, iz, salt + 1);
+    let warm = (hash(ix, iz, salt + 2) - 0.5) * 0.12;
+    [
+        (hue[0] * light + warm).clamp(0.0, 1.0),
+        (hue[1] * light).clamp(0.0, 1.0),
+        (hue[2] * light - warm).clamp(0.0, 1.0),
+    ]
+}
+
+/// A brain coral's colour: the tans, greens and muted mauves of the
+/// boulder corals, a little lighter or darker from one to the next.
+fn brain_hue(ix: i32, iz: i32, salt: u32) -> [f32; 3] {
+    const HUES: [[f32; 3]; 4] = [
+        [0.84, 0.72, 0.46],
+        [0.58, 0.74, 0.52],
+        [0.92, 0.66, 0.42],
+        [0.80, 0.64, 0.70],
+    ];
+    let hue = HUES[(hash(ix, iz, salt) * 4.0) as usize % 4];
+    let light = 0.88 + 0.18 * hash(ix, iz, salt + 1);
+    hue.map(|c| (c * light).min(1.0))
+}
+
 /// The reef between the gardens' bommies: one small coral to a cell, close
-/// enough that the floor reads as reef rather than sand. Near the window each
-/// is a model; further off, where its branches can no longer be told apart,
-/// it is a cut-out card in [`Frame::impostors`], which costs a quad.
+/// enough that the floor reads as reef rather than sand, of seven kinds:
+/// staghorn and bushy branching corals, finger, table and brain corals,
+/// anemones and sea whips. Near the window each is a model; further off,
+/// where its branches can no longer be told apart, it is a cut-out card in
+/// [`Frame::impostors`], which costs a quad. The two overlap for a unit
+/// either side of the switch, the card dissolving as the window nears it
+/// (`fs_impostor`), so a coral grows into its model rather than popping. The
+/// anemones and whips are too small to need a card.
 fn reef(w: &World, f: &mut Frame) {
     const MODELS: f32 = 4.0;
+    /// How far inside [`MODELS`] the cards still stand, dissolving.
+    const BAND: f32 = 1.1;
     let c = w.pose.pos;
     let out = w.pose.basis[2];
     let ahead = [c[0] + out[0] * 8.0, c[2] + out[2] * 8.0];
@@ -2041,14 +2092,6 @@ fn reef(w: &World, f: &mut Frame) {
     {
         return;
     }
-    let palettes = [
-        [1.00, 0.35, 0.46],
-        [1.00, 0.60, 0.22],
-        [0.66, 0.40, 0.92],
-        [1.00, 0.86, 0.56],
-        [1.00, 0.70, 0.72],
-        [0.45, 0.80, 0.62],
-    ];
     for &(ix, iz, x, z) in &cells(w, 0.32, 0.6, 10.0, 60) {
         let coral = w.biome(x, z).weight(CORAL) as f32;
         let needs = hash(ix, iz, 61) * 0.7 + 0.3;
@@ -2058,46 +2101,70 @@ fn reef(w: &World, f: &mut Frame) {
         let y = w.ground(x, z);
         let grown = fade(coral, needs);
         let depth = (x - c[0]) * out[0] + (z - c[2]) * out[2];
-        let hue = palettes[(hash(ix, iz, 62) * 6.0) as usize % 6];
         let form = hash(ix, iz, 63);
+        let hue = if (0.76..0.86).contains(&form) {
+            brain_hue(ix, iz, 62)
+        } else {
+            reef_hue(ix, iz, 62)
+        };
         let yaw = hash(ix, iz, 64) * TAU;
         let s = 0.10 + 0.12 * hash(ix, iz, 65);
-        // Its kind, and its height and half width in units of `s`.
-        let (model, kind, tall, half) = if form < 0.5 {
-            (Model::Coral, 0.0, 0.55, 0.24)
-        } else if form < 0.75 {
-            (Model::CoralFinger, 2.0, 0.55, 0.22)
+        let tall_by = 0.85 + 0.3 * hash(ix, iz, 68);
+        // Its model, its impostor's form (none for the small ones), its
+        // scale, and its height and half width in units of that scale.
+        let (model, kind, s, tall, half) = if form < 0.28 {
+            (Model::Coral, Some(0.0), s, 0.45, 0.30)
+        } else if form < 0.46 {
+            (Model::CoralBush, Some(4.0), s * 1.1, 0.31, 0.20)
+        } else if form < 0.62 {
+            (Model::CoralFinger, Some(2.0), s, 0.54, 0.18)
+        } else if form < 0.76 {
+            (Model::CoralTable, Some(1.0), s * 0.75, 0.72, 1.05)
+        } else if form < 0.86 {
+            (Model::CoralBrain, Some(3.0), s * 0.5, 0.76, 0.95)
+        } else if form < 0.94 {
+            (Model::Anemone, None, s * 0.6, 0.49, 0.33)
         } else {
-            (Model::CoralTable, 1.0, 0.55, 0.75)
+            (Model::SeaWhip, None, s * 0.8, 1.0, 0.3)
         };
         if depth < MODELS {
             if !w.visible([x, y + 0.1, z], 0.25) {
                 continue;
             }
             f.fade = grown;
-            let (scale, tilt) = if kind == 1.0 {
-                (
-                    [s * 0.75, s * 0.75, s * 0.75],
-                    (hash(ix, iz, 67) - 0.5) * 0.3,
-                )
-            } else {
-                ([s; 3], 0.0)
+            let tilt = match model {
+                Model::CoralTable => (hash(ix, iz, 67) - 0.5) * 0.3,
+                Model::CoralBrain | Model::Anemone => 0.0,
+                _ => (hash(ix, iz, 67) - 0.5) * 0.2,
             };
-            let rows = place([x, y - 0.01, z], yaw, tilt, tilt * 0.5, scale);
+            let rows = place([x, y - 0.01, z], yaw, tilt, tilt * 0.5, [s, s * tall_by, s]);
             let instance = f.put(model, rows, hue);
-            if kind != 1.0 {
-                instance.moving(anim::SWAY, yaw, 0.015, 0.4);
+            match model {
+                Model::CoralTable | Model::CoralBrain => {}
+                Model::Anemone => {
+                    instance.moving(anim::SWAY, yaw, 0.05, 0.8);
+                }
+                Model::SeaWhip => {
+                    instance.moving(anim::SWAY, yaw, 0.08, 0.5);
+                }
+                _ => {
+                    instance.moving(anim::SWAY, yaw, 0.015, 0.4);
+                }
             }
-            instance.glowing(0.28).grounded();
-        } else {
-            let height = tall * s * grown;
+            instance.glowing(0.26).grounded();
+        }
+        let Some(kind) = kind else {
+            continue;
+        };
+        if depth > MODELS - BAND {
+            let height = tall * s * tall_by * grown;
             if height < 0.01 || !w.visible([x, y + height * 0.5, z], height) {
                 continue;
             }
             f.impostors.push(Sprite {
                 place: [x, y, z, height],
                 tint: [hue[0], hue[1], hue[2], hash(ix, iz, 66) * 10.0],
-                stretch: [half * s * grown, kind, 0.0, 0.0],
+                stretch: [half * s * grown, kind, MODELS - BAND, 0.0],
             });
         }
     }
@@ -2126,17 +2193,10 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
         z,
         yaw,
     } = site;
-    let palettes = [
-        [1.00, 0.35, 0.46],
-        [1.00, 0.60, 0.22],
-        [0.66, 0.40, 0.92],
-        [1.00, 0.86, 0.56],
-        [1.00, 0.70, 0.72],
-    ];
-    let hue = |salt: u32| palettes[(hash(ix, iz, salt) * 5.0) as usize % 5];
+    let hue = |salt: u32| reef_hue(ix, iz, salt);
     let roll = hash(ix, iz, 80);
     if roll < 0.30 {
-        // A thicket of branching coral.
+        // A thicket of branching coral, staghorn and bushy heads together.
         let heads = 4 + (hash(ix, iz, 81) * 4.0) as i32;
         for k in 0..heads {
             let a = yaw + k as f32 * 2.1;
@@ -2146,8 +2206,13 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
                 continue;
             }
             let s = 0.20 + 0.18 * hash(ix, iz + k, 83);
+            let (model, s) = if hash(ix + k, iz, 95) < 0.35 {
+                (Model::CoralBush, s * 1.15)
+            } else {
+                (Model::Coral, s)
+            };
             f.put(
-                Model::Coral,
+                model,
                 place(
                     p,
                     yaw + k as f32 * 1.7,
@@ -2238,27 +2303,44 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
                 .grounded();
         }
     } else if roll < 0.78 {
-        // A brain coral: a low, lumpy dome.
-        let s = 0.11 + 0.09 * hash(ix, iz, 90);
+        // A brain coral: a low boulder dome, sometimes with a smaller one
+        // beside it, and an anemone in the lee of the two.
+        let s = 0.13 + 0.10 * hash(ix, iz, 90);
         if w.visible([x, y + 0.04, z], s) {
-            for k in 0..3 {
+            let domes = 1 + (hash(ix, iz, 96) < 0.5) as i32;
+            for k in 0..domes {
                 let a = yaw + k as f32 * 2.4;
-                let p = [x + a.cos() * s * 0.35, y + 0.02, z + a.sin() * s * 0.35];
+                let r = s * (1.0 - 0.4 * k as f32);
+                let p = [
+                    x + a.cos() * s * 0.9 * k as f32,
+                    y - 0.015,
+                    z + a.sin() * s * 0.9 * k as f32,
+                ];
                 f.put(
-                    Model::Sphere,
-                    place(p, a, 0.0, 0.0, [s * (1.0 - k as f32 * 0.18), s * 0.55, s]),
-                    if k == 0 {
-                        [0.92, 0.46, 0.38]
-                    } else {
-                        hue(91 + k as u32)
-                    },
+                    Model::CoralBrain,
+                    place(
+                        p,
+                        a,
+                        0.0,
+                        0.0,
+                        [r, r * (0.75 + 0.3 * hash(ix + k, iz, 97)), r],
+                    ),
+                    brain_hue(ix, iz, 91 + k as u32),
                 )
-                .textured(crate::dive3d::textures::Surface::Coral, 2.0)
                 .glowing(0.16)
                 .grounded();
             }
+            if hash(ix, iz, 98) < 0.6 {
+                let a = yaw - 1.7;
+                let p = [x + a.cos() * s * 1.2, y - 0.01, z + a.sin() * s * 1.2];
+                let r = 0.08 + 0.05 * hash(ix, iz, 99);
+                f.put(Model::Anemone, place(p, a, 0.0, 0.0, [r, r, r]), hue(100))
+                    .moving(anim::SWAY, a, 0.05, 0.8)
+                    .glowing(0.24)
+                    .grounded();
+            }
         }
-    } else if roll < 0.9 {
+    } else if roll < 0.84 {
         let hue = if hash(ix, iz, 88) < 0.5 {
             [0.85, 0.40, 0.52]
         } else {
@@ -2268,6 +2350,57 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
         f.put(Model::Fan, place([x, y, z], yaw, 0.0, 0.0, [s, s, s]), hue)
             .moving(anim::SWAY, yaw, 0.15, 0.7)
             .grounded();
+    } else if roll < 0.9 {
+        // Soft corals: a clump of sea whips, or a few tube sponges, with an
+        // anemone at their foot.
+        if hash(ix, iz, 130) < 0.5 {
+            let s = 0.22 + 0.14 * hash(ix, iz, 131);
+            let tint = hue(132);
+            f.put(
+                Model::SeaWhip,
+                place([x, y - 0.01, z], yaw, 0.0, 0.0, [s, s, s]),
+                tint,
+            )
+            .moving(anim::SWAY, yaw, 0.08, 0.5)
+            .glowing(0.2)
+            .grounded();
+        } else {
+            let tint = [[0.78, 0.52, 0.70], [0.86, 0.66, 0.36], [0.56, 0.62, 0.84]]
+                [(hash(ix, iz, 133) * 3.0) as usize % 3];
+            for k in 0..3 {
+                let a = k as f32 * 2.1 + yaw;
+                let h = 0.07 + 0.08 * hash(ix, iz, 134 + k);
+                f.put(
+                    Model::Sponge,
+                    place(
+                        [x + a.cos() * 0.04, y - 0.005, z + a.sin() * 0.04],
+                        a,
+                        (hash(ix + k as i32, iz, 137) - 0.5) * 0.3,
+                        0.0,
+                        [0.022, h, 0.022],
+                    ),
+                    tint,
+                )
+                .glowing(0.18)
+                .grounded();
+            }
+        }
+        let a = yaw + 2.6;
+        let r = 0.06 + 0.05 * hash(ix, iz, 138);
+        f.put(
+            Model::Anemone,
+            place(
+                [x + a.cos() * 0.12, y - 0.01, z + a.sin() * 0.12],
+                a,
+                0.0,
+                0.0,
+                [r, r, r],
+            ),
+            hue(139),
+        )
+        .moving(anim::SWAY, a, 0.05, 0.8)
+        .glowing(0.24)
+        .grounded();
     } else if hash(ix, iz, 90) < 0.6 {
         let s = 0.04 + 0.03 * hash(ix, iz, 91);
         f.put(

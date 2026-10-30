@@ -750,8 +750,8 @@ mod effect {
         (
             "coral",
             CORALS,
-            "Coral, CoralTable, CoralFinger",
-            "the reef's branching, table and finger corals",
+            "Coral, CoralTable, CoralFinger, CoralBush, CoralBrain, Anemone, SeaWhip",
+            "the reef's branching, table, finger, bush and brain corals, anemones and sea whips",
         ),
         ("sargassum", SARGASSUM, "Sargassum", "sargasso weed rafts"),
         ("trees", TREES, "Tree", "the forest's branching trees"),
@@ -831,7 +831,13 @@ fn model_bit(model: usize) -> u64 {
         Model::Fan => effect::FANS,
         Model::Star => effect::STARS,
         Model::Sponge => effect::SPONGES,
-        Model::Coral | Model::CoralTable | Model::CoralFinger => effect::CORALS,
+        Model::Coral
+        | Model::CoralTable
+        | Model::CoralFinger
+        | Model::CoralBush
+        | Model::CoralBrain
+        | Model::Anemone
+        | Model::SeaWhip => effect::CORALS,
         Model::Sargassum => effect::SARGASSUM,
         Model::Tree => effect::TREES,
         Model::Vent => effect::VENTS,
@@ -1885,11 +1891,15 @@ impl Nautilus {
                 // distance: bias its LOD choice so the far half uses it. The
                 // branching corals' coarser levels change only the shading
                 // across branches a few pixels wide, not along the long thin
-                // triangles their edge measure sees, so they go coarser too.
+                // triangles their edge measure sees, so they go coarser too,
+                // as do the anemones' tentacles and the sea whips.
                 let bias = if model == mesh::Model::Kelp as usize {
                     2.0
                 } else if model == mesh::Model::Coral as usize
                     || model == mesh::Model::CoralFinger as usize
+                    || model == mesh::Model::CoralBush as usize
+                    || model == mesh::Model::Anemone as usize
+                    || model == mesh::Model::SeaWhip as usize
                 {
                     4.0
                 } else {
