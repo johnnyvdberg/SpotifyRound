@@ -45,6 +45,7 @@ use std::f32::consts::TAU;
 
 use super::world::{
     ATLANTIS, CAVE, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope,
+    tunnel_stretch,
 };
 use crate::voyage::{Position, SPEED};
 
@@ -113,9 +114,22 @@ const BANK: f32 = 0.035;
 const BRISK: f32 = 3.0;
 /// How far round the helmsman would set the boat across the cave's tunnel to
 /// look up it, and the fastest he swings it. The tunnel's walls allow less
-/// where they close in or the boat rides high under the vault.
-pub const LOOK: f32 = 0.55;
+/// where they close in or the boat rides high under the vault. Sixty
+/// degrees: the window looks thirty off the tunnel's line, across each hall
+/// to its far end, and the hull, a third of its length across, still clears
+/// the narrows between.
+pub const LOOK: f32 = 1.05;
 const CRAB_RATE: f32 = 0.008;
+/// The fastest the nose turns all told, course, swing and crab together, in
+/// radians a second: the tightest turn a hull of its size makes at cruising
+/// speed is about three hull lengths. The crab takes what the course and the
+/// swing leave of it, so it comes on as briskly as the boat may turn.
+const TURN: f32 = 0.0095;
+/// How far ahead of the tunnel's mouth, in world units, the helmsman starts
+/// setting the boat across: so the window is already looking ahead at the
+/// cliff and its mouth as the boat comes up to it, and the crab is well on
+/// by the first hall.
+const CRAB_AHEAD: f32 = 7.0;
 /// How far round the helmsman swings the boat off its track in open water,
 /// either way, and the fastest he swings it: sixteen degrees, so the window
 /// sees nearly a third of the boat's way coming at it or falling away from
@@ -198,6 +212,10 @@ impl Spring {
 const GATE_TURN: f32 = 0.13 * (crate::voyage::LEG as f32 / 5.0);
 const GATE_PERIOD: f32 = 2.0 * crate::voyage::LEG as f32;
 
+/// How far the tunnel runs from [`cave_start`]: from a little before the
+/// cave's leg to most of the way through it.
+const TUNNEL_RUN: f32 = 0.98 * crate::voyage::LEG as f32;
+
 /// The weave that puts the turns at the biome boundaries: a cosine, whose
 /// second derivative is greatest (and heading straight across the corridor)
 /// exactly at each boundary.
@@ -210,8 +228,9 @@ fn gate(x: f32, open: f32) -> (f32, f32) {
 }
 
 /// The start of the nearest stretch of lava cave along the corridor, in
-/// world x, if this visit has one. The tunnel is about five units long, and
-/// the gate's weave eases out over the five before it.
+/// world x, if this visit has one. The tunnel runs nearly the leg's length
+/// ([`TUNNEL_RUN`]), and the gate's weave eases out over the five units
+/// before it and back in over the five after.
 fn cave_start(seabed: &Seabed, x: f32) -> Option<f32> {
     let leg = seabed.order.iter().position(|&b| b == CAVE)? as f32;
     let leg_length = crate::voyage::LEG as f32;
@@ -239,7 +258,7 @@ fn track(x: f32, phase: f32, open: f32) -> (f32, f32) {
 /// the biome blend's own short ramp into the tunnel.
 fn open(seabed: &Seabed, x: f32) -> f32 {
     cave_start(seabed, x).map_or(1.0, |cave| {
-        let out = (cave - x).max(x - (cave + 5.2)).max(0.0);
+        let out = (cave - x).max(x - (cave + TUNNEL_RUN)).max(0.0);
         smooth(0.0, 5.0, out)
     })
 }
@@ -498,7 +517,7 @@ impl Helm {
             // window looks up it, from a little before the mouth until the far
             // one, no farther than the hull fits.
             let cave = |at: f32| seabed.share(at, corridor(at), CAVE);
-            let wanted = LOOK * smooth(0.3, 0.9, cave(x).max(cave(x + 1.5)));
+            let wanted = LOOK * smooth(0.3, 0.9, cave(x).max(cave(x + CRAB_AHEAD)));
             let fits = if wanted > 0.0 || self.crab.value > 0.0 {
                 self.fits(seabed, x, z)
             } else {
@@ -515,12 +534,14 @@ impl Helm {
                 fits
             };
             let before = self.crab.value;
+            let spare = (TURN - self.course.rate.abs() - self.swing.rate.abs())
+                .clamp(0.3 * CRAB_RATE, TURN);
             self.crab
-                .follow(wanted.min(ahead), 0.12, attitude_dt, CRAB_RATE);
+                .follow(wanted.min(ahead), 0.12, attitude_dt, spare);
             // Should the walls close in, straighten up at once, but no faster
             // than the boat turns; the keel's metre of water covers the lag.
             if self.crab.value > fits {
-                let back = (before - CRAB_RATE * attitude_dt).max(fits);
+                let back = (before - TURN * attitude_dt).max(fits);
                 self.crab.rate = self.crab.rate.min(0.0);
                 self.crab.value = back;
             }
@@ -573,8 +594,6 @@ impl Helm {
         // Take the arch's narrowest, most ragged radius, and reckon with it
         // from well before the mouth, so the boat is never set across
         // farther than the tunnel will take it.
-        let wide = TUNNEL * 0.91 - KEEL;
-        let high = 0.85 * TUNNEL * 0.91 - KEEL;
         let course = self.course.value + self.swing.value;
         let c0 = course.cos();
         let centres = STATIONS.map(|along| {
@@ -589,9 +608,21 @@ impl Helm {
                     return true;
                 };
                 let (px, pz) = (x + along * c, z - along * s);
+                // As wide and high as the arch is where this station is, in
+                // a hall or a narrows.
+                let (wide, high) = tunnel_stretch(px);
+                let (wide, high) = (
+                    TUNNEL * wide * 0.91 - KEEL,
+                    0.85 * TUNNEL * high * 0.91 - KEEL,
+                );
                 let r = girth(along);
                 let across = pz - corridor(px);
-                let up = self.height.value - centre + along * self.pitch.value.sin();
+                // Where the floor falls away into the mouth, the bow is over
+                // a vault still coming down, and the height, not the crab,
+                // must clear it (`ceiling`): reckon the hull no higher than
+                // half the arch, so the crab is judged by the walls alone.
+                let up = (self.height.value - centre + along * self.pitch.value.sin())
+                    .min(0.5 * high);
                 [(r, 0.0), (-r, 0.0), (0.0, r)].iter().all(|&(dz, dy)| {
                     ((across + dz) / wide).powi(2) + ((up + dy) / high).powi(2) <= 1.0
                 })

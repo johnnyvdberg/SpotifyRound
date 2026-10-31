@@ -369,7 +369,8 @@ fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f
         // itself, so the floor the helm follows and the vault are unchanged.
         let ledges =
             2.0 * smooth(-0.35, 0.35, (TAU * across.abs() / 1.2 + 0.4 * detail).sin()) - 1.0;
-        let near = smooth(0.45, 0.9, across.abs());
+        let k = tunnel_stretch(x).0;
+        let near = smooth(0.45 * k, 0.9 * k, across.abs());
         shape += cave * near * (0.25 * ledges + 0.12 * detail);
     }
     let abyss = weight(ABYSS);
@@ -460,6 +461,65 @@ pub const MASSIF: f32 = 4.5;
 /// The cave's share of the biome mix from which its tunnel is built.
 pub const TUNNEL_SHARE: f32 = 0.85;
 
+/// The tunnel is not one bore but a string of halls joined by narrows: three
+/// halls to a leg, the first a tenth of the way in, so every cave has them in
+/// the same places along its length and the shader's massif, which knows only
+/// `x`, agrees with the arch. In a narrows the arch is half as wide again as
+/// the old bore and a little higher; in a hall nearly three times as wide
+/// and twice as high, so the window, which can only look sideways, looks
+/// across a floor to a far wall several hull lengths off instead of into the
+/// rock beside the glass.
+const HALLS: f32 = 3.0;
+const HALL_AT: f32 = 0.10;
+const NARROWS_WIDE: f32 = 1.55;
+const NARROWS_HIGH: f32 = 1.15;
+const HALL_WIDE: f32 = 2.8;
+const HALL_HIGH: f32 = 1.9;
+
+/// How far the tunnel has opened into a hall at `x`: one through a hall's
+/// middle stretch, easing to nothing in the narrows between. As `hall` in
+/// `scene.wesl`.
+pub fn hall(x: f32) -> f32 {
+    let u = (x / crate::voyage::LEG as f32 * HALLS - HALL_AT * HALLS + 0.5).rem_euclid(1.0) - 0.5;
+    smooth(0.30, 0.10, u.abs())
+}
+
+/// What fills each of a cave's three halls, in order through the tunnel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HallKind {
+    /// A fall of molten rock down the far wall into a glowing river along
+    /// its foot, and the ember pool in its nook.
+    Forge,
+    /// Colonies of luminous things on the walls, a still pool lit from
+    /// within, and the crystal pocket.
+    Grotto,
+    /// The organ of basalt columns, a shaft of pale light from a chimney in
+    /// the vault, and the abandoned camp.
+    Colonnade,
+}
+
+/// One hall of a cave: what is in it and the middle of it along the voyage.
+#[derive(Clone, Copy, Debug)]
+pub struct Hall {
+    pub kind: HallKind,
+    pub x: f32,
+}
+
+/// The tunnel's stretch at `x`: how many times the old bore's radius it is
+/// across, and how many times its height.
+pub fn tunnel_stretch(x: f32) -> (f32, f32) {
+    let g = hall(x);
+    (
+        NARROWS_WIDE + (HALL_WIDE - NARROWS_WIDE) * g,
+        NARROWS_HIGH + (HALL_HIGH - NARROWS_HIGH) * g,
+    )
+}
+
+/// The tunnel's half-width at `x`, before its ragged edge.
+pub fn tunnel_wide(x: f32) -> f32 {
+    TUNNEL * tunnel_stretch(x).0
+}
+
 /// What lies off the lava cave's tunnel, glimpsed as the Nautilus passes:
 /// passages to places it never goes, each lit by what is in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -511,6 +571,11 @@ pub struct Opening {
     pub depth: f32,
     pub bend: f32,
     pub rise: f32,
+    /// Where it leaves the tunnel, across from the corridor: the wall for a
+    /// side passage, the vault (across and up) for a chimney. The tunnel's
+    /// width changes along it, so each opening takes the wall where it is.
+    pub wall: f32,
+    pub crown: [f32; 2],
 }
 
 /// What is tucked into one of the tunnel's shallow side nooks: a pocket of
@@ -539,8 +604,11 @@ pub struct Nook {
     pub spread: f32,
 }
 
-/// The nooks in each cave, through the tunnel's length.
+/// The nooks in each cave, one to a hall.
 const NOOKS: usize = 3;
+/// How much larger a nook's things are than they were by the old bore's
+/// wall, now that the window sees them from across a hall.
+const NOOK_GROW: f32 = 1.7;
 
 /// The tunnel's rings: how far apart, and how many points round each.
 const RING_STEP: f32 = 0.1;
@@ -578,12 +646,12 @@ impl Opening {
             let t = [2.0 * self.bend * s, self.depth];
             let l = (t[0] * t[0] + t[1] * t[1]).sqrt();
             (
-                [x, WALL + self.depth * s, 0.2 + self.rise * s * s],
+                [x, self.wall + self.depth * s, 0.2 + self.rise * s * s],
                 [t[1] / l, -t[0] / l],
             )
         } else {
             (
-                [x, CHIMNEY_O + 0.35 * s, CHIMNEY_H + self.depth * s],
+                [x, self.crown[0] + 0.35 * s, self.crown[1] + self.depth * s],
                 [1.0, 0.0],
             )
         }
@@ -709,7 +777,7 @@ impl Seabed {
         // The lava cave's massif, rising either side of its tunnel.
         let mut massif = b.weight(CAVE) as f32
             * MASSIF
-            * smooth(TUNNEL * 1.05, TUNNEL * 1.8, off)
+            * smooth(tunnel_wide(x) * 1.05, tunnel_wide(x) * 1.8, off)
             * (0.85 + 0.3 * vnoise(x * 0.4, z * 0.4, 5));
         // Cut back to the floor where a side passage runs into it. Only here:
         // the shader's `ground` beds models in the sand, and nothing it beds
@@ -745,16 +813,20 @@ impl Seabed {
             let j = (hash(ki, i as i32, 700 + salt) * (i + 1) as f32) as usize;
             kinds.swap(i, j.min(i));
         }
-        // The five secrets are spread through the long tunnel, not bunched
-        // at its mouth: the side passages step along most of the leg, and
-        // the chimney rises from the vault between the first two.
+        // The five secrets lie in the two narrows between the halls, two
+        // passages to each, at the narrows' ends where the window, looking
+        // up the tunnel, sees each mouth from across the hall before it; the
+        // chimney rises from the vault of the first narrows, between its two.
         Some(std::array::from_fn(|i| {
             let h = |n: u32| hash(ki, i as i32, 710 + n + salt);
             let kind = kinds[i];
             let along = if kind == Secret::Chimney {
-                0.31
+                0.252
             } else {
-                0.18 + i as f32 * 0.21
+                // Inside the narrows (`hall` is nothing from 0.2 to 0.333
+                // of the leg, and again a third on), bend and all: a
+                // passage running on into a hall would hang in its water.
+                [0.212, 0.292, 0.545, 0.625][i.min(3)]
             };
             let x = (k + along) * leg + (h(0) - 0.5) * 0.06;
             // Bent on ahead, all alike so none runs into the next, so the
@@ -768,6 +840,7 @@ impl Seabed {
                 Secret::Door => (0.17, 1.2, 0.3, 0.0),
                 Secret::Chimney => (0.15, 1.6, 0.30, 0.0),
             };
+            let (k, v) = tunnel_stretch(x);
             Opening {
                 kind,
                 x,
@@ -775,14 +848,40 @@ impl Seabed {
                 depth: depth * (0.9 + 0.2 * h(1)),
                 bend: bend * toward,
                 rise,
+                wall: WALL * k,
+                crown: [
+                    CHIMNEY_O * k,
+                    0.25 * TUNNEL + (CHIMNEY_H - 0.25 * TUNNEL) * v,
+                ],
             }
         }))
     }
 
-    /// The cave's three shallow nooks, in the same frame as the openings:
-    /// one low on the window side for a camp, one higher for crystals, and
-    /// one low for a pool of lava. They sit between the passages, so the
-    /// tunnel's mouth and every passage's opening stay clear.
+    /// The leg of the cave nearest `x`, if a cave is near.
+    fn cave_leg(&self, x: f32) -> Option<f32> {
+        let leg = crate::voyage::LEG as f32;
+        let u = (x / leg).floor();
+        [u, u + 1.0]
+            .into_iter()
+            .find(|k| Biome::at(f64::from((k + 0.5) * leg), self.seed).a == CAVE)
+    }
+
+    /// The cave's three halls, where its tunnel opens out (`hall`).
+    pub fn halls(&self, x: f32) -> Option<[Hall; 3]> {
+        let k = self.cave_leg(x)?;
+        let leg = crate::voyage::LEG as f32;
+        let kinds = [HallKind::Forge, HallKind::Grotto, HallKind::Colonnade];
+        Some(std::array::from_fn(|i| Hall {
+            kind: kinds[i],
+            x: (k + HALL_AT + i as f32 / HALLS) * leg,
+        }))
+    }
+
+    /// The cave's three nooks, in the same frame as the openings: one in the
+    /// far wall of each hall, at about the window's height, where the window
+    /// sees it from across the hall's floor rather than from an arm's length.
+    /// The lava pool is in the first hall, by the fall; the crystals in the
+    /// second, the grotto; the camp in the third, among the columns.
     pub fn nooks(&self, x: f32) -> Option<[Nook; NOOKS]> {
         let leg = crate::voyage::LEG as f32;
         let u = (x / leg).floor();
@@ -793,18 +892,21 @@ impl Seabed {
         let salt = self.seed.to_bits() & 0xffff;
         Some(std::array::from_fn(|i| {
             let h = |n: u32| hash(ki, i as i32, 730 + n + salt);
-            let (kind, along, angle, depth) = match i {
-                0 => (NookKind::Camp, 0.10, -0.06, 0.20),
-                1 => (NookKind::Crystal, 0.50, 0.34, 0.27),
-                _ => (NookKind::Ember, 0.70, 0.05, 0.22),
+            // A little past each hall's middle: the window looks ahead, up
+            // the hall, so it frames the nook while the boat is still in it.
+            let (kind, angle, depth) = match i {
+                0 => (NookKind::Ember, 0.02, 0.16),
+                1 => (NookKind::Crystal, 0.10, 0.18),
+                _ => (NookKind::Camp, 0.0, 0.15),
             };
+            let along = HALL_AT + i as f32 / HALLS + 0.035;
             Nook {
                 kind,
-                x: (k + along) * leg + (h(0) - 0.5) * 0.03,
-                a: angle * PI + (h(1) - 0.5) * 0.10,
+                x: (k + along) * leg + (h(0) - 0.5) * 0.10,
+                a: angle * PI + (h(1) - 0.5) * 0.06,
                 depth: depth * (0.85 + 0.3 * h(2)),
-                width: 0.10 + 0.04 * h(3),
-                spread: 0.16 + 0.06 * h(4),
+                width: 0.36 + 0.08 * h(3),
+                spread: 0.20 + 0.05 * h(4),
             }
         }))
     }
@@ -826,7 +928,8 @@ impl Seabed {
     /// How far the side passages clear the massif at (x, o): 1 within one,
     /// where the rock is cut back to the tunnel's floor.
     fn bay(&self, x: f32, o: f32) -> f32 {
-        if !(0.85..3.3).contains(&o) {
+        let k = tunnel_stretch(x).0;
+        if !(0.85 * k..WALL * k + 2.3).contains(&o) {
             return 0.0;
         }
         let Some(openings) = self.openings(x) else {
@@ -836,11 +939,11 @@ impl Seabed {
             .iter()
             .filter(|p| p.side())
             .map(|p| {
-                let s = ((o - WALL) / p.depth).clamp(0.0, 1.0);
+                let s = ((o - p.wall) / p.depth).clamp(0.0, 1.0);
                 let (c, _) = p.path(s);
                 let width = p.half * (1.0 + 0.1 * s) + 0.12;
                 smooth(width + 0.12, width, (x - c[0]).abs())
-                    * smooth(WALL + p.depth + 0.4, WALL + p.depth + 0.2, o)
+                    * smooth(p.wall + p.depth + 0.4, p.wall + p.depth + 0.2, o)
             })
             .fold(0.0, f32::max)
     }
@@ -855,7 +958,7 @@ impl Seabed {
                     && if side {
                         o > 0.3
                     } else {
-                        (-0.05..0.8).contains(&o)
+                        (p.crown[0] - 0.42..p.crown[0] + 0.43).contains(&o)
                     }
             })
         })
@@ -1051,6 +1154,7 @@ fn window_fade(w: &World, p: [f32; 3], radius: f32) -> f32 {
 /// The lengths of a frame's lists at one moment.
 struct Mark {
     solid: Vec<usize>,
+    glass: Vec<usize>,
     sprites: usize,
     lights: usize,
 }
@@ -1167,8 +1271,39 @@ impl Frame {
     fn mark(&self) -> Mark {
         Mark {
             solid: self.solid.iter().map(Vec::len).collect(),
+            glass: self.glass.iter().map(Vec::len).collect(),
             sprites: self.sprites.len(),
             lights: self.lights.len(),
+        }
+    }
+
+    /// Grow everything placed since `mark` by `scale` about `from`, and set
+    /// it down with `from` at `to`: models, sprites and lights, their reach
+    /// with them.
+    fn grow_since(&mut self, mark: &Mark, from: [f32; 3], to: [f32; 3], scale: f32) {
+        let moved = |p: [f32; 3]| [0, 1, 2].map(|i| to[i] + (p[i] - from[i]) * scale);
+        for (lists, marks) in [(&mut self.solid, &mark.solid), (&mut self.glass, &mark.glass)] {
+            for (list, &first) in lists.iter_mut().zip(marks) {
+                for instance in &mut list[first..] {
+                    let m = &mut instance.rows;
+                    let t = moved([m[0][3], m[1][3], m[2][3]]);
+                    for (i, row) in m.iter_mut().enumerate() {
+                        for v in &mut row[..3] {
+                            *v *= scale;
+                        }
+                        row[3] = t[i];
+                    }
+                }
+            }
+        }
+        for sprite in &mut self.sprites[mark.sprites..] {
+            let p = moved([sprite.place[0], sprite.place[1], sprite.place[2]]);
+            sprite.place[..3].copy_from_slice(&p);
+            sprite.place[3] *= scale;
+        }
+        for light in &mut self.lights[mark.lights..] {
+            light.pos = moved(light.pos);
+            light.range *= scale;
         }
     }
 
@@ -1855,7 +1990,10 @@ fn planes(w: &World, f: &mut Frame) {
 
 fn rocks(w: &World, f: &mut Frame) {
     for &(ix, iz, x, z) in &cells(w, 0.55, 0.6, 14.0, 10) {
-        if hash(ix, iz, 12) < 0.55 {
+        // Fewer on the cave's floor, which the window sees whole across its
+        // halls: a scatter of pillow lava, not a field of it.
+        let sparse = 0.3 * w.share(x, z, CAVE);
+        if hash(ix, iz, 12) < 0.55 + sparse {
             continue;
         }
         // Big boulders lie farther off; right by the glass only stones.
@@ -3902,10 +4040,14 @@ fn city_beams(w: &World, f: &mut Frame) {
 /// The lava cave: basalt columns, stalactites dripping molten rock, and the
 /// glow of the pools.
 fn cave(w: &World, f: &mut Frame) {
-    // Basalt columns stand against the tunnel's walls, clear of the boat's way.
+    // Basalt columns stand in clumps against the tunnel's walls, out of the
+    // hull's sweep as it is set across the tunnel: in the halls a ragged
+    // organ of tall ones at the foot of the far wall, where the window sees
+    // them in a row against the rock; only a few, so the floor stays open.
     for &(ix, iz, x, z) in &cells(w, 0.16, 0.5, 9.0, 100) {
         let off = (z - corridor(x)).abs();
-        if !(0.35..TUNNEL * 0.9).contains(&off) {
+        let wall = tunnel_wide(x);
+        if !(0.95f32.max(wall * 0.62)..wall * 0.9).contains(&off) || hash(ix, iz, 105) < 0.8 {
             continue;
         }
         let cluster = vnoise(x * 0.5, z * 0.5, 101);
@@ -3919,11 +4061,12 @@ fn cave(w: &World, f: &mut Frame) {
         }
         f.fade = fade(share, 0.6);
         let y = w.ground(x, z);
-        let h = 0.04 + 0.30 * smooth(0.48, 0.90, cluster) * (0.5 + 0.5 * hash(ix, iz, 102));
+        let tall = 1.0 + 0.9 * hall(x) * smooth(0.6, 0.85, off / wall);
+        let h = (0.06 + 0.30 * smooth(0.48, 0.90, cluster) * (0.5 + 0.5 * hash(ix, iz, 102))) * tall;
         if !w.visible([x, y + h * 0.5, z], h) {
             continue;
         }
-        let v = 0.10 + 0.03 * hash(ix, iz, 103);
+        let v = 0.30 + 0.08 * hash(ix, iz, 103);
         f.put(
             Model::Hex,
             place(
@@ -3931,16 +4074,20 @@ fn cave(w: &World, f: &mut Frame) {
                 hash(ix, iz, 104),
                 0.0,
                 0.0,
-                [0.08, h + 0.02, 0.08],
+                [0.07, h + 0.02, 0.07],
             ),
-            [v, v * 0.95, v * 0.95],
+            [v, v * 0.93, v * 0.9],
         )
+        .textured(Surface::Basalt, 4.0)
         .grounded();
     }
     // Stalactites hang from the tunnel's arch, some dripping molten rock.
-    for &(ix, iz, x, z) in &cells(w, 0.2, 0.5, 12.0, 110) {
+    // As thick on the vault as they were in the old bore, which was a third
+    // as wide: the cells are larger, so a hall's roof is not a forest.
+    for &(ix, iz, x, z) in &cells(w, 0.36, 0.5, 12.0, 110) {
         let off = z - corridor(x);
-        if off.abs() > TUNNEL * 0.75 || hash(ix, iz, 111) < 0.3 {
+        let (wide, high) = tunnel_stretch(x);
+        if off.abs() > TUNNEL * wide * 0.75 || hash(ix, iz, 111) < 0.3 {
             continue;
         }
         // None hangs over a chimney's open mouth.
@@ -3954,8 +4101,8 @@ fn cave(w: &World, f: &mut Frame) {
             continue;
         }
         f.fade = fade(share, 0.65);
-        let a = (off / TUNNEL).clamp(-1.0, 1.0).acos();
-        let top = c[1] + 0.85 * w.seabed.tunnel_radius_with_nooks(x, a) * a.sin() + 0.08;
+        let a = (off / (TUNNEL * wide)).clamp(-1.0, 1.0).acos();
+        let top = c[1] + 0.85 * high * w.seabed.tunnel_radius_with_nooks(x, a) * a.sin() + 0.08;
         let len = 0.05 + 0.32 * hash(ix, iz, 112).powf(1.5);
         if !w.visible([x, top - len * 0.5, z], len) {
             continue;
@@ -3978,7 +4125,9 @@ fn cave(w: &World, f: &mut Frame) {
     }
     // The pools that light the tunnel: a light over each of the nearest.
     for &(ix, iz, x, z) in &cells(w, 1.0, 0.5, 9.0, 120) {
-        if (z - corridor(x)).abs() > TUNNEL * 0.8
+        // Along the middle of the floor only, as in the old bore: the
+        // halls' far sides have lights of their own (`halls`).
+        if (z - corridor(x)).abs() > TUNNEL * 1.3
             || w.share(x, z, CAVE) < 0.5
             || hash(ix, iz, 121) < 0.25
         {
@@ -4010,22 +4159,287 @@ fn cave(w: &World, f: &mut Frame) {
             );
         }
     }
+    halls(w, f);
     cave_props(w, f);
 }
 
-/// A point on the tunnel's wall at `x` and round the arch `a`, `inset` inside
-/// the rock: the nooks' recesses included. None outside the tunnel.
+/// A point on the tunnel's wall at `x` and round the arch `a`, `inset` in
+/// front of the rock (negative: into it, past the wall's ragged ledges): the
+/// nooks' recesses included. None outside the tunnel.
 fn tunnel_spot(seabed: &Seabed, x: f32, a: f32, inset: f32) -> Option<[f32; 3]> {
     let (c, lat, share) = seabed.tunnel_at(x)?;
     if share < TUNNEL_SHARE {
         return None;
     }
     let r = (seabed.tunnel_radius_with_nooks(x, a) - inset).max(0.18);
+    let (k, v) = tunnel_stretch(x);
     Some([
-        c[0] + lat[0] * r * a.cos(),
-        c[1] + 0.85 * r * a.sin(),
-        c[2] + lat[2] * r * a.cos(),
+        c[0] + lat[0] * k * r * a.cos(),
+        c[1] + 0.85 * v * r * a.sin(),
+        c[2] + lat[2] * k * r * a.cos(),
     ])
+}
+
+/// A point on the window side's wall of the tunnel at `x`, `height` above
+/// its floor, `inset` in front of the rock (negative: into it). The arch is
+/// an ellipse, so the angle round it is found from the height.
+fn wall_at(seabed: &Seabed, x: f32, height: f32, inset: f32) -> Option<[f32; 3]> {
+    let (_, high) = tunnel_stretch(x);
+    let s = ((height - 0.25 * TUNNEL) / (0.85 * high * TUNNEL)).clamp(-0.55, 0.98);
+    tunnel_spot(seabed, x, s.asin(), inset)
+}
+
+/// The light each hall throws on its own walls, as (where, colour, reach):
+/// baked into the tunnel's vertices with the passages' spill, so the rock by
+/// the lava river glows and the grotto's walls are green without a light
+/// paid for per pixel.
+fn hall_glows(seabed: &Seabed, x: f32) -> Vec<([f32; 3], [f32; 3], f32)> {
+    let mut glows = Vec::new();
+    let Some(halls) = seabed.halls(x) else {
+        return glows;
+    };
+    let mut glow = |p: Option<[f32; 3]>, colour: [f32; 3], reach: f32| {
+        if let Some(p) = p {
+            glows.push((p, colour, reach));
+        }
+    };
+    for hall in halls {
+        match hall.kind {
+            HallKind::Forge => {
+                for k in 0..6 {
+                    let x = hall.x - 1.5 + 0.5 * k as f32;
+                    glow(wall_at(seabed, x, 0.1, 0.3), [0.55, 0.17, 0.03], 0.8);
+                }
+                let fall = hall.x - 0.45;
+                glow(wall_at(seabed, fall, 0.7, 0.1), [0.75, 0.28, 0.06], 1.0);
+                glow(wall_at(seabed, fall, 1.3, 0.1), [0.45, 0.16, 0.04], 0.7);
+            }
+            HallKind::Grotto => {
+                for k in 0..5 {
+                    let x = hall.x - 1.4 + 0.65 * k as f32;
+                    glow(wall_at(seabed, x, 0.6, 0.1), [0.04, 0.26, 0.21], 0.7);
+                }
+            }
+            HallKind::Colonnade => {
+                glow(wall_at(seabed, hall.x - 0.1, 0.3, 0.4), [0.10, 0.15, 0.22], 1.0);
+            }
+        }
+    }
+    glows
+}
+
+/// What fills the cave's halls, placed each frame: a lava fall and the river
+/// along the foot of the forge's far wall, the grotto's luminous colonies
+/// and still pool, the colonnade's shaft of light from the vault. All of it
+/// on the window's side, across the hall's floor from the glass, and almost
+/// all of it light: glowing sprites, a stretched shaft and a few flat
+/// discs of molten rock, rather than geometry.
+fn halls(w: &World, f: &mut Frame) {
+    let cam_x = w.camera();
+    let Some(halls) = w.seabed.halls(cam_x) else {
+        return;
+    };
+    let t = w.t;
+    for hall in halls {
+        if (hall.x - cam_x).abs() > 9.0 {
+            continue;
+        }
+        let Some((c, _, share)) = w.seabed.tunnel_at(hall.x) else {
+            continue;
+        };
+        if share < TUNNEL_SHARE {
+            continue;
+        }
+        let floor = c[1] - 0.25 * TUNNEL;
+        let wide = tunnel_wide(hall.x);
+        // On the floor of the hall, `across` from the corridor toward the
+        // window's side, standing on the ground there.
+        let ground = |x: f32, across: f32| {
+            let z = corridor(x) + across;
+            [x, w.ground(x, z).max(floor - 0.3), z]
+        };
+        if !w.visible(ground(hall.x, wide * 0.6), 2.6) {
+            continue;
+        }
+        let id = (hall.x * 10.0).round() as i32;
+        let h = |k: i32, salt: u32| hash(id, k, salt);
+        match hall.kind {
+            HallKind::Forge => {
+                // The river: molten rock pooled along the far wall's foot,
+                // in flat lengths that step down the ledges like a cascade
+                // of pools, each lit from within.
+                for k in 0..6 {
+                    let x = hall.x - 1.5 + 0.5 * k as f32;
+                    let across = wide * (0.74 + 0.04 * (k as f32 * 1.7).sin());
+                    let ends = [ground(x - 0.3, across), ground(x + 0.3, across)];
+                    let y = ends[0][1].max(ends[1][1]).max(ground(x, across)[1]) + 0.012;
+                    let p = [x, y, corridor(x) + across];
+                    if !w.visible(p, 0.4) {
+                        continue;
+                    }
+                    f.put(
+                        Model::Cylinder,
+                        place(p, corridor_slope(x).atan() * -1.0, 0.0, 0.0, [0.34, 0.012, 0.16]),
+                        [0.9, 0.22, 0.04],
+                    )
+                    .material(material::LAVA)
+                    .glowing(0.9);
+                    // The water shimmering over it, and embers lifting off.
+                    f.glow_sprite(
+                        [x, y + 0.06, p[2]],
+                        0.32,
+                        [0.40, 0.11, 0.02],
+                        h(k, 901) * TAU,
+                        1.1,
+                        1.0,
+                    );
+                    for e in 0..3 {
+                        f.ember_sprite(
+                            [x + (h(k * 3 + e, 902) - 0.5) * 0.5, y, p[2] + (h(k * 3 + e, 903) - 0.5) * 0.25],
+                            0.012,
+                            [1.0, 0.45, 0.10],
+                            h(k * 3 + e, 904),
+                            0.10 + 0.05 * h(k * 3 + e, 905),
+                            0.9,
+                        );
+                    }
+                }
+                // The fall: a ribbon of molten rock from high on the far
+                // wall down into the river, its glow pulsing as it pours.
+                let x = hall.x - 0.45;
+                if let (Some(top), Some(foot)) = (
+                    wall_at(w.seabed, x, 1.35, 0.06),
+                    wall_at(w.seabed, x, 0.05, 0.16),
+                ) {
+                    let breathe = 0.85 + 0.15 * (t * 1.7 + hall.x).sin();
+                    let k = 0.9 * breathe;
+                    // A bright core and, about it, a wide dim sheath: the hot
+                    // water shimmering round the pour.
+                    let run = [foot[0] - top[0], foot[1] - top[1], foot[2] - top[2], 0.0];
+                    for (width, glow) in [(0.12, 1.0), (0.34, 0.35)] {
+                        let k = k * glow;
+                        f.shafts.push(Sprite {
+                            place: [top[0], top[1], top[2], width],
+                            // w: lit by its own light, not the sun's.
+                            tint: [1.0 * k, 0.36 * k, 0.06 * k, 1.0],
+                            stretch: run,
+                        });
+                    }
+                    // Bright beads running down it, and a splash of glow and
+                    // embers where it meets the river.
+                    for b in 0..7 {
+                        let fall = (t * 0.35 + b as f32 / 7.0).fract();
+                        let q = lerp3(top, foot, fall * fall);
+                        f.sprite(q, 0.08, [0.9, 0.34, 0.06], GLOW);
+                    }
+                    f.glow_sprite(foot, 0.45, [0.65, 0.20, 0.04], h(0, 906) * TAU, 2.3, 1.0);
+                    f.light_flicker(
+                        [foot[0], foot[1] + 0.25, foot[2] - 0.2],
+                        1.4,
+                        [1.5, 0.45, 0.08],
+                        h(1, 906) * TAU,
+                    );
+                    for e in 0..8 {
+                        f.ember_sprite(
+                            [foot[0] + (h(e, 907) - 0.5) * 0.4, foot[1], foot[2] - 0.1 * h(e, 908)],
+                            0.014,
+                            [1.0, 0.5, 0.12],
+                            h(e, 909),
+                            0.14 + 0.06 * h(e, 910),
+                            1.4,
+                        );
+                    }
+                }
+            }
+            HallKind::Grotto => {
+                // Colonies of luminous things on the far wall, clustered as
+                // fungi and worm tubes gather on a seep, each breathing its
+                // light in its own time; green and blue, a few violet.
+                for k in 0..30 {
+                    let cluster = k / 6;
+                    let x = hall.x - 1.4 + 0.65 * cluster as f32 + (h(k, 911) - 0.5) * 0.35;
+                    let height = 0.15 + 0.9 * h(cluster, 912) + (h(k, 913) - 0.5) * 0.3;
+                    let Some(q) = wall_at(w.seabed, x, height, 0.03) else {
+                        continue;
+                    };
+                    let tint = match k % 5 {
+                        0 => [0.35, 0.25, 0.8],
+                        1 | 2 => [0.10, 0.75, 0.55],
+                        _ => [0.15, 0.55, 0.85],
+                    };
+                    f.glow_sprite(
+                        q,
+                        0.025 + 0.035 * h(k, 914),
+                        tint.map(|v| v * 0.8),
+                        h(k, 915) * TAU,
+                        0.4 + 0.6 * h(k, 916),
+                        0.0,
+                    );
+                }
+                // Tube worms in a clump on the floor before the wall: pale
+                // stalks with glowing crowns.
+                let bed = ground(hall.x - 0.7, wide * 0.72);
+                for k in 0..6 {
+                    let p = [
+                        bed[0] + (h(k, 917) - 0.5) * 0.3,
+                        bed[1] - 0.01,
+                        bed[2] + (h(k, 918) - 0.5) * 0.2,
+                    ];
+                    let len = 0.10 + 0.12 * h(k, 919);
+                    let tip = [p[0] + (h(k, 920) - 0.5) * 0.04, p[1] + len, p[2]];
+                    f.put(Model::Cylinder, between(p, tip, 0.012), [0.62, 0.60, 0.52]);
+                    f.glow_sprite(tip, 0.03, [0.9, 0.25, 0.35], h(k, 921) * TAU, 0.8, 0.0);
+                }
+                // A still pool in the floor, lit from below by what lives in
+                // it: it holds the colonies' light as a sheet of green.
+                let pool = ground(hall.x + 0.2, wide * 0.55);
+                f.put(
+                    Model::Cylinder,
+                    place([pool[0], pool[1] + 0.01, pool[2]], 0.3, 0.0, 0.0, [0.42, 0.008, 0.26]),
+                    [0.03, 0.22, 0.20],
+                )
+                .glowing(0.55);
+                f.glow_sprite(
+                    [pool[0], pool[1] + 0.05, pool[2]],
+                    0.5,
+                    [0.04, 0.22, 0.18],
+                    h(2, 922) * TAU,
+                    0.5,
+                    1.0,
+                );
+                f.light([pool[0], pool[1] + 0.3, pool[2]], 1.1, [0.10, 0.55, 0.45]);
+            }
+            HallKind::Colonnade => {
+                // A chimney high in the vault lets down a shaft of pale
+                // light across the columns, with motes sinking through it.
+                let x = hall.x - 0.3;
+                let Some(top) = wall_at(w.seabed, x, 1.75, 0.05) else {
+                    continue;
+                };
+                let foot = ground(x + 0.25, wide * 0.55);
+                let breathe = 0.8 + 0.2 * (t * 0.4 + hall.x).sin();
+                let k = 0.35 * breathe;
+                f.shafts.push(Sprite {
+                    place: [top[0], top[1], top[2], 0.16],
+                    tint: [0.42 * k, 0.68 * k, 1.0 * k, 1.0],
+                    stretch: [foot[0] - top[0], foot[1] - top[1], foot[2] - top[2], 0.0],
+                });
+                f.glow_sprite(foot, 0.35, [0.10, 0.16, 0.24], h(0, 931) * TAU, 0.4, 1.0);
+                f.light([foot[0], foot[1] + 0.4, foot[2]], 1.0, [0.25, 0.38, 0.55]);
+                for m in 0..12 {
+                    let fall = (t * 0.03 + h(m, 932)).fract();
+                    let q = lerp3(top, foot, fall);
+                    let q = [
+                        q[0] + (h(m, 933) - 0.5) * 0.2,
+                        q[1],
+                        q[2] + (h(m, 934) - 0.5) * 0.2,
+                    ];
+                    let glow = smooth(0.0, 0.15, fall) * smooth(1.0, 0.8, fall);
+                    f.sprite(q, 0.012, [0.5 * glow, 0.7 * glow, 0.9 * glow], GLOW);
+                }
+            }
+        }
+    }
 }
 
 /// The props in the tunnel: what has settled in the nooks (a landing party's
@@ -4052,6 +4466,10 @@ fn cave_props(w: &World, f: &mut Frame) {
         }
         let floor = c[1] - 0.25 * TUNNEL;
         let side = if n.a.cos() < 0.0 { -1.0 } else { 1.0 };
+        // Each nook's things are laid out as for a bore of the old size,
+        // about a spot on its floor, and then grown about that spot and set
+        // down at the foot of the hall's far wall: everything in it a size
+        // the window can read from across the hall, nothing in a jumble.
         let at = |along: f32, across: f32| {
             [
                 c[0] + along + lat[0] * side * across,
@@ -4059,11 +4477,17 @@ fn cave_props(w: &World, f: &mut Frame) {
                 c[2] + lat[2] * side * across,
             ]
         };
-        let centre = at(0.0, 0.78);
-        if distance(centre, cam) < 0.50 || !w.visible([centre[0], floor + 0.4, centre[2]], 1.1) {
+        let (k, _) = tunnel_stretch(n.x);
+        let pivot = at(0.0, 0.80);
+        let foot = {
+            let q = at(0.0, 0.80 * k);
+            [q[0], w.ground(q[0], q[2]).max(floor - 0.1), q[2]]
+        };
+        if distance(foot, cam) < 0.8 || !w.visible([foot[0], foot[1] + 0.5, foot[2]], 1.6) {
             continue;
         }
         f.fade = fade(share, 0.6);
+        let mark = f.mark();
         let h = |k: u32| hash((n.x * 10.0) as i32, n.kind as i32, k);
         // A broken rim of rock about the hollow's foot.
         for k in 0..4 {
@@ -4084,40 +4508,8 @@ fn cave_props(w: &World, f: &mut Frame) {
         }
         match n.kind {
             NookKind::Crystal => {
-                // Points growing out of the high wall, aimed across the
-                // hollow so the window sees their long faces.
-                let violet = [0.42, 0.34, 0.95];
-                for k in 0..7 {
-                    let a = n.a + (h(70 + k) - 0.5) * n.spread * 1.5;
-                    let x = n.x + (h(80 + k) - 0.5) * n.width * 1.2;
-                    let Some(base) = tunnel_spot(w.seabed, x, a, 0.015) else {
-                        continue;
-                    };
-                    let inward = norm([c[0] - base[0], 0.0, c[2] - base[2]]);
-                    let mut dir = [
-                        inward[0] * 0.55 + (h(90 + k) - 0.5) * 0.6,
-                        0.35 + 0.7 * h(100 + k),
-                        inward[2] * 0.55 + (h(110 + k) - 0.5) * 0.6,
-                    ];
-                    dir = norm(dir);
-                    let len = 0.10 + 0.16 * h(120 + k);
-                    let tip = add(base, dir.map(|v| v * len));
-                    let width = 0.025 + 0.025 * h(130 + k);
-                    f.glass(
-                        if k < 2 {
-                            Model::Crystal
-                        } else {
-                            Model::CrystalCluster
-                        },
-                        between(base, tip, width),
-                        violet,
-                    )
-                    .material(material::CRYSTAL)
-                    .glowing(0.18 + 0.16 * h(140 + k));
-                    if k == 0 {
-                        f.sprite(tip, 0.018, [0.7, 0.55, 1.2], GLOW);
-                    }
-                }
+                // The points grow out of the wall itself, below; here only
+                // the light they fill the hollow with.
                 let (_, strength) = Secret::Crystal.light();
                 let light = at(0.0, 0.62);
                 f.light([light[0], floor + 0.55, light[2]], 0.45, [0.12, 0.10, 0.24]);
@@ -4296,12 +4688,50 @@ fn cave_props(w: &World, f: &mut Frame) {
                 );
             }
         }
+        f.grow_since(&mark, pivot, foot, NOOK_GROW);
+        if n.kind == NookKind::Crystal {
+            // Points growing out of the hollow's wall, aimed across the hall
+            // toward the boat's way, so the window sees their long faces.
+            let violet = [0.42, 0.34, 0.95];
+            for k in 0..6 {
+                let a = n.a + (h(70 + k) - 0.5) * n.spread * 1.6;
+                let x = n.x + (h(80 + k) - 0.5) * n.width * 1.4;
+                let Some(base) = tunnel_spot(w.seabed, x, a, -0.07) else {
+                    continue;
+                };
+                let inward = norm([c[0] - base[0], 0.0, c[2] - base[2]]);
+                let dir = norm([
+                    inward[0] * 0.55 + (h(90 + k) - 0.5) * 0.6,
+                    0.35 + 0.7 * h(100 + k),
+                    inward[2] * 0.55 + (h(110 + k) - 0.5) * 0.6,
+                ]);
+                let len = NOOK_GROW * (0.18 + 0.20 * h(120 + k));
+                let tip = add(base, dir.map(|v| v * len));
+                let width = NOOK_GROW * (0.025 + 0.025 * h(130 + k));
+                f.glass(
+                    if k < 3 {
+                        Model::Crystal
+                    } else {
+                        Model::CrystalCluster
+                    },
+                    between(base, tip, width),
+                    violet,
+                )
+                .material(material::CRYSTAL)
+                .glowing(0.22 + 0.18 * h(140 + k));
+                if k % 3 == 0 {
+                    let twinkle = (w.t * 1.3 + k as f32 * 2.1).sin().max(0.0).powi(8);
+                    let warm = 0.7 + 0.9 * twinkle;
+                    f.sprite(tip, 0.03, [0.6 * warm, 0.5 * warm, 1.1 * warm], GLOW);
+                }
+            }
+        }
     }
     // Stalagmites and rubble along the walls between the nooks, and the odd
     // flowstone column where a drip has run for a while.
-    for &(ix, iz, x, z) in &cells(w, 0.30, 0.5, 10.0, 150) {
+    for &(ix, iz, x, z) in &cells(w, 0.42, 0.5, 10.0, 150) {
         let off = z - corridor(x);
-        if !(0.62..TUNNEL * 0.88).contains(&off.abs()) || w.seabed.in_mouth(x, off, true) {
+        if !(0.95..tunnel_wide(x) * 0.88).contains(&off.abs()) || w.seabed.in_mouth(x, off, true) {
             continue;
         }
         let share = w.share(x, z, CAVE);
@@ -4374,7 +4804,7 @@ impl Passage {
     /// Where its light spills out into the tunnel.
     fn mouth(&self) -> [f32; 3] {
         if self.opening.side() {
-            self.at([self.opening.x, WALL - 0.05, 0.35])
+            self.at([self.opening.x, self.opening.wall - 0.05, 0.35])
         } else {
             self.centre(0.0)
         }
@@ -4455,11 +4885,19 @@ fn build_tunnel(w: &World, f: &mut Frame) {
             (p.mouth(), c.map(|v| v * k * 0.45))
         })
         .collect();
+    let lit_halls = hall_glows(seabed, (from + to) as f32 * 0.5 * RING_STEP);
     let spill = |p: [f32; 3]| {
         let mut e = [0.0f32; 3];
         for (m, c) in &glows {
             let d = distance(p, *m);
             let fall = (-d * d / 0.1).exp();
+            for j in 0..3 {
+                e[j] += c[j] * fall;
+            }
+        }
+        for (m, c, reach) in &lit_halls {
+            let d = distance(p, *m) / reach;
+            let fall = (-d * d).exp();
             for j in 0..3 {
                 e[j] += c[j] * fall;
             }
@@ -4491,12 +4929,13 @@ fn build_tunnel(w: &World, f: &mut Frame) {
         };
         let floor = c[1] - 0.25 * TUNNEL;
         let swell = swell(x);
+        let (wide, high) = tunnel_stretch(x);
         rings.push(Some(verts.len() as u32));
         for outer in [false, true] {
             for i in 0..n {
                 let a = -0.2 * PI + i as f32 / AROUND as f32 * 1.4 * PI;
                 let (across, up, shade) = if outer {
-                    let across = TUNNEL * 1.9 + 1.7 * swell * a.cos().max(0.0);
+                    let across = TUNNEL * wide * 1.9 + 1.7 * swell * a.cos().max(0.0);
                     let up = MASSIF * share * (0.85 + 0.3 * vnoise(x * 0.4, a, 5));
                     // The massif's face is rock too: a broad, slowly changing
                     // tone, so the cliff about each mouth is not one smooth
@@ -4517,7 +4956,7 @@ fn build_tunnel(w: &World, f: &mut Frame) {
                     // of them, wandering in height along the tunnel, on the
                     // walls only, so the arch the stalactites hang from is
                     // where it was.
-                    let height = 0.85 * r * a.sin();
+                    let height = 0.85 * high * r * a.sin();
                     let walls = smooth(0.62, 0.45, a.sin());
                     let bench = |at: f32| smooth(at - 0.04, at + 0.04, height);
                     let benches = 0.05 * bench(-0.05 + 0.10 * vnoise(x * 0.7, 3.0, 30))
@@ -4537,7 +4976,7 @@ fn build_tunnel(w: &World, f: &mut Frame) {
                         * (0.86 + 0.28 * ledge01)
                         * (1.0 - 0.16 * soot);
                     let r = r + rough + ledge;
-                    (r, 0.85 * r, shade)
+                    (wide * r, 0.85 * high * r, shade)
                 };
                 let p = [
                     c[0] + lat[0] * across * a.cos(),
@@ -4644,7 +5083,7 @@ fn build_tunnel(w: &World, f: &mut Frame) {
             points
                 .iter()
                 .map(|q| {
-                    let across = (q[2] - corridor(q[0]) - CHIMNEY_O) / 0.22;
+                    let across = (q[2] - corridor(q[0]) - o.crown[0]) / 0.22;
                     across.atan2((q[0] - o.x) / o.half)
                 })
                 .collect()
@@ -4827,6 +5266,10 @@ fn passages(w: &World, f: &mut Frame) {
                               up: f32,
                               lateral: f32,
                               glow: f32| {
+                    // Only past where the mouth's own wider edge has eased
+                    // into the passage's section (`build_tunnel`), so no point
+                    // stands in the open water of a wide mouth.
+                    let s = 0.45 + 0.55 * s;
                     let wall = p.wall(s, a);
                     let c = p.centre(s);
                     let inward = norm([c[0] - wall[0], 0.0, c[2] - wall[2]]);
@@ -4936,9 +5379,9 @@ fn passages(w: &World, f: &mut Frame) {
                 f.light(p.centre(0.5), 0.6, tint(0.7));
                 // A doorway of dressed stone, set a little way in, and steps
                 // up into the light.
-                let into = WALL + o.depth * 0.3;
+                let into = o.wall + o.depth * 0.3;
                 // Along the passage's bend, `at` out from the corridor.
-                let along = |at: f32| o.path((at - WALL) / o.depth).0[0];
+                let along = |at: f32| o.path((at - o.wall) / o.depth).0[0];
                 let door = along(into);
                 let stone = [0.24, 0.23, 0.21];
                 let block = |f: &mut Frame, at: [f32; 3], size: [f32; 3]| {
@@ -7378,6 +7821,7 @@ fn particles(w: &World, f: &mut Frame) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::voyage::Voyage;
 
     /// A creature that wanders into the glass fades over its rim instead of
