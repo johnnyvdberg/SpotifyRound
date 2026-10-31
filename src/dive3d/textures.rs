@@ -241,10 +241,10 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             // the tile joins itself.
             let tau = std::f32::consts::TAU;
             let (mut field, mut waves) = (0.0f32, 0.0f32);
-            for b in 0..=5i32 {
-                for a in -5..=5i32 {
+            for b in 0..=10i32 {
+                for a in -10..=10i32 {
                     let k = ((a * a + b * b) as f32).sqrt();
-                    if !(4.5..=5.5).contains(&k) || (b == 0 && a < 0) {
+                    if !(9.5..=10.5).contains(&k) || (b == 0 && a < 0) {
                         continue;
                     }
                     let phase = hash(a, b, 151) * tau;
@@ -259,8 +259,8 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             let valley = smooth(0.42, 0.0, field.abs());
             let ridge = smooth(0.2, 1.2, field.abs());
             let grain = 0.92 + 0.12 * fbm(u, v, 32, 2, 153);
-            let c = grey((0.78 + 0.40 * ridge) * (1.0 - 0.62 * valley) * grain);
-            mix(c, [0.60, 0.66, 0.56], valley * 0.35)
+            let c = grey((0.84 + 0.26 * ridge) * (1.0 - 0.45 * valley) * grain);
+            mix(c, [0.60, 0.66, 0.56], valley * 0.25)
         }
         Surface::Kelp => {
             let rib = smooth(0.04, 0.0, (u - 0.5).abs());
@@ -362,7 +362,7 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
 /// the mosaic shows colour as well as relief, while staying close to white
 /// on average like every other layer. Every field wraps.
 fn paint_reef(u: f32, v: f32) -> [f32; 3] {
-    const N: i32 = 8;
+    const N: i32 = 16;
     // Which colony this texel is in: the nearest of a wrapped jittered grid,
     // its borders bent so the colonies are not a pavement of cobbles.
     let bend = 0.35;
@@ -390,7 +390,7 @@ fn paint_reef(u: f32, v: f32) -> [f32; 3] {
     let edge = second - best;
     // Not every border has opened into a crevice: some colonies have grown
     // into one another.
-    let open = smooth(0.25, 0.55, fbm(u, v, 5, 2, 171));
+    let open = smooth(0.45, 0.70, fbm(u, v, 5, 2, 171));
     let crevice = smooth(0.07, 0.0, edge) * open;
     // A low head: highest at its middle, falling to the crevice.
     let dome = smooth(0.0, 0.45, edge);
@@ -409,7 +409,7 @@ fn paint_reef(u: f32, v: f32) -> [f32; 3] {
         // A smooth crust, mottled.
         0.92 + 0.20 * fbm(u, v, 12, 2, 166)
     };
-    let tone = texture * (0.84 + 0.24 * dome) * (1.0 - 0.50 * crevice);
+    let tone = texture * (0.90 + 0.14 * dome) * (1.0 - 0.30 * crevice);
     // A colony's own tint about the floor's hue: warmer, cooler, greener or
     // pinker, and a little lighter or darker.
     const TINTS: [[f32; 3]; 6] = [

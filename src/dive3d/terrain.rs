@@ -664,6 +664,7 @@ mod tests {
             seabed: &seabed,
             pose: Pose::level(3.3, -2.0),
             t: 0.0,
+            slack: 0.0,
         };
         let mut terrain = Terrain::default();
         let mut built = 0;
@@ -697,6 +698,7 @@ mod tests {
                 seabed: &seabed,
                 pose: Pose::level(3.3 + step as f32 * 0.7, -2.0),
                 t: 0.0,
+                slack: 0.0,
             };
             terrain.update(&w, |slot, _| assert!((slot as usize) < SLOTS));
             assert!(terrain.tiles.len() <= SLOTS);

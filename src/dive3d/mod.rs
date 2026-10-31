@@ -1818,6 +1818,7 @@ impl Nautilus {
             seabed: &self.seabed,
             pose,
             t,
+            slack: 0.0,
         };
         world::build(&world, &mut self.frame, &mut self.static_cache);
         // Bake the ice sheet's noise for the region around the camera, and
@@ -2743,11 +2744,11 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     let deep = mix3(deep, [0.004, 0.010, 0.040], share(world::BLOOM) * 0.65);
     let deep = mix3(deep, [0.010, 0.040, 0.034], share(world::CITY) * 0.70);
     // Over the trench the water is clear, and daylight reaches its walls;
-    // the shallow reef is flooded with it, the vents get almost none.
+    // the shallow reef gets a little more of it, the vents almost none.
     let sun = (-depth * 4.3).exp()
         * (1.0 - 0.95 * cave)
         * (1.0 + 1.8 * share(world::TRENCH))
-        * (1.0 + 0.70 * share(world::CORAL))
+        * (1.0 + 0.30 * share(world::CORAL))
         * (1.0 + 0.50 * share(world::SARGASSO))
         * (1.0 - 0.55 * share(world::VENTS))
         * (1.0 - 0.60 * share(world::CITY));
@@ -2786,22 +2787,22 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         (-(below - 1.0) * 0.05).exp(),
         (-(below - 1.0) * 0.07).exp(),
     ];
-    // Over the reef the sea is a few metres deep and gin clear, and the
-    // daylight still has its reds: the corals keep their ochres, pinks and
-    // purples instead of going the teal of everything deeper. The water's
-    // light is cyan (`light_at`), so its red is lifted back past its green.
+    // Over the reef the sea is a few metres deep and clear, and the daylight
+    // keeps a little more of its reds than deeper down: enough that the
+    // corals' ochres and mauves show, not so much that they read as paint
+    // beside the other seas.
     let coral = share(world::CORAL);
     let tint = [
-        tint[0] * (1.0 + 0.40 * coral),
-        tint[1] * (1.0 - 0.06 * coral),
-        tint[2] * (1.0 + 0.04 * coral),
+        tint[0] * (1.0 + 0.12 * coral),
+        tint[1] * (1.0 - 0.02 * coral),
+        tint[2] * (1.0 + 0.02 * coral),
     ];
     // The trench's water is clear, so its far wall shows across the gulf;
     // the sargasso's weed and the vents' plumes thicken it. The drowned
     // city's water is clear enough that its towers stand as silhouettes
     // across the avenue and their windows show from much further.
     let haze = blend([
-        0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11, 0.085, 0.18, 0.24, 0.14, 0.27, 0.09,
+        0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11, 0.13, 0.18, 0.24, 0.14, 0.27, 0.09,
     ]);
     // How much this sea has a sky the water can open on to: the shallow seas
     // can through Snell's window, the polar ice through its leads; the cave,
@@ -3144,6 +3145,7 @@ mod tests {
             seabed: &scene.seabed,
             pose,
             t: seconds as f32,
+            slack: 0.0,
         };
         bench("world::build", &mut || {
             world::build(&world, &mut scene.frame, &mut StaticCache::default())
@@ -3659,6 +3661,7 @@ mod tests {
                     seabed: &scene.seabed,
                     pose,
                     t: seconds as f32,
+                    slack: 0.0,
                 };
                 world::build(&world, &mut scene.frame, &mut StaticCache::default());
                 cpu += begun.elapsed().as_secs_f64();
@@ -3692,7 +3695,9 @@ mod tests {
     /// `DIVE3D_HOTSPOT_SEEDS=0,250000,500000,750000` chooses visits (the
     /// voyage seed is the visit modulo 1,000,003); `DIVE3D_HOTSPOT_PLACES`
     /// chooses fractions through each leg; `DIVE3D_HOTSPOT_FRAMES` sets the
-    /// samples. Writes CSV to `DIVE3D_HOTSPOT_DIR` when set.
+    /// samples; `DIVE3D_HOTSPOT_SCENES` limits it to some seas, and
+    /// `DIVE3D_SKIP`/`DIVE3D_SKIP_EFFECTS` leave parts out as in
+    /// `frame_time`. Writes CSV to `DIVE3D_HOTSPOT_DIR` when set.
     #[test]
     #[ignore = "a benchmark; needs a working GPU adapter"]
     fn hotspots() {
@@ -3716,6 +3721,10 @@ mod tests {
         .map(|v| v as u64)
         .collect();
         let places = list("DIVE3D_HOTSPOT_PLACES", &[0.15, 0.45, 0.85]);
+        // `DIVE3D_HOTSPOT_SCENES=coral,city` times only those seas.
+        let scenes: Vec<String> = std::env::var("DIVE3D_HOTSPOT_SCENES")
+            .map(|text| text.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default();
         let frames = std::env::var("DIVE3D_HOTSPOT_FRAMES")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -3733,6 +3742,12 @@ mod tests {
                 .map(|n| names[Biome::at((n as f64 + 0.5) * crate::voyage::LEG, seed_of(visit)).a])
                 .collect();
             let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+            if let Ok(skip) = std::env::var("DIVE3D_SKIP") {
+                scene.skip = mask(&skip);
+            }
+            if let Ok(skip) = std::env::var("DIVE3D_SKIP_EFFECTS") {
+                scene.skip_effects = mask(&skip);
+            }
             // Build the seabed and warm its pipelines before timing it.
             for i in 0..4 {
                 scene
@@ -3741,6 +3756,9 @@ mod tests {
                 gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
             }
             for (n, name) in legs.iter().enumerate() {
+                if !scenes.is_empty() && !scenes.iter().any(|s| s == name) {
+                    continue;
+                }
                 for &place in &places {
                     let seconds = leg(n as f64) + place.clamp(0.0, 0.99) * span;
                     for i in 0..3 {
@@ -4016,6 +4034,7 @@ mod tests {
                     seabed: &seabed,
                     pose,
                     t: seconds as f32,
+                    slack: 0.0,
                 };
                 world::build(&world, &mut frame, &mut StaticCache::default());
             }
@@ -4035,6 +4054,7 @@ mod tests {
             seabed: &seabed,
             pose,
             t: seconds as f32,
+            slack: 0.0,
         };
         let begun = std::time::Instant::now();
         for _ in 0..10 {

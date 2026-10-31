@@ -120,9 +120,13 @@ pub fn reef_tone(x: f32, z: f32) -> [f32; 3] {
         + vnoise(x * 0.31, z * 0.31 + 4.0, 71) * 4.0;
     let n = REEF_FLOOR.len();
     let i = at.floor() as usize;
-    let seam = smooth(0.30, 0.70, at - at.floor());
+    let seam = smooth(0.05, 0.95, at - at.floor());
     let (a, b) = (REEF_FLOOR[i % n], REEF_FLOOR[(i + 1) % n]);
-    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * seam)
+    let c = [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * seam);
+    // A carpet of many small colonies, seen from a few metres, greys toward
+    // the rubble and sand between them.
+    let grey = 0.30 * c[0] + 0.50 * c[1] + 0.20 * c[2];
+    c.map(|v| v + (grey - v) * 0.35)
 }
 
 /// The seabed's colour at (x, z), its biome's floor with the living reef
@@ -1117,6 +1121,12 @@ pub struct World<'a> {
     pub seabed: &'a Seabed,
     pub pose: Pose,
     pub t: f32,
+    /// How much wider than the window, as a share of the distance out, a
+    /// placement counts as [`World::visible`]: none for what is placed
+    /// afresh every frame; for the static cache, the turn and the way the
+    /// window may make before the cache is built again, so nothing that
+    /// comes into view in between appears at the rim.
+    pub slack: f32,
 }
 
 impl World<'_> {
@@ -1167,7 +1177,30 @@ impl World<'_> {
     /// which is round: the corners of the square the sea is drawn into are
     /// behind the brass.
     pub fn visible(&self, p: [f32; 3], radius: f32) -> bool {
+        if self.slack > 0.0 {
+            return self.within(p, radius);
+        }
         self.reveal(p, radius) > 0.001
+    }
+
+    /// Whether a sphere of `radius` at `p` is inside the window's cone
+    /// widened by [`World::slack`], and by the [`CACHE_CELL`] the window may
+    /// move sideways, for the static cache.
+    fn within(&self, p: [f32; 3], radius: f32) -> bool {
+        let d = [
+            p[0] - self.pose.pos[0],
+            p[1] - self.pose.pos[1],
+            p[2] - self.pose.pos[2],
+        ];
+        let dot = |a: [f32; 3]| a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
+        let [right, up, out] = self.pose.basis;
+        let z = dot(out);
+        let wide = radius * 1.1 + CACHE_CELL * 1.5;
+        if z + wide < 0.08 {
+            return false;
+        }
+        let reach = (VIEW * 1.08 + self.slack) * z.max(0.0) + wide;
+        dot(right).hypot(dot(up)) < reach
     }
 
     /// How far a creature or a party at `p` has swum into the window: one well
@@ -1845,6 +1878,8 @@ impl Default for StaticCache {
 }
 
 const CACHE_CELL: f32 = 0.2;
+/// The turn, in radians, after which the static cache is built again.
+const HEADING_SECTOR: f32 = 0.08;
 
 /// Build the frame.
 /// One kind of thing to place in the frame.
@@ -1923,13 +1958,22 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // A turn of a few degrees changes which cells are in the window even
     // while the boat is still in the same position cell.
     let out = world.pose.basis[2];
-    let heading = (out[0].atan2(out[2]) / 0.08).floor() as i32;
+    let heading = (out[0].atan2(out[2]) / HEADING_SECTOR).floor() as i32;
     let stale =
         !cache.seed.eq(&seed) || cache.cell != Some(camera) || cache.heading != Some(heading);
     #[cfg(test)]
     let show_steps = std::env::var_os("DIVE3D_BUILD_STEPS").is_some();
     if stale {
         cache.frame.clear();
+        // The cache stands until the window has moved a cell or turned a
+        // sector, and the boat pitches and rolls a little meanwhile: placed
+        // for a cone that much wider, what comes into view in between is
+        // already there rather than appearing at the rim.
+        let wide = World {
+            slack: HEADING_SECTOR + 0.04,
+            ..*world
+        };
+        let world = &wide;
         #[cfg(test)]
         for (i, (step, skin)) in static_steps.into_iter().enumerate() {
             cache.frame.style(skin);
@@ -2416,17 +2460,17 @@ fn gardens(w: &World, f: &mut Frame) {
 
 /// The reef's colours: ochre and brown acropora, purple and pink, the olive
 /// green and cream of the boulder corals, the blue of staghorn tips and a
-/// golden accent. Rich, as a shallow reef in clear water is, but still the
-/// colours of living tissue rather than paint.
+/// golden accent, all muted as living tissue is under a few metres of water,
+/// rather than the saturated colours of a lit photograph.
 const REEF_HUES: [[f32; 3]; 8] = [
-    [0.86, 0.52, 0.24],
-    [0.62, 0.40, 0.24],
-    [0.62, 0.36, 0.78],
-    [0.95, 0.45, 0.58],
-    [0.50, 0.72, 0.36],
-    [0.90, 0.80, 0.55],
-    [0.56, 0.64, 0.82],
-    [0.92, 0.62, 0.22],
+    [0.66, 0.50, 0.32],
+    [0.50, 0.39, 0.28],
+    [0.50, 0.40, 0.56],
+    [0.70, 0.50, 0.50],
+    [0.46, 0.54, 0.36],
+    [0.74, 0.68, 0.54],
+    [0.50, 0.56, 0.62],
+    [0.72, 0.56, 0.30],
 ];
 
 /// One colony's colour: a hue of the reef's, a little lighter or darker and
@@ -2447,10 +2491,10 @@ fn reef_hue(ix: i32, iz: i32, salt: u32) -> [f32; 3] {
 /// boulder corals, a little lighter or darker from one to the next.
 fn brain_hue(ix: i32, iz: i32, salt: u32) -> [f32; 3] {
     const HUES: [[f32; 3]; 4] = [
-        [0.84, 0.66, 0.36],
-        [0.52, 0.72, 0.40],
-        [0.92, 0.60, 0.34],
-        [0.76, 0.54, 0.70],
+        [0.64, 0.56, 0.38],
+        [0.48, 0.56, 0.38],
+        [0.68, 0.52, 0.38],
+        [0.58, 0.48, 0.54],
     ];
     let hue = HUES[(hash(ix, iz, salt) * 4.0) as usize % 4];
     let light = 0.88 + 0.18 * hash(ix, iz, salt + 1);
@@ -8220,6 +8264,7 @@ mod tests {
             seabed: &seabed,
             pose,
             t: 0.0,
+            slack: 0.0,
         };
         let c = pose.pos;
         let out = pose.basis[2];
@@ -8322,6 +8367,7 @@ mod tests {
                     seabed: &seabed,
                     pose,
                     t: seconds as f32,
+                    slack: 0.0,
                 };
                 build(&world, &mut frame, &mut StaticCache::default());
                 let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
@@ -8398,6 +8444,7 @@ mod tests {
                     seabed: &seabed,
                     pose,
                     t: seconds as f32,
+                    slack: 0.0,
                 };
                 let mut frame = Frame::new();
                 build(&world, &mut frame, &mut StaticCache::default());
@@ -8478,6 +8525,7 @@ mod tests {
                     seabed: &seabed,
                     pose,
                     t: seconds as f32,
+                    slack: 0.0,
                 };
                 let mut frame = Frame::new();
                 build(&world, &mut frame, &mut StaticCache::default());
@@ -8547,6 +8595,7 @@ mod tests {
                     seabed: &seabed,
                     pose,
                     t: seconds as f32,
+                    slack: 0.0,
                 };
                 let mut frame = Frame::new();
                 build(&world, &mut frame, &mut StaticCache::default());
@@ -8605,6 +8654,7 @@ mod tests {
                     seabed: &seabed,
                     pose,
                     t: seconds as f32,
+                    slack: 0.0,
                 };
                 frame.clear();
                 shoals(&world, &mut frame);
@@ -8649,6 +8699,7 @@ mod tests {
                     seabed: &seabed,
                     pose,
                     t: seconds as f32,
+                    slack: 0.0,
                 };
                 build(&world, &mut frame, &mut StaticCache::default());
                 let Some(hull) = frame.solid[Model::Submarine.index()].first() else {
@@ -8730,6 +8781,7 @@ mod tests {
                     seabed: &seabed,
                     pose,
                     t: at as f32,
+                    slack: 0.0,
                 };
                 build(&world, &mut frame, &mut StaticCache::default());
                 let now: Vec<([f32; 3], f32)> = frame
@@ -8825,6 +8877,7 @@ mod tests {
                 seabed: &seabed,
                 pose,
                 t: seconds as f32,
+                slack: 0.0,
             };
             build(&world, &mut frame, &mut StaticCache::default());
             let now: Vec<([f32; 3], f32)> = frame
