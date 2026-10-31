@@ -39,8 +39,12 @@ run() {
         env+=" $(printf %q "$pair")"
     done
     # The kiosk shares the GPU (and a global perfmon would count it), so it
-    # stops for the run and carries on however the run ends.
-    ssh "$PI" "set -e; P=\$(pgrep -x spotify-round || true)
+    # stops for the run and carries on however the run ends. Runs from
+    # several checkouts take turns: each holds the lock for its whole run, so
+    # one cannot resume the kiosk in the middle of another.
+    ssh "$PI" "set -e; exec 9>/tmp/nautilus-bench.lock
+        flock -n 9 || { echo 'waiting for another benchmark on the Pi'; flock 9; }
+        P=\$(pgrep -x spotify-round || true)
         [ -n \"\$P\" ] && kill -STOP \$P; trap '[ -n \"\$P\" ] && kill -CONT \$P' EXIT
         mkdir -p /tmp/hot-$tag; cd /tmp
         env $env $remote dive3d::tests::hotspots --ignored --nocapture 2>&1 | grep -v '^MESA'"
