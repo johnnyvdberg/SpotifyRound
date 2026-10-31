@@ -5126,6 +5126,7 @@ dependencies = [
  "glam",
  "half",
  "image",
+ "libc",
  "meshopt",
  "pollster",
  "qrcode",

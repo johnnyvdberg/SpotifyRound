@@ -97,3 +97,7 @@ slint = { version = "1.18", default-features = false, features = [
     "renderer-software",
 ] }
 
+# The V3D's performance counters, by ioctl on the render node (`v3d_perf`).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2.191"
+

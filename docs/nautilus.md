@@ -288,6 +288,17 @@ switch at once over all legs, `frame_time` averages each leg, and `cpu_cost` the
 `spotify-round-tests gpu_cost::videocore_vii --ignored` confirms the adapter really is the Pi 5's
 V3D before a measurement is trusted.
 
+**What the GPU's units did.** `hotspots` prints each place's `bin_ms` and `render_ms`, the V3D's
+binning engine (the vertex shaders' binning pass and the tiling) and its render engine (the vertex
+shaders again and every fragment), from `gpu_stats`: whether a slow place is geometry or pixels.
+`DIVE3D_COUNTERS=name,name,…` adds the V3D's own hardware counters a frame (up to 32 of the 93;
+`spotify-round-tests v3d_perf --ignored --nocapture` lists them), counted by a global kernel perfmon
+round the unmodified benchmark (`src/v3d_perf.rs`), so one run says what a skip sweep needed eight
+for: shader instructions and stalls by cause (texture, tile buffer, vertex memory, SFU), quads that
+reach the depth test against those that pass it, triangles binned, texture and memory traffic.
+Compare two builds' counters rather than reading one alone: the units of the cycle counters are
+undocumented. The V3D here has 4 slices of 4 QPUs.
+
 **Shader registers without the Pi.** `deploy/v3d-shaderdb/shaderdb.sh <checkout>` compiles every
 pipeline with the Pi's own Mesa (v3dv, V3D 7.1) on the Mac and prints, per shader, its instructions,
 **threads**, temporaries and spills. It matched the Pi's own `V3D_DEBUG=shaderdb` exactly, so a

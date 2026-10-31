@@ -19,6 +19,8 @@ mod motion;
 mod ring;
 mod service;
 mod ui;
+#[cfg(test)]
+mod v3d_perf;
 mod visuals;
 mod voyage;
 

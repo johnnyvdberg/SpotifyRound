@@ -402,9 +402,27 @@ fn read_render_runtime(path: &std::path::Path) -> Option<u64> {
 }
 
 fn render_runtime(text: &str) -> Option<u64> {
+    engine_runtime(text, "render")
+}
+
+/// The busy nanoseconds so far of the V3D's binning engine, which runs the
+/// vertex shaders' binning pass and sorts triangles into tiles, and of its
+/// render engine, which runs the vertex shaders again and every fragment:
+/// how much of a frame is geometry and how much is pixels. `None` where there
+/// is no `gpu_stats`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn engine_busy() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string(gpu_stats_path()?).ok()?;
+    Some((
+        engine_runtime(&text, "bin")?,
+        engine_runtime(&text, "render")?,
+    ))
+}
+
+fn engine_runtime(text: &str, engine: &str) -> Option<u64> {
     for line in text.lines() {
         let mut fields = line.split_whitespace();
-        if fields.next() != Some("render") {
+        if fields.next() != Some(engine) {
             continue;
         }
         fields.next()?; // timestamp
@@ -494,6 +512,7 @@ mod tests {
                     render\t96819875704297\t25518675\t50863620570058\n\
                     tfu\t96819875704297\t31475491\t8148262068943\n";
         assert_eq!(render_runtime(text), Some(50_863_620_570_058));
+        assert_eq!(engine_runtime(text, "bin"), Some(7_578_612_819_218));
         assert_eq!(render_runtime("no counters here\n"), None);
     }
 

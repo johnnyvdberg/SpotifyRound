@@ -3956,6 +3956,16 @@ mod tests {
             "coral", "sargasso", "vents", "brine", "bloom", "city",
         ];
         let span = crate::voyage::LEG / crate::voyage::SPEED;
+        // `DIVE3D_COUNTERS=name,name` counts those V3D counters a frame
+        // at every place (the names `v3d_perf_counters` lists).
+        let counter_names: Vec<String> = std::env::var("DIVE3D_COUNTERS")
+            .map(|text| text.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default();
+        let perfmon = (!counter_names.is_empty()).then(|| {
+            let names: Vec<&str> = counter_names.iter().map(String::as_str).collect();
+            crate::v3d_perf::Perfmon::start(&names)
+                .expect("DIVE3D_COUNTERS needs the Pi's V3D and counters it knows")
+        });
         let mut rows = Vec::new();
         for &visit in &seeds {
             // Every leg of this visit's circuit, named by the biome it settles
@@ -3991,6 +4001,8 @@ mod tests {
                     }
                     let mut total = 0.0;
                     let mut worst: f64 = 0.0;
+                    let busy = crate::gpu::engine_busy();
+                    let counted = perfmon.as_ref().and_then(|p| p.read());
                     for i in 0..frames {
                         let begun = std::time::Instant::now();
                         scene
@@ -4006,6 +4018,24 @@ mod tests {
                         total += ms;
                         worst = worst.max(ms);
                     }
+                    // The Pi's two engines' busy time a frame, geometry and
+                    // pixels; not known elsewhere.
+                    let (bin, render) = match (busy, crate::gpu::engine_busy()) {
+                        (Some(a), Some(b)) => (
+                            (b.0 - a.0) as f64 / 1e6 / frames as f64,
+                            (b.1 - a.1) as f64 / 1e6 / frames as f64,
+                        ),
+                        _ => (f64::NAN, f64::NAN),
+                    };
+                    let counts: Vec<f64> = match (counted, perfmon.as_ref().and_then(|p| p.read()))
+                    {
+                        (Some(a), Some(b)) => a
+                            .iter()
+                            .zip(&b)
+                            .map(|(a, b)| (b - a) as f64 / frames as f64)
+                            .collect(),
+                        _ => Vec::new(),
+                    };
                     let count: usize = scene.frame.solid.iter().map(Vec::len).sum::<usize>()
                         + scene.frame.glass.iter().map(Vec::len).sum::<usize>();
                     rows.push((
@@ -4017,29 +4047,59 @@ mod tests {
                         worst,
                         count,
                         scene.frame.sprites.len(),
+                        bin,
+                        render,
+                        counts,
                     ));
                 }
             }
         }
         rows.sort_by(|a, b| b.4.total_cmp(&a.4));
         println!(
-            "{:>8}  {:<9} {:>5} {:>8} {:>8} {:>7} {:>7}",
-            "seed", "scene", "place", "mean_ms", "worst_ms", "inst", "sprite"
+            "{:>8}  {:<9} {:>5} {:>8} {:>8} {:>7} {:>7} {:>7} {:>9}",
+            "seed",
+            "scene",
+            "place",
+            "mean_ms",
+            "worst_ms",
+            "inst",
+            "sprite",
+            "bin_ms",
+            "render_ms"
         );
         for r in rows.iter().take(20) {
             println!(
-                "{:>8}  {:<9} {:>5.2} {:>8.2} {:>8.2} {:>7} {:>7}",
-                r.0, r.2, r.3, r.4, r.5, r.6, r.7
+                "{:>8}  {:<9} {:>5.2} {:>8.2} {:>8.2} {:>7} {:>7} {:>7.2} {:>9.2}",
+                r.0, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9
             );
+            if !r.10.is_empty() {
+                let each: Vec<String> = counter_names
+                    .iter()
+                    .zip(&r.10)
+                    .map(|(name, v)| format!("{name} {v:.0}"))
+                    .collect();
+                println!("{:>18} a frame: {}", "", each.join(", "));
+            }
         }
         println!("{} hotspots measured", rows.len());
         if let Ok(dir) = std::env::var("DIVE3D_HOTSPOT_DIR") {
-            let mut csv = String::from("seed,scene,place,mean_ms,worst_ms,instances,sprites\n");
+            let mut csv = String::from(
+                "seed,scene,place,mean_ms,worst_ms,instances,sprites,bin_ms,render_ms",
+            );
+            for name in &counter_names {
+                csv.push(',');
+                csv.push_str(name);
+            }
+            csv.push('\n');
             for r in &rows {
                 csv.push_str(&format!(
-                    "{},{},{:.2},{:.3},{:.3},{},{}\n",
-                    r.0, r.2, r.3, r.4, r.5, r.6, r.7
+                    "{},{},{:.2},{:.3},{:.3},{},{},{:.3},{:.3}",
+                    r.0, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9
                 ));
+                for v in &r.10 {
+                    csv.push_str(&format!(",{v:.0}"));
+                }
+                csv.push('\n');
             }
             std::fs::write(std::path::Path::new(&dir).join("hotspots.csv"), csv)
                 .expect("a hotspot CSV");
