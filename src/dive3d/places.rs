@@ -115,22 +115,29 @@ pub fn all() -> Vec<Place> {
         place.swiped = Some(after);
         places.push(place);
     }
-    // Through the lava cave's tunnel and past its secrets, which the window
-    // sees ahead of the boat: from the approach, looking in at the mouth,
-    // along the passages, and out of the far mouth.
+    // Through the lava cave's tunnel, its halls and the narrows between
+    // them, which the window sees ahead of the boat as it is set across the
+    // tunnel: from the approach, looking in at the mouth, into each hall,
+    // along the passages in the narrows, and out of the far mouth. A place
+    // is a moment of the voyage, and the window looks some way ahead, so
+    // each is a little before the thing it frames.
     for (name, at) in [
         ("approach", -0.45),
         ("tunnel-mouth", -0.30),
         ("entering", -0.20),
-        ("passages-1", -0.10),
-        ("passages-2", -0.02),
-        ("passages-3", 0.10),
-        ("far-mouth", 0.22),
-        // The three shallow nooks, seen a little before the window reaches
-        // them: the camp, the crystal pocket and the lava pool.
-        ("nook-camp", 0.10),
-        ("nook-crystal", 0.50),
-        ("nook-ember", 0.70),
+        ("hall-forge", -0.08),
+        ("passages-1", -0.03),
+        ("passages-2", 0.06),
+        ("hall-grotto", 0.25),
+        ("passages-3", 0.33),
+        ("hall-colonnade", 0.60),
+        ("far-mouth", 0.72),
+        // The three nooks, one in the far wall of each hall, at the moments
+        // the window looks straight at them across the hall's floor: the
+        // ember pool, the crystal pocket and the camp.
+        ("nook-ember", -0.14),
+        ("nook-crystal", 0.20),
+        ("nook-camp", 0.51),
     ] {
         places.push(Place::new(format!("{cave}-cave-{name}"), cave + at, seed));
     }

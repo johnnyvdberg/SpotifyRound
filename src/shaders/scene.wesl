@@ -345,7 +345,8 @@ fn biome_shape(l: Leg, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 
     if (cave > 0.0) {
         // Ledged basalt round the tunnel's mouths, clear of the tunnel itself.
         let ledges = 2.0 * smooth01(-0.35, 0.35, sin(TAU * abs(across) / 1.2 + 0.4 * detail)) - 1.0;
-        let near = smooth01(0.45, 0.9, abs(across));
+        let k = tunnel_wide(x);
+        let near = smooth01(0.45 * k, 0.9 * k, abs(across));
         shape += cave * near * (0.25 * ledges + 0.12 * detail);
     }
     let abyss = presence(l, ABYSS);
@@ -419,10 +420,23 @@ fn biome_shape(l: Leg, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 
     return shape;
 }
 
+// How far the tunnel has opened into a hall at `x`, and how many times the
+// old bore's radius it is across there: as `world::hall` and
+// `world::tunnel_stretch`, three halls to a leg joined by narrows.
+fn hall(x: f32) -> f32 {
+    let u = fract(x / LEG * 3.0 - 0.3 + 0.5) - 0.5;
+    return smooth01(0.30, 0.10, abs(u));
+}
+
+fn tunnel_wide(x: f32) -> f32 {
+    return 1.55 + 1.25 * hall(x);
+}
+
 // The lava cave's massif, rising either side of its tunnel: the part of the
 // ground that climbs steeply across it.
 fn massif(x: f32, z: f32, l: Leg, off: f32) -> f32 {
-    return presence(l, CAVE) * MASSIF * smooth01(TUNNEL * 1.05, TUNNEL * 1.8, off)
+    let wide = TUNNEL * tunnel_wide(x);
+    return presence(l, CAVE) * MASSIF * smooth01(wide * 1.05, wide * 1.8, off)
         * (0.85 + 0.3 * vnoise(x * 0.4, z * 0.4, 5u));
 }
 

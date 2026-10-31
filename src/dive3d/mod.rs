@@ -2460,16 +2460,32 @@ impl Nautilus {
         seed: u64,
         swiped: Option<f64>,
     ) -> Vec<u8> {
+        self.read_back_sailed(gpu, seconds, seed, swiped, 20.0)
+    }
+
+    /// As [`Self::read_back_swiped`], having sailed the last `sail` seconds
+    /// first rather than twenty: the cave's crab and the open water's swing
+    /// take minutes to come on, and a shot after a short run sees the boat
+    /// still straight on its track.
+    #[cfg(test)]
+    fn read_back_sailed(
+        &mut self,
+        gpu: &Graphics,
+        seconds: f64,
+        seed: u64,
+        swiped: Option<f64>,
+        sail: f64,
+    ) -> Vec<u8> {
         // A swipe leaves the voyage a leg on: start afresh before and after.
         if swiped.is_some() {
             self.voyage = Voyage::default();
         }
-        // Sail the last twenty seconds first, so the helm has settled as it
-        // would have on screen.
-        self.draw(gpu, seconds - 20.0, seed, 0)
+        // Sail the last stretch first, so the helm has settled as it would
+        // have on screen.
+        self.draw(gpu, seconds - sail, seed, 0)
             .expect("a 3D dive frame");
-        for i in 1..600 {
-            let at = seconds - 20.0 + f64::from(i) / 30.0;
+        for i in 1..(sail * 30.0) as i32 {
+            let at = seconds - sail + f64::from(i) / 30.0;
             if let Some(before) = swiped
                 && at - 1.0 / 30.0 < seconds - before
                 && at >= seconds - before
@@ -2945,6 +2961,9 @@ mod tests {
         let render = scene.render;
         const THUMB: u32 = 360;
         const ACROSS: u32 = 4;
+        // Minutes of voyage before each shot, so the boat is set across the
+        // cave's tunnel, or swung off its track, as it would be on screen.
+        const SAIL: f64 = 300.0;
         let rows = (places.len() as u32).div_ceil(ACROSS).max(1);
         let mut sheet = image::RgbaImage::new(THUMB * ACROSS, THUMB * rows);
         let mut html = String::from(
@@ -2954,7 +2973,13 @@ mod tests {
         );
         for (i, (place, offset)) in places.iter().enumerate() {
             let pixels =
-                scene.read_back_fast(&gpu, place.seconds() + offset.unwrap_or(0.0), place.seed);
+                scene.read_back_sailed(
+                    &gpu,
+                    place.seconds() + offset.unwrap_or(0.0),
+                    place.seed,
+                    place.swiped,
+                    SAIL,
+                );
             let frame = image::RgbaImage::from_raw(render, render, pixels).expect("a whole frame");
             let file = format!("{}.png", place.name);
             frame.save(dir.join(&file)).expect("a screenshot");

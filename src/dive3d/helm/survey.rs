@@ -108,13 +108,14 @@ fn inside_tunnel(seabed: &Seabed, p: [f32; 3]) -> Option<f32> {
     let (c, lat, _) = seabed.tunnel_at(p[0])?;
     let across = (p[0] - c[0]) * lat[0] + (p[2] - c[2]) * lat[2];
     let dy = p[1] - c[1];
-    let a = (dy / 0.85).atan2(across);
+    let (wide, high) = super::super::world::tunnel_stretch(p[0]);
+    let a = (dy / (0.85 * high)).atan2(across / wide);
     // Below the arch's foot is the floor, which the ground covers.
     if a < -0.2 * PI || a > 1.2 * PI {
         return None;
     }
     let r = Seabed::tunnel_radius(p[0], a);
-    let rho = ((across / r).powi(2) + (dy / (0.85 * r)).powi(2)).sqrt();
+    let rho = ((across / (wide * r)).powi(2) + (dy / (0.85 * high * r)).powi(2)).sqrt();
     Some((1.0 - rho) * 0.85 * r)
 }
 
@@ -310,9 +311,11 @@ pub fn sail(trip: &Voyaging, mut log: Option<&mut String>) -> Summary {
     s
 }
 
-/// The voyages surveyed: whole circuits cruising on two seabeds, and one
-/// swiped through leg after leg, there and back.
-pub const VOYAGES: [Voyaging; 3] = [
+/// The voyages surveyed: whole circuits cruising on two seabeds, one swiped
+/// through leg after leg, there and back, and one through the lava cave's
+/// halls and narrows, set across the tunnel from before its mouth to past
+/// the far one.
+pub const VOYAGES: [Voyaging; 4] = [
     Voyaging {
         name: "cruise-7",
         visit: 7,
@@ -349,6 +352,16 @@ pub const VOYAGES: [Voyaging; 3] = [
             (290.0, 1),
         ],
     },
+    // The cave is the fourth leg of this circuit: from a little over half a
+    // leg before it to most of a leg past it.
+    Voyaging {
+        name: "cave-3",
+        visit: 3,
+        seed: 0.37,
+        from: 684.0,
+        seconds: 560.0,
+        swipes: &[],
+    },
 ];
 
 #[test]
@@ -378,7 +391,7 @@ fn survey() {
 /// like a heavy hull of its size, and no point of the hull ever touches.
 #[test]
 fn the_hull_moves_like_a_heavy_boat() {
-    for trip in [&VOYAGES[0], &VOYAGES[2]] {
+    for trip in [&VOYAGES[0], &VOYAGES[2], &VOYAGES[3]] {
         let s = sail(trip, None);
         let name = trip.name;
         assert!(
