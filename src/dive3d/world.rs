@@ -2583,7 +2583,7 @@ fn colony_hue(x: f32, z: f32, ix: i32, iz: i32, salt: u32) -> [f32; 3] {
 /// its model rather than popping. The anemones and whips are too small to
 /// need a card.
 fn reef(w: &World, f: &mut Frame) {
-    const MODELS: f32 = 4.0;
+    const MODELS: f32 = 3.2;
     /// How far inside [`MODELS`] the cards still stand, dissolving.
     const BAND: f32 = 1.1;
     let c = w.pose.pos;
@@ -2593,7 +2593,7 @@ fn reef(w: &World, f: &mut Frame) {
     {
         return;
     }
-    for &(ix, iz, x, z) in &cells(w, 0.32, 0.6, 10.0, 60) {
+    for &(ix, iz, x, z) in &cells(w, 0.32, 0.6, 8.0, 60) {
         let coral = w.biome(x, z).weight(CORAL) as f32;
         if coral <= 0.0 {
             continue;
@@ -2723,6 +2723,11 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
     let mound = reef_mound(field);
     let grow = 1.0 + 0.7 * mound;
     let tint = colony_hue(x, z, ix, iz, 84);
+    // Far out in the haze a thicket or a terrace reads as one clump: its
+    // biggest heads or its first plate are enough.
+    let c = w.pose.pos;
+    let out = w.pose.basis[2];
+    let far = (x - c[0]) * out[0] + (z - c[2]) * out[2] > 4.5 + w.margin(4.5);
     let shade = |k: i32| {
         let light = 0.88 + 0.22 * hash(ix + k, iz, 85);
         tint.map(|c| (c * light).min(1.0))
@@ -2730,7 +2735,11 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
     match reef_species(x, z, hash(ix, iz, 80)) {
         STAGHORN => {
             // A staghorn thicket: many heads of one colony crowded together.
-            let heads = 4 + (hash(ix, iz, 81) * 3.0) as i32;
+            let heads = if far {
+                2
+            } else {
+                4 + (hash(ix, iz, 81) * 3.0) as i32
+            };
             for k in 0..heads {
                 let a = yaw + k as f32 * 2.4;
                 let off = (0.04 + 0.30 * hash(ix + k, iz, 82)) * grow;
@@ -2758,7 +2767,11 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
         TABLE => {
             // A terrace of table corals, each plate stepped up and out over
             // the one before, as they shoulder each other for the light.
-            let plates = 2 + (hash(ix, iz, 120) < 0.5) as i32;
+            let plates = if far {
+                1
+            } else {
+                2 + (hash(ix, iz, 120) < 0.5) as i32
+            };
             for k in 0..plates {
                 let s = (0.15 + 0.10 * hash(ix, iz + k, 121)) * grow * (1.0 - 0.22 * k as f32);
                 let a = yaw + k as f32 * 2.3;

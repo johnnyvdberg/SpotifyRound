@@ -1488,17 +1488,6 @@ struct City {
     keep: f32,
 };
 
-// The water a polished or glazed city surface mirrors along `r`: lighter
-// overhead, dark below, and the city's own windows as a warm band low along
-// the horizon, as `water_at` has them without the searchlight's beam. An
-// analytic environment map: a gradient keyed to the reflected direction,
-// where a cube map would be a dependent texture read for every pixel.
-fn city_mirror(r: vec3<f32>) -> vec3<f32> {
-    var c = mix(g.deep.rgb, g.water.rgb * 1.6, smooth01(-0.5, 0.6, r.y));
-    c += vec3<f32>(0.32, 0.17, 0.05) * g.levels.w * (1.0 - smooth01(0.0, 0.22, abs(r.y - 0.06)));
-    return c;
-}
-
 // The drowned city's surfaces. `n` is the surface's world normal and `v`
 // the way to the camera, both unit length; `distance` how far off it is.
 fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> City {
@@ -1526,8 +1515,11 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
         out.lamps = (in.floor * (1.9 + 0.2 * sin(t * 37.0 + seed)) + vec3<f32>(0.30) * core * core) * stutter;
         return out;
     }
-    // The water every polished or glazed part mirrors, worked out once.
-    let env = city_mirror(r);
+    // The water every polished or glazed part mirrors: one tone, between
+    // the deep below and the lit water above. A gradient keyed to the
+    // reflected ray reads no better from the street, and on the Pi its
+    // registers slowed every city pixel by a millisecond and more.
+    let env = mix(g.deep.rgb, g.water.rgb * 1.6, 0.55);
     if (kind > 1.4) {
         // Glass panes leaded in an iron lattice, lit warm from within. The
         // lattice is in the world, so a walkway stretched between two towers
