@@ -377,3 +377,59 @@ fn videocore_vii() {
         "the V3D has no timestamp queries; wgpu-profiler must stay off"
     );
 }
+
+/// What the adapter at hand offers the dive: backend, features, the limits
+/// that bound its draws and bindings, and how it treats the texture formats
+/// the dive uses or could use. Run it on each backend of the Pi
+/// (`WGPU_BACKEND=gl` and `vulkan`) with
+/// `spotify-round-tests gpu_cost::adapter_report --ignored --nocapture`.
+#[test]
+#[ignore = "reports on whichever adapter is at hand"]
+fn adapter_report() {
+    use wgpu::TextureFormat as F;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::from_env().unwrap_or_else(wgpu::Backends::all),
+        ..wgpu::InstanceDescriptor::new_without_display_handle_from_env()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("a GPU adapter");
+    let info = adapter.get_info();
+    println!(
+        "adapter: {} ({:?}), driver: {} {}",
+        info.name, info.backend, info.driver, info.driver_info
+    );
+    println!("features: {:?}", adapter.features());
+    println!("downlevel: {:?}", adapter.get_downlevel_capabilities());
+    println!("limits: {:#?}", adapter.limits());
+    for (name, format) in [
+        ("Rgba8Unorm", F::Rgba8Unorm),
+        ("R8Unorm", F::R8Unorm),
+        ("Rg8Unorm", F::Rg8Unorm),
+        ("Rgba16Float", F::Rgba16Float),
+        ("Rgba32Float", F::Rgba32Float),
+        ("Rgb10a2Unorm", F::Rgb10a2Unorm),
+        ("Rg11b10Ufloat", F::Rg11b10Ufloat),
+        ("Depth32Float", F::Depth32Float),
+        ("Etc2Rgb8Unorm", F::Etc2Rgb8Unorm),
+        ("Etc2Rgba8Unorm", F::Etc2Rgba8Unorm),
+        ("EacR11Unorm", F::EacR11Unorm),
+        ("EacRg11Unorm", F::EacRg11Unorm),
+        ("Bc1RgbaUnorm", F::Bc1RgbaUnorm),
+        (
+            "Astc4x4",
+            F::Astc {
+                block: wgpu::AstcBlock::B4x4,
+                channel: wgpu::AstcChannel::Unorm,
+            },
+        ),
+    ] {
+        let f = adapter.get_texture_format_features(format);
+        println!(
+            "format {name}: allowed {:?}, flags {:?}",
+            f.allowed_usages, f.flags
+        );
+    }
+}
