@@ -270,6 +270,7 @@ with the salon window halfway along its port side. `helm.rs` steers it.
 | No bubble on the glass | `bubbles_keep_off_the_glass`, `bubbles_never_pop` |
 | Sister submarines move like hulls | `dive3d::world::tests::submarines` |
 | Frame time per place on the Pi | `hotspots` (below) |
+| What each part and effect costs | `PI=<user>@<pi> deploy/bench-pi.sh features TAG`; the table is `docs/feature-costs.md` |
 
 **Seeing what a change did.** `deploy/shots.sh` renders every place of `dive3d::places::all()`
 (the legs of the voyage, each at three moments, another visit's seabed, the cave's tunnel, the

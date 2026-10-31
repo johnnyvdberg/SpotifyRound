@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 /// alternative shader paths (`QUARTER`, `CHEAP_*`, `NO_NOISE`, ...) are not
 /// features and stay in `effect_cost`. A new pass gets its row here.
 const PASSES: &[(&str, u64)] = &[
-    ("sea (open water and surface)", part::SEA),
+    ("whole 3D pass (all of the below and the clear)", part::SEA),
     ("terrain", part::TERRAIN),
     ("opaque models", part::MODELS),
     ("glass models", part::GLASS),
