@@ -1,7 +1,7 @@
 # The Nautilus on the Pi 5: where the frame goes, and what to do about it
 
-Status: **in progress** (2026-10-31). Sections are filled in as measurements land; each finding
-below is measured on the Pi unless it says otherwise.
+Status: **complete** (2026-10-31). Every finding below is measured on the Pi unless it says
+otherwise; estimates are marked as such, with how they were made.
 
 Measured at `e5af5ea` (main) on the Pi 5 (V3D 7.1.7 at 960 MHz, 4 slices × 4 QPUs, Mesa
 26.2.2-1~bpo13+0~rpt1, kiosk frozen by the bench scripts), `hotspots` over four visits × fourteen
@@ -12,29 +12,43 @@ comparison below is within one session.)
 
 `hotspots` times a frame serially: CPU build and staging, submission, binning, rendering and the
 wait. In the kiosk the CPU and the binning of one frame overlap the rendering of the one before,
-and Slint's and cage's own frames share the render engine (§3.8), so the number that limits the
-kiosk is **the render engine's time per frame plus ~2 ms of UI and compositor work**.
+and the UI's own frame and its presentation share the render engine (§3.8), so the number that
+limits the kiosk is **the render engine's time per frame plus ~2 ms of UI work**.
 
 ## 1. Summary (ranked)
 
 | # | Bottleneck | Measured cost | Where | Fix (brief) |
 |---|---|---|---|---|
-| 1 | **No early-Z at all on the Pi 5**: Mesa 26.2.2's v3dv never enables the V3D 7.1 early-Z unit, and the corner mask's `Always` depth test would disable it anyway | **−0.79 ms median, −0.80 ms worst**, −0.7…−1.1 ms in every sea; 25 → 4 places over 11 ms | every frame, render engine (FEP/TLB) | driver patch + mask `GreaterEqual` (§3.1; T1, T2) |
-| 2 | **The cave's tunnel**: a full-screen vault shader at 2 threads, drawn first and overdrawn by everything after it | **2.2 ms median over the cave's places, 4.4–5.5 ms at the seven slowest tunnel views** (cave 0.15, the legs that look into the cave) | cave; brine/forest/shallows 0.85 | (§3.2) |
-| 3 | **The city's buildings**: `fs_model` for `CITY_LIGHTS` is 650–667 instructions at 2 threads | 2.9 ms median over the city's places, 5.2 ms at city s0 0.45 | city | (§3.3) |
-| 4 | **Open water**: the full-screen background shader | 1.74 ms median, up to 3.0 ms | every sea, most at 0.45 | (§3.4) |
-| 5 | **Seabed** | 1.58 ms median, up to 3.4 ms | every sea | (§3.5) |
-| 6 | **Sprites** (marine snow, bubbles, glows, embers) | 0.43 ms median, up to 4.1 ms | forest, vents, abyss, wrecks | (§3.6) |
-| 7 | **Glass** (jellyfish, crystals) | 1.5 ms median in the bloom, up to 3.7 ms | bloom, abyss, wrecks, arctic | (§3.7) |
-| 8 | **UI and compositor**, outside `hotspots` | ≈2.0 ms render engine + ≈1.4 ms TFU per displayed frame | every frame in the kiosk | (§3.8) |
-| … | *(CPU, start-up and the ruled-out list being written)* | | | |
+| 1 | **No early-Z at all on the Pi 5**: Mesa 26.2.2's v3dv never enables the V3D 7.1 early-Z unit, and the corner mask's `Always` depth test would disable it anyway | **0.79 ms median, 0.80 ms worst** (measured with both fixed), 0.7–1.1 ms in every sea; 25 → 4 places over 11 ms | every frame, render engine (rasteriser/TLB throughput) | mask `GreaterEqual` (T1) + v3dv patch (T2); §3.1 |
+| 2 | **The cave's tunnel**: `fs_model` for the vault, 187 instructions at 2 threads, over the whole window | **4.4–5.5 ms at the seven slowest tunnel views**, 2.2 ms on the cave's median place; all of it the fragment shader | cave 0.15; brine, forest, shallows 0.85 | `fs_vault` at 4 threads (T3); §3.2 |
+| 3 | **The city's buildings**: `fs_model` for `CITY_LIGHTS`, 650–667 instructions at 2 threads, for every part of every building | **5.1 ms at city s0 0.45** (the slowest place once early-Z is on), 2.3 ms at arctic s750000 0.15, 1.0 ms on the city's median | city, and legs that look at it | split by part (T5); §3.3 |
+| 4 | **The UI's present path**, outside `hotspots`: three render jobs and a 1.4 ms TFU conversion a frame after the visual's own; cage is not involved (it scans the app's buffers out) | **≈2.0 ms render engine + ≈1.4 ms TFU a displayed frame** | every kiosk frame, every scene | attribute, then drop the copy (T9); §3.8 |
+| 5 | **Open water above the horizon**: the caustic ceiling (seven `sin`s, a `pow`, a fetch per pixel) and the glint | **0.84–1.01 ms median**, 1.0–1.4 ms in six seas; the ceiling ~0.7 ms of it, the glint 0.10 | every sea, most near the surface | cheaper ceiling (T6); §3.4 |
+| 6 | **The vents' plumes**: 8–12 stacked additive `GLOW` discs per chimney | **up to 3.75 ms**; 2.5–3.4 ms at vents 0.15/0.45, 3.2 ms at abyss s500000 0.85 | vents; legs that look into them | one column per plume (T4); §3.6 |
+| 7 | **Glass**: `fs_glass` 506 instructions at 2 threads; its `vs_model` compiled for any animation, 1078/640 instructions | **1.5 ms on the bloom's median**, up to 3.7 ms; half of it the fragment shader | bloom, abyss, wrecks, arctic | specialise by material and animation (T7); §3.7 |
+| 8 | **Seabed**: mostly quads hidden behind the tunnel and the models | 1.58 ms median, up to 3.4 ms; early-Z removes 1.4–1.6 ms of the worst | every sea | T1/T2, then re-measure; §3.5 |
+| 9 | **Start-up**: the mesh library rebuilt on one core at every start; 161 pipelines compiled eagerly | **4.65 s of the 5.9 s warm start**; ~9.5 s of compiling in the 15.4 s cold start | boot, first dive | parallel library, fewer pipelines (T8); §3.10 |
+| 10 | **Frame pacing**: a 60.00 Hz CPU timer against a 60.07 Hz panel | a repeated frame every ~14 s | every kiosk frame | pace from the display (T10); §3.9 |
+| — | CPU | 0.76 ms median, 1.58 ms max a frame, overlapped with the GPU in the kiosk | — | none needed; §3.9 |
+
+**Where this leaves the targets.** No place is over 14 ms today. With T1 + T2 (measured) the median
+is 8.59 ms, the worst 11.80 ms and four places are over 11 ms: city s0 0.45 (11.79), arctic s750000
+0.15 (11.43), cave s250000 0.15 (11.20) and vents s250000 0.15 (11.03). Each of the four has its own
+brief: the city (T5, ~2–3 ms there; it is also 2.3 ms of the arctic place, which looks back at the
+city, and T6 takes ~0.5–0.9 ms of its 2.4 ms of water), the tunnel (T3, ~2–3 ms) and the plumes (T4,
+~1.5–2.5 ms). Those estimates put every place under ~10 ms serial. In the kiosk the render engine is
+the limit: 10.1 ms at the worst place after T1/T2 plus ~2 ms of UI is ~12.1 ms of a 16.7 ms refresh,
+and T9 is the brief that shrinks the 2 ms. The CPU is not a hidden limiter (0.8–1.6 ms a frame,
+overlapped).
 
 ## 2. Method and raw evidence
 
 ### Tools
 
-- Pi timing: `deploy/build-for-pi.sh --tests` on the Mac (touch `src` first), then
-  `PI=<user>@<pi> deploy/bench-pi.sh run TAG [NAME=VALUE…]` and `deploy/bench-pi.sh compare A B`.
+- Pi timing: `find src -type f -exec touch {} +` and `deploy/build-for-pi.sh --tests` on the Mac,
+  then `PI=<user>@<pi> deploy/bench-pi.sh run TAG [NAME=VALUE…]` and
+  `deploy/bench-pi.sh compare A B`. The run now holds `/tmp/nautilus-bench.lock` on the Pi, so runs
+  from several checkouts queue instead of overlapping (added with this analysis).
 - Pass attribution: `DIVE3D_SKIP=<bits>` (the `part` bits in `src/dive3d/mod.rs`) leaves a pass
   out; the saving is the pass's cost. `DIVE3D_SKIP_EFFECTS=<bits>` leaves out one model group or
   sprite kind (`effect` bits).
@@ -46,6 +60,9 @@ kiosk is **the render engine's time per frame plus ~2 ms of UI and compositor wo
   `deploy/v3d-shaderdb/check.sh <checkout>`.
 - Mesa source: the `v3d-mesa-src` Docker image built by `deploy/v3d-shaderdb` holds the exact
   Mesa 26.2.2 tree (`/mesa`); `docker run --rm v3d-mesa-src sh -c '…'` reads it.
+- Display state, read-only: `kmsprint` on the Pi (planes, framebuffer ids, mode), and
+  `DRM_IOCTL_MODE_GETFB2` on a framebuffer id for its format, pitch and modifier (no DRM master
+  needed; a short Python `fcntl.ioctl` with the system `python3`).
 
 ### Baseline counters (168 places, per frame, stock driver)
 
@@ -159,8 +176,8 @@ at random per visit, so the dive could not be chosen without touching the panel)
 Kiosk threads: UI thread 85.6 ms/s, visualizer 29.9 ms/s; cage 15.9 ms/s. The globe alone
 (`globe::tests::frame_time`, kiosk frozen) is one render job and ~10.2 ms of render engine a
 frame; its uniform upload is a TFU job of ~40 µs. So the other **three render jobs a frame cost
-≈2.0 ms** of render engine, and **two TFU jobs a frame of ≈0.7 ms each** come from outside the
-app's own uploads: Slint's frame and cage's composite of it (§3.8). For reference
+≈2.0 ms** of render engine, and besides the globe's upload there is **one TFU job a frame of
+≈1.4 ms**: the UI's present path (§3.8; cage scans the app's buffers out). For reference
 (`gpu_cost::gpu_cost`, kiosk frozen, 1080²): a pass that only clears and stores costs 0.40 ms, one
 that loads and stores 0.77 ms, a clear plus one full-screen textured quad 0.79 ms.
 
@@ -217,12 +234,12 @@ the rasteriser, about half a GPU cycle each. (This also corrects the old reading
 as "heavy overdraw being shaded": the overdraw costs rasteriser/TLB time, not shader time.)
 
 **Fix.** (a) Driver: compile `cmd_buffer_update_ez_state` for every version and call it on 7.1 for
-its bookkeeping only (the `CFG_BITS` fields stay 4.2-only); see brief T1. Ship it to the kiosk as
+its bookkeeping only (the `CFG_BITS` fields stay 4.2-only); see brief T2. Ship it to the kiosk as
 a user-built `libvulkan_broadcom.so` with its own ICD file, selected by `VK_ICD_FILENAMES` in the
 kiosk unit's environment only while that file exists (a wrapper, not a second ICD in the list:
 two listed ICDs expose two V3D adapters), and send the same patch upstream to Mesa (and to
 Raspberry Pi's `mesa` package) so a later Pi OS update makes the local build unnecessary. (b) App:
-the mask's depth compare `Always → GreaterEqual` (brief T2) — free, pixel-identical, and needed
+the mask's depth compare `Always → GreaterEqual` (brief T1) — free, pixel-identical, and needed
 for (a) to do anything.
 
 **Expected gain.** Measured: **−0.8…−0.9 ms on the median place** (−0.79 serial, −0.90 render
@@ -291,7 +308,7 @@ the windowed walls with their grid of rooms, lifts and failing lamps). A V3D sha
 count is set by its largest path, so a neon tube or a plain roof costs a pixel as much as a lit
 window with a room behind it.
 
-**Fix (T4).** Split the city by part. When the library builds a city model, sort its triangles by
+**Fix (T5).** Split the city by part. When the library builds a city model, sort its triangles by
 part kind (the mark `mesh::city` already writes) into separate index ranges, and draw each range
 with a pipeline specialised by a `CITY_PART` override (neon; lit glass; brass and plain stone;
 windowed wall). The first three become short shaders at 4 threads. For the windowed walls, move
@@ -309,14 +326,32 @@ city s0 0.45 is 11.79 ms, the slowest place of all; after T4 it would be ~9–10
 less variety than the per-pixel rooms; check the city's previews and `screenshots`
 (`DIVE3D_SHOTS=city`) at near and far distances.
 
-### 3.4 Open water: a full-screen pass whose shader is half its cost
+### 3.4 Open water: the caustic ceiling above the horizon
 
 **Evidence.** Leaving the water out saves 1.74 ms median (up to 3.03 ms: abyss, atlantis,
-arctic and coral at 0.45, where most of the window is open water). Compiling the same pass with
-the existing `CHEAP_BACKGROUND` switch (`DIVE3D_SKIP=16384`: the depth gradient only, no glint,
-ceiling or sky) saves **1.01 ms median, 1.94 ms max**. So of the water's 1.74 ms, ~1.0 ms is its
-shader's work and ~0.7 ms is the pass itself (rasterising, depth-testing and writing the
+arctic and coral at 0.45, where most of the window is open water). The existing
+`CHEAP_BACKGROUND` switch (`DIVE3D_SKIP=16384`, a uniform `debug` bit in the same pipeline: the
+depth gradient only, no beam, glint, ceiling or sky) saves **0.84–1.01 ms median** (two sessions),
+1.94 ms max, and takes the places over 11 ms from 26 to 14. So of the water's 1.74 ms, ~0.9 ms is
+its shader's work and ~0.8 ms is the pass itself (rasterising, depth-testing and writing the
 uncovered pixels, which a 3-instruction shader would still pay).
+
+Where the shader's 0.9 ms goes, from two throwaway builds measured in one session against the
+same baseline (168 places each):
+
+| build | median saved | per sea (median saved) |
+|---|---:|---|
+| below the horizon, return `water_at` at once (what a horizon split would do) | **0.02** (render engine) | nothing anywhere |
+| the open-water glint removed (`SKY` 0 and 2 only) | 0.10 | abyss 0.37, wrecks 0.34, arctic 0.33, bloom 0.33, vents 0.15, the rest 0 |
+| everything but the gradient (`CHEAP_BACKGROUND`) | 0.84 | atlantis 1.43, brine 1.41, wrecks 1.41, trench 1.33, coral 1.08, arctic 1.06, vents 0.92, shallows 0.83, sargasso 0.82, abyss 0.81, city 0.70, bloom 0.53, cave 0.48, forest 0.35 |
+
+The pixels below the horizon already skip the expensive terms (they sit behind `up > 0` and
+`dir.y > 0` branches that whole 16-pixel groups take together), so **the cost is above the
+horizon**, and in most seas it is **`water_ceiling`**, the underside of the surface drawn while
+the boat is within six units of it (`SKY` 1): ~0.7 ms median and 1.0–1.4 ms in atlantis, brine,
+wrecks, trench, coral and arctic. Per pixel it is one caustic fetch, seven `sin`s (swell ×3, chop,
+sun, fine ×2), a `pow(…, 18)` and the wash toward the open water; the glint (`SKY` 0) is four
+`sin`s and a `pow(…, 14)`.
 
 **Root cause.** One fragment shader per sky (`SKY` override, `sky_mode` on the CPU):
 
@@ -327,9 +362,9 @@ uncovered pixels, which a 3-instruction shader would still pay).
 | `Dive3d water #2` | polar sky through the leads | 321 | **2** | 19 |
 | `Dive3d water #3` | Snell's window | 398 | **2** | 28 |
 
-Every pixel below the horizon pays for the whole shader's register budget even though only the
-part above the horizon (`dir.y > 0`, and the glint band `dir.y > 0.05`) uses the waves, the
-caustic ceiling and the sky.
+#0 and #1, the ones nearly every frame uses, already run at 4 threads: the ceiling costs because
+it is a lot of transcendental arithmetic on every pixel above the horizon, not because of a
+thread cliff.
 
 **Why #2 and #3 run at 2 threads with 19 and 28 temps.** Not register pressure: the compiler logs
 no failed allocation for them. In Mesa's `v3d_tex.c`, a texture lookup may write at most
@@ -357,20 +392,24 @@ two plain `Cube` views of the array, one per leg, bound from the CPU, which take
 with the LOD) would avoid the extra fetches, but the most it can win is the thread step on a small
 part of a few mid-cost frames. **Low value; not briefed.**
 
-**Fix.** (a) Split the pass at the horizon: the CPU already knows the camera basis (`Globals`), so
-it can emit two polygons, the part of the window below the horizon drawn with a gradient-only
-pipeline (`water_at` only, pixel-identical there because the glint, ceiling and sky terms are all
-multiplied by zero below `dir.y = 0`; check the `up` band's 0.05 start) and the part above with
-the current `SKY` variant (brief T6). (b) Not recommended: #2/#3 at 4 threads (measured above);
-a per-vertex grid for the whole water, which would blur the glint and the caustic web.
+**Fix (T6).** Make the ceiling cheaper per pixel without changing how it reads. Its terms are a
+fixed pattern on the surface plane (`at`, the ray's hit on y = 0) moving with time, so they can
+come from textures instead of `sin`: (a) bake the swell, chop and fine cells into the unused
+channels of `caustic_map` (or a second small tileable texture) and scroll them, so the ceiling
+becomes two or three fetches of the same `at` and a few multiply-adds; (b) or drop the terms that
+the final wash leaves invisible, measured term by term against the previews (the survey in
+`docs/pipeline-optimization.md` §14 found the old glint's `sin`s and `pow` drew nothing in the
+previews; the ceiling has not been checked that way). Not recommended: a
+horizon split (measured above: 0.02 ms), #2/#3 at 4 threads (measured above), a per-vertex grid
+(the plane recedes to the horizon, where any grid undersamples).
 
-**Expected gain.** (a) is bounded by the shader's 1.0 ms median share times the part of the water
-below the horizon, less what `water_at` alone still costs there: estimated ~0.3–0.6 ms median, up
-to ~1 ms at the 0.45 places that look level or down (abyss, atlantis, arctic, coral). Not measured;
-the brief's first step is to measure it. Pixel-identical by construction below the horizon.
+**Expected gain.** Bounded by `CHEAP_BACKGROUND`: 0.84 ms median, 1.0–1.4 ms in six seas. A
+ceiling at a third of its arithmetic would take ~0.4–0.5 ms off the median and 0.6–0.9 ms in those
+seas.
 
-**Risk.** Low. The seam is the horizon line itself, where every term the split removes is zero; a
-mistake shows as a hard line across the water, easy to see in the previews.
+**Risk.** Medium: the ceiling is the look of every shallow sea. A baked swell repeats where the
+`sin` sum did not (pick a texture period well beyond the 0.3-unit caustic tile); compare the
+shallow seas' previews and `screenshots`.
 
 ### 3.5 Seabed: mostly hidden quads, which early-Z removes
 
@@ -407,7 +446,7 @@ the window puts 8–12 blended full-size layers over a large part of the screen;
 (blending is cheap per layer on V3D, ~0.4 ms per full-screen layer in `gpu_cost`, but the plumes
 stack). `vs_sprite` (388 instructions, 2 threads) is not the issue at ~1 k sprites.
 
-**Fix.** Draw each plume as one or two stretched quads with the rising puffs computed in the
+**Fix (T4).** Draw each plume as one or two stretched quads with the rising puffs computed in the
 fragment shader (the lava falls already do this through `f.shafts`), or fade a plume disc out as
 its projected radius grows past ~60 px, so a near chimney is one translucent column rather than a
 stack of discs. Identify the abyss's large glows the same way (`DIVE3D_SKIP_EFFECTS` on that
@@ -441,16 +480,31 @@ of the remaining ~0.7 ms for the vertex shaders. Realistically 0.5–1 ms in the
 1–1.5 ms at the worst glass places. Pixel-identical if the specialisation only removes dead
 paths.
 
-### 3.8 The UI and the compositor: ~2 ms a frame that `hotspots` never sees
+### 3.8 The UI's present path: ~2 ms a frame that `hotspots` never sees
 
 **Evidence.** §2's live sample: with the kiosk running normally the render engine does 4 jobs a
 frame at 60 fps and is busy 733 ms a second; the visual's own frame was one job of ~10.2 ms (the
 globe was on screen; the dive's frame is likewise one render job). The other three render jobs
-cost ≈2.0 ms a frame, and two TFU jobs a frame (≈0.7 ms each, 84 ms/s) are not the app's uploads
-(those are ~8 µs each). A clear plus one full-screen textured quad plus the store is 0.79 ms on its
-own (`gpu_cost`), which is what Slint's frame of the sea is; the rest is cage compositing the
-app's buffer rather than scanning it out (a TFU job of ~0.7 ms is what converting a 1080² linear
-RGBA8 buffer to the tiled layout the GPU samples costs).
+cost **≈2.0 ms a frame**. Of the two TFU jobs a frame, one is the visual's own upload (~40 µs);
+the other takes **≈1.4 ms** (84 ms/s in all), about what the TFU needs to convert a whole 1080²
+RGBA8 image between the linear and the tiled layouts.
+
+**Cage is not the cost: it already scans the app's buffers out.** Read-only, without touching
+the kiosk: `kmsprint` on the Pi shows one active plane on the HDMI output (no cursor plane), and
+`DRM_IOCTL_MODE_GETFB2` on the framebuffers it shows (no DRM master needed; a 40-line Python
+`ioctl`, run with the system `python3`) gives four framebuffers in rotation, each
+**1080×1080 `ARGB8888`, linear, pitch 4352**. wlroots renders its own output buffers as
+`XRGB8888` unless told otherwise, and cage does not; four ARGB buffers in rotation are the
+client's swapchain. So cage scans the app's buffers out directly and does no GPU work a frame.
+(The panel's mode is 1080×1080 at **60.07 Hz**, which matters for §3.9's pacing note.)
+
+What is left is the app's own present path, after the visual's frame: Slint's frame (Skia drawing
+the sea's texture full-screen plus the UI; a clear, one full-screen textured quad and the store is
+0.79 ms in `gpu_cost`), something else of about one full-screen pass (a load-and-store pass is
+0.77 ms in `gpu_cost`; a copy of the swapchain image into the linear buffer the display scans out
+would look like this), a smaller job, and the one 1.4 ms TFU conversion. Which caller issues which
+job is not established: `gpu_stats` is global, and the per-client counters in
+`/proc/<pid>/fdinfo` are not readable for the kiosk's processes without root.
 
 **Consequence.** The kiosk's budget for the dive's render engine is ~14.5 ms at 60 Hz, not
 16.7 ms; at the worst place today (11.08 ms render) that leaves ~3.5 ms, and the adaptive render
@@ -458,12 +512,16 @@ scale (`SPOTIFY_ROUND_ADAPTIVE`, which steers from the render engine's busy time
 has headroom. A frame drawn at a time unrelated to the display's vsync (§3.9) still lands on the
 next vblank only if all of this fits.
 
-**Fix.** (a) Find out why cage composites instead of scanning out (`cage -d` logs wlroots' direct
-scan-out decision; needs a change to the kiosk unit, i.e. the user with sudo): a 1080² opaque
-`XRGB8888`/`ARGB8888` client that covers the output is a scan-out candidate unless the buffer's
-modifier or an output transform or a software cursor rules it out. Scan-out would return ≈1.2 ms
-of render engine and ≈1.4 ms of TFU a frame, for the globe and the player too. (b) The KMS
-overlay for the dive itself stays blocked (`docs/pipeline-optimization.md` §71).
+**Fix (T9).** Attribute the three render jobs and the TFU job to their callers (Mesa's
+`V3D_DEBUG=cl` names every job and its targets; the app's surface configuration — format,
+alpha mode, present mode, image count — is the first thing to log), then remove the full-screen
+copy and conversion if they are what they look like: render the UI straight into the scannable
+image, or keep the swapchain tiled if the display path does not need linear. The KMS overlay for
+the dive itself stays blocked (`docs/pipeline-optimization.md` §71).
+
+**Expected gain.** Unmeasured; bounded by ≈1.2 ms of render engine a frame (everything after
+Slint's own 0.8 ms) plus the 1.4 ms TFU job, on every frame of every scene, the globe and the
+player included.
 
 ### 3.9 CPU: not a hidden limiter
 
@@ -488,13 +546,15 @@ visualizer: a fraction of one of the four cores. The CPU governor is `ondemand` 
 when sampled); `performance` would shave the CPU part of the serial `hotspots` number but not the
 kiosk's frame.
 
-**Frame pacing (not a cost, a smoothness note).** The visualizer paces itself with a 60 Hz CPU
-timer (`visuals::pace`), not the display's vblank, and its submission and Slint's frame both run
-on the UI thread. A dive frame that finishes just after a vblank waits a whole refresh, and the
-timer's 60 Hz beats against the panel's, so a frame is occasionally shown twice or skipped even
-when the GPU has room. Driving the dive from Slint's `BeforeRendering` notifier (render the next
-dive frame as the UI starts presenting this one) would lock the two; a design change, measured by
-counting repeated frames, not by `hotspots`.
+**Frame pacing (not a cost, a smoothness note; T10).** The visualizer paces itself with a CPU
+timer (`visuals.rs`: `deadline += budget` at exactly `1 / TARGET_FPS`, then `pace`), not the
+display's vblank, and its submission and Slint's frame both run on the UI thread. The panel's
+mode is **60.07 Hz** (85.5 MHz over 1280 × 1112, `kmsprint`), so a 60.00 Hz producer falls one
+frame behind the display every **~14 s**: one refresh shows the previous dive frame again, and
+while the frame's completion drifts across the vblank, jitter can show a frame twice and skip the
+next. Pacing from the display instead (Slint's rendering notifier, or the swapchain's present
+timing) would lock the two; measured by counting repeated and skipped frames over a minute, not by
+`hotspots`.
 
 ### 3.10 Start-up
 
@@ -518,7 +578,7 @@ reaches (every solid material is in `MATERIALS`; the glass-only materials go thr
 and the any-material fragment shaders are the largest (393–420 instructions). More of the
 material × grounded × animation combinations are never drawn.
 
-**Fix (T9).** (a) Build the models in parallel (`std::thread::scope` over `Model::ALL`, results
+**Fix (T8).** (a) Build the models in parallel (`std::thread::scope` over `Model::ALL`, results
 gathered in model order so the library is bit-identical; a unit test compares it with the serial
 build), or cache the built library on disk keyed by a hash of the generator's inputs. (b) Drop the
 "any" material slot (an unknown material becomes a test failure, not a fallback pipeline).
@@ -530,3 +590,411 @@ the build competes for the CPU with the UI for ~15 s.
 **Expected gain.** (a) ~3 s off every start on four cores (4.65 s → ~1.2–1.6 s), all of it with a
 disk cache. (b) ~1 s off a cold start (18 of 161 pipelines, the largest shaders among them).
 (c) more on a cold start, depending on how many slots are unused.
+
+## 4. Task briefs for implementation agents
+
+Ordered by value for the effort. Hand an agent §4.0 and its own brief; each brief names the part
+of §3 that holds its evidence. Every number to beat is from this document's sessions on the stock
+driver unless the brief says otherwise.
+
+| brief | what | expected gain | effort | tier | parallel |
+|---|---|---|---|---|---|
+| T1 | corner mask `GreaterEqual` | none alone; needed by T2 | minutes | Haiku | yes |
+| T2 | early-Z on V3D 7.1 in v3dv, shipped as a local driver + upstream | −0.8…−0.9 ms median, every frame | 1–2 days | Sonnet | yes (driver only) |
+| T3 | the tunnel's own 4-thread fragment shader | −2…−3 ms at 7 places, −1 ms cave median | ~1 day | Sonnet | yes |
+| T4 | one column per vent plume | −1.5…−3 ms at the vents' 0.15/0.45 places | ~half a day | Sonnet | yes |
+| T5 | the city split by building part | −2…−3 ms at city s0 0.45, −1 ms arctic s750000 | 2–3 days | Sonnet | yes, merges with T3/T7 |
+| T6 | a cheaper caustic ceiling | −0.3…−0.5 ms median, −0.6…−1 ms in six seas | ~1 day | Sonnet | yes |
+| T7 | glass specialised by material and animation | −0.5…−1 ms bloom, −1…−1.5 ms worst glass | ~1 day | Sonnet | yes, merges with T3/T5 |
+| T8 | start-up: parallel mesh library, no unused pipelines | warm start 5.9 → ≤ 3 s | ~half a day | Sonnet; (b) Haiku | yes |
+| T9 | the UI's present path: attribute, then drop the copy | up to ~1.2 ms render + 1.4 ms TFU a frame | investigation | Sonnet | yes; needs the user |
+| T10 | pace the dive from the display | no repeated frame every ~14 s | ~1 day | Sonnet | yes; needs the user to deploy |
+
+### 4.0 Rules for every brief
+
+1. **Branch.** Work in your own git worktree on a branch named for the brief (`perf-t3-vault`, …).
+   Do not push, merge to main or deploy: the user does. The repository is public: never write the
+   Pi's address or user name into tracked files, only `<user>@<pi>`.
+2. **Build on the Mac only; never run cargo on the Pi.** For the Pi:
+   `find src -type f -exec touch {} +` then `deploy/build-for-pi.sh --tests`, and check that
+   `md5 -q target/pi/spotify-round-tests` changed since your previous build (the build can hand
+   back a stale binary from another worktree otherwise).
+3. **The kiosk on the Pi is the user's live display.** Benchmark only through
+   `deploy/bench-pi.sh run` (it freezes the kiosk for the run and resumes it however the run ends)
+   or a script that does `kill -STOP` with a `trap … kill -CONT` on every exit path. Never leave
+   it stopped, never replace the deployed binary, never restart it. Agents have no `sudo`.
+4. **One Pi run at a time.** The GPU and its counters are shared by everything on the Pi.
+   `bench-pi.sh` holds `/tmp/nautilus-bench.lock` on the Pi for the length of a run, so runs from
+   parallel agents queue; a hand-written Pi script takes the same lock first
+   (`exec 9>/tmp/nautilus-bench.lock; flock 9`).
+5. **Measure before and after in one session**, the default 168 places:
+   `PI=<user>@<pi> deploy/bench-pi.sh run <brief>-before` (base commit's test binary), then
+   `… run <brief>-after`, then `deploy/bench-pi.sh compare <brief>-before <brief>-after`. Report
+   the median, the worst, the places over 11 ms and the per-sea medians (the CSVs in
+   `target/bench/`). The median drifts by up to ±0.1 ms between runs: a gain under 0.1 ms needs a
+   second pair. `DIVE3D_HOTSPOT_SCENES=<sea,…>` narrows a run for iteration; the acceptance run is
+   the full one.
+6. **Gates, all on the Mac:** `deploy/v3d-shaderdb/check.sh` (about a minute; fails if any shader
+   lost threads or started spilling; a brief that changes thread counts or adds pipelines runs
+   `deploy/v3d-shaderdb/check.sh . --update` once the table is what it wants, and commits the new
+   `baseline.txt` with the change); `cargo test --release`; and CI's
+   `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all -- --check`.
+7. **Pictures.** Before and after:
+   `DIVE3D_PREVIEW_DIR=<dir> cargo test --release dive3d::tests::previews -- --ignored --nocapture`
+   (28 frames from every leg), then `/usr/bin/python3 target/compare_frames.py <before> <after>`
+   (the script is untracked in the main checkout's `target/`; copy it). A brief that claims
+   pixel-identical output shows mean 0.000; a brief that changes the look also writes the
+   `screenshots` of its sea (`DIVE3D_SHOTS_DIR=<dir> DIVE3D_SHOTS=<sea> cargo test --release
+   dive3d::tests::screenshots -- --ignored --nocapture`) and puts the most-changed frames side by
+   side for the user, who decides. Where the driver is the change (T2), render the previews on the
+   Pi with the test binary instead (kiosk frozen, rules 3–4).
+8. Do not re-propose what §5 rules out (f16 among them) without new evidence.
+
+### T1. Corner mask: `GreaterEqual` instead of `Always` (Haiku)
+
+- **Goal.** Stop the sea pass's first draw from switching early-Z off for the whole pass. Alone it
+  changes nothing on the stock driver (measured 9.46 → 9.48 ms median, noise); it is what lets T2
+  work (§3.1).
+- **Where.** `src/dive3d/mod.rs`, the `Dive3d corners` pipeline:
+  `depth_compare: Some(wgpu::CompareFunction::Always)`. Leave the `Always` in `src/gpu_cost.rs`
+  alone (a measurement probe).
+- **Approach.** `CompareFunction::GreaterEqual`, with a comment saying why: the depth target is
+  cleared to 0.0 and the mask writes 1.0, so the test passes wherever the mask draws, exactly as
+  `Always` did; but v3dv treats `ALWAYS` with depth writes as an early-Z-incompatible test and
+  disables early-Z for the rest of the render pass, while `GREATER_EQUAL` matches every other draw
+  in the pass.
+- **Constraints.** §4.0. No shader changes: the shader gate passes unchanged. `cargo test
+  --release`, clippy, fmt.
+- **Acceptance.** Previews identical (mean 0.000, max 0). Pi, full run before/after: median within
+  ±0.1 ms. With T2's driver: `DIVE3D_COUNTERS=FEP-clipped-quads` reads > 0 at every place.
+- **Parallel:** yes. **Tier:** Haiku.
+
+### T2. Early-Z on V3D 7.1 in v3dv, shipped locally and upstream (Sonnet)
+
+- **Goal.** Turn on the Pi 5's early-Z for the dive's render pass. Measured with a throwaway
+  driver plus T1: **median 9.46 → 8.59 ms, worst 12.61 → 11.80 ms, places over 11 ms 25 → 4**,
+  render engine median 7.33 → 6.43 ms, previews byte-identical (§3.1).
+- **Where.** Mesa 26.2.2, `src/broadcom/vulkan/v3dvx_cmd_buffer.c`: `cmd_buffer_update_ez_state()`
+  and its only call, in `v3dX(cmd_buffer_emit_configuration_bits)()`, are compiled only
+  `#if V3D_VERSION == 42`. That function is the only place that sets `job->has_ez_draws` and
+  decides `job->first_ez_state`; `set_rcl_early_z_config()` reads them when it writes the render
+  pass's `TILE_RENDERING_MODE_CFG_COMMON`, so on 7.1 every job gets `early_z_disable = true`.
+- **Approach.**
+  1. Check Mesa's main branch first. If the 7.1 bookkeeping is already fixed there, backport that
+     commit unchanged and cite it.
+  2. Otherwise patch (this is the measured change, minus the throwaway's environment switch):
+     ```diff
+     -#if V3D_VERSION == 42
+      /* Updates cmd_buffer, and their job, early z state tracking. Returns false if
+       * EZ must be disabled for the current draw call.
+     + *
+     + * V3D 7.x has no per-draw early-Z bits in CFG_BITS, but the job's direction
+     + * and has_ez_draws, which set_rcl_early_z_config() needs, come from here.
+       */
+      static bool
+      cmd_buffer_update_ez_state(struct v3dv_cmd_buffer *cmd_buffer,
+     …
+         return !disable_ez;
+      }
+     -#endif
+     …
+      #if V3D_VERSION == 42
+            bool enable_ez = cmd_buffer_update_ez_state(cmd_buffer, pipeline);
+            config.early_z_enable = enable_ez;
+            config.early_z_updates_enable = config.early_z_enable &&
+               cmd_buffer->state.z_updates_enable;
+     +#else
+     +      (void) cmd_buffer_update_ez_state(cmd_buffer, pipeline);
+      #endif
+     ```
+     Per-shader cases (discard, depth writes) stay safe on 7.1: the shader state record's
+     `turn_off_early_z_test` bit is set from the fragment shader's `disable_ez` on every version.
+  3. Build on the Mac in an arm64 Debian trixie container (the `mesa` stage of
+     `deploy/v3d-shaderdb/Dockerfile` is a working recipe, without its `patch-mesa.sh`, which only
+     renames shaders for the shader table), from the source of the installed
+     package (Raspberry Pi's `mesa 26.2.2-1~bpo13+0~rpt1`; upstream `mesa-26.2.2` reproduced the
+     system driver exactly in the experiment, counter for counter), with
+     `-Dvulkan-drivers=broadcom -Dgallium-drivers= -Dplatforms=wayland` and the other options of
+     that recipe. The throwaway had `-Dplatforms=` (no window-system support), which is enough for
+     the offscreen benchmark but not for the kiosk.
+  4. Install without `sudo` and with a fallback: the `.so` and an ICD JSON with its absolute
+     `library_path` under the kiosk user's home (say `~/.local/lib/nautilus-mesa/`), **not** in a
+     Vulkan ICD directory (the loader would then list the system driver and this one, and wgpu
+     would see two V3D adapters). Select it for the app only: at the very top of `main()`, before
+     any thread or wgpu instance exists, if that JSON exists and neither `VK_DRIVER_FILES` nor
+     `VK_ICD_FILENAMES` is set, set `VK_DRIVER_FILES` to it (an `unsafe` `set_var` in Rust 2024,
+     sound there because nothing else runs yet), and log which driver the adapter reports.
+     Removing the file returns the kiosk to the system driver at its next start. (The
+     alternative, `Environment=VK_DRIVER_FILES=…` in the kiosk unit, needs the user's `sudo` and has
+     no fallback if the file goes missing.) The first start on the new driver recompiles every
+     shader (~15 s: Mesa's cache is keyed on the driver build).
+  5. Upstream: prepare a Mesa merge request (patch, the §3.1 counters and the 2 × 2 table) and a
+     note for Raspberry Pi's mesa package, for the user to send, so a later Pi OS update makes the
+     local driver unnecessary. Record in `docs/` how to rebuild the local driver when Pi OS
+     upgrades Mesa.
+  6. Follow-up once it runs: the draw-order probes of `docs/pipeline-optimization.md` §7.4/§12
+     (`DEPTH_FIRST_DRAWS`, `TERRAIN_FIRST`, nearest-first) were measured without early-Z; re-run
+     them with it (`DIVE3D_SKIP=<bit>`) before ruling them out for good.
+- **Constraints.** §4.0 rules 2–5 and 7; the shader gate is unaffected (no app shader changes);
+  `cargo test --release`, clippy, fmt for the `main()` change.
+- **Acceptance.**
+  - Counters: `PI=<user>@<pi> deploy/bench-pi.sh run t2-stock DIVE3D_COUNTERS=FEP-clipped-quads,TLB-quads-not-passing-z-and-stencil-test`
+    and `… run t2-ez VK_DRIVER_FILES=<abs path>/icd.json DIVE3D_COUNTERS=…` (T1 in the binary):
+    `FEP-clipped-quads` 0 → ≥ 1 M median; `TLB-quads-not-passing…` 1.7 M → ≤ 0.1 M median.
+  - Time, same pair: median −0.7 ms or better, worst −0.7 ms or better, places over 11 ms ≤ 6.
+  - Pictures: the `previews` test on the Pi under both drivers gives byte-identical PNGs
+    (`md5sum` of each; 28 of 28 in the experiment).
+  - The app logs the local driver when the file exists and the system one when it is removed.
+- **Parallel:** yes (driver and `main()` only). **Tier:** Sonnet.
+
+### T3. The tunnel's own fragment shader at 4 threads (Sonnet)
+
+- **Goal.** Cut the vault's per-pixel cost (§3.2): 4.4–5.5 ms at the seven slowest tunnel views
+  (cave 0.15 at seeds 0/250000/750000, brine 0.85 at 0/750000, forest s250000 0.85, shallows
+  s500000 0.85), 2.2 ms on the cave's median place. All of it is `fs_model`'s vault path,
+  187 instructions at 2 threads (36 temps).
+- **Where.** `src/shaders/scene.wesl`: the full-HD `fs_model` (its `MATERIAL == VAULT` uv, LOD and
+  tap) and `vault_hd`; `vs_model` and the `Lit` varyings. `src/dive3d/mod.rs`: the model pipelines
+  for the vault's material slot (labels `Dive3d models material5 …`), where the fragment entry
+  point is chosen.
+- **Approach.**
+  1. A full-HD-only `fs_vault` entry point for the vault's pipelines, reading only the varyings
+     it needs.
+  2. Per vertex, interpolated, what varies smoothly over a wall: the tap's uv
+     (`(p.x + p.z, p.y) × surface.y × 1.35`) and its LOD (`clamp(log2(distance), 0, 8)`); the lamp's
+     falloff and cone (`1 / (1 + reach² × 0.12)`, `cone`); the floor bounce's `low` and breathing;
+     `near`; the cracks' `pulse`. Pack them into one or two `vec4` varyings (a vault-only vertex
+     output, or `Lit` fields the vault does not use).
+  3. Per pixel only what needs the tap: the bumped normal, the lamp's N·L, the bounce's
+     `bumped.y`, the tone and the shine (`pow(…, 16)`). Issue the `textureSampleLevel` first, with
+     nothing before it but varyings, so its latency overlaps the arithmetic.
+  4. Iterate offline with `deploy/v3d-shaderdb/shaderdb.sh .` until the `material5` FS rows read
+     4 threads (≤ 32 temps). The vertex shader (574 / 66 instructions, ≤ 16 k vertices) is not the
+     cost; leave it unless the extra outputs push it into spilling.
+- **Constraints.** §4.0; gate: the vault FS goes to 4 threads, nothing else loses threads (update
+  the baseline); `cargo test --release`, clippy, fmt; pictures: the cave legs.
+- **Acceptance.** Pi, `bench-pi.sh run t3-before DIVE3D_HOTSPOT_SCENES=cave,brine,forest,shallows`
+  and `t3-after` with the same scenes for iterating, then the full pair: each cave 0.15 place
+  −2 ms or better, the brine 0.85 places −1.5 ms or better, the cave's median −0.8 ms or better, no
+  sea's median worse by more than 0.1 ms. Pictures: the cave legs' previews mean ≤ 1/255; no
+  facets of the per-vertex lamp near the glass (look at the closest frames); side by side for the
+  user.
+- **Parallel:** yes; T5 and T7 also edit `fs_model`/the pipeline table: merge one at a time.
+  **Tier:** Sonnet.
+
+### T4. One column per vent plume (Sonnet)
+
+- **Goal.** The `GLOW` sprites cost up to 3.75 ms: 2.5–3.4 ms at the vents' 0.15 and 0.45 places
+  and 3.2 ms at abyss s500000 0.85 (§3.6). Take ≥ 1.5 ms off each without losing the plume.
+- **Where.** `src/dive3d/world.rs`: the chimneys' plumes, `for k in 0..8` (radius
+  `0.05 + rise × 0.16`) and the vents field's `for k in 0..12` (`0.06 + rise × 0.22`);
+  `vs_sprite`/`fs_sprite` in `src/shaders/scene.wesl` if a sprite mode is added. First confirm
+  that abyss s500000 0.85's glows are plumes too: `DIVE3D_HOTSPOT_SCENES=abyss
+  DIVE3D_HOTSPOT_SEEDS=500000` with and without `DIVE3D_SKIP_EFFECTS=8589934592` (glows off).
+- **Approach,** cheapest first:
+  (a) Fade a disc out by its size on screen: in `vs_sprite`, scale a `GLOW` disc's tint by a
+  smooth step of its projected radius (full below ~60 px, gone above ~150 px) and collapse it
+  to a zero-area quad when gone, so a chimney close to the window keeps its small, far discs and
+  drops the big overlapping ones.
+  (b) Replace each plume by one or two camera-facing stretched quads (a column from the mouth to
+  the plume's top) whose rising puffs are a scrolling pattern in the fragment shader, the way the
+  lava falls already do in `fs_shaft`: one blended layer instead of 8–12.
+- **Constraints.** §4.0; gate; tests; pictures: the vents' previews and `screenshots`
+  (`DIVE3D_SHOTS=vents`), side by side for the user (the plume's look changes).
+- **Acceptance.** Pi, `bench-pi.sh run t4-before DIVE3D_HOTSPOT_SCENES=vents,abyss` / `t4-after`:
+  vents 0.15 and 0.45 places −1.5 ms or better each, abyss s500000 0.85 −1.5 ms or better; with
+  `DIVE3D_SKIP_EFFECTS=8589934592` at those places the remaining glow cost is ≤ 1 ms. Full pair: no
+  sea worse.
+- **Parallel:** yes. **Tier:** Sonnet.
+
+### T5. The city split by building part (Sonnet)
+
+- **Goal.** `fs_model` for `CITY_LIGHTS` (650–667 instructions, 2 threads, 50–51 temps) costs
+  5.1 ms at city s0 0.45, the slowest place once T1/T2 are in (11.79 ms), 2.3 ms at arctic s750000
+  0.15 and 1.0 ms on the city's median (§3.3). Take 2–3 ms off city s0 0.45 and ≥ 1 ms off the
+  arctic place.
+- **Where.** `src/dive3d/mesh.rs` (the city's generator, which marks each triangle's part as the
+  length of its model-space normal: `kind = length(local_normal) − 1` in `city_light`);
+  `src/dive3d/world.rs` `city()`; `src/dive3d/mod.rs` (`material_slot`, `pipeline_slot`, the
+  model draw loop and its index ranges); `src/shaders/scene.wesl` `city_light`, `city_room` and the
+  `CITY_LIGHTS` branch of the full-HD `fs_model`.
+- **Approach.**
+  1. When the library builds a city model (every LOD), sort its triangles by part into contiguous
+     index ranges and keep the ranges.
+  2. Draw each range with a pipeline specialised by a new `CITY_PART` override: neon
+     (`kind > 2.3`), lit glass, brass and plain stone, windowed walls (read `city_light`'s branches
+     for the exact split). The first three become short shaders at 4 threads.
+  3. Windowed walls: take what a window keeps for its life (its hash, lit or not, warmth,
+     brightness, room style) out of the per-pixel path, per vertex where the window grid allows or
+     from one fetch of a small baked table indexed by the window's cell; replace `city_room`'s
+     arithmetic by a small baked atlas of rooms if it is what holds the registers. Aim at 4
+     threads; if out of reach, measure fewer instructions at 2.
+  4. A few dozen more draws a frame cost ~0.7 µs each: noise.
+  Consider two branches: steps 1–2 first (pixel-identical), then step 3.
+- **Constraints.** §4.0; gate (update the baseline); tests; pictures: identical for neon, glass and
+  stone; the walls side by side at near and far distances (`DIVE3D_SHOTS=city`) for the user.
+- **Acceptance.** shaderdb: neon/glass/stone city FS at 4 threads; walls at 4 threads or ≥ 30 %
+  fewer instructions. Pi, `bench-pi.sh run t5-before DIVE3D_HOTSPOT_SCENES=city,arctic,vents` /
+  after, then the full pair: city s0 0.45 −2 ms or better, arctic s750000 0.15 −1 ms or better,
+  city median −0.4 ms or better, no sea worse by more than 0.1 ms.
+- **Parallel:** yes; shares `fs_model` and the pipeline table with T3 and T7. **Tier:** Sonnet
+  (the largest brief).
+
+### T6. A cheaper caustic ceiling (Sonnet)
+
+- **Goal.** The water's shader work above the horizon costs 0.84–1.01 ms median and 1.0–1.4 ms
+  in atlantis, brine, wrecks, trench, coral and arctic, nearly all of it `water_ceiling` (§3.4).
+  Take ≥ 0.3 ms off the median and ≥ 0.5 ms off those six seas without a visible change.
+- **Where.** `src/shaders/scene.wesl`: `water_ceiling`, the glint block of the full-HD
+  `fs_background`; the `caustic_map` texture's creation (`src/dive3d/mod.rs`, `textures.rs`).
+- **Approach.**
+  1. Weigh each term: throwaway builds dropping, one at a time, the swell (three `sin`s), the chop
+     and its `pow(…, 18)` sheen, the `sun` term, the fine cells (two `sin`s); compare previews. A
+     term whose removal gives mean < 0.05/255 and max < 4 on every frame that shows the ceiling
+     draws nothing: drop it.
+  2. For what remains, replace `sin` sums with fetches: the swell, chop and fine cells are
+     periodic patterns of `at` (the ray's hit on the surface) with time as a phase, so bake them
+     into a small tileable texture (or the spare channels of `caustic_map`, which uses `.r` only)
+     and scroll it with `t`: the ceiling becomes two or three fetches of the same `at` and a few
+     multiply-adds. The same for the glint's `wave` if step 1 keeps it.
+  3. Keep water #0 and #1 at 4 threads (2D fetches use three TMU writes, within the limit).
+  Not this: a horizon split (measured 0.02 ms), #2/#3 at 4 threads (measured slower), a
+  per-vertex grid (undersamples toward the horizon).
+- **Constraints.** §4.0; gate; tests; pictures: the shallow seas.
+- **Acceptance.** Bound: `DIVE3D_SKIP=16384` (`CHEAP_BACKGROUND`). Pi full pair: median −0.3 ms or
+  better; atlantis, brine, wrecks, trench, coral and arctic medians −0.5 ms or better; no sea worse
+  by more than 0.1 ms. Pictures: previews mean ≤ 0.5/255 on every frame, max ≤ 16; the
+  shallows and atlantis frames side by side for the user.
+- **Parallel:** yes (the water only). **Tier:** Sonnet.
+
+### T7. Glass specialised by material and animation (Sonnet)
+
+- **Goal.** Glass costs 1.5 ms on the bloom's median place and up to 3.7 ms (arctic s500000 0.85,
+  bloom 0.15, cave s0 0.85, atlantis s250000 0.85); about half is `fs_glass` (§3.7). Take
+  ≥ 0.5 ms off the bloom's median and ≥ 1 ms off the worst glass place.
+- **Where.** `src/dive3d/mod.rs`: the `Dive3d glass` pipeline (its `vs_model` built with
+  `ANIM = -1`) and the glass draw list; `src/shaders/scene.wesl`: the full-HD `fs_glass`,
+  `vs_model`'s `ANIM` switch; `src/dive3d/world.rs` for which glass models animate how.
+- **Approach.**
+  1. Vertex: a glass pipeline per animation the glass uses, as the solid models have since
+     `675c234` (crystals and comb jellies still or swaying; the jellies' own animations), or one
+     "jelly" variant if three cost too much start-up. The any-animation `vs_model` is 1078
+     instructions (640 binning) at 2 threads; a still one is ~400 / 66.
+  2. Fragment: `fs_glass` per glass material (`CRYSTAL` 3, `JELLY` 7, `JELLY_SOFT` 9, `COMB` 10)
+     through a `MATERIAL` override, each path alone, aiming at 4 threads (49 temps today).
+  3. Glass is blended: keep its back-to-front order and switch pipelines between draws as needed
+     (~0.7 µs a draw).
+- **Constraints.** §4.0; gate (update the baseline); tests; pictures: identical if only dead paths
+  go (mean 0.000).
+- **Acceptance.** Pi, `bench-pi.sh run t7-before DIVE3D_HOTSPOT_SCENES=bloom,abyss,wrecks,arctic,atlantis,cave`
+  / after, then the full pair: bloom median −0.5 ms or better, the worst glass place −1 ms or
+  better, no sea worse by more than 0.1 ms.
+- **Parallel:** yes; shares files with T3 and T5. **Tier:** Sonnet.
+
+### T8. Start-up: the mesh library in parallel, no unused pipelines (Sonnet; (b) Haiku)
+
+- **Goal.** Warm start 5.9 s → ≤ 3 s (4.65 s of it is `mesh::Library::build` on one core); cold
+  start −1 s or more (§3.10).
+- **Where.** `src/dive3d/mesh.rs` `Library::build` (and its caller in `Nautilus::new`);
+  `src/dive3d/mod.rs` `compile()`, `MATERIALS`, `material_slot`, `pipeline_slot`.
+- **Approach.**
+  (a) Build each model's mesh and LODs on its own thread (`std::thread::scope`, at most three at
+  once so the UI thread keeps a core), collecting results in model order; a unit test asserts the
+  parallel library equals the serial one byte for byte. Optional: a disk cache of the built
+  library keyed by a hash of the generator's inputs.
+  (b) Drop the "any" material slot (`MATERIAL == -1`, 18 pipelines that no placer reaches): an
+  unknown material becomes a test failure (a test that builds every leg of a few visits and
+  asserts each model's material has its own slot), not a fallback pipeline.
+  (c) Optional: collect the `pipeline_slot`s a voyage actually uses (the same test) and compile
+  only those, or compile on first use.
+- **Constraints.** §4.0; gate (removed pipelines show as "gone"; nothing loses threads); tests;
+  pictures identical (mean 0.000).
+- **Acceptance.** On the Pi, with the test binary that `bench-pi.sh run <tag>` copied to
+  `/tmp/srt-<tag>`, the kiosk frozen and the lock held:
+  `ssh <user>@<pi> 'exec 9>/tmp/nautilus-bench.lock; flock 9; mkdir -p /tmp/hot-start; P=$(pgrep -x spotify-round); trap "kill -CONT $P" EXIT; kill -STOP $P; cd /tmp; time env DIVE3D_HOTSPOT_SEEDS=0 DIVE3D_HOTSPOT_SCENES=none DIVE3D_HOTSPOT_DIR=/tmp/hot-start /tmp/srt-<tag> dive3d::tests::hotspots --ignored'`
+  times the start-up (`Nautilus::new` and four frames; add `MESA_SHADER_CACHE_DISABLE=true` after
+  `env` for a cold start), and the same wrapper around
+  `/tmp/srt-<tag> dive3d::mesh::tests::closed_shapes_are_sealed_and_sheets_are_not` times the
+  library alone. Targets: library 4.65 s → ≤ 1.8 s; warm start ≤ 3 s; cold start −1 s or more with
+  (b).
+- **Parallel:** yes. **Tier:** Sonnet for (a) and (c), Haiku for (b).
+
+### T9. The UI's present path: attribute ~2 ms a frame, then drop the copy (Sonnet; needs the user)
+
+- **Goal.** After the visual's own frame, three render jobs (≈2.0 ms) and one TFU job (≈1.4 ms)
+  a frame go to the UI and its presentation, in every scene (§3.8). Find out which is what, and
+  remove any full-screen copy or layout conversion among them: up to ≈1.2 ms of render engine and
+  the 1.4 ms TFU job a frame.
+- **Known.** The display scans out the app's own swapchain buffers (four 1080² `ARGB8888` linear
+  framebuffers in rotation, read with `kmsprint` and `DRM_IOCTL_MODE_GETFB2`; §3.8), so cage does
+  no GPU work a frame. Slint draws with Skia on the shared wgpu device, and the visual's texture reaches
+  it as a `wgpu::Texture` (`ui.rs`, `set_idle_frames`). A rendering notifier makes Slint add a
+  clear pass of its own (`ui.rs`, `watch_rendering_if_asked`), so do not add one to measure.
+  `SPOTIFY_ROUND_SCENE=nautilus` fixes the dive on screen; `SPOTIFY_ROUND_CONFIG_DIR` points a
+  second copy of the app at its own settings and tokens.
+- **Approach.**
+  1. Log once at start the surface configuration Slint chose: format, alpha mode, present mode,
+     swapchain image count, adapter and driver.
+  2. Attribute the jobs with Mesa's `V3D_DEBUG=cl` (every job with its targets: a full-screen
+     render job that loads a tiled image and stores raster is a copy; a 1080² TFU job is a layout
+     conversion, and the dump says from what). This needs the app on the Pi's display with that
+     environment: ask the user for a window in which they stop the kiosk (`sudo`) and start the
+     app by hand under cage, or run a copy under a headless cage (`WLR_BACKENDS=headless`, its own
+     `SPOTIFY_ROUND_CONFIG_DIR`, the kiosk frozen only while measuring), knowing the headless
+     output may negotiate a different buffer layout from the panel's.
+  3. Fix what it finds; the likely shapes: Skia rendering into an intermediate that is then
+     copied into the swapchain image; a per-frame upload of a full-screen image; the WSI rendering
+     tiled and converting to linear for scan-out.
+- **Constraints.** §4.0; no change to the kiosk without the user.
+- **Acceptance.** In the live kiosk (after the user deploys), read-only:
+  `ssh <user>@<pi> 'F=$(ls /sys/class/drm/card*/device/gpu_stats | head -1); cat $F; sleep 10; cat $F'`
+  with the dive on screen: render jobs per displayed frame 4 → ≤ 3 and the render engine's busy
+  time −1 ms a frame or better; the ~84 ms/s of TFU gone or explained.
+- **Parallel:** yes, but it needs the user's time. **Tier:** Sonnet.
+
+### T10. Pace the dive from the display (Sonnet; optional)
+
+- **Goal.** No dive frame shown twice or skipped because of the clock (§3.9): the visualizer's
+  60.00 Hz timer falls a frame behind the 60.07 Hz panel every ~14 s, ~4 times a minute.
+- **Where.** `src/visuals.rs` (the visualizer loop: `deadline += budget`, `pace`), `src/ui.rs`
+  (`show_idle_frame`).
+- **Approach.** Let the display set the rate: e.g. render the next dive frame when the UI thread
+  takes the current one (it already runs `show_idle_frame` there), keeping two frames in flight,
+  or measure the presented rate and pace at its period instead of `1 / TARGET_FPS`. Not with a
+  rendering notifier (it costs a clear pass a frame, T9). The animation clock already follows
+  real time, so a different rate needs nothing else.
+- **Constraints.** §4.0; `hotspots` must not change (rendering is untouched).
+- **Acceptance.** A debug counter over 60 s of the dive (`SPOTIFY_ROUND_SCENE=nautilus`): dive
+  frames produced vs. frames the UI presented with a new dive frame. Before: ~4 repeats a minute
+  expected from the beat; after: 0–1. Needs the user to deploy the build to count.
+- **Parallel:** yes. **Tier:** Sonnet.
+
+## 5. Things tried and ruled out
+
+Measured in this analysis unless a section of `docs/pipeline-optimization.md` (PO) or
+`docs/nautilus.md` is named.
+
+| idea | result | where |
+|---|---|---|
+| Half precision (f16) in the shaders | No shader gains a thread: Mesa 26.2 keeps each f16 in a 32-bit register and never packs two into `vfmul`/`vfadd`; `light_at` in f16 cut the model vertex shaders ~1 % and made the glass spill. Retry only if Mesa learns to vectorise 16-bit ALU work. | `docs/nautilus.md` |
+| Splitting the water at the horizon (a cheap pipeline below it) | **0.02 ms** (render engine median): pixels below the horizon already branch past the expensive terms. | §3.4 |
+| Water #2/#3 at 4 threads by an implicit-LOD sky lookup hoisted out of the branch | 4 threads offline, but **0.02–0.15 ms slower** at the 11 places that use them (every water pixel then fetches the sky); none of them slow. | §3.4 |
+| More early-Z by the app alone (mask `GreaterEqual` on the stock driver) | No change (9.46 → 9.48 ms): the stock v3dv never enables early-Z on 7.1; with T2 it is the whole gain. | §3.1 |
+| Overdraw as shader cost | Not the case on V3D 7.1: the TLB depth-tests before shading, so occluded quads were never shaded (early-Z leaves fragment cycles at 16.05 M → 16.05 M). The overdraw costs rasteriser/TLB throughput, which T2 removes. | §3.1 |
+| The GPU as ALU-, bandwidth- or TMU-bound | ~20 M instructions a frame are ~1.4 ms of issue per QPU of 8.2 ms busy; L2T misses ~24 k and memory reads ~40 k a frame. Thread count and quad throughput set the time. | §2 |
+| Draw calls and batching | Issuing every model draw with no instances (`DRAW_CALLS`) saves the same as leaving the models out; encoding is 0.011 ms a frame; draws cost ~0.7 µs. | §2, PO §65 |
+| Merging uploads | 14 `write_buffer` TFU jobs a frame, 0.12 ms in all. | §2 |
+| CPU work (static caches, placement caches, pooling) | The CPU is 0.76 ms median, 1.58 ms max a frame and overlapped with the GPU in the kiosk; the cache experiments of PO §21–55 cannot pay. The CPU governor (`ondemand`) only touches the serial number. | §3.9, PO §21–55 |
+| Point lights in the vertex shaders | Sun-only `vs_terrain` (`CHEAP_TERRAIN`) saves 0.10 ms median (0.36 max); sun-only models (`CHEAP_MODELS`) 0.19 ms (0.76 max). | §3.5 |
+| A flat/static model vertex shader, the cofactor hoist | Still 2 threads (46 temps) and no measured gain. | PO §5, §20 |
+| Depth-first draws across materials | +1.46 ms (260 → ~2100 draws). Measured without early-Z; T2 step 6 re-checks the order probes with it. | PO §7.4 |
+| Opaque draws nearest-first; the seabed before the models | +0.08 ms; +0.14 ms (without early-Z; re-checked by T2 step 6). | PO §12 |
+| Keeping (loading) the colour target instead of clearing | +1.58 ms: a load reads the whole panel (a load-and-store pass is 0.77 ms against 0.40 ms for clear-and-store). | PO §7.4, `gpu_cost` |
+| A clipmap terrain; a baked clipmap | 2.2× slower (the vertex shader recomputes the procedural ground); the baked one pays a fetch per vertex. | PO §13, §14 |
+| A normal map on the seabed | +1.6 ms. | PO §15 |
+| Coarser terrain mesh | −0.33 ms for a visibly softer seabed; render scale is the better trade. | PO §15 |
+| The cheap and shimmer water pipelines as the default | They drop the ceiling and the glint, which today's shallow seas show (§3.4); T6 keeps them and makes them cheaper. | PO §13, §14 |
+| MSAA; anisotropic filtering | The dive renders one sample (`SAMPLES = 1`) and samples without anisotropy (`anisotropy_clamp: 1`); either would multiply the per-pixel cost this document is about. | — |
+| A KMS overlay for the dive; the LinuxKMS backend | wgpu 30 cannot export or render into an imported image; the LinuxKMS backend does not carry the dive's texture. And cage already scans the app's buffers out (§3.8): what an overlay could still save is Slint's own full-screen draw of the sea, which T9 looks at inside the app. | PO §68, §71, §3.8 |
+| A lower render scale as the fix | Deployed as the adaptive controller (`SPOTIFY_ROUND_ADAPTIVE`, 0.6–1.0); it trades sharpness for time and stays a safety net, not the plan. | PO §70, §72 |
+| A depth pre-pass | Would add a second geometry pass (~1.3 ms of geometry today) to save shading that the TLB already skips for occluded quads. | §2, §3.1 |
