@@ -491,8 +491,47 @@ fn material_slot(i: &Instance) -> usize {
         .unwrap_or(MATERIALS.len() - 1)
 }
 
+/// The animations models get a pipeline of their own for, as `ANIM` in
+/// `scene.wesl`: none, and the sway nearly all the reef's life moves with.
+/// Everything else is drawn by the last, -1, which reads the kind per
+/// instance. A still model's vertex shader is half the length and its
+/// binning pass a sixth, and the GPU runs both for every vertex.
+const ANIMS: [i32; 3] = [0, world::anim::SWAY as i32, -1];
+
+/// The index into [`ANIMS`] of the pipeline for an instance.
+fn anim_slot(i: &Instance) -> usize {
+    let kind = i.anim[0].round() as i32;
+    ANIMS
+        .iter()
+        .position(|&a| a == kind)
+        .unwrap_or(ANIMS.len() - 1)
+}
+
+/// A model pipeline's label, naming what it was compiled for, so the
+/// shader statistics (`deploy/v3d-shaderdb`) say which is which and keep
+/// their names when pipelines are added.
+fn model_label(kind: &str, material: i32, grounded: f64, anim: i32) -> String {
+    let material = match material {
+        0 => "plain".to_string(),
+        -1 => "any".to_string(),
+        m => format!("material{m}"),
+    };
+    let ground = if grounded > 0.5 { "grounded" } else { "free" };
+    let anim = match anim {
+        0 => "still",
+        -1 => "any-anim",
+        _ => "sway",
+    };
+    format!("{kind} {material} {ground} {anim}")
+}
+
+/// The index into [`MATERIALS`] of a pipeline's material.
+fn slot_material(slot: usize) -> usize {
+    slot / (2 * ANIMS.len())
+}
+
 /// The pipeline for an instance: its material's, of the pair for things that
-/// stand on the seabed or swim free.
+/// stand on the seabed or swim free, and of those, its animation's.
 fn pipeline_slot(i: &Instance) -> usize {
     let grounded = i.extra[1] > 0.5;
     // The grounded pipelines leave the swimmers' animation out (`vs_model`).
@@ -501,7 +540,7 @@ fn pipeline_slot(i: &Instance) -> usize {
             && [world::anim::PULSE, world::anim::TRAIL, world::anim::GLIDE].contains(&i.anim[0])),
         "a swimming model stands on the seabed"
     );
-    material_slot(i) * 2 + usize::from(grounded)
+    (material_slot(i) * 2 + usize::from(grounded)) * ANIMS.len() + anim_slot(i)
 }
 
 /// The impostor forms that have a pipeline of their own, as `FORM` in
@@ -1103,7 +1142,7 @@ fn compile(
         },
         alpha: wgpu::BlendComponent::OVER,
     };
-    let pipeline = |label,
+    let pipeline = |label: &str,
                     vs,
                     fs,
                     buffers: &[Option<wgpu::VertexBufferLayout>],
@@ -1247,30 +1286,33 @@ fn compile(
     // Each in a pipeline per material and grounded flag.
     let per_material =
         |label, coverage, fading: f64, blend: Option<wgpu::BlendState>, write_depth: bool, cull| {
-            let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
+            let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2 * ANIMS.len());
             for &material in &MATERIALS {
                 for grounded in [0.0, 1.0] {
-                    pipelines.push(pipeline(
-                        label,
-                        "vs_model",
-                        "fs_model",
-                        &model_buffers,
-                        blend,
-                        write_depth,
-                        nearer,
-                        coverage,
-                        fading == 0.0,
-                        &[
-                            ("FADING", fading),
-                            (
-                                "FADE_OPAQUE",
-                                f64::from(u8::from(blend.is_none() && write_depth)),
-                            ),
-                            ("MATERIAL", f64::from(material)),
-                            ("GROUNDED", grounded),
-                        ],
-                        cull,
-                    ));
+                    for &anim in &ANIMS {
+                        pipelines.push(pipeline(
+                            &model_label(label, material, grounded, anim),
+                            "vs_model",
+                            "fs_model",
+                            &model_buffers,
+                            blend,
+                            write_depth,
+                            nearer,
+                            coverage,
+                            fading == 0.0,
+                            &[
+                                ("FADING", fading),
+                                (
+                                    "FADE_OPAQUE",
+                                    f64::from(u8::from(blend.is_none() && write_depth)),
+                                ),
+                                ("MATERIAL", f64::from(material)),
+                                ("GROUNDED", grounded),
+                                ("ANIM", f64::from(anim)),
+                            ],
+                            cull,
+                        ));
+                    }
                 }
             }
             pipelines
@@ -1337,27 +1379,30 @@ fn compile(
     // would discard) so the GPU can reject what the opaque pass already
     // hides before it shades it; the ice keeps the discard it needs.
     let fading = {
-        let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
+        let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2 * ANIMS.len());
         for &material in &MATERIALS {
             for grounded in [0.0, 1.0] {
-                let ice = material == world::material::ICE as i32;
-                pipelines.push(pipeline(
-                    "Dive3d fading models",
-                    "vs_model",
-                    "fs_model",
-                    &model_buffers,
-                    (!MULTISAMPLED).then_some(blend),
-                    !MULTISAMPLED,
-                    nearer,
-                    true,
-                    false,
-                    &[
-                        ("FADING", if ice { 1.0 } else { 0.0 }),
-                        ("MATERIAL", f64::from(material)),
-                        ("GROUNDED", grounded),
-                    ],
-                    None,
-                ));
+                for &anim in &ANIMS {
+                    let ice = material == world::material::ICE as i32;
+                    pipelines.push(pipeline(
+                        &model_label("Dive3d fading models", material, grounded, anim),
+                        "vs_model",
+                        "fs_model",
+                        &model_buffers,
+                        (!MULTISAMPLED).then_some(blend),
+                        !MULTISAMPLED,
+                        nearer,
+                        true,
+                        false,
+                        &[
+                            ("FADING", if ice { 1.0 } else { 0.0 }),
+                            ("MATERIAL", f64::from(material)),
+                            ("GROUNDED", grounded),
+                            ("ANIM", f64::from(anim)),
+                        ],
+                        None,
+                    ));
+                }
             }
         }
         pipelines
@@ -2543,7 +2588,8 @@ impl Nautilus {
                     let mut bound = None;
                     for d in this.draws.iter().filter(|d| d.kind == wanted) {
                         if wanted == Kind::Fading {
-                            let ice = MATERIALS[d.slot / 2] == world::material::ICE as i32;
+                            let ice =
+                                MATERIALS[slot_material(d.slot)] == world::material::ICE as i32;
                             if (ice && this.skips(part::FADING_ICE))
                                 || (!ice && this.skips(part::FADING_PROPS))
                             {
@@ -3673,7 +3719,7 @@ mod tests {
                 }
             }
             for d in scene.draws.iter().filter(|d| d.kind == Kind::Fading) {
-                *fade_seen.entry(d.slot / 2).or_default() += d.count as usize;
+                *fade_seen.entry(slot_material(d.slot)).or_default() += d.count as usize;
             }
         }
         assert_eq!(unknown, 0, "a sprite kind outside the four named ones");

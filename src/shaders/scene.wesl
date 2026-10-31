@@ -116,6 +116,12 @@ override GROUNDED: bool = false;
 // keep more than two of its threads at once, and every pixel pays for it.
 override MATERIAL: i32 = -1;
 
+// The animation every model this pipeline draws moves with (`world::anim`:
+// 0 none, 1 the sway), or -1 to take it from each instance. The animations
+// are most of the models' vertex shader, and on the Pi's tiler it runs twice
+// a vertex, binning and drawing: a still model compiles none of them.
+override ANIM: i32 = -1;
+
 // What every colour is multiplied by as it is stored: the sea is kept in ten
 // bits a channel, which hold no more than 1, so it is stored at half its
 // brightness, to keep the highlights up to 2 that the old grade and
@@ -1203,9 +1209,8 @@ struct Lit {
 // Bend a model where it lives: plants sway, fish sweep their tails sideways
 // and whales beat their flukes up and down, and tentacles writhe. The jellies
 // swim in `swim`.
-fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>) -> vec3<f32> {
+fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>, kind: u32) -> vec3<f32> {
     var p = p_in;
-    let kind = u32(anim.x + 0.5);
     let t = g.camera.w * anim.w + anim.y;
     if (kind == 1u) {
         let up = aux.y * aux.y;
@@ -1356,7 +1361,7 @@ fn swim(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>, kind: u32, stretch: f3
 
 @vertex
 fn vs_model(v: Model, i: Instance) -> Lit {
-    let kind = u32(i.anim.x + 0.5);
+    let kind = select(u32(i.anim.x + 0.5), u32(ANIM), ANIM >= 0);
     var p = v.pos;
     var rise = vec3<f32>(0.0);
     var beat = 0.0;
@@ -1371,7 +1376,7 @@ fn vs_model(v: Model, i: Instance) -> Lit {
         rise = s.rise;
         beat = s.beat;
     } else {
-        p = animate(v.pos, vec2<f32>(v.aux), i.anim);
+        p = animate(v.pos, vec2<f32>(v.aux), i.anim, kind);
     }
     var world = vec3<f32>(dot(i.m0, vec4<f32>(p, 1.0)), dot(i.m1, vec4<f32>(p, 1.0)), dot(i.m2, vec4<f32>(p, 1.0)));
     // The rise is the water's, not the model's: the bell and everything

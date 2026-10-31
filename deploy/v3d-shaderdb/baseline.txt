@@ -26,153 +26,441 @@ Dive3d water, shimmer #0         vs_background  VS-bin    33   4     0   23     
 Dive3d seabed #0                 fs_terrain     FS       109   4     0   21    27        0:0    0    1
 Dive3d seabed #0                 vs_terrain     VS       404   2     1  187    46        0:0    2   24
 Dive3d seabed #0                 vs_terrain     VS-bin    54   4     0   26    14        0:0    1    2
-Dive3d models #0                 fs_model       FS        87   4     0    7    28        0:0    0    2
-Dive3d models #0                 vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d models #0                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d models #1                 fs_model       FS       113   4     0   10    32        0:0    0    1
-Dive3d models #1                 vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d models #1                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d models #2                 fs_model       FS       187   4     0   29    30        0:0    0    3
-Dive3d models #2                 vs_model       VS      1013   2     1  385    60        0:0    2   80
-Dive3d models #2                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d models #3                 fs_model       FS       214   4     0   42    32        0:0    0    4
-Dive3d models #3                 vs_model       VS       780   2     1  303    58        0:0    1   69
-Dive3d models #3                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d models #4                 fs_model       FS       115   4     0   19    30        0:0    0    3
-Dive3d models #4                 vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d models #4                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d models #5                 fs_model       FS       141   4     0   23    32        0:0    0    1
-Dive3d models #5                 vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d models #5                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d models #6                 fs_model       FS       187   2     0   61    36        0:0    0    2
-Dive3d models #6                 vs_model       VS      1186   2     0  402    59        0:0    0   91
-Dive3d models #6                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d models #7                 fs_model       FS       187   2     0   61    36        0:0    0    2
-Dive3d models #7                 vs_model       VS       951   2     0  308    55        0:0    0   76
-Dive3d models #7                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d models #8                 fs_model       FS        97   4     0   34    16        0:0    1    2
-Dive3d models #8                 vs_model       VS       712   2     0  282    50        0:0    0   53
-Dive3d models #8                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d models #9                 fs_model       FS        97   4     0   34    16        0:0    1    2
-Dive3d models #9                 vs_model       VS       529   4     0  229    32        0:0    0   38
-Dive3d models #9                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d models #10                fs_model       FS       121   4     0   20    30        0:0    0    4
-Dive3d models #10                vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d models #10                vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d models #11                fs_model       FS       147   4     0   25    32        0:0    0    4
-Dive3d models #11                vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d models #11                vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d models #12                fs_model       FS       650   2     0  173    50        0:0    0   39
-Dive3d models #12                vs_model       VS      1094   2     1  445    61        5:5    4   89
-Dive3d models #12                vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d models #13                fs_model       FS       667   2     0  173    51        0:0    0   38
-Dive3d models #13                vs_model       VS       827   2     1  351    62        0:0    1   73
-Dive3d models #13                vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d models #14                fs_model       FS       393   2     0   84    38        0:0    3   40
-Dive3d models #14                vs_model       VS      1018   2     1  387    62        0:0    2   80
-Dive3d models #14                vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d models #15                fs_model       FS       420   2     0   86    43        0:0    3   40
-Dive3d models #15                vs_model       VS       781   2     1  305    59        0:0    1   70
-Dive3d models #15                vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d sealed models #0          fs_model       FS        87   4     0    7    28        0:0    0    2
-Dive3d sealed models #0          vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d sealed models #0          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d sealed models #1          fs_model       FS       113   4     0   10    32        0:0    0    1
-Dive3d sealed models #1          vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d sealed models #1          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d sealed models #2          fs_model       FS       187   4     0   29    30        0:0    0    3
-Dive3d sealed models #2          vs_model       VS      1013   2     1  385    60        0:0    2   80
-Dive3d sealed models #2          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d sealed models #3          fs_model       FS       214   4     0   42    32        0:0    0    4
-Dive3d sealed models #3          vs_model       VS       780   2     1  303    58        0:0    1   69
-Dive3d sealed models #3          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d sealed models #4          fs_model       FS       115   4     0   19    30        0:0    0    3
-Dive3d sealed models #4          vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d sealed models #4          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d sealed models #5          fs_model       FS       141   4     0   23    32        0:0    0    1
-Dive3d sealed models #5          vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d sealed models #5          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d sealed models #6          fs_model       FS       187   2     0   61    36        0:0    0    2
-Dive3d sealed models #6          vs_model       VS      1186   2     0  402    59        0:0    0   91
-Dive3d sealed models #6          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d sealed models #7          fs_model       FS       187   2     0   61    36        0:0    0    2
-Dive3d sealed models #7          vs_model       VS       951   2     0  308    55        0:0    0   76
-Dive3d sealed models #7          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d sealed models #8          fs_model       FS        97   4     0   34    16        0:0    1    2
-Dive3d sealed models #8          vs_model       VS       712   2     0  282    50        0:0    0   53
-Dive3d sealed models #8          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d sealed models #9          fs_model       FS        97   4     0   34    16        0:0    1    2
-Dive3d sealed models #9          vs_model       VS       529   4     0  229    32        0:0    0   38
-Dive3d sealed models #9          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d sealed models #10         fs_model       FS       121   4     0   20    30        0:0    0    4
-Dive3d sealed models #10         vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d sealed models #10         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d sealed models #11         fs_model       FS       147   4     0   25    32        0:0    0    4
-Dive3d sealed models #11         vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d sealed models #11         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d sealed models #12         fs_model       FS       650   2     0  173    50        0:0    0   39
-Dive3d sealed models #12         vs_model       VS      1094   2     1  445    61        5:5    4   89
-Dive3d sealed models #12         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d sealed models #13         fs_model       FS       667   2     0  173    51        0:0    0   38
-Dive3d sealed models #13         vs_model       VS       827   2     1  351    62        0:0    1   73
-Dive3d sealed models #13         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d sealed models #14         fs_model       FS       393   2     0   84    38        0:0    3   40
-Dive3d sealed models #14         vs_model       VS      1018   2     1  387    62        0:0    2   80
-Dive3d sealed models #14         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d sealed models #15         fs_model       FS       420   2     0   86    43        0:0    3   40
-Dive3d sealed models #15         vs_model       VS       781   2     1  305    59        0:0    1   70
-Dive3d sealed models #15         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models plain free still #0 fs_model       FS        87   4     0    7    28        0:0    0    2
+Dive3d models plain free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d models plain free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models plain free sway #0 fs_model       FS        87   4     0    7    28        0:0    0    2
+Dive3d models plain free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d models plain free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models plain free any-anim #0 fs_model       FS        87   4     0    7    28        0:0    0    2
+Dive3d models plain free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d models plain free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models plain grounded still #0 fs_model       FS       113   4     0   10    32        0:0    0    1
+Dive3d models plain grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d models plain grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models plain grounded sway #0 fs_model       FS       113   4     0   10    32        0:0    0    1
+Dive3d models plain grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d models plain grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models plain grounded any-anim #0 fs_model       FS       113   4     0   10    32        0:0    0    1
+Dive3d models plain grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d models plain grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models material1 free still #0 fs_model       FS       187   4     0   29    30        0:0    0    3
+Dive3d models material1 free still #0 vs_model       VS       395   2     1  188    46        0:0    2   24
+Dive3d models material1 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material1 free sway #0 fs_model       FS       187   4     0   29    30        0:0    0    3
+Dive3d models material1 free sway #0 vs_model       VS       427   2     1  201    45        0:0    2   26
+Dive3d models material1 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material1 free any-anim #0 fs_model       FS       187   4     0   29    30        0:0    0    3
+Dive3d models material1 free any-anim #0 vs_model       VS      1013   2     1  385    60        0:0    2   80
+Dive3d models material1 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models material1 grounded still #0 fs_model       FS       214   4     0   42    32        0:0    0    4
+Dive3d models material1 grounded still #0 vs_model       VS       406   2     1  198    46        0:0    1   24
+Dive3d models material1 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material1 grounded sway #0 fs_model       FS       214   4     0   42    32        0:0    0    4
+Dive3d models material1 grounded sway #0 vs_model       VS       437   2     1  211    45        0:0    1   26
+Dive3d models material1 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material1 grounded any-anim #0 fs_model       FS       214   4     0   42    32        0:0    0    4
+Dive3d models material1 grounded any-anim #0 vs_model       VS       780   2     1  303    58        0:0    1   69
+Dive3d models material1 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models material2 free still #0 fs_model       FS       115   4     0   19    30        0:0    0    3
+Dive3d models material2 free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d models material2 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material2 free sway #0 fs_model       FS       115   4     0   19    30        0:0    0    3
+Dive3d models material2 free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d models material2 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material2 free any-anim #0 fs_model       FS       115   4     0   19    30        0:0    0    3
+Dive3d models material2 free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d models material2 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models material2 grounded still #0 fs_model       FS       141   4     0   23    32        0:0    0    1
+Dive3d models material2 grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d models material2 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material2 grounded sway #0 fs_model       FS       141   4     0   23    32        0:0    0    1
+Dive3d models material2 grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d models material2 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material2 grounded any-anim #0 fs_model       FS       141   4     0   23    32        0:0    0    1
+Dive3d models material2 grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d models material2 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models material5 free still #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d models material5 free still #0 vs_model       VS       574   2     0  209    54        0:0    0   35
+Dive3d models material5 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material5 free sway #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d models material5 free sway #0 vs_model       VS       600   2     0  216    53        0:0    0   33
+Dive3d models material5 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material5 free any-anim #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d models material5 free any-anim #0 vs_model       VS      1186   2     0  402    59        0:0    0   91
+Dive3d models material5 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models material5 grounded still #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d models material5 grounded still #0 vs_model       VS       574   2     0  209    54        0:0    0   35
+Dive3d models material5 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material5 grounded sway #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d models material5 grounded sway #0 vs_model       VS       600   2     0  216    53        0:0    0   33
+Dive3d models material5 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material5 grounded any-anim #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d models material5 grounded any-anim #0 vs_model       VS       951   2     0  308    55        0:0    0   76
+Dive3d models material5 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models material6 free still #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d models material6 free still #0 vs_model       VS       146   4     0   84    25        0:0    1    4
+Dive3d models material6 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material6 free sway #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d models material6 free sway #0 vs_model       VS       174   4     0   93    23        0:0    0    1
+Dive3d models material6 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material6 free any-anim #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d models material6 free any-anim #0 vs_model       VS       712   2     0  282    50        0:0    0   53
+Dive3d models material6 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models material6 grounded still #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d models material6 grounded still #0 vs_model       VS       146   4     0   84    25        0:0    1    4
+Dive3d models material6 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material6 grounded sway #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d models material6 grounded sway #0 vs_model       VS       174   4     0   93    23        0:0    0    1
+Dive3d models material6 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material6 grounded any-anim #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d models material6 grounded any-anim #0 vs_model       VS       529   4     0  229    32        0:0    0   38
+Dive3d models material6 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models material8 free still #0 fs_model       FS       121   4     0   20    30        0:0    0    4
+Dive3d models material8 free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d models material8 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material8 free sway #0 fs_model       FS       121   4     0   20    30        0:0    0    4
+Dive3d models material8 free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d models material8 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material8 free any-anim #0 fs_model       FS       121   4     0   20    30        0:0    0    4
+Dive3d models material8 free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d models material8 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models material8 grounded still #0 fs_model       FS       147   4     0   25    32        0:0    0    4
+Dive3d models material8 grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d models material8 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material8 grounded sway #0 fs_model       FS       147   4     0   25    32        0:0    0    4
+Dive3d models material8 grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d models material8 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material8 grounded any-anim #0 fs_model       FS       147   4     0   25    32        0:0    0    4
+Dive3d models material8 grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d models material8 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models material11 free still #0 fs_model       FS       650   2     0  173    50        0:0    0   39
+Dive3d models material11 free still #0 vs_model       VS       444   2     1  233    47        0:0    1   31
+Dive3d models material11 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material11 free sway #0 fs_model       FS       650   2     0  173    50        0:0    0   39
+Dive3d models material11 free sway #0 vs_model       VS       486   2     1  242    49        0:0    1   32
+Dive3d models material11 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material11 free any-anim #0 fs_model       FS       650   2     0  173    50        0:0    0   39
+Dive3d models material11 free any-anim #0 vs_model       VS      1094   2     1  445    61        5:5    4   89
+Dive3d models material11 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models material11 grounded still #0 fs_model       FS       667   2     0  173    51        0:0    0   38
+Dive3d models material11 grounded still #0 vs_model       VS       443   2     1  233    47        0:0    1   30
+Dive3d models material11 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material11 grounded sway #0 fs_model       FS       667   2     0  173    51        0:0    0   38
+Dive3d models material11 grounded sway #0 vs_model       VS       486   2     1  242    49        0:0    1   32
+Dive3d models material11 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material11 grounded any-anim #0 fs_model       FS       667   2     0  173    51        0:0    0   38
+Dive3d models material11 grounded any-anim #0 vs_model       VS       827   2     1  351    62        0:0    1   73
+Dive3d models material11 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models any free still #0  fs_model       FS       393   2     0   84    38        0:0    3   40
+Dive3d models any free still #0  vs_model       VS       399   2     1  192    46        0:0    2   25
+Dive3d models any free still #0  vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models any free sway #0   fs_model       FS       393   2     0   84    38        0:0    3   40
+Dive3d models any free sway #0   vs_model       VS       429   2     1  203    46        0:0    2   24
+Dive3d models any free sway #0   vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models any free any-anim #0 fs_model       FS       393   2     0   84    38        0:0    3   40
+Dive3d models any free any-anim #0 vs_model       VS      1018   2     1  387    62        0:0    2   80
+Dive3d models any free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models any grounded still #0 fs_model       FS       420   2     0   86    43        0:0    3   40
+Dive3d models any grounded still #0 vs_model       VS       412   2     1  202    46        0:0    1   25
+Dive3d models any grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models any grounded sway #0 fs_model       FS       420   2     0   86    43        0:0    3   40
+Dive3d models any grounded sway #0 vs_model       VS       442   2     1  213    46        0:0    1   24
+Dive3d models any grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models any grounded any-anim #0 fs_model       FS       420   2     0   86    43        0:0    3   40
+Dive3d models any grounded any-anim #0 vs_model       VS       781   2     1  305    59        0:0    1   70
+Dive3d models any grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models plain free still #0 fs_model       FS        87   4     0    7    28        0:0    0    2
+Dive3d sealed models plain free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d sealed models plain free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models plain free sway #0 fs_model       FS        87   4     0    7    28        0:0    0    2
+Dive3d sealed models plain free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d sealed models plain free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models plain free any-anim #0 fs_model       FS        87   4     0    7    28        0:0    0    2
+Dive3d sealed models plain free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d sealed models plain free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models plain grounded still #0 fs_model       FS       113   4     0   10    32        0:0    0    1
+Dive3d sealed models plain grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d sealed models plain grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models plain grounded sway #0 fs_model       FS       113   4     0   10    32        0:0    0    1
+Dive3d sealed models plain grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d sealed models plain grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models plain grounded any-anim #0 fs_model       FS       113   4     0   10    32        0:0    0    1
+Dive3d sealed models plain grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d sealed models plain grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models material1 free still #0 fs_model       FS       187   4     0   29    30        0:0    0    3
+Dive3d sealed models material1 free still #0 vs_model       VS       395   2     1  188    46        0:0    2   24
+Dive3d sealed models material1 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material1 free sway #0 fs_model       FS       187   4     0   29    30        0:0    0    3
+Dive3d sealed models material1 free sway #0 vs_model       VS       427   2     1  201    45        0:0    2   26
+Dive3d sealed models material1 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material1 free any-anim #0 fs_model       FS       187   4     0   29    30        0:0    0    3
+Dive3d sealed models material1 free any-anim #0 vs_model       VS      1013   2     1  385    60        0:0    2   80
+Dive3d sealed models material1 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models material1 grounded still #0 fs_model       FS       214   4     0   42    32        0:0    0    4
+Dive3d sealed models material1 grounded still #0 vs_model       VS       406   2     1  198    46        0:0    1   24
+Dive3d sealed models material1 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material1 grounded sway #0 fs_model       FS       214   4     0   42    32        0:0    0    4
+Dive3d sealed models material1 grounded sway #0 vs_model       VS       437   2     1  211    45        0:0    1   26
+Dive3d sealed models material1 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material1 grounded any-anim #0 fs_model       FS       214   4     0   42    32        0:0    0    4
+Dive3d sealed models material1 grounded any-anim #0 vs_model       VS       780   2     1  303    58        0:0    1   69
+Dive3d sealed models material1 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models material2 free still #0 fs_model       FS       115   4     0   19    30        0:0    0    3
+Dive3d sealed models material2 free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d sealed models material2 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material2 free sway #0 fs_model       FS       115   4     0   19    30        0:0    0    3
+Dive3d sealed models material2 free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d sealed models material2 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material2 free any-anim #0 fs_model       FS       115   4     0   19    30        0:0    0    3
+Dive3d sealed models material2 free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d sealed models material2 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models material2 grounded still #0 fs_model       FS       141   4     0   23    32        0:0    0    1
+Dive3d sealed models material2 grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d sealed models material2 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material2 grounded sway #0 fs_model       FS       141   4     0   23    32        0:0    0    1
+Dive3d sealed models material2 grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d sealed models material2 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material2 grounded any-anim #0 fs_model       FS       141   4     0   23    32        0:0    0    1
+Dive3d sealed models material2 grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d sealed models material2 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models material5 free still #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d sealed models material5 free still #0 vs_model       VS       574   2     0  209    54        0:0    0   35
+Dive3d sealed models material5 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material5 free sway #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d sealed models material5 free sway #0 vs_model       VS       600   2     0  216    53        0:0    0   33
+Dive3d sealed models material5 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material5 free any-anim #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d sealed models material5 free any-anim #0 vs_model       VS      1186   2     0  402    59        0:0    0   91
+Dive3d sealed models material5 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models material5 grounded still #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d sealed models material5 grounded still #0 vs_model       VS       574   2     0  209    54        0:0    0   35
+Dive3d sealed models material5 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material5 grounded sway #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d sealed models material5 grounded sway #0 vs_model       VS       600   2     0  216    53        0:0    0   33
+Dive3d sealed models material5 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material5 grounded any-anim #0 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d sealed models material5 grounded any-anim #0 vs_model       VS       951   2     0  308    55        0:0    0   76
+Dive3d sealed models material5 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models material6 free still #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d sealed models material6 free still #0 vs_model       VS       146   4     0   84    25        0:0    1    4
+Dive3d sealed models material6 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material6 free sway #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d sealed models material6 free sway #0 vs_model       VS       174   4     0   93    23        0:0    0    1
+Dive3d sealed models material6 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material6 free any-anim #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d sealed models material6 free any-anim #0 vs_model       VS       712   2     0  282    50        0:0    0   53
+Dive3d sealed models material6 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models material6 grounded still #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d sealed models material6 grounded still #0 vs_model       VS       146   4     0   84    25        0:0    1    4
+Dive3d sealed models material6 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material6 grounded sway #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d sealed models material6 grounded sway #0 vs_model       VS       174   4     0   93    23        0:0    0    1
+Dive3d sealed models material6 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material6 grounded any-anim #0 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d sealed models material6 grounded any-anim #0 vs_model       VS       529   4     0  229    32        0:0    0   38
+Dive3d sealed models material6 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models material8 free still #0 fs_model       FS       121   4     0   20    30        0:0    0    4
+Dive3d sealed models material8 free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d sealed models material8 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material8 free sway #0 fs_model       FS       121   4     0   20    30        0:0    0    4
+Dive3d sealed models material8 free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d sealed models material8 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material8 free any-anim #0 fs_model       FS       121   4     0   20    30        0:0    0    4
+Dive3d sealed models material8 free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d sealed models material8 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models material8 grounded still #0 fs_model       FS       147   4     0   25    32        0:0    0    4
+Dive3d sealed models material8 grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d sealed models material8 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material8 grounded sway #0 fs_model       FS       147   4     0   25    32        0:0    0    4
+Dive3d sealed models material8 grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d sealed models material8 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material8 grounded any-anim #0 fs_model       FS       147   4     0   25    32        0:0    0    4
+Dive3d sealed models material8 grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d sealed models material8 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models material11 free still #0 fs_model       FS       650   2     0  173    50        0:0    0   39
+Dive3d sealed models material11 free still #0 vs_model       VS       444   2     1  233    47        0:0    1   31
+Dive3d sealed models material11 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material11 free sway #0 fs_model       FS       650   2     0  173    50        0:0    0   39
+Dive3d sealed models material11 free sway #0 vs_model       VS       486   2     1  242    49        0:0    1   32
+Dive3d sealed models material11 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material11 free any-anim #0 fs_model       FS       650   2     0  173    50        0:0    0   39
+Dive3d sealed models material11 free any-anim #0 vs_model       VS      1094   2     1  445    61        5:5    4   89
+Dive3d sealed models material11 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models material11 grounded still #0 fs_model       FS       667   2     0  173    51        0:0    0   38
+Dive3d sealed models material11 grounded still #0 vs_model       VS       443   2     1  233    47        0:0    1   30
+Dive3d sealed models material11 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material11 grounded sway #0 fs_model       FS       667   2     0  173    51        0:0    0   38
+Dive3d sealed models material11 grounded sway #0 vs_model       VS       486   2     1  242    49        0:0    1   32
+Dive3d sealed models material11 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material11 grounded any-anim #0 fs_model       FS       667   2     0  173    51        0:0    0   38
+Dive3d sealed models material11 grounded any-anim #0 vs_model       VS       827   2     1  351    62        0:0    1   73
+Dive3d sealed models material11 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models any free still #0 fs_model       FS       393   2     0   84    38        0:0    3   40
+Dive3d sealed models any free still #0 vs_model       VS       399   2     1  192    46        0:0    2   25
+Dive3d sealed models any free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models any free sway #0 fs_model       FS       393   2     0   84    38        0:0    3   40
+Dive3d sealed models any free sway #0 vs_model       VS       429   2     1  203    46        0:0    2   24
+Dive3d sealed models any free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models any free any-anim #0 fs_model       FS       393   2     0   84    38        0:0    3   40
+Dive3d sealed models any free any-anim #0 vs_model       VS      1018   2     1  387    62        0:0    2   80
+Dive3d sealed models any free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models any grounded still #0 fs_model       FS       420   2     0   86    43        0:0    3   40
+Dive3d sealed models any grounded still #0 vs_model       VS       412   2     1  202    46        0:0    1   25
+Dive3d sealed models any grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models any grounded sway #0 fs_model       FS       420   2     0   86    43        0:0    3   40
+Dive3d sealed models any grounded sway #0 vs_model       VS       442   2     1  213    46        0:0    1   24
+Dive3d sealed models any grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models any grounded any-anim #0 fs_model       FS       420   2     0   86    43        0:0    3   40
+Dive3d sealed models any grounded any-anim #0 vs_model       VS       781   2     1  305    59        0:0    1   70
+Dive3d sealed models any grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
 Dive3d corners #0                fs_mask        FS         8   4     0    0     0        0:0    0    3
 Dive3d corners #0                vs_mask        VS        74   4     0   40    10        0:0    0    1
 Dive3d corners #0                vs_mask        VS-bin    74   4     0   40    10        0:0    0    0
-Dive3d fading models #0          fs_model       FS        82   4     0    7    28        0:0    0    2
-Dive3d fading models #0          vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d fading models #0          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d fading models #1          fs_model       FS       106   4     0   10    30        0:0    0    1
-Dive3d fading models #1          vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d fading models #1          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d fading models #2          fs_model       FS       181   4     0   29    30        0:0    0    3
-Dive3d fading models #2          vs_model       VS      1013   2     1  385    60        0:0    2   80
-Dive3d fading models #2          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d fading models #3          fs_model       FS       208   4     0   42    32        0:0    0    4
-Dive3d fading models #3          vs_model       VS       780   2     1  303    58        0:0    1   69
-Dive3d fading models #3          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d fading models #4          fs_model       FS       107   4     0   19    30        0:0    0    3
-Dive3d fading models #4          vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d fading models #4          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d fading models #5          fs_model       FS       134   4     0   23    32        0:0    0    1
-Dive3d fading models #5          vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d fading models #5          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d fading models #6          fs_model       FS       181   2     0   61    36        0:0    0    2
-Dive3d fading models #6          vs_model       VS      1186   2     0  402    59        0:0    0   91
-Dive3d fading models #6          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d fading models #7          fs_model       FS       181   2     0   61    36        0:0    0    2
-Dive3d fading models #7          vs_model       VS       951   2     0  308    55        0:0    0   76
-Dive3d fading models #7          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d fading models #8          fs_model       FS        94   4     0   36    16        0:0    1    2
-Dive3d fading models #8          vs_model       VS       712   2     0  282    50        0:0    0   53
-Dive3d fading models #8          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d fading models #9          fs_model       FS        94   4     0   36    16        0:0    1    2
-Dive3d fading models #9          vs_model       VS       529   4     0  229    32        0:0    0   38
-Dive3d fading models #9          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d fading models #10         fs_model       FS       114   4     0   20    30        0:0    0    4
-Dive3d fading models #10         vs_model       VS      1009   2     1  386    59        0:0    1   75
-Dive3d fading models #10         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d fading models #11         fs_model       FS       136   4     0   25    32        0:0    0    4
-Dive3d fading models #11         vs_model       VS       773   2     1  302    57        0:0    1   67
-Dive3d fading models #11         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d fading models #12         fs_model       FS       643   2     0  173    50        0:0    0   39
-Dive3d fading models #12         vs_model       VS      1094   2     1  445    61        5:5    4   89
-Dive3d fading models #12         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d fading models #13         fs_model       FS       660   2     0  173    51        0:0    0   38
-Dive3d fading models #13         vs_model       VS       827   2     1  351    62        0:0    1   73
-Dive3d fading models #13         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d fading models #14         fs_model       FS       387   2     0   84    38        0:0    3   40
-Dive3d fading models #14         vs_model       VS      1018   2     1  387    62        0:0    2   80
-Dive3d fading models #14         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
-Dive3d fading models #15         fs_model       FS       414   2     0   86    43        0:0    3   40
-Dive3d fading models #15         vs_model       VS       781   2     1  305    59        0:0    1   70
-Dive3d fading models #15         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models plain free still #0 fs_model       FS        82   4     0    7    28        0:0    0    2
+Dive3d fading models plain free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d fading models plain free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models plain free sway #0 fs_model       FS        82   4     0    7    28        0:0    0    2
+Dive3d fading models plain free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d fading models plain free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models plain free any-anim #0 fs_model       FS        82   4     0    7    28        0:0    0    2
+Dive3d fading models plain free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d fading models plain free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models plain grounded still #0 fs_model       FS       106   4     0   10    30        0:0    0    1
+Dive3d fading models plain grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d fading models plain grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models plain grounded sway #0 fs_model       FS       106   4     0   10    30        0:0    0    1
+Dive3d fading models plain grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d fading models plain grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models plain grounded any-anim #0 fs_model       FS       106   4     0   10    30        0:0    0    1
+Dive3d fading models plain grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d fading models plain grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models material1 free still #0 fs_model       FS       181   4     0   29    30        0:0    0    3
+Dive3d fading models material1 free still #0 vs_model       VS       395   2     1  188    46        0:0    2   24
+Dive3d fading models material1 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material1 free sway #0 fs_model       FS       181   4     0   29    30        0:0    0    3
+Dive3d fading models material1 free sway #0 vs_model       VS       427   2     1  201    45        0:0    2   26
+Dive3d fading models material1 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material1 free any-anim #0 fs_model       FS       181   4     0   29    30        0:0    0    3
+Dive3d fading models material1 free any-anim #0 vs_model       VS      1013   2     1  385    60        0:0    2   80
+Dive3d fading models material1 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models material1 grounded still #0 fs_model       FS       208   4     0   42    32        0:0    0    4
+Dive3d fading models material1 grounded still #0 vs_model       VS       406   2     1  198    46        0:0    1   24
+Dive3d fading models material1 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material1 grounded sway #0 fs_model       FS       208   4     0   42    32        0:0    0    4
+Dive3d fading models material1 grounded sway #0 vs_model       VS       437   2     1  211    45        0:0    1   26
+Dive3d fading models material1 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material1 grounded any-anim #0 fs_model       FS       208   4     0   42    32        0:0    0    4
+Dive3d fading models material1 grounded any-anim #0 vs_model       VS       780   2     1  303    58        0:0    1   69
+Dive3d fading models material1 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models material2 free still #0 fs_model       FS       107   4     0   19    30        0:0    0    3
+Dive3d fading models material2 free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d fading models material2 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material2 free sway #0 fs_model       FS       107   4     0   19    30        0:0    0    3
+Dive3d fading models material2 free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d fading models material2 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material2 free any-anim #0 fs_model       FS       107   4     0   19    30        0:0    0    3
+Dive3d fading models material2 free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d fading models material2 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models material2 grounded still #0 fs_model       FS       134   4     0   23    32        0:0    0    1
+Dive3d fading models material2 grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d fading models material2 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material2 grounded sway #0 fs_model       FS       134   4     0   23    32        0:0    0    1
+Dive3d fading models material2 grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d fading models material2 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material2 grounded any-anim #0 fs_model       FS       134   4     0   23    32        0:0    0    1
+Dive3d fading models material2 grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d fading models material2 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models material5 free still #0 fs_model       FS       181   2     0   61    36        0:0    0    2
+Dive3d fading models material5 free still #0 vs_model       VS       574   2     0  209    54        0:0    0   35
+Dive3d fading models material5 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material5 free sway #0 fs_model       FS       181   2     0   61    36        0:0    0    2
+Dive3d fading models material5 free sway #0 vs_model       VS       600   2     0  216    53        0:0    0   33
+Dive3d fading models material5 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material5 free any-anim #0 fs_model       FS       181   2     0   61    36        0:0    0    2
+Dive3d fading models material5 free any-anim #0 vs_model       VS      1186   2     0  402    59        0:0    0   91
+Dive3d fading models material5 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models material5 grounded still #0 fs_model       FS       181   2     0   61    36        0:0    0    2
+Dive3d fading models material5 grounded still #0 vs_model       VS       574   2     0  209    54        0:0    0   35
+Dive3d fading models material5 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material5 grounded sway #0 fs_model       FS       181   2     0   61    36        0:0    0    2
+Dive3d fading models material5 grounded sway #0 vs_model       VS       600   2     0  216    53        0:0    0   33
+Dive3d fading models material5 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material5 grounded any-anim #0 fs_model       FS       181   2     0   61    36        0:0    0    2
+Dive3d fading models material5 grounded any-anim #0 vs_model       VS       951   2     0  308    55        0:0    0   76
+Dive3d fading models material5 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models material6 free still #0 fs_model       FS        94   4     0   36    16        0:0    1    2
+Dive3d fading models material6 free still #0 vs_model       VS       146   4     0   84    25        0:0    1    4
+Dive3d fading models material6 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material6 free sway #0 fs_model       FS        94   4     0   36    16        0:0    1    2
+Dive3d fading models material6 free sway #0 vs_model       VS       174   4     0   93    23        0:0    0    1
+Dive3d fading models material6 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material6 free any-anim #0 fs_model       FS        94   4     0   36    16        0:0    1    2
+Dive3d fading models material6 free any-anim #0 vs_model       VS       712   2     0  282    50        0:0    0   53
+Dive3d fading models material6 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models material6 grounded still #0 fs_model       FS        94   4     0   36    16        0:0    1    2
+Dive3d fading models material6 grounded still #0 vs_model       VS       146   4     0   84    25        0:0    1    4
+Dive3d fading models material6 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material6 grounded sway #0 fs_model       FS        94   4     0   36    16        0:0    1    2
+Dive3d fading models material6 grounded sway #0 vs_model       VS       174   4     0   93    23        0:0    0    1
+Dive3d fading models material6 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material6 grounded any-anim #0 fs_model       FS        94   4     0   36    16        0:0    1    2
+Dive3d fading models material6 grounded any-anim #0 vs_model       VS       529   4     0  229    32        0:0    0   38
+Dive3d fading models material6 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models material8 free still #0 fs_model       FS       114   4     0   20    30        0:0    0    4
+Dive3d fading models material8 free still #0 vs_model       VS       393   2     1  188    46        0:0    1   23
+Dive3d fading models material8 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material8 free sway #0 fs_model       FS       114   4     0   20    30        0:0    0    4
+Dive3d fading models material8 free sway #0 vs_model       VS       415   2     1  200    45        0:0    1   24
+Dive3d fading models material8 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material8 free any-anim #0 fs_model       FS       114   4     0   20    30        0:0    0    4
+Dive3d fading models material8 free any-anim #0 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d fading models material8 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models material8 grounded still #0 fs_model       FS       136   4     0   25    32        0:0    0    4
+Dive3d fading models material8 grounded still #0 vs_model       VS       405   2     1  196    46        0:0    1   24
+Dive3d fading models material8 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material8 grounded sway #0 fs_model       FS       136   4     0   25    32        0:0    0    4
+Dive3d fading models material8 grounded sway #0 vs_model       VS       432   2     1  209    45        0:0    1   24
+Dive3d fading models material8 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material8 grounded any-anim #0 fs_model       FS       136   4     0   25    32        0:0    0    4
+Dive3d fading models material8 grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d fading models material8 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models material11 free still #0 fs_model       FS       643   2     0  173    50        0:0    0   39
+Dive3d fading models material11 free still #0 vs_model       VS       444   2     1  233    47        0:0    1   31
+Dive3d fading models material11 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material11 free sway #0 fs_model       FS       643   2     0  173    50        0:0    0   39
+Dive3d fading models material11 free sway #0 vs_model       VS       486   2     1  242    49        0:0    1   32
+Dive3d fading models material11 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material11 free any-anim #0 fs_model       FS       643   2     0  173    50        0:0    0   39
+Dive3d fading models material11 free any-anim #0 vs_model       VS      1094   2     1  445    61        5:5    4   89
+Dive3d fading models material11 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models material11 grounded still #0 fs_model       FS       660   2     0  173    51        0:0    0   38
+Dive3d fading models material11 grounded still #0 vs_model       VS       443   2     1  233    47        0:0    1   30
+Dive3d fading models material11 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models material11 grounded sway #0 fs_model       FS       660   2     0  173    51        0:0    0   38
+Dive3d fading models material11 grounded sway #0 vs_model       VS       486   2     1  242    49        0:0    1   32
+Dive3d fading models material11 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models material11 grounded any-anim #0 fs_model       FS       660   2     0  173    51        0:0    0   38
+Dive3d fading models material11 grounded any-anim #0 vs_model       VS       827   2     1  351    62        0:0    1   73
+Dive3d fading models material11 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models any free still #0 fs_model       FS       387   2     0   84    38        0:0    3   40
+Dive3d fading models any free still #0 vs_model       VS       399   2     1  192    46        0:0    2   25
+Dive3d fading models any free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models any free sway #0 fs_model       FS       387   2     0   84    38        0:0    3   40
+Dive3d fading models any free sway #0 vs_model       VS       429   2     1  203    46        0:0    2   24
+Dive3d fading models any free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models any free any-anim #0 fs_model       FS       387   2     0   84    38        0:0    3   40
+Dive3d fading models any free any-anim #0 vs_model       VS      1018   2     1  387    62        0:0    2   80
+Dive3d fading models any free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models any grounded still #0 fs_model       FS       414   2     0   86    43        0:0    3   40
+Dive3d fading models any grounded still #0 vs_model       VS       412   2     1  202    46        0:0    1   25
+Dive3d fading models any grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d fading models any grounded sway #0 fs_model       FS       414   2     0   86    43        0:0    3   40
+Dive3d fading models any grounded sway #0 vs_model       VS       442   2     1  213    46        0:0    1   24
+Dive3d fading models any grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d fading models any grounded any-anim #0 fs_model       FS       414   2     0   86    43        0:0    3   40
+Dive3d fading models any grounded any-anim #0 vs_model       VS       781   2     1  305    59        0:0    1   70
+Dive3d fading models any grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
 Dive3d glass #0                  fs_glass       FS       506   2     0  127    49        0:0    2   35
 Dive3d glass #0                  vs_model       VS      1078   2     1  428    63        0:0    3   87
 Dive3d glass #0                  vs_model       VS-bin   640   2     0  235    47        0:0    1   51
