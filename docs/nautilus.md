@@ -271,13 +271,15 @@ with the salon window halfway along its port side. `helm.rs` steers it.
 | Frame time per place on the Pi | `hotspots` (below) |
 
 **Measuring on the Pi.** Build the test binary on the Mac with `deploy/build-for-pi.sh --tests`
-(touch `src` first when switching between trees, since builds share one cargo target volume), copy
-`target/pi/spotify-round-tests` to the Pi and freeze the kiosk while it runs:
+(touch `src` first when switching between trees, since builds share one cargo target volume), then
+let `deploy/bench-pi.sh` copy it over, check the Pi's copy by checksum, freeze the kiosk while
+`hotspots` runs and bring the table home:
 
 ```sh
-P=$(pgrep -x spotify-round); kill -STOP $P; trap "kill -CONT $P" EXIT
-DIVE3D_HOTSPOT_SEEDS=0,250000,500000,750000 DIVE3D_HOTSPOT_FRAMES=6 DIVE3D_HOTSPOT_DIR=/tmp/hot \
-  ./spotify-round-tests dive3d::tests::hotspots --ignored --nocapture
+PI=<user>@<pi> deploy/bench-pi.sh run before DIVE3D_HOTSPOT_SCENES=coral,shallows
+# ...change, rebuild...
+PI=<user>@<pi> deploy/bench-pi.sh run after DIVE3D_HOTSPOT_SCENES=coral,shallows
+deploy/bench-pi.sh compare before after   # place by place, median, worst, places over 14 ms
 ```
 
 `hotspots` times every leg of each visit at three places in it (`DIVE3D_HOTSPOT_PLACES`, default
