@@ -1956,6 +1956,12 @@ impl Nautilus {
                     || model == mesh::Model::SeaWhip as usize
                 {
                     4.0
+                } else if model == mesh::Model::Tree as usize {
+                    // The forest's trees are dark shapes in thick water: a
+                    // coarser crown's shading and outline do not show until
+                    // well inside the haze, and a wood seen down its length
+                    // is a few hundred of them.
+                    12.0
                 } else if model == mesh::Model::CoralBrain as usize {
                     // A boulder coral's grooves are its texture's; its
                     // coarser domes lose only a little roundness at the rim.

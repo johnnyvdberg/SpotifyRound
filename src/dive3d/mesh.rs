@@ -2253,8 +2253,11 @@ fn tree() -> Mesh {
     let top = [-0.015, 0.97, 0.0];
     m.append(rod(base, middle, 0.105, 0.062, bark));
     m.append(rod(middle, top, 0.062, 0.020, bark));
+    // Far off, a tree is a trunk, its boughs and a crown of a few clumps:
+    // no buttresses, no forked twigs.
+    let far = COARSER.get() >= 2;
     // A few buttresses, so the trunk grows out of the silt.
-    for k in 0..3 {
+    for k in 0..if far { 0 } else { 3 } {
         let a = k as f32 * TAU / 3.0 + 0.5;
         m.append(rod(
             [a.cos() * 0.12, 0.0, a.sin() * 0.12],
@@ -2277,24 +2280,29 @@ fn tree() -> Mesh {
             root[2] + angle.sin() * reach,
         ];
         m.append(rod(root, tip, 0.032, 0.010, bark));
+        leaf_clumps.push((tip, 0.10 + 0.025 * (b as f32 * 0.9).sin().abs()));
+        if far {
+            continue;
+        }
         let fork = [
             tip[0] + (angle + 0.6).cos() * 0.11,
             tip[1] + 0.08,
             tip[2] + (angle + 0.6).sin() * 0.11,
         ];
         m.append(rod(tip, fork, 0.014, 0.005, bark));
-        leaf_clumps.push((tip, 0.10 + 0.025 * (b as f32 * 0.9).sin().abs()));
         leaf_clumps.push((fork, 0.085));
     }
     // The crown: a broad, uneven collection of small clumps.
-    for k in 0..5 {
-        let a = k as f32 / 5.0 * TAU;
+    let crown = if far { 3 } else { 5 };
+    for k in 0..crown {
+        let a = k as f32 / crown as f32 * TAU;
         let p = [
             top[0] + a.cos() * (0.10 + 0.04 * k as f32),
             top[1] - 0.02 + 0.04 * (k as f32 * 1.3).sin(),
             top[2] + a.sin() * (0.10 + 0.04 * k as f32),
         ];
-        leaf_clumps.push((p, 0.105));
+        // Fewer clumps, each a little larger, so the crown keeps its bulk.
+        leaf_clumps.push((p, if far { 0.13 } else { 0.105 }));
     }
     for (centre, size) in leaf_clumps {
         let clump = sphere_with(
