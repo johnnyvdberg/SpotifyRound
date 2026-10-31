@@ -112,7 +112,9 @@ with the salon window halfway along its port side. `helm.rs` steers it.
   shader too large for its registers runs at fewer threads for every pixel it draws, so a feature
   costs its registers even where a branch skips it: what does not show is removed, not gated.
   Work is baked into vertices or textures where it can be, and each material has its own pipeline
-  so no other model pays for it.
+  so no other model pays for it; so do the water's skies and the coral cards' forms. Every shader
+  that covers much of a reef view (the water, the seabed, the plain models and every coral card)
+  runs at the full **four threads**.
 - The CPU builds the scene in about a millisecond a frame on the Pi; the static scenery is cached.
 
 ---
@@ -137,8 +139,9 @@ with the salon window halfway along its port side. `helm.rs` steers it.
   turtles and mantas along the reef.
 - Colonies are models within 3.2 units and cards out to 8; beyond 4.5 units a thicket or a terrace
   is only its biggest heads.
-- *Open*: views looking into the reef are the slowest on the Pi (about 15–16 ms), and the bommies
-  are still smooth hills rather than lumpy coral heads.
+- The far staghorn's cards are baked silhouettes (`textures::Surface::Staghorn`), four colonies
+  that stay whole inside their card, not traced limb by limb.
+- *Open*: the bommies are still smooth hills rather than lumpy coral heads.
 
 ### Forest of Crespo
 
@@ -285,7 +288,13 @@ switch at once over all legs, `frame_time` averages each leg, and `cpu_cost` the
 `spotify-round-tests gpu_cost::videocore_vii --ignored` confirms the adapter really is the Pi 5's
 V3D before a measurement is trusted.
 
-On 2026-10-31 (`hotspots`, four visits, 168 places): median **11.1 ms**, 10 places over 14 ms, the
-worst 15.9 ms (a shallows view looking into the reef).
+**Shader registers without the Pi.** `deploy/v3d-shaderdb/shaderdb.sh <checkout>` compiles every
+pipeline with the Pi's own Mesa (v3dv, V3D 7.1) on the Mac and prints, per shader, its instructions,
+**threads**, temporaries and spills. It matched the Pi's own `V3D_DEBUG=shaderdb` exactly, so a
+shader can be brought back to four threads before any Pi measurement; the Pi then confirms the
+milliseconds.
+
+On 2026-10-31 (`hotspots`, four visits, 168 places): median **10.3 ms**, no place over 14 ms, the
+worst 13.7 ms (an arctic view); the reef's worst is 13.1 ms (coral) and 12.3 ms (shallows).
 
 ![Every Nautilus scene and effect](dive3d-scenes.png)

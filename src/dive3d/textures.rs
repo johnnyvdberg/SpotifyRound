@@ -41,10 +41,15 @@ pub enum Surface {
     /// small colonies, each its own texture and a shade of its own hue, with
     /// dark crevices between ([`paint_reef`]).
     Reef,
+    /// The far staghorn's silhouettes for its cut-out cards (`fs_impostor`),
+    /// not a colour either: four colonies' signed distances and pale tips
+    /// ([`paint_staghorn`]), so the card takes one lookup instead of tracing
+    /// fifteen limbs a pixel.
+    Staghorn,
 }
 
 impl Surface {
-    pub const ALL: [Surface; 18] = [
+    pub const ALL: [Surface; 19] = [
         Surface::Plain,
         Surface::Rock,
         Surface::Wood,
@@ -63,6 +68,7 @@ impl Surface {
         Surface::Brain,
         Surface::Vault,
         Surface::Reef,
+        Surface::Staghorn,
     ];
 
     pub fn layer(self) -> f32 {
@@ -348,7 +354,7 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             mix(c, [0.85, 0.45, 0.25], rust * 0.35)
         }
         // Not a colour: painted whole, with its relief, by `paint_vault`.
-        Surface::Vault => grey(1.0),
+        Surface::Vault | Surface::Staghorn => grey(1.0),
         Surface::Reef => paint_reef(u, v),
     }
 }
@@ -512,6 +518,9 @@ pub fn paint_all() -> Vec<Vec<Vec<u8>>> {
             if surface == Surface::Vault {
                 return paint_vault();
             }
+            if surface == Surface::Staghorn {
+                return paint_staghorn();
+            }
             (0..SIZE * SIZE)
                 .map(|i| {
                     let (x, y) = (i % SIZE, i / SIZE);
@@ -567,6 +576,71 @@ pub fn paint_all() -> Vec<Vec<Vec<u8>>> {
     levels
 }
 
+/// How many staghorn colonies [`Surface::Staghorn`] holds, two by two, each
+/// in a square of the layer; `fs_impostor` picks one by its card's seed.
+pub const STAGHORN_CELLS: usize = 2;
+
+/// The half width over height the staghorn's silhouettes are traced at: the
+/// colony's own, as `world` places it (0.30 over 0.45). A card a little
+/// wider or narrower stretches it.
+const STAGHORN_WIDE: f32 = 0.30 / 0.45;
+
+/// The seeds the four baked colonies are grown from: four of the few whose
+/// antlers stay inside the card, where most seeds' reach past its top and
+/// were cut off square by it.
+const STAGHORN_SEEDS: [f32; 4] = [1.825, 3.575, 5.675, 7.925];
+
+/// The far staghorn's cards, baked: in each square of the layer, a colony as
+/// `fs_impostor` used to trace it per pixel, five trunks leaning out of one
+/// foot, each forking into two upturned antlers. Across a square is across
+/// the card, -1 to 1 of its half width; down it, up the card from its foot.
+/// Red is the signed distance to the colony's edge, in card heights, 0.5 at
+/// the edge and two heights a unit; green how pale its new growth is, at the
+/// antlers' tips. Interpolated, the distance gives the card its edge to the
+/// pixel at any size.
+fn paint_staghorn() -> Vec<[f32; 4]> {
+    let cell = SIZE / STAGHORN_CELLS;
+    // `seeded` in `scene.wesl`.
+    let seeded =
+        |seed: f32, k: f32| ((seed * 12.9898 + k * 78.233).sin() * 43758.547).rem_euclid(1.0);
+    let limb = |p: [f32; 2], a: [f32; 2], b: [f32; 2], ra: f32, rb: f32| {
+        let ab = [b[0] - a[0], b[1] - a[1]];
+        let pa = [p[0] - a[0], p[1] - a[1]];
+        let t = ((pa[0] * ab[0] + pa[1] * ab[1]) / (ab[0] * ab[0] + ab[1] * ab[1])).clamp(0.0, 1.0);
+        (pa[0] - ab[0] * t).hypot(pa[1] - ab[1] * t) - (ra + (rb - ra) * t)
+    };
+    let wide = STAGHORN_WIDE;
+    (0..SIZE * SIZE)
+        .map(|i| {
+            let (x, y) = (i % SIZE, i / SIZE);
+            let seed = STAGHORN_SEEDS[(y / cell) * STAGHORN_CELLS + x / cell];
+            let u = ((x % cell) as f32 + 0.5) / cell as f32 * 2.0 - 1.0;
+            let p = [u * wide, ((y % cell) as f32 + 0.5) / cell as f32];
+            let mut d = f32::MAX;
+            let mut end_near = f32::MAX;
+            for k in 0..5 {
+                let f = k as f32;
+                let h = seeded(seed, f);
+                let a = (f / 4.0 - 0.5) * 1.5 + (h - 0.5) * 0.35;
+                let foot = [a * 0.10 * wide, 0.0];
+                let knee = [a.sin() * 0.62 * wide, 0.36 + 0.12 * h];
+                d = d.min(limb(p, foot, knee, 0.075, 0.055));
+                for c in 0..2 {
+                    let turn = a * 0.55 + (c as f32 - 0.5) * (0.7 + 0.3 * h);
+                    let reach = 0.42 + 0.16 * seeded(seed, f + c as f32 * 5.0 + 9.0);
+                    let end = [
+                        knee[0] + turn.sin() * reach * wide * 0.95,
+                        knee[1] + turn.cos() * reach,
+                    ];
+                    d = d.min(limb(p, knee, end, 0.05, 0.032));
+                    end_near = end_near.min((p[0] - end[0]).hypot(p[1] - end[1]));
+                }
+            }
+            [0.5 + d * 2.0, 1.0 - smooth(0.0, 0.16, end_near), 0.0, 1.0]
+        })
+        .collect()
+}
+
 /// The texture array stores 0..1.6 as 0..255, so textures can brighten as well
 /// as darken; the shader scales back by this.
 pub const RANGE: f32 = 1.6;
@@ -583,6 +657,43 @@ mod tests {
         let shader = include_str!("../shaders/scene.wesl");
         let line = format!("const REEF_LAYER: i32 = {};", Surface::Reef as usize);
         assert!(shader.contains(&line), "scene.wesl wants `{line}`");
+    }
+
+    /// The far staghorn's cards read their silhouettes from the layer, by
+    /// number and by the size of its squares.
+    #[test]
+    fn the_shader_knows_the_staghorns_layer() {
+        let shader = include_str!("../shaders/scene.wesl");
+        for line in [
+            format!(
+                "const STAGHORN_LAYER: i32 = {};",
+                Surface::Staghorn as usize
+            ),
+            format!("const STAGHORN_CELLS: f32 = {STAGHORN_CELLS}.0;"),
+        ] {
+            assert!(shader.contains(&line), "scene.wesl wants `{line}`");
+        }
+    }
+
+    /// Every baked staghorn stands on its foot and leaves room round it: the
+    /// card's edges are outside the colony, its foot inside.
+    #[test]
+    fn the_baked_staghorns_stand_clear_of_their_squares() {
+        let layer = paint_staghorn();
+        let cell = SIZE / STAGHORN_CELLS;
+        for v in 0..STAGHORN_CELLS * STAGHORN_CELLS {
+            let (ox, oy) = ((v % STAGHORN_CELLS) * cell, (v / STAGHORN_CELLS) * cell);
+            let at = |x: usize, y: usize| layer[(oy + y) * SIZE + ox + x][0];
+            assert!(at(cell / 2, 1) < 0.5, "colony {v} has no foot");
+            for k in 0..cell {
+                for (x, y) in [(0, k), (cell - 1, k), (k, cell - 1)] {
+                    assert!(
+                        at(x, y) > 0.5,
+                        "colony {v} touches its square at ({x}, {y})"
+                    );
+                }
+            }
+        }
     }
 
     /// The cave's cliffs name the tunnel's layer in the shader by number.

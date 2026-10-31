@@ -83,6 +83,12 @@ const CORAL_LAYER: i32 = 8;
 const BRAIN_LAYER: i32 = 15;
 // The living reef carpeting the coral's seabed, `textures::Surface::Reef`.
 const REEF_LAYER: i32 = 17;
+// The far staghorn's baked silhouettes, `textures::Surface::Staghorn`, and
+// how many colonies a side of the layer holds, `textures::STAGHORN_CELLS`.
+const STAGHORN_LAYER: i32 = 18;
+const STAGHORN_CELLS: f32 = 2.0;
+// The surfaces' size in texels, `textures::SIZE`.
+const SIZE_STAGHORN: i32 = 256;
 // How much of the terrain layer's fraction carries the reef, as
 // `terrain::REEF_SHARE`.
 const REEF_SHARE: f32 = 0.45;
@@ -115,6 +121,26 @@ override MATERIAL: i32 = -1;
 // brightness, to keep the highlights up to 2 that the old grade and
 // its bending of the glass blend from.
 override SEA_SCALE: f32 = 1.0;
+
+// What the open water's pipeline opens on to overhead: the plain sea, the
+// underside of the water surface, the polar sky through the ice's leads, or
+// the underside with the sky through Snell's window over it, for a view
+// steep enough to reach the window (`sky_mode` on the CPU picks one a frame,
+// by the same tests the shader used to make per pixel). Each compiles only
+// its own: together they kept the water at two threads on the Pi, and it
+// shades most of a reef view. The sky's one fetch alone halves the
+// ceiling's threads, and the salon's window never looks that far up.
+override SKY: i32 = 1;
+const SKY_OPEN: i32 = 0;
+const SKY_CEILING: i32 = 1;
+const SKY_POLAR: i32 = 2;
+const SKY_SNELL: i32 = 3;
+
+// The impostor form this pipeline draws (`fs_impostor`): 0 staghorn,
+// 1 table, 2 fingers, 3 dome or bush, 5 fish; -1 any. A form a pipeline
+// keeps the card shader small enough for four threads, where all of them in
+// one needed sixty registers and two.
+override FORM: i32 = -1;
 
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
@@ -790,7 +816,9 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     }
     var col = water_at(dir);
     let up = smooth01(0.05, 0.65, dir.y);
-    if (up > 0.0) {
+    // Under the water's ceiling the surface's glint is never seen: the
+    // ceiling covers everything over a tenth of the way up its band.
+    if (SKY != SKY_CEILING && SKY != SKY_SNELL && up > 0.0) {
         let t = g.camera.w;
         let wave = sin(dir.x * 13.0 + t * 0.8 + sin(dir.z * 9.0 - t * 0.5))
             * sin(dir.z * 10.0 - t * 0.65 + sin(dir.x * 7.0 + t * 0.4));
@@ -804,14 +832,14 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     // sheen, never a painted cloud deck. The sky itself only appears where a
     // ray can actually leave the water, in Snell's window overhead.
     if (dir.y > 0.0) {
-        let arctic = presence(sky_leg(), ARCTIC);
-        if (g.sky.w > 0.002 && arctic > 0.01) {
+        if (SKY == SKY_POLAR) {
+            let arctic = presence(sky_leg(), ARCTIC);
             let sky = sky_at(dir, sky_leg());
             let sky_up = smooth01(0.0, 0.12, dir.y) * g.sky.w * arctic;
             col = mix(col, sky, sky_up);
-        } else if (g.camera.y > -6.0) {
+        } else if (SKY == SKY_CEILING || SKY == SKY_SNELL) {
             var ceiling = water_ceiling(dir, g.camera.w);
-            if (g.sky.w > 0.002 && dir.y > 0.64) {
+            if (SKY == SKY_SNELL && g.sky.w > 0.002 && dir.y > 0.64) {
                 let sky = sky_at(dir, sky_leg());
                 ceiling = mix(ceiling, sky, smooth01(0.64, 0.85, dir.y) * g.sky.w);
             }
@@ -1319,7 +1347,9 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     var p = v.pos;
     var rise = vec3<f32>(0.0);
     var beat = 0.0;
-    let swimming = kind == 5u || kind == 10u || kind == 11u;
+    // Nothing that swims stands on the seabed, so the grounded pipelines,
+    // which draw the reef, compile none of it.
+    let swimming = !GROUNDED && (kind == 5u || kind == 10u || kind == 11u);
     if (swimming) {
         let across = length(vec3<f32>(i.m0.x, i.m1.x, i.m2.x));
         let stretch = length(vec3<f32>(i.m0.y, i.m1.y, i.m2.y)) / max(across, 1e-6);
@@ -2467,26 +2497,36 @@ fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
     var tip = 0.0;
     var round = 1.0;
     var groove = 0.0;
-    if (form < 0.5) {
+    // Which form, fixed by the pipeline's `FORM` where it has one, so the
+    // others are not compiled in.
+    let any = FORM < 0;
+    let staghorn = select(FORM == 0, (form < 0.5), any);
+    let table = select(FORM == 1, (form >= 0.5) && (form < 1.5), any);
+    let fingers = select(FORM == 2, (form >= 1.5) && (form < 2.5), any);
+    let fish = select(FORM == 5, (form > 4.5), any);
+    if (staghorn) {
         // Staghorn: trunks leaning out of one foot, each forking into two
-        // upturned antlers with a pale tip, as the model grows them.
-        for (var k = 0; k < 5; k = k + 1) {
-            let f = f32(k);
-            let h = seeded(seed, f);
-            let a = (f / 4.0 - 0.5) * 1.5 + (h - 0.5) * 0.35;
-            let foot = vec2<f32>(a * 0.10 * wide, 0.0);
-            let knee = vec2<f32>(sin(a) * 0.62 * wide, 0.36 + 0.12 * h);
-            d = min(d, limb_out(p, foot, knee, 0.075, 0.055));
-            for (var c = 0; c < 2; c = c + 1) {
-                let turn = a * 0.55 + (f32(c) - 0.5) * (0.7 + 0.3 * h);
-                let reach = 0.42 + 0.16 * seeded(seed, f + f32(c) * 5.0 + 9.0);
-                let end = knee + vec2<f32>(sin(turn) * reach * wide * 0.95, cos(turn) * reach);
-                d = min(d, limb_out(p, knee, end, 0.05, 0.032));
-                tip = max(tip, 1.0 - smooth01(0.0, 0.16, length(p - end)));
-            }
-        }
+        // upturned antlers with a pale tip, as the model grows them; baked
+        // (`textures::paint_staghorn`), one of four colonies by the seed,
+        // the right way round or mirrored. Traced here, the fifteen limbs
+        // kept the card at half the Pi's threads.
+        let colony = floor(fract(seed * 0.1) * 4.0);
+        let mirror = select(1.0, -1.0, fract(seed * 3.7) < 0.5);
+        let half = 0.5 / (f32(SIZE_STAGHORN) / STAGHORN_CELLS);
+        let across = clamp(p.x / wide * mirror * 0.5 + 0.5, half, 1.0 - half);
+        let up = clamp(p.y, half, 1.0 - half);
+        let square = vec2<f32>(colony % STAGHORN_CELLS, floor(colony / STAGHORN_CELLS));
+        let baked = textureSampleLevel(
+            surfaces,
+            surface_sampler,
+            (square + vec2<f32>(across, up)) / STAGHORN_CELLS,
+            STAGHORN_LAYER,
+            0.0,
+        );
+        d = (baked.r - 0.5) * 0.5;
+        tip = baked.g;
         round = smooth01(0.0, 0.05, -d);
-    } else if (form < 1.5) {
+    } else if (table) {
         // A table: a broad cupped plate on a short stem, its rim lifted and
         // lobed, its underside in shade.
         let x = p.x / wide;
@@ -2498,7 +2538,7 @@ fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
         d = min(plate * thick, stem);
         tip = smooth01(0.7, 0.98, abs(x)) * step(0.6, p.y);
         round = select(0.55, 1.0, p.y > 0.66 + lift - thick * 0.2);
-    } else if (form < 2.5) {
+    } else if (fingers) {
         // Fingers: blunt, upright and close together, of uneven height.
         for (var k = 0; k < 7; k = k + 1) {
             let f = f32(k);
@@ -2509,7 +2549,7 @@ fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
             tip = max(tip, 1.0 - smooth01(0.0, 0.14, length(p - top)));
         }
         round = smooth01(0.0, 0.07, -d);
-    } else if (form > 4.5) {
+    } else if (fish) {
         // A small reef fish side on: a deep oval body, nose to +x, and a
         // forked tail; darker along its back, paler at its belly, with a
         // dark eye.
@@ -2562,7 +2602,7 @@ fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
     // In shade at the foot, darker round each branch's sides and in the
     // grooves, the paler new growth at the tips.
     var shade = (0.50 + 0.50 * smooth01(0.0, 0.8, p.y)) * (0.62 + 0.38 * round) * (1.0 - groove);
-    if (form > 4.5) {
+    if (fish) {
         shade = round * (1.0 - groove);
     }
     let colour = mix(in.colour * shade, in.colour * 1.2 + vec3<f32>(0.05), tip * 0.55);

@@ -370,7 +370,9 @@ struct Globals {
 }
 
 pub(crate) struct Nautilus {
-    background: wgpu::RenderPipeline,
+    /// The open water, one pipeline per sky it opens on to (`SKY` in
+    /// `scene.wesl`, chosen by [`sky_mode`]).
+    backgrounds: Vec<wgpu::RenderPipeline>,
     /// The mobile-style water, selected by `part::CHEAP_WATER`.
     background_cheap: wgpu::RenderPipeline,
     /// The caustic-shimmer surface, selected by `part::SHIMMER_WATER`.
@@ -390,8 +392,8 @@ pub(crate) struct Nautilus {
     shafts: wgpu::RenderPipeline,
     /// Searchlight beams of other submarines.
     beams: wgpu::RenderPipeline,
-    /// Far coral, as cut-out cards.
-    impostors: wgpu::RenderPipeline,
+    /// Far coral, as cut-out cards: one pipeline per entry of [`FORMS`].
+    impostors: Vec<wgpu::RenderPipeline>,
     globals: wgpu::Buffer,
     group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
@@ -483,7 +485,71 @@ fn material_slot(i: &Instance) -> usize {
 /// The pipeline for an instance: its material's, of the pair for things that
 /// stand on the seabed or swim free.
 fn pipeline_slot(i: &Instance) -> usize {
-    material_slot(i) * 2 + usize::from(i.extra[1] > 0.5)
+    let grounded = i.extra[1] > 0.5;
+    // The grounded pipelines leave the swimmers' animation out (`vs_model`).
+    debug_assert!(
+        !(grounded
+            && [world::anim::PULSE, world::anim::TRAIL, world::anim::GLIDE].contains(&i.anim[0])),
+        "a swimming model stands on the seabed"
+    );
+    material_slot(i) * 2 + usize::from(grounded)
+}
+
+/// The impostor forms that have a pipeline of their own, as `FORM` in
+/// `scene.wesl`: staghorn, table, fingers, the dome and the bush (3 and 4,
+/// which share their shape), and the fish.
+const FORMS: [i32; 5] = [0, 1, 2, 3, 5];
+
+/// The index into [`FORMS`] of the pipeline for an impostor.
+fn form_slot(s: &Sprite) -> usize {
+    match s.stretch[1].round() as i32 {
+        form @ 0..=2 => form as usize,
+        3 | 4 => 3,
+        _ => 4,
+    }
+}
+
+/// Which sky the open water opens on to overhead, as `SKY` in `scene.wesl`:
+/// the polar sky where the arctic's leads show it, else the underside of the
+/// water surface while the boat is within six units of it, else nothing but
+/// the sea. The tests are the ones `fs_background` made for every pixel. The
+/// underside has a variant with the sky through Snell's window, for a view
+/// that looks far enough up to see into it.
+fn sky_mode(g: &Globals) -> usize {
+    let arctic = world::ARCTIC as i32;
+    let (a, b, w) = ((g.sky[0] + 0.5) as i32, (g.sky[1] + 0.5) as i32, g.sky[2]);
+    let polar = if a == arctic { 1.0 - w } else { 0.0 } + if b == arctic { w } else { 0.0 };
+    if g.sky[3] > 0.002 && polar > 0.01 {
+        2
+    } else if g.camera[1] > -6.0 {
+        if g.sky[3] > 0.002 && highest_view(g) > SNELL_REACH {
+            3
+        } else {
+            1
+        }
+    } else {
+        0
+    }
+}
+
+/// How far up the window ever looks before `fs_background` takes in the sky
+/// through Snell's window (0.64), less a margin for the round window's edge
+/// between the corners `highest_view` tries.
+const SNELL_REACH: f32 = 0.6;
+
+/// The greatest upward slope (the y of the unit ray) anywhere in the view:
+/// at one of its corners, as the ray's height is greatest at the edge of a
+/// square that is level or tilted.
+fn highest_view(g: &Globals) -> f32 {
+    let s = g.view[0];
+    [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
+        .iter()
+        .map(|&(x, y): &(f32, f32)| {
+            let (lx, ly) = (x * s, y * s);
+            let y = lx * g.right[1] + ly * g.up[1] + g.out[1];
+            y / (lx * lx + ly * ly + 1.0).sqrt()
+        })
+        .fold(f32::MIN, f32::max)
 }
 
 /// Which pipeline a run of instances is drawn with, in the order they are drawn.
@@ -1446,20 +1512,24 @@ impl Nautilus {
         };
         // Depth is reversed — near at 1, far toward 0 — for precision far out.
         let nearer = wgpu::CompareFunction::Greater;
-        let background = pipeline(
-            "Dive3d water",
-            "vs_background",
-            "fs_background",
-            &[],
-            None,
-            false,
-            // Only where the depth is still the clear value: nothing drawn.
-            wgpu::CompareFunction::GreaterEqual,
-            false,
-            true,
-            &[],
-            None,
-        );
+        let backgrounds = (0..4)
+            .map(|sky| {
+                pipeline(
+                    "Dive3d water",
+                    "vs_background",
+                    "fs_background",
+                    &[],
+                    None,
+                    false,
+                    // Only where the depth is still the clear value: nothing drawn.
+                    wgpu::CompareFunction::GreaterEqual,
+                    false,
+                    true,
+                    &[("SKY", f64::from(sky))],
+                    None,
+                )
+            })
+            .collect();
         let background_cheap = pipeline(
             "Dive3d water, cheap",
             "vs_background",
@@ -1678,19 +1748,24 @@ impl Nautilus {
         );
         // Opaque and writing depth, like the models: the discard is what
         // shapes it, and it is drawn after them so they hide it first.
-        let impostors = pipeline(
-            "Dive3d impostors",
-            "vs_impostor",
-            "fs_impostor",
-            &sprite_buffers,
-            None,
-            true,
-            nearer,
-            false,
-            false,
-            &[],
-            None,
-        );
+        let impostors = FORMS
+            .iter()
+            .map(|&form| {
+                pipeline(
+                    "Dive3d impostors",
+                    "vs_impostor",
+                    "fs_impostor",
+                    &sprite_buffers,
+                    None,
+                    true,
+                    nearer,
+                    false,
+                    false,
+                    &[("FORM", f64::from(form))],
+                    None,
+                )
+            })
+            .collect();
 
         let underwater = std::env::var_os("SPOTIFY_ROUND_UNDERWATER").is_some();
         let lowpoly = std::env::var_os("SPOTIFY_ROUND_LOWPOLY").is_some();
@@ -1706,7 +1781,7 @@ impl Nautilus {
             "3D dive ready"
         );
         Ok(Self {
-            background,
+            backgrounds,
             background_cheap,
             background_shimmer,
             terrain_pipeline: terrain,
@@ -1896,6 +1971,7 @@ impl Nautilus {
             switches |= shader_switch::TERRAIN_FACETS;
         }
         uniforms.counts[1] = switches as f32;
+        let sky = sky_mode(&uniforms);
         gpu.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&uniforms));
 
@@ -2183,7 +2259,9 @@ impl Nautilus {
             (std::mem::size_of_val(sprites) + std::mem::size_of_val(shafts)) as u64,
             bytemuck::cast_slice(beams),
         );
-        // And the far coral follows the beams.
+        // And the far coral follows the beams, sorted by form, which each
+        // has a pipeline of its own.
+        self.frame.impostors.sort_by_key(form_slot);
         let impostors = &self.frame.impostors[..self
             .frame
             .impostors
@@ -2378,10 +2456,21 @@ impl Nautilus {
                     draw_terrain(&mut pass);
                 }
                 if !impostors.is_empty() && !this.skips(part::IMPOSTORS) {
+                    // Sorted by form as they were uploaded: a draw a run.
                     let first = (sprites.len() + shafts.len() + beams.len()) as u32;
-                    pass.set_pipeline(&this.impostors);
                     pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
-                    pass.draw(0..6, first..first + impostors.len() as u32);
+                    let mut start = 0;
+                    while start < impostors.len() {
+                        let slot = form_slot(&impostors[start]);
+                        let end = start
+                            + impostors[start..]
+                                .iter()
+                                .take_while(|i| form_slot(i) == slot)
+                                .count();
+                        pass.set_pipeline(&this.impostors[slot]);
+                        pass.draw(0..6, first + start as u32..first + end as u32);
+                        start = end;
+                    }
                 }
                 // The open water, before the things that fade into it: it
                 // shades only the pixels nothing solid has covered, and the
@@ -2392,7 +2481,7 @@ impl Nautilus {
                     } else if this.skips(part::SHIMMER_WATER) {
                         &this.background_shimmer
                     } else {
-                        &this.background
+                        &this.backgrounds[sky]
                     });
                     pass.draw(0..3, 0..1);
                 }
