@@ -207,18 +207,34 @@ impl Graphics {
     }
 }
 
-/// Create the device and make Slint use it.
+/// The backends to try, in order. `WGPU_BACKEND` picks one instead (`gl`,
+/// `vulkan`, …), to compare the Pi's two drivers.
 ///
-/// Vulkan first, because that is what the Pi 5 runs; the other backends are only a
-/// convenience so the display still works on a machine without a Vulkan driver.
-/// `WGPU_BACKEND` picks one instead (`gl`, `vulkan`, …), to compare the Pi's
-/// Vulkan driver against its OpenGL ES one.
+/// On the Pi (Linux on arm64) OpenGL ES comes first: Mesa's GL driver runs
+/// the V3D 7.1's early-Z, and its Vulkan driver (v3dv, as of Mesa 26.2) never
+/// does, which made every frame of the dive 0.9-2.6 ms slower. Vulkan is the
+/// fallback there and the first choice elsewhere; any other backend is only a
+/// convenience so the display still works on a machine without either.
+fn backend_order() -> Vec<wgpu::Backends> {
+    if let Some(chosen) = wgpu::Backends::from_env() {
+        return vec![chosen];
+    }
+    if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        vec![
+            wgpu::Backends::GL,
+            wgpu::Backends::VULKAN,
+            wgpu::Backends::all(),
+        ]
+    } else {
+        vec![wgpu::Backends::VULKAN, wgpu::Backends::all()]
+    }
+}
+
+/// Create the device and make Slint use it, on the first backend of
+/// [`backend_order`] that opens.
 pub fn install() -> Result<Graphics> {
     let mut last = "no GPU adapter available".to_owned();
-    let order = match wgpu::Backends::from_env() {
-        Some(chosen) => vec![chosen],
-        None => vec![wgpu::Backends::VULKAN, wgpu::Backends::all()],
-    };
+    let order = backend_order();
     for backends in order {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
@@ -269,17 +285,21 @@ pub fn install() -> Result<Graphics> {
 /// design previews use this.
 #[cfg(test)]
 pub fn headless() -> Result<Graphics> {
-    let backends =
-        wgpu::Backends::from_env().unwrap_or(wgpu::Backends::VULKAN | wgpu::Backends::all());
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
-        ..wgpu::InstanceDescriptor::new_without_display_handle_from_env()
-    });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))?;
-    open(&adapter, "preview", true)
+    let mut last = anyhow::anyhow!("no GPU adapter available");
+    for backends in backend_order() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..wgpu::InstanceDescriptor::new_without_display_handle_from_env()
+        });
+        match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        })) {
+            Ok(adapter) => return open(&adapter, "preview", true),
+            Err(err) => last = err.into(),
+        }
+    }
+    Err(last)
 }
 
 /// Open a device, optionally with wgpu-profiler's timer-query features.

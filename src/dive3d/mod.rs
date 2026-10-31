@@ -1335,7 +1335,11 @@ fn compile(
         Some(wgpu::Face::Back),
     );
     // Before anything else, the corners outside the round window are
-    // marked as nearest of all, so nothing drawn there is shaded.
+    // marked as nearest of all, so nothing drawn there is shaded. Its test
+    // is `GreaterEqual`, which passes everywhere over the cleared depth just
+    // as `Always` would: a depth-writing `Always` turns the V3D's early-Z off
+    // for the whole pass, and with it on, hidden quads are dropped at the
+    // rasteriser (0.9-2.6 ms a frame on the Pi 5's GL driver).
     let mask = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Dive3d corners"),
         layout: Some(pipeline_layout),
@@ -1359,7 +1363,7 @@ fn compile(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH,
             depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Always),
+            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
             stencil: Default::default(),
             bias: Default::default(),
         }),
