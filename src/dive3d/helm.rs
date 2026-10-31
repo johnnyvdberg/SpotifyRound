@@ -26,10 +26,10 @@
 //! the tunnel so the window looks up it, no farther than the hull clears both
 //! walls, and swings it straight again beyond the far mouth.
 //!
-//! In open water the helmsman lets the boat crab the same way, slowly and a
-//! good deal less: every couple of minutes he swings the nose off the track,
-//! so the window looks a little ahead or a little astern, and the boat dips
-//! a little as it looks ahead and lifts as it looks back. The scenery then
+//! In open water the helmsman swings the boat off its track too, as far as
+//! fifty degrees either way over a couple of minutes, so the window looks
+//! well ahead up its way or back down it, and the boat dips a little as it
+//! looks ahead and lifts as it looks back. The scenery then
 //! comes at the glass, or falls away from it, on the diagonal, rather than
 //! only sliding past it, and the voyage is seen in depth as well as across
 //! and up and down. He keeps the swing small among the city's columns,
@@ -130,13 +130,14 @@ const TURN: f32 = 0.0095;
 /// by the first hall.
 const CRAB_AHEAD: f32 = 7.0;
 /// How far round the helmsman swings the boat off its track in open water,
-/// either way, and the fastest he swings it: sixteen degrees, so the window
-/// sees nearly a third of the boat's way coming at it or falling away from
-/// it, at a quarter of a degree a second, so a whole swing from looking
-/// astern to looking ahead takes a couple of minutes. With the corridor's own
-/// bends it stays within the turning rate of a hull of its size.
-pub const SWING: f32 = 0.28;
-const SWING_RATE: f32 = 0.005;
+/// either way, and the fastest he swings it: fifty degrees, so the window
+/// looks well ahead up the boat's way, or back down it, and the voyage is
+/// seen coming and going rather than only sliding past, at under half a
+/// degree a second, so a swing from straight to looking ahead takes a
+/// couple of minutes. With the corridor's own bends it stays within the
+/// turning rate of a hull of its size ([`TURN`]).
+pub const SWING: f32 = 0.9;
+const SWING_RATE: f32 = 0.0075;
 /// How much lower than its cruise the boat runs while it looks ahead, and
 /// how much higher while it looks astern, as a share of its height over the
 /// ground: it dips into the scenery it is turning towards.
@@ -279,7 +280,10 @@ fn room(seabed: &Seabed, x: f32) -> f32 {
         })
         .sum::<f32>()
         / 7.0;
-    (1.0 - 0.9 * smooth(0.0, 0.8, ruins)) * open(seabed, x)
+    // Among the ruins, no more than the old sixteen degrees' tenth, which
+    // their columns beside the lane allow.
+    let held = 0.028 / SWING;
+    (1.0 - (1.0 - held) * smooth(0.0, 0.8, ruins)) * open(seabed, x)
 }
 
 /// Where the helmsman means to swing the boat at `x`, off its track, in
@@ -460,7 +464,7 @@ impl Helm {
             // window would jolt. The bound is read several hull lengths
             // ahead, so at cruising speed the boat has straightened before
             // the place itself closes in.
-            let spare = (CRAB_RATE - self.course.rate.abs()).clamp(0.1 * SWING_RATE, SWING_RATE);
+            let spare = (TURN - self.course.rate.abs()).clamp(0.1 * SWING_RATE, SWING_RATE);
             self.swing
                 .follow(swung.clamp(-most, most), 0.12, attitude_dt, spare);
             self.cruise += (about - self.cruise) * (1.0 - (-voyage_dt / 4.0).exp());
