@@ -1526,6 +1526,8 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
         out.lamps = (in.floor * (1.9 + 0.2 * sin(t * 37.0 + seed)) + vec3<f32>(0.30) * core * core) * stutter;
         return out;
     }
+    // The water every polished or glazed part mirrors, worked out once.
+    let env = city_mirror(r);
     if (kind > 1.4) {
         // Glass panes leaded in an iron lattice, lit warm from within. The
         // lattice is in the world, so a walkway stretched between two towers
@@ -1535,7 +1537,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
         let lead = min(min(q.x, q.y), q.z);
         let pane = mix(smooth01(0.03, 0.08, lead), 0.8, smooth01(10.0, 22.0, distance));
         out.lamps = vec3<f32>(0.95, 0.64, 0.30) * (0.06 + 0.32 * pane);
-        out.sheen += city_mirror(r) * (0.12 + 0.9 * fresnel) * pane;
+        out.sheen += env * (0.12 + 0.9 * fresnel) * pane;
         out.keep = 0.55;
         return out;
     }
@@ -1552,7 +1554,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     if (brass > 0.01) {
         let band = exp(-60.0 * (r.y - 0.30) * (r.y - 0.30));
         out.sheen += vec3<f32>(1.0, 0.74, 0.40) * brass * (1.0 - foot)
-            * (city_mirror(r) * (0.22 + 0.9 * fresnel) + vec3<f32>(0.06, 0.05, 0.04) * band);
+            * (env * (0.22 + 0.9 * fresnel) + vec3<f32>(0.06, 0.05, 0.04) * band);
     }
     if (kind < 0.5) {
         return out;
@@ -1593,9 +1595,12 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     }
     // Far off the grid is finer than the pixels: its average, steady.
     let far = smooth01(22.0, 45.0, distance);
+    // The rooms only near: past eighteen units a pane is a few pixels, and
+    // the room fades to its average tint, so nothing pops.
+    let plain = smooth01(10.0, 18.0, distance);
     var room = vec3<f32>(1.0);
-    if (lit * pane > 0.001 && far < 0.999) {
-        room = city_room(f, h, t);
+    if (lit * pane > 0.001 && plain < 0.999) {
+        room = mix(city_room(f, h, t), vec3<f32>(1.0), plain);
     }
     let glow = mix(lit * pane * bright * room, vec3<f32>(0.22), far) * wall;
     out.lamps = warm * glow;
@@ -1603,7 +1608,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     // mirrors it faintly over its own light.
     let glass = pane * wall * (1.0 - far);
     out.keep *= 1.0 - 0.45 * glass * (1.0 - lit);
-    out.sheen += city_mirror(r) * (0.10 + 0.8 * fresnel) * glass * (1.0 - 0.7 * lit);
+    out.sheen += env * (0.10 + 0.8 * fresnel) * glass * (1.0 - 0.7 * lit);
     return out;
 }
 
