@@ -262,6 +262,7 @@ with the salon window halfway along its port side. `helm.rs` steers it.
 | What | How |
 | --- | --- |
 | Every sea, moment and effect | `DIVE3D_SHEET=docs/dive3d-scenes.png cargo test --release dive3d::tests::scenes_sheet -- --ignored`, with the labelled [index](dive3d-scenes.html) |
+| Before/after pictures of every place | `deploy/shots.sh run before`, change, `deploy/shots.sh run after`, `deploy/shots.sh compare before after` (below) |
 | Full-size shots of every place | `DIVE3D_SHOTS_DIR=<dir> cargo test --release dive3d::tests::screenshots -- --ignored`; `DIVE3D_SHOTS=cave` keeps the places whose names contain `cave`, `DIVE3D_SHOTS_SEED=<visit>` shoots another circuit |
 | The hull's motion and clearances | `dive3d::helm::survey::the_hull_moves_like_a_heavy_boat`; `HELM_LOG_DIR=<dir> cargo test --release survey -- --ignored` logs the voyages |
 | No pop-in from the scenery cache | `dive3d::world::tests::the_static_cache_never_lags_the_window` |
@@ -269,6 +270,27 @@ with the salon window halfway along its port side. `helm.rs` steers it.
 | No bubble on the glass | `bubbles_keep_off_the_glass`, `bubbles_never_pop` |
 | Sister submarines move like hulls | `dive3d::world::tests::submarines` |
 | Frame time per place on the Pi | `hotspots` (below) |
+
+**Seeing what a change did.** `deploy/shots.sh` renders every place of `dive3d::places::all()`
+(the legs of the voyage, each at three moments, another visit's seabed, the cave's tunnel, the
+swipe passages and the submarine encounters; fixed seeds and times, so two runs of one build are
+byte-identical) and compares two runs:
+
+```sh
+deploy/shots.sh run before                    # target/shots/before/index.html: a contact sheet per sea
+# ...change, rebuild...
+deploy/shots.sh run after DIVE3D_SKIP_EFFECTS=1   # NAME=VALUE pairs go to the test (DIVE3D_SHOTS=cave, ...)
+deploy/shots.sh compare before after          # target/shots/compare-before-after.html, and the table
+PI=<user>@<pi> deploy/shots.sh pi after-gl    # the same on the Pi (test binary, kiosk frozen): driver differences
+```
+
+The comparison page lists the places most-changed first, each as before | after | difference
+times 16, with the share of pixels that moved by more than 2/255 and the mean and largest change, and
+a per-sea summary on top; identical places are folded away. Places are matched by name, and the
+names carry the sea, so a reordered voyage shows as places added and removed rather than as changes.
+A new leg is picked up with no change to the tool. `deploy/shots.py` holds the page generation. An
+unchanged render scores exactly 0, so anything on the page is a real difference. `previews` and
+`scenes_sheet` remain for the 28-frame legs overview and the labelled sheet.
 
 **Measuring on the Pi.** Build the test binary on the Mac with `deploy/build-for-pi.sh --tests`
 (touch `src` first when switching between trees, since builds share one cargo target volume), then

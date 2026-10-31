@@ -3231,6 +3231,12 @@ mod tests {
             .collect();
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP") {
+            scene.skip = mask(&skip);
+        }
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP_EFFECTS") {
+            scene.skip_effects = mask(&skip);
+        }
         let render = scene.render;
         const THUMB: u32 = 360;
         const ACROSS: u32 = 4;

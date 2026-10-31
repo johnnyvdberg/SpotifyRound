@@ -45,8 +45,7 @@ ruled out in §5), `docs/pipeline-optimization.md` (history; check it before re-
 5. **Gates on the Mac:** `deploy/v3d-shaderdb/check.sh .` (update the baseline with `--update`
    when the change is intended, and commit it), `cargo test --release`,
    `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all -- --check`.
-6. **Pictures.** Before/after previews and screenshots of every sea you touched (see task I1 for
-   the tooling once it lands; until then `dive3d::tests::previews` and `::screenshots`, see
+6. **Pictures.** Before/after previews and screenshots of every sea you touched (`deploy/shots.sh run/compare`, see
    `docs/nautilus.md`). Put the comparison images in your handoff note.
 7. **Budget.** The frame must stay under **11 ms at every place** on the Pi (the display's 16.7 ms
    minus the UI and headroom). A visual task may spend headroom a perf task freed, but only with
@@ -68,7 +67,7 @@ run at once**, from different groups. Model tier is a suggestion.
 
 | id | group | task | tier | status |
 |---|---|---|---|---|
-| I1 | tooling | Screenshot generation that shows changes at a glance | Sonnet | todo |
+| I1 | tooling | Screenshot generation that shows changes at a glance | Sonnet | done (`deploy/shots.sh`, `docs/nautilus.md`) |
 | I2 | tooling | Per-feature cost benchmark and `docs/feature-costs.md` | Sonnet | todo |
 | G1 | tooling | What the GL backend gives us that we build by hand | Sonnet | todo |
 | P1 | perf-a | Tunnel's own 4-thread fragment shader (perf-bottlenecks T3) | Sonnet | todo |
