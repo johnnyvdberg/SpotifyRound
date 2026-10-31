@@ -312,6 +312,15 @@ to be in the `video`, `render` and `input` groups, as the first user on Raspberr
 `groups` shows them, and `sudo usermod -aG video,render,input <user>` adds any that are missing. The
 display logs to the journal: `journalctl -u cage-kiosk -f`.
 
+The app hides the pointer over its own window, but cage draws its arrow before the app has a say:
+when the touch controller enumerates as a mouse, cage puts its arrow on the screen, and touches never
+move it into the app. Make every cursor transparent for the kiosk's user, once (no root needed;
+cage picks it up when it next starts):
+
+```bash
+python3 deploy/invisible-cursors.py
+```
+
 ### Without any compositor (DRM/KMS)
 
 cage costs a little GPU time and memory that the Pi can spend elsewhere. Building with the `kms`
