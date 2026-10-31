@@ -2972,14 +2972,13 @@ mod tests {
              flex-wrap:wrap;gap:12px}figure{margin:0}img{width:360px}</style>\n",
         );
         for (i, (place, offset)) in places.iter().enumerate() {
-            let pixels =
-                scene.read_back_sailed(
-                    &gpu,
-                    place.seconds() + offset.unwrap_or(0.0),
-                    place.seed,
-                    place.swiped,
-                    SAIL,
-                );
+            let pixels = scene.read_back_sailed(
+                &gpu,
+                place.seconds() + offset.unwrap_or(0.0),
+                place.seed,
+                place.swiped,
+                SAIL,
+            );
             let frame = image::RgbaImage::from_raw(render, render, pixels).expect("a whole frame");
             let file = format!("{}.png", place.name);
             frame.save(dir.join(&file)).expect("a screenshot");

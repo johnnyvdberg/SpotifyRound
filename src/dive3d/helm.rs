@@ -44,8 +44,7 @@
 use std::f32::consts::TAU;
 
 use super::world::{
-    ATLANTIS, CAVE, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope,
-    tunnel_stretch,
+    ATLANTIS, CAVE, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope, tunnel_stretch,
 };
 use crate::voyage::{Position, SPEED};
 
@@ -621,8 +620,8 @@ impl Helm {
                 // a vault still coming down, and the height, not the crab,
                 // must clear it (`ceiling`): reckon the hull no higher than
                 // half the arch, so the crab is judged by the walls alone.
-                let up = (self.height.value - centre + along * self.pitch.value.sin())
-                    .min(0.5 * high);
+                let up =
+                    (self.height.value - centre + along * self.pitch.value.sin()).min(0.5 * high);
                 [(r, 0.0), (-r, 0.0), (0.0, r)].iter().all(|&(dz, dy)| {
                     ((across + dz) / wide).powi(2) + ((up + dy) / high).powi(2) <= 1.0
                 })

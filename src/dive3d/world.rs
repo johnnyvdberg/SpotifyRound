@@ -396,8 +396,9 @@ pub fn reef_mound(field: f32) -> f32 {
 /// The shape each biome gives its own floor, over the shared heightmap: the
 /// same function as `biome_shape` in `scene.wesl`. `across` is signed distance
 /// from the corridor (positive to port), `h` the heightmap's height and
-/// `detail` its fine grain. Every term is periodic over the heightmap's 64
-/// units, so the added shape repeats with it.
+/// `detail` its fine grain. Every term but the cave's is periodic over the
+/// heightmap's 64 units, so the added shape repeats with it; the cave's
+/// ledges stand back from its halls, as its massif does.
 fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 {
     let weight = |id: usize| b.weight(id) as f32;
     let mut shape = 0.0;
@@ -1367,7 +1368,10 @@ impl Frame {
     /// with them.
     fn grow_since(&mut self, mark: &Mark, from: [f32; 3], to: [f32; 3], scale: f32) {
         let moved = |p: [f32; 3]| [0, 1, 2].map(|i| to[i] + (p[i] - from[i]) * scale);
-        for (lists, marks) in [(&mut self.solid, &mark.solid), (&mut self.glass, &mark.glass)] {
+        for (lists, marks) in [
+            (&mut self.solid, &mark.solid),
+            (&mut self.glass, &mark.glass),
+        ] {
             for (list, &first) in lists.iter_mut().zip(marks) {
                 for instance in &mut list[first..] {
                     let m = &mut instance.rows;
@@ -4420,7 +4424,8 @@ fn cave(w: &World, f: &mut Frame) {
         f.fade = fade(share, 0.6);
         let y = w.ground(x, z);
         let tall = 1.0 + 0.9 * hall(x) * smooth(0.6, 0.85, off / wall);
-        let h = (0.06 + 0.30 * smooth(0.48, 0.90, cluster) * (0.5 + 0.5 * hash(ix, iz, 102))) * tall;
+        let h =
+            (0.06 + 0.30 * smooth(0.48, 0.90, cluster) * (0.5 + 0.5 * hash(ix, iz, 102))) * tall;
         if !w.visible([x, y + h * 0.5, z], h) {
             continue;
         }
@@ -4579,7 +4584,11 @@ fn hall_glows(seabed: &Seabed, x: f32) -> Vec<([f32; 3], [f32; 3], f32)> {
                 }
             }
             HallKind::Colonnade => {
-                glow(wall_at(seabed, hall.x - 0.1, 0.3, 0.4), [0.10, 0.15, 0.22], 1.0);
+                glow(
+                    wall_at(seabed, hall.x - 0.1, 0.3, 0.4),
+                    [0.10, 0.15, 0.22],
+                    1.0,
+                );
             }
         }
     }
@@ -4637,7 +4646,7 @@ fn halls(w: &World, f: &mut Frame) {
                     }
                     f.put(
                         Model::Cylinder,
-                        place(p, corridor_slope(x).atan() * -1.0, 0.0, 0.0, [0.34, 0.012, 0.16]),
+                        place(p, -corridor_slope(x).atan(), 0.0, 0.0, [0.34, 0.012, 0.16]),
                         [0.9, 0.22, 0.04],
                     )
                     .material(material::LAVA)
@@ -4653,7 +4662,11 @@ fn halls(w: &World, f: &mut Frame) {
                     );
                     for e in 0..3 {
                         f.ember_sprite(
-                            [x + (h(k * 3 + e, 902) - 0.5) * 0.5, y, p[2] + (h(k * 3 + e, 903) - 0.5) * 0.25],
+                            [
+                                x + (h(k * 3 + e, 902) - 0.5) * 0.5,
+                                y,
+                                p[2] + (h(k * 3 + e, 903) - 0.5) * 0.25,
+                            ],
                             0.012,
                             [1.0, 0.45, 0.10],
                             h(k * 3 + e, 904),
@@ -4699,7 +4712,11 @@ fn halls(w: &World, f: &mut Frame) {
                     );
                     for e in 0..8 {
                         f.ember_sprite(
-                            [foot[0] + (h(e, 907) - 0.5) * 0.4, foot[1], foot[2] - 0.1 * h(e, 908)],
+                            [
+                                foot[0] + (h(e, 907) - 0.5) * 0.4,
+                                foot[1],
+                                foot[2] - 0.1 * h(e, 908),
+                            ],
                             0.014,
                             [1.0, 0.5, 0.12],
                             h(e, 909),
@@ -4753,7 +4770,13 @@ fn halls(w: &World, f: &mut Frame) {
                 let pool = ground(hall.x + 0.2, wide * 0.55);
                 f.put(
                     Model::Cylinder,
-                    place([pool[0], pool[1] + 0.01, pool[2]], 0.3, 0.0, 0.0, [0.42, 0.008, 0.26]),
+                    place(
+                        [pool[0], pool[1] + 0.01, pool[2]],
+                        0.3,
+                        0.0,
+                        0.0,
+                        [0.42, 0.008, 0.26],
+                    ),
                     [0.03, 0.22, 0.20],
                 )
                 .glowing(0.55);
@@ -8911,7 +8934,8 @@ mod tests {
                 let ledges = 2.0
                     * smooth(-0.35, 0.35, (TAU * across.abs() / 1.2 + 0.4 * detail).sin())
                     - 1.0;
-                let near = smooth(0.45, 0.9, across.abs());
+                let k = 1.55 + 1.25 * hall(x);
+                let near = smooth(0.45 * k, 0.9 * k, across.abs());
                 shape += cave * near * (0.25 * ledges + 0.12 * detail);
             }
             let abyss = presence(ABYSS);
@@ -9008,8 +9032,9 @@ mod tests {
                 }
             }
         }
-        // Every term of the shape repeats with the heightmap.
-        for &id in &ids {
+        // Every term of the shape repeats with the heightmap, but the cave's,
+        // which widens with its halls along the leg.
+        for &id in ids.iter().filter(|&&id| id != CAVE) {
             let b = Biome {
                 a: id,
                 b: id,

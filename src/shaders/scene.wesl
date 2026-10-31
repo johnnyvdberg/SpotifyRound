@@ -305,8 +305,9 @@ fn ground_parts(x: f32, z: f32) -> vec2<f32> {
 }
 
 // The shape each biome gives its own floor, over the shared heightmap: the
-// same function as `world::biome_shape`. Every term repeats over the
-// heightmap's 64 units, so the added shape repeats with it.
+// same function as `world::biome_shape`. Every term but the cave's repeats
+// over the heightmap's 64 units, so the added shape repeats with it; the
+// cave's ledges stand back from its halls, as its massif does.
 fn biome_shape(l: Leg, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 {
     var shape = 0.0;
     let shallows = presence(l, SHALLOWS);
