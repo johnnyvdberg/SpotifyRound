@@ -1,0 +1,202 @@
+pipeline                         entry          stage   inst thr loops unif temps spill:fill  sfu nops
+(mesa internal)                  set event cs   CS        17   4     0    6     3        0:0    0    6
+(mesa internal)                  wait event cs  CS        27   4     1    9     3        0:0    0    9
+(mesa internal)                  set query availability cs CS        22   4     0    8     3        0:0    0    6
+(mesa internal)                  reset occlusion query cs CS        39   4     0    9     4        0:0    0    9
+(wgpu internal) Indirect dispatch validation pipeline #0 main           CS       151   4     0   38     8        0:0    0   54
+(wgpu internal) Indirect draw validation pipeline #0 main           CS       274   4     0   59    19        0:0    0   45
+Dive3d water #0                  fs_background  FS       229   4     0   74    19        0:0    1   12
+Dive3d water #0                  vs_background  VS        36   4     0   24     6        0:0    0    1
+Dive3d water #0                  vs_background  VS-bin    33   4     0   23     7        0:0    0    0
+Dive3d water #1                  fs_background  FS       318   4     0  106    22        0:0    0   15
+Dive3d water #1                  vs_background  VS        36   4     0   24     6        0:0    0    1
+Dive3d water #1                  vs_background  VS-bin    33   4     0   23     7        0:0    0    0
+Dive3d water #2                  fs_background  FS       321   2     0   98    19        0:0    1   26
+Dive3d water #2                  vs_background  VS        36   4     0   24     6        0:0    0    1
+Dive3d water #2                  vs_background  VS-bin    33   4     0   23     7        0:0    0    0
+Dive3d water #3                  fs_background  FS       398   2     0  133    28        0:0    0   23
+Dive3d water #3                  vs_background  VS        36   4     0   24     6        0:0    0    1
+Dive3d water #3                  vs_background  VS-bin    33   4     0   23     7        0:0    0    0
+Dive3d water, cheap #0           fs_background_cheap FS       102   4     0   28    10        0:0    0   18
+Dive3d water, cheap #0           vs_background  VS        36   4     0   24     6        0:0    0    1
+Dive3d water, cheap #0           vs_background  VS-bin    33   4     0   23     7        0:0    0    0
+Dive3d water, shimmer #0         fs_background_shimmer FS       196   4     0   71    19        0:0    0   11
+Dive3d water, shimmer #0         vs_background  VS        36   4     0   24     6        0:0    0    1
+Dive3d water, shimmer #0         vs_background  VS-bin    33   4     0   23     7        0:0    0    0
+Dive3d seabed #0                 fs_terrain     FS       109   4     0   21    27        0:0    0    1
+Dive3d seabed #0                 vs_terrain     VS       404   2     1  187    46        0:0    2   24
+Dive3d seabed #0                 vs_terrain     VS-bin    54   4     0   26    14        0:0    1    2
+Dive3d models #0                 fs_model       FS        87   4     0    7    28        0:0    0    2
+Dive3d models #0                 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d models #0                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models #1                 fs_model       FS       113   4     0   10    32        0:0    0    1
+Dive3d models #1                 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d models #1                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models #2                 fs_model       FS       187   4     0   29    30        0:0    0    3
+Dive3d models #2                 vs_model       VS      1013   2     1  385    60        0:0    2   80
+Dive3d models #2                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models #3                 fs_model       FS       214   4     0   42    32        0:0    0    4
+Dive3d models #3                 vs_model       VS       780   2     1  303    58        0:0    1   69
+Dive3d models #3                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models #4                 fs_model       FS       115   4     0   19    30        0:0    0    3
+Dive3d models #4                 vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d models #4                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models #5                 fs_model       FS       141   4     0   23    32        0:0    0    1
+Dive3d models #5                 vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d models #5                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models #6                 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d models #6                 vs_model       VS      1186   2     0  402    59        0:0    0   91
+Dive3d models #6                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models #7                 fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d models #7                 vs_model       VS       951   2     0  308    55        0:0    0   76
+Dive3d models #7                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models #8                 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d models #8                 vs_model       VS       712   2     0  282    50        0:0    0   53
+Dive3d models #8                 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models #9                 fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d models #9                 vs_model       VS       529   4     0  229    32        0:0    0   38
+Dive3d models #9                 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models #10                fs_model       FS       121   4     0   20    30        0:0    0    4
+Dive3d models #10                vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d models #10                vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models #11                fs_model       FS       147   4     0   25    32        0:0    0    4
+Dive3d models #11                vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d models #11                vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models #12                fs_model       FS       650   2     0  173    50        0:0    0   39
+Dive3d models #12                vs_model       VS      1094   2     1  445    61        5:5    4   89
+Dive3d models #12                vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models #13                fs_model       FS       667   2     0  173    51        0:0    0   38
+Dive3d models #13                vs_model       VS       827   2     1  351    62        0:0    1   73
+Dive3d models #13                vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models #14                fs_model       FS       393   2     0   84    38        0:0    3   40
+Dive3d models #14                vs_model       VS      1018   2     1  387    62        0:0    2   80
+Dive3d models #14                vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models #15                fs_model       FS       420   2     0   86    43        0:0    3   40
+Dive3d models #15                vs_model       VS       781   2     1  305    59        0:0    1   70
+Dive3d models #15                vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models #0          fs_model       FS        87   4     0    7    28        0:0    0    2
+Dive3d sealed models #0          vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d sealed models #0          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models #1          fs_model       FS       113   4     0   10    32        0:0    0    1
+Dive3d sealed models #1          vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d sealed models #1          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models #2          fs_model       FS       187   4     0   29    30        0:0    0    3
+Dive3d sealed models #2          vs_model       VS      1013   2     1  385    60        0:0    2   80
+Dive3d sealed models #2          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models #3          fs_model       FS       214   4     0   42    32        0:0    0    4
+Dive3d sealed models #3          vs_model       VS       780   2     1  303    58        0:0    1   69
+Dive3d sealed models #3          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models #4          fs_model       FS       115   4     0   19    30        0:0    0    3
+Dive3d sealed models #4          vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d sealed models #4          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models #5          fs_model       FS       141   4     0   23    32        0:0    0    1
+Dive3d sealed models #5          vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d sealed models #5          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models #6          fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d sealed models #6          vs_model       VS      1186   2     0  402    59        0:0    0   91
+Dive3d sealed models #6          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models #7          fs_model       FS       187   2     0   61    36        0:0    0    2
+Dive3d sealed models #7          vs_model       VS       951   2     0  308    55        0:0    0   76
+Dive3d sealed models #7          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models #8          fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d sealed models #8          vs_model       VS       712   2     0  282    50        0:0    0   53
+Dive3d sealed models #8          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models #9          fs_model       FS        97   4     0   34    16        0:0    1    2
+Dive3d sealed models #9          vs_model       VS       529   4     0  229    32        0:0    0   38
+Dive3d sealed models #9          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models #10         fs_model       FS       121   4     0   20    30        0:0    0    4
+Dive3d sealed models #10         vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d sealed models #10         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models #11         fs_model       FS       147   4     0   25    32        0:0    0    4
+Dive3d sealed models #11         vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d sealed models #11         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models #12         fs_model       FS       650   2     0  173    50        0:0    0   39
+Dive3d sealed models #12         vs_model       VS      1094   2     1  445    61        5:5    4   89
+Dive3d sealed models #12         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models #13         fs_model       FS       667   2     0  173    51        0:0    0   38
+Dive3d sealed models #13         vs_model       VS       827   2     1  351    62        0:0    1   73
+Dive3d sealed models #13         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models #14         fs_model       FS       393   2     0   84    38        0:0    3   40
+Dive3d sealed models #14         vs_model       VS      1018   2     1  387    62        0:0    2   80
+Dive3d sealed models #14         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models #15         fs_model       FS       420   2     0   86    43        0:0    3   40
+Dive3d sealed models #15         vs_model       VS       781   2     1  305    59        0:0    1   70
+Dive3d sealed models #15         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d corners #0                fs_mask        FS         8   4     0    0     0        0:0    0    3
+Dive3d corners #0                vs_mask        VS        74   4     0   40    10        0:0    0    1
+Dive3d corners #0                vs_mask        VS-bin    74   4     0   40    10        0:0    0    0
+Dive3d fading models #0          fs_model       FS        82   4     0    7    28        0:0    0    2
+Dive3d fading models #0          vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d fading models #0          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models #1          fs_model       FS       106   4     0   10    30        0:0    0    1
+Dive3d fading models #1          vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d fading models #1          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models #2          fs_model       FS       181   4     0   29    30        0:0    0    3
+Dive3d fading models #2          vs_model       VS      1013   2     1  385    60        0:0    2   80
+Dive3d fading models #2          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models #3          fs_model       FS       208   4     0   42    32        0:0    0    4
+Dive3d fading models #3          vs_model       VS       780   2     1  303    58        0:0    1   69
+Dive3d fading models #3          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models #4          fs_model       FS       107   4     0   19    30        0:0    0    3
+Dive3d fading models #4          vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d fading models #4          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models #5          fs_model       FS       134   4     0   23    32        0:0    0    1
+Dive3d fading models #5          vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d fading models #5          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models #6          fs_model       FS       181   2     0   61    36        0:0    0    2
+Dive3d fading models #6          vs_model       VS      1186   2     0  402    59        0:0    0   91
+Dive3d fading models #6          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models #7          fs_model       FS       181   2     0   61    36        0:0    0    2
+Dive3d fading models #7          vs_model       VS       951   2     0  308    55        0:0    0   76
+Dive3d fading models #7          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models #8          fs_model       FS        94   4     0   36    16        0:0    1    2
+Dive3d fading models #8          vs_model       VS       712   2     0  282    50        0:0    0   53
+Dive3d fading models #8          vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models #9          fs_model       FS        94   4     0   36    16        0:0    1    2
+Dive3d fading models #9          vs_model       VS       529   4     0  229    32        0:0    0   38
+Dive3d fading models #9          vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models #10         fs_model       FS       114   4     0   20    30        0:0    0    4
+Dive3d fading models #10         vs_model       VS      1009   2     1  386    59        0:0    1   75
+Dive3d fading models #10         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models #11         fs_model       FS       136   4     0   25    32        0:0    0    4
+Dive3d fading models #11         vs_model       VS       773   2     1  302    57        0:0    1   67
+Dive3d fading models #11         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models #12         fs_model       FS       643   2     0  173    50        0:0    0   39
+Dive3d fading models #12         vs_model       VS      1094   2     1  445    61        5:5    4   89
+Dive3d fading models #12         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models #13         fs_model       FS       660   2     0  173    51        0:0    0   38
+Dive3d fading models #13         vs_model       VS       827   2     1  351    62        0:0    1   73
+Dive3d fading models #13         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d fading models #14         fs_model       FS       387   2     0   84    38        0:0    3   40
+Dive3d fading models #14         vs_model       VS      1018   2     1  387    62        0:0    2   80
+Dive3d fading models #14         vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d fading models #15         fs_model       FS       414   2     0   86    43        0:0    3   40
+Dive3d fading models #15         vs_model       VS       781   2     1  305    59        0:0    1   70
+Dive3d fading models #15         vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d glass #0                  fs_glass       FS       506   2     0  127    49        0:0    2   35
+Dive3d glass #0                  vs_model       VS      1078   2     1  428    63        0:0    3   87
+Dive3d glass #0                  vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sprites #0                fs_sprite      FS        52   4     0   13    12        0:0    0    1
+Dive3d sprites #0                vs_sprite      VS       388   2     0  175    42        0:0    1   34
+Dive3d sprites #0                vs_sprite      VS-bin   230   4     0  105    25        0:0    0   15
+Dive3d shafts #0                 fs_shaft       FS        26   4     0    3     7        0:0    0    2
+Dive3d shafts #0                 vs_shaft       VS       136   4     0   68    21        0:0    2    2
+Dive3d shafts #0                 vs_shaft       VS-bin    97   4     0   45    20        0:0    1    0
+Dive3d beams #0                  fs_beam        FS        32   4     0    8     9        0:0    0    2
+Dive3d beams #0                  vs_beam        VS       137   4     0   66    20        0:0    2    4
+Dive3d beams #0                  vs_beam        VS-bin   104   4     0   49    19        0:0    1    1
+Dive3d impostors #0              fs_impostor    FS        82   4     0   22    17        0:0    0    1
+Dive3d impostors #0              vs_impostor    VS       498   2     1  222    47        0:0    1   29
+Dive3d impostors #0              vs_impostor    VS-bin   175   4     0   87    20        0:0    1    4
+Dive3d impostors #1              fs_impostor    FS        95   4     0   29    22        0:0    0    1
+Dive3d impostors #1              vs_impostor    VS       498   2     1  222    47        0:0    1   29
+Dive3d impostors #1              vs_impostor    VS-bin   175   4     0   87    20        0:0    1    4
+Dive3d impostors #2              fs_impostor    FS       120   4     1   33    28        0:0    0    4
+Dive3d impostors #2              vs_impostor    VS       498   2     1  222    47        0:0    1   29
+Dive3d impostors #2              vs_impostor    VS-bin   175   4     0   87    20        0:0    1    4
+Dive3d impostors #3              fs_impostor    FS       152   4     0   48    25        0:0    0    1
+Dive3d impostors #3              vs_impostor    VS       503   2     1  224    48        0:0    2   29
+Dive3d impostors #3              vs_impostor    VS-bin   175   4     0   87    20        0:0    1    4
+Dive3d impostors #4              fs_impostor    FS        70   4     0   28    23        0:0    0    1
+Dive3d impostors #4              vs_impostor    VS       497   2     1  221    46        0:0    1   29
+Dive3d impostors #4              vs_impostor    VS-bin   175   4     0   87    20        0:0    1    4

@@ -436,7 +436,11 @@ instruction and thread count. That needs no Pi: `deploy/v3d-shaderdb/shaderdb.sh
 the Pi OS release of Mesa in Docker with its V3D noop `drm-shim`, compiles every pipeline of the
 scenes with the Pi 5's own compiler and prints each shader's instructions, threads and spills by
 pipeline label and entry point (about a minute once the image is built);
-`deploy/v3d-shaderdb/compare.py a.txt b.txt` shows what changed between two checkouts.
+`deploy/v3d-shaderdb/compare.py a.txt b.txt` shows what changed between two checkouts. Its
+numbers match the Pi's own `V3D_DEBUG=shaderdb` shader for shader. **Run
+`deploy/v3d-shaderdb/check.sh` before committing a shader change**: it fails if any shader runs at
+fewer threads than in `deploy/v3d-shaderdb/baseline.txt` or starts spilling, the cliff a change can
+fall off with no visible difference in the code (`check.sh . --update` accepts a new baseline).
 `spotify-round-tests gpu_cost::videocore_vii --ignored` asserts that the headless adapter really is
 the Pi 5's V3D; run it before trusting a Pi measurement. So:
 
