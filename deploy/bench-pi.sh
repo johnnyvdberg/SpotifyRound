@@ -8,6 +8,11 @@
 #       the benchmark: DIVE3D_HOTSPOT_SCENES=coral, DIVE3D_SKIP=..., and so on.
 #   deploy/bench-pi.sh compare BEFORE AFTER
 #       sets two runs side by side, place by place, slowest first.
+#   PI=<user>@<pi> deploy/bench-pi.sh features TAG [NAME=VALUE ...]
+#       what every part and effect costs (dive3d::feature_costs::features):
+#       leaves the table in target/bench/TAG-features.md (paste it into
+#       docs/feature-costs.md) and every measurement in TAG-features.csv.
+#       DIVE3D_HOTSPOT_SCENES, DIVE3D_FEATURE_VISITS, _PLACES and _FRAMES narrow it.
 #
 # The defaults are four visits to every sea, six frames a place. The binary
 # is checked against the Pi's copy by checksum, since a stale one is the
@@ -16,13 +21,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 usage() {
-    sed -n '4,10p' "$0" >&2
+    sed -n '4,16p' "$0" >&2
     exit 2
 }
 
+# run TAG [NAME=VALUE ...]: the hotspots benchmark. Set TEST and ENV first
+# to run another test (see features).
 run() {
     local tag=$1
     shift
+    local test=${TEST:-dive3d::tests::hotspots}
     : "${PI:?set PI=<user>@<pi>}"
     local bin=target/pi/spotify-round-tests remote=/tmp/srt-$tag
     [[ -f $bin ]] || { echo "no $bin: run deploy/build-for-pi.sh --tests" >&2; exit 1; }
@@ -32,8 +40,8 @@ run() {
     there=$(ssh "$PI" "md5sum $remote" | cut -d' ' -f1)
     [[ $here == "$there" ]] || { echo "the Pi's copy differs from $bin" >&2; exit 1; }
 
-    local env="DIVE3D_HOTSPOT_SEEDS=0,250000,500000,750000 DIVE3D_HOTSPOT_FRAMES=6"
-    env+=" DIVE3D_HOTSPOT_DIR=/tmp/hot-$tag"
+    local env=${ENV-"DIVE3D_HOTSPOT_SEEDS=0,250000,500000,750000 DIVE3D_HOTSPOT_FRAMES=6"}
+    env+=" DIVE3D_HOTSPOT_DIR=/tmp/hot-$tag DIVE3D_FEATURE_DIR=/tmp/hot-$tag"
     for pair in "$@"; do
         [[ $pair == *=* ]] || usage
         env+=" $(printf %q "$pair")"
@@ -47,10 +55,17 @@ run() {
         P=\$(pgrep -x spotify-round || true)
         [ -n \"\$P\" ] && kill -STOP \$P; trap '[ -n \"\$P\" ] && kill -CONT \$P' EXIT
         mkdir -p /tmp/hot-$tag; cd /tmp
-        env $env $remote dive3d::tests::hotspots --ignored --nocapture 2>&1 | grep -v '^MESA'"
+        env $env $remote $test --ignored --nocapture 2>&1 | grep -v '^MESA'"
     mkdir -p target/bench
-    scp -q "$PI:/tmp/hot-$tag/hotspots.csv" "target/bench/$tag.csv"
-    echo "saved target/bench/$tag.csv"
+    if [[ ${TEST:-} == *features ]]; then
+        scp -q "$PI:/tmp/hot-$tag/features.csv" "target/bench/$tag-features.csv"
+        scp -q "$PI:/tmp/hot-$tag/features.md" "target/bench/$tag-features.md"
+        echo "saved target/bench/$tag-features.md and .csv"
+    else
+        scp -q "$PI:/tmp/hot-$tag/hotspots.csv" "target/bench/$tag.csv"
+        echo "saved target/bench/$tag.csv"
+    fi
+    ssh "$PI" "rm -rf /tmp/hot-$tag $remote"
 }
 
 compare() {
@@ -76,6 +91,7 @@ EOF
 
 case "${1:-}" in
     run) [[ $# -ge 2 ]] || usage; shift; run "$@" ;;
+    features) [[ $# -ge 2 ]] || usage; shift; TEST=dive3d::feature_costs::features ENV= run "$@" ;;
     compare) [[ $# -eq 3 ]] || usage; compare "$2" "$3" ;;
     *) usage ;;
 esac

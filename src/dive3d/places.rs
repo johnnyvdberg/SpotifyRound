@@ -48,7 +48,7 @@ fn seeded() -> Option<u64> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-fn biome_name(id: usize) -> &'static str {
+pub fn biome_name(id: usize) -> &'static str {
     match id {
         0 => "shallows",
         1 => "forest",

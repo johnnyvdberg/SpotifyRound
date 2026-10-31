@@ -10,6 +10,8 @@
 //! The window itself is not part of the 3D scene: the 1080 sea texture is
 //! handed straight to Slint as the full panel.
 
+#[cfg(test)]
+mod feature_costs;
 mod heightmap;
 mod helm;
 mod mesh;
