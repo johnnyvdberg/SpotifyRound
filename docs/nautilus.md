@@ -307,6 +307,14 @@ pipeline with the Pi's own Mesa (v3dv, V3D 7.1) on the Mac and prints, per shade
 shader can be brought back to four threads before any Pi measurement; the Pi then confirms the
 milliseconds.
 
+**Half precision does not pay here (Mesa 26.2).** V3D 7.1 has native f16 add, multiply, min and
+max, but Mesa keeps each f16 in a whole 32-bit register and never pairs two into its packed
+`vfmul`/`vfadd`; everything else (dot, exp, mix, comparisons, texture results) is widened back to
+32 bits. Tried on 2026-10-31 with shaderdb: `light_at` in f16 cut the model vertex shaders by about
+1% and made the glass spill; the city's lighting in f16 added instructions and uniforms and saved 2
+of its 51 temporaries, nowhere near four threads. No shader gained a thread. Worth retrying only if
+Mesa learns to vectorise 16-bit ALU work.
+
 On 2026-10-31 (`hotspots`, four visits, 168 places): median **10.3 ms**, no place over 14 ms, the
 worst 13.7 ms (an arctic view); the reef's worst is 13.1 ms (coral) and 12.3 ms (shallows).
 
