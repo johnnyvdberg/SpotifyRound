@@ -15,8 +15,8 @@ Slowest place: 14.7 ms at 5fed499, 14.2 ms merged. Budget 16.6 ms.
 Reproduce (binaries still on the Pi):
 
 ```sh
-scp target/pi/spotify-round-tests john@192.168.0.33:/tmp/srt-finish
-ssh john@192.168.0.33 '
+scp target/pi/spotify-round-tests <user>@<pi>:/tmp/srt-finish
+ssh <user>@<pi> '
   P=$(pgrep -x spotify-round); kill -STOP $P; trap "kill -CONT $P" EXIT
   mkdir -p /tmp/hot-fin; cd /tmp
   DIVE3D_HOTSPOT_SEEDS=0,500000 DIVE3D_HOTSPOT_FRAMES=8 \

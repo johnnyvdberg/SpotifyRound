@@ -187,8 +187,8 @@ benchmark and for you to repeat it in case. Suggested:
 ```sh
 cd .worktrees/finish
 deploy/build-for-pi.sh --tests
-scp target/pi/spotify-round-tests john@192.168.0.33:/tmp/srt-finish2
-ssh john@192.168.0.33 '
+scp target/pi/spotify-round-tests <user>@<pi>:/tmp/srt-finish2
+ssh <user>@<pi> '
   P=$(pgrep -x spotify-round); kill -STOP $P; trap "kill -CONT $P" EXIT
   mkdir -p /tmp/hot-fin2; cd /tmp
   DIVE3D_HOTSPOT_SEEDS=0,500000 DIVE3D_HOTSPOT_FRAMES=8 \

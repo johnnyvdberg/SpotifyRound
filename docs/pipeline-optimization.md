@@ -196,7 +196,7 @@ and is gone.
 
 ## 6. Raspberry Pi 5: the frame is not fill-bound
 
-Measured on the device itself: `ssh john@192.168.0.33`, adapter `V3D 7.1.7.0`,
+Measured on the device itself: `ssh <user>@<pi>`, adapter `V3D 7.1.7.0`,
 V3D at 960 MHz, `throttled=0x0`, 72 °C.
 
 **How to measure.** `deploy/build-for-pi.sh --tests` builds both binaries in the
@@ -2700,7 +2700,7 @@ deployed.
 
 Binary: `cargo build --release --locked`, default features (`skia`,
 `full-hd`), sha256 `e6cf55d1...b42e9`, at
-`/home/john/SpotifyRound/target/release/spotify-round`; previous binary kept
+`~/SpotifyRound/target/release/spotify-round`; previous binary kept
 as `spotify-round.before-adaptive`. `cage-kiosk.service`, no restarts.
 
 Enabled: `SPOTIFY_ROUND_LOG=info` (base unit) and
