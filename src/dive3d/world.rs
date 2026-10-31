@@ -1183,6 +1183,18 @@ impl World<'_> {
         self.reveal(p, radius) > 0.001
     }
 
+    /// How much farther than `distance` out a placer's cut-off reaches: none
+    /// for what is placed afresh every frame; for the static cache, as far
+    /// as the window may move and turn before it is built again, so nothing
+    /// crossing a cut-off meanwhile is missing from it.
+    pub fn margin(&self, distance: f32) -> f32 {
+        if self.slack > 0.0 {
+            CACHE_CELL + self.slack * distance
+        } else {
+            0.0
+        }
+    }
+
     /// Whether a sphere of `radius` at `p` is inside the window's cone
     /// widened by [`World::slack`], and by the [`CACHE_CELL`] the window may
     /// move sideways, for the static cache.
@@ -1195,7 +1207,7 @@ impl World<'_> {
         let dot = |a: [f32; 3]| a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
         let [right, up, out] = self.pose.basis;
         let z = dot(out);
-        let wide = radius * 1.1 + CACHE_CELL * 1.5;
+        let wide = radius * 1.1 + CACHE_CELL;
         if z + wide < 0.08 {
             return false;
         }
@@ -1830,6 +1842,7 @@ impl<'a> IntoIterator for &'a Cells {
 /// abeam holds, so nothing kept off the glass appears or vanishes as the
 /// boat swings. The footprint is taken from half as near, to hold them.
 fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
+    let far = far + w.margin(far);
     let ([x0, x1, z0, z1], o, r) = footprint(w, near * 0.5, far);
     let c = w.pose.pos;
     let abeam = w.pose.abeam;
@@ -1859,27 +1872,34 @@ fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
 /// the cached visible set, which is what the placers culled for the cell.
 pub struct StaticCache {
     frame: Frame,
-    cell: Option<[i32; 2]>,
-    /// The window's heading, in sectors: a turn brings new cells into view
-    /// before the camera has moved a cell, and the cached set must follow.
-    heading: Option<i32>,
+    /// Where the window was and which way it looked when the cache was
+    /// built: a turn brings new things into view before the boat has moved
+    /// far, and the cached set must follow.
+    built: Option<([f32; 3], [f32; 3])>,
     seed: f32,
+    /// Placed for the window exactly, with no margin: a test's reference
+    /// for what should be in view.
+    #[cfg(test)]
+    exact: bool,
 }
 
 impl Default for StaticCache {
     fn default() -> Self {
         Self {
             frame: Frame::new(),
-            cell: None,
-            heading: None,
+            built: None,
             seed: f32::NAN,
+            #[cfg(test)]
+            exact: false,
         }
     }
 }
 
+/// How far the window moves, and how far round it turns in radians (its
+/// heading and pitch together; roll does not move the round window's
+/// cone), before the static cache is built again.
 const CACHE_CELL: f32 = 0.2;
-/// The turn, in radians, after which the static cache is built again.
-const HEADING_SECTOR: f32 = 0.08;
+const CACHE_TURN: f32 = 0.04;
 
 /// Build the frame.
 /// One kind of thing to place in the frame.
@@ -1950,29 +1970,26 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "shafts",
         "particles",
     ];
-    let camera = [
-        (world.pose.pos[0] / CACHE_CELL).floor() as i32,
-        (world.pose.pos[2] / CACHE_CELL).floor() as i32,
-    ];
     let seed = world.seabed.seed;
-    // A turn of a few degrees changes which cells are in the window even
-    // while the boat is still in the same position cell.
-    let out = world.pose.basis[2];
-    let heading = (out[0].atan2(out[2]) / HEADING_SECTOR).floor() as i32;
-    let stale =
-        !cache.seed.eq(&seed) || cache.cell != Some(camera) || cache.heading != Some(heading);
+    let (at, out) = (world.pose.pos, world.pose.basis[2]);
+    let stale = !cache.seed.eq(&seed)
+        || cache.built.is_none_or(|(was, looked)| {
+            let moved = (at[0] - was[0]).hypot(at[2] - was[2]);
+            let turned = out[0] * looked[0] + out[1] * looked[1] + out[2] * looked[2];
+            moved > CACHE_CELL || turned < CACHE_TURN.cos()
+        });
     #[cfg(test)]
     let show_steps = std::env::var_os("DIVE3D_BUILD_STEPS").is_some();
     if stale {
         cache.frame.clear();
-        // The cache stands until the window has moved a cell or turned a
-        // sector, and the boat pitches and rolls a little meanwhile: placed
-        // for a cone that much wider, what comes into view in between is
-        // already there rather than appearing at the rim.
-        let wide = World {
-            slack: HEADING_SECTOR + 0.04,
-            ..*world
-        };
+        // The cache stands until the window has moved a cell or turned
+        // [`CACHE_TURN`]: placed for a cone that much wider, what comes into
+        // view in between is already there rather than appearing at the rim.
+        #[cfg(test)]
+        let slack = if cache.exact { 0.0 } else { CACHE_TURN };
+        #[cfg(not(test))]
+        let slack = CACHE_TURN;
+        let wide = World { slack, ..*world };
         let world = &wide;
         #[cfg(test)]
         for (i, (step, skin)) in static_steps.into_iter().enumerate() {
@@ -2008,8 +2025,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
                 }
             }
         }
-        cache.cell = Some(camera);
-        cache.heading = Some(heading);
+        cache.built = Some((at, out));
         cache.seed = seed;
     }
     for (m, src) in cache.frame.solid.iter().enumerate() {
@@ -2612,7 +2628,7 @@ fn reef(w: &World, f: &mut Frame) {
             _ if hash(ix, iz, 66) < 0.5 => (Model::Anemone, None, s * 0.6, 0.49, 0.33),
             _ => (Model::SeaWhip, None, s * 0.9, 1.0, 0.3),
         };
-        if depth < MODELS {
+        if depth < MODELS + w.margin(MODELS) {
             if !w.visible([x, y + 0.1, z], 0.25) {
                 continue;
             }
@@ -2641,7 +2657,7 @@ fn reef(w: &World, f: &mut Frame) {
         let Some(kind) = kind else {
             continue;
         };
-        if depth > MODELS - BAND {
+        if depth > MODELS - BAND - w.margin(MODELS) {
             let height = tall * s * tall_by * grown;
             if height < 0.01 || !w.visible([x, y + height * 0.5, z], height) {
                 continue;
@@ -8840,6 +8856,84 @@ mod tests {
             );
             assert_eq!(pops, 0, "{name}: {pops} bubbles popped, worst {worst:.3}");
         }
+    }
+
+    /// Nothing the static cache holds pops in at the window's rim. Sailing
+    /// through the reef, the cave and the forest as the helm swings the
+    /// boat, every static instance a fresh build would place well inside the
+    /// window is already in the frame built from the standing cache.
+    #[test]
+    fn the_static_cache_never_lags_the_window() {
+        let seed = 0.0f32;
+        let seabed = Seabed::new(0, seed);
+        let span = crate::voyage::LEG / crate::voyage::SPEED;
+        let step = 0.1;
+        let key = |m: usize, i: &Instance| {
+            let r = i.rows;
+            (
+                m,
+                [r[0][3], r[1][3], r[2][3]].map(|v| (v * 1e4).round() as i64),
+            )
+        };
+        let mut missed = 0usize;
+        for biome in [CORAL, CAVE, FOREST] {
+            let leg = seabed
+                .order
+                .iter()
+                .position(|&b| b == biome)
+                .expect("a leg");
+            let mut voyage = Voyage::default();
+            let mut helm = super::super::helm::Helm::default();
+            let mut cache = StaticCache::default();
+            let (mut cached, mut fresh) = (Frame::new(), Frame::new());
+            let start = (leg as f64 + 0.2) * span;
+            for i in 0..900 {
+                let seconds = start + f64::from(i) * step;
+                let at = voyage.advance(seconds, seed);
+                let pose = helm.steer(&seabed, at, seconds);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: seconds as f32,
+                    slack: 0.0,
+                };
+                build(&world, &mut cached, &mut cache);
+                let mut exact = StaticCache {
+                    exact: true,
+                    ..StaticCache::default()
+                };
+                build(&world, &mut fresh, &mut exact);
+                let have: std::collections::HashSet<_> = (cached.solid.iter().enumerate())
+                    .chain(cached.glass.iter().enumerate())
+                    .flat_map(|(m, list)| list.iter().map(move |i| key(m, i)))
+                    .collect();
+                for (m, list) in fresh
+                    .solid
+                    .iter()
+                    .enumerate()
+                    .chain(fresh.glass.iter().enumerate())
+                {
+                    for instance in list {
+                        let r = instance.rows;
+                        let p = [r[0][3], r[1][3], r[2][3]];
+                        // Well inside the window, not just grazing its rim.
+                        if world.reveal(p, 0.0) < 0.5 || have.contains(&key(m, instance)) {
+                            continue;
+                        }
+                        missed += 1;
+                        if missed <= 10 {
+                            let out = world.pose.basis[2];
+                            let depth = (0..3).map(|k| (p[k] - pose.pos[k]) * out[k]).sum::<f32>();
+                            println!(
+                                "{biome} at {seconds:.1} s: model {m} at {p:?}, {depth:.2} out, \
+                                 missing from the cache"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(missed, 0, "{missed} instances would have popped in");
     }
 
     /// No bubble is ever drawn on the glass. Over every leg of the circuit and
