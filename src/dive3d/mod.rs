@@ -370,6 +370,15 @@ struct Globals {
 }
 
 pub(crate) struct Nautilus {
+    /// What the pipelines were compiled from, for a benchmark to compile
+    /// them again with other switches ([`compile`]).
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    colour_format: wgpu::TextureFormat,
+    scale: f64,
+    plain: bool,
+    /// The switches the pipelines are compiled with.
+    switches: u32,
     /// The open water, one pipeline per sky it opens on to (`SKY` in
     /// `scene.wesl`, chosen by [`sky_mode`]).
     backgrounds: Vec<wgpu::RenderPipeline>,
@@ -994,7 +1003,7 @@ fn hides_model(_mask: u64, _model: usize) -> bool {
     false
 }
 
-/// Shader switches for the benchmark, as `counts.y` bits (see `debug` in
+/// Shader switches, compiled into every pipeline as `SWITCHES` (see `debug` in
 /// `scene.wesl`), and the extra variant that changes the sampler.
 #[cfg_attr(not(test), allow(dead_code))]
 mod shader_switch {
@@ -1006,6 +1015,440 @@ mod shader_switch {
     pub const UNDERWATER_GRADE: u32 = 32;
     /// The low-poly facet bands in `fs_terrain`.
     pub const TERRAIN_FACETS: u32 = 64;
+}
+
+/// Every render pipeline the scene draws with, compiled for one set of
+/// shader switches.
+struct Pipelines {
+    backgrounds: Vec<wgpu::RenderPipeline>,
+    background_cheap: wgpu::RenderPipeline,
+    background_shimmer: wgpu::RenderPipeline,
+    terrain: wgpu::RenderPipeline,
+    models: Vec<wgpu::RenderPipeline>,
+    sealed: Vec<wgpu::RenderPipeline>,
+    mask: wgpu::RenderPipeline,
+    fading: Vec<wgpu::RenderPipeline>,
+    glass: wgpu::RenderPipeline,
+    sprites: wgpu::RenderPipeline,
+    shafts: wgpu::RenderPipeline,
+    beams: wgpu::RenderPipeline,
+    impostors: Vec<wgpu::RenderPipeline>,
+}
+
+/// The switches the kiosk's own look flags set, `SPOTIFY_ROUND_UNDERWATER`
+/// and `SPOTIFY_ROUND_LOWPOLY`: fixed for the process, so compiled in.
+fn look_switches(underwater: bool, lowpoly: bool) -> u32 {
+    let mut switches = 0;
+    if underwater {
+        switches |= shader_switch::UNDERWATER_GRADE;
+    }
+    if lowpoly {
+        switches |= shader_switch::TERRAIN_FACETS;
+    }
+    switches
+}
+
+/// Compile the scene's pipelines with `switches` (`SWITCHES` in
+/// `scene.wesl`, bits of [`shader_switch`]) fixed in every one of them: a
+/// switch is compiled in or out, never tested per pixel, so the kiosk's
+/// shaders carry none of the benchmarks' alternatives in their registers.
+fn compile(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    colour: wgpu::TextureFormat,
+    scale: f64,
+    plain: bool,
+    switches: u32,
+) -> Pipelines {
+    let model_attributes = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Snorm8x4, 2 => Unorm8x4, 3 => Float16x2,
+    ];
+    let instance_attributes = wgpu::vertex_attr_array![
+        4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
+        10 => Float32x4, 11 => Float32x4,
+    ];
+    let terrain_attributes = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+    ];
+    let sprite_attributes =
+        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
+    let model_buffers = [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<mesh::Packed>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &model_attributes,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Instance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &instance_attributes,
+        }),
+    ];
+    let terrain_buffers = [Some(wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<terrain::Point>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &terrain_attributes,
+    })];
+    let sprite_buffers = [Some(wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Sprite>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &sprite_attributes,
+    })];
+    let additive = wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent::OVER,
+    };
+    let pipeline = |label,
+                    vs,
+                    fs,
+                    buffers: &[Option<wgpu::VertexBufferLayout>],
+                    blend: Option<wgpu::BlendState>,
+                    write_depth: bool,
+                    compare: wgpu::CompareFunction,
+                    coverage: bool,
+                    write_alpha: bool,
+                    constants: &[(&str, f64)],
+                    cull: Option<wgpu::Face>| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some(vs),
+                buffers,
+                // The material too, which the tunnel's vertices are read
+                // by (`vs_model`).
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[constants, &[("SWITCHES", f64::from(switches))]].concat(),
+                    ..Default::default()
+                },
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some(fs),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: colour,
+                    blend,
+                    // The sea is handed to Slint with its alpha channel:
+                    // fading models blend their coverage as alpha, but
+                    // must leave the channel opaque behind them.
+                    write_mask: if write_alpha {
+                        wgpu::ColorWrites::ALL
+                    } else {
+                        wgpu::ColorWrites::COLOR
+                    },
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[
+                        constants,
+                        &[
+                            ("SEA_SCALE", scale),
+                            ("PLAIN_TEXTURES", f64::from(u8::from(plain))),
+                            ("SWITCHES", f64::from(switches)),
+                        ],
+                    ]
+                    .concat(),
+                    ..Default::default()
+                },
+            }),
+            // Fins, sails and fronds are single sheets: only sealed models
+            // are culled. The view's basis mirrors the screen, so what
+            // faces the camera turns clockwise on it.
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: cull,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH,
+                depth_write_enabled: Some(write_depth),
+                depth_compare: Some(compare),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: SAMPLES,
+                // Fading models out by coverage while multisampled; at one
+                // sample the fragment shader blends them into the water.
+                alpha_to_coverage_enabled: coverage && MULTISAMPLED,
+                ..Default::default()
+            },
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    // Depth is reversed — near at 1, far toward 0 — for precision far out.
+    let nearer = wgpu::CompareFunction::Greater;
+    let backgrounds = (0..4)
+        .map(|sky| {
+            pipeline(
+                "Dive3d water",
+                "vs_background",
+                "fs_background",
+                &[],
+                None,
+                false,
+                // Only where the depth is still the clear value: nothing drawn.
+                wgpu::CompareFunction::GreaterEqual,
+                false,
+                true,
+                &[("SKY", f64::from(sky))],
+                None,
+            )
+        })
+        .collect();
+    let background_cheap = pipeline(
+        "Dive3d water, cheap",
+        "vs_background",
+        "fs_background_cheap",
+        &[],
+        None,
+        false,
+        wgpu::CompareFunction::GreaterEqual,
+        false,
+        true,
+        &[],
+        None,
+    );
+    let background_shimmer = pipeline(
+        "Dive3d water, shimmer",
+        "vs_background",
+        "fs_background_shimmer",
+        &[],
+        None,
+        false,
+        wgpu::CompareFunction::GreaterEqual,
+        false,
+        true,
+        &[],
+        None,
+    );
+    let terrain = pipeline(
+        "Dive3d seabed",
+        "vs_terrain",
+        "fs_terrain",
+        &terrain_buffers,
+        None,
+        true,
+        nearer,
+        false,
+        true,
+        &[],
+        None,
+    );
+    // Models that are fully there, compiled without the discard so the GPU
+    // can skip whatever is hidden before shading it; and those fading in or
+    // out, which are blended over what is behind them, back to front.
+    // Each in a pipeline per material and grounded flag.
+    let per_material =
+        |label, coverage, fading: f64, blend: Option<wgpu::BlendState>, write_depth: bool, cull| {
+            let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
+            for &material in &MATERIALS {
+                for grounded in [0.0, 1.0] {
+                    pipelines.push(pipeline(
+                        label,
+                        "vs_model",
+                        "fs_model",
+                        &model_buffers,
+                        blend,
+                        write_depth,
+                        nearer,
+                        coverage,
+                        fading == 0.0,
+                        &[
+                            ("FADING", fading),
+                            (
+                                "FADE_OPAQUE",
+                                f64::from(u8::from(blend.is_none() && write_depth)),
+                            ),
+                            ("MATERIAL", f64::from(material)),
+                            ("GROUNDED", grounded),
+                        ],
+                        cull,
+                    ));
+                }
+            }
+            pipelines
+        };
+    let blend = wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::SrcAlpha,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent::REPLACE,
+    };
+    let models = per_material("Dive3d models", false, 0.0, None, true, None);
+    let sealed = per_material(
+        "Dive3d sealed models",
+        false,
+        0.0,
+        None,
+        true,
+        Some(wgpu::Face::Back),
+    );
+    // Before anything else, the corners outside the round window are
+    // marked as nearest of all, so nothing drawn there is shaded.
+    let mask = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Dive3d corners"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_mask"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_mask"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: colour,
+                blend: None,
+                write_mask: wgpu::ColorWrites::empty(),
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: SAMPLES,
+            ..Default::default()
+        },
+        multiview_mask: None,
+        cache: None,
+    });
+    // One sample has no alpha-to-coverage: blending the coverage over the
+    // water is the dissolve. Multisampled, the coverage itself does it.
+    //
+    // Only the ice sheet works its coverage out per pixel; every other
+    // fading model has one coverage for the whole instance. Those are
+    // compiled without the discard (the CPU drops instances the shader
+    // would discard) so the GPU can reject what the opaque pass already
+    // hides before it shades it; the ice keeps the discard it needs.
+    let fading = {
+        let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
+        for &material in &MATERIALS {
+            for grounded in [0.0, 1.0] {
+                let ice = material == world::material::ICE as i32;
+                pipelines.push(pipeline(
+                    "Dive3d fading models",
+                    "vs_model",
+                    "fs_model",
+                    &model_buffers,
+                    (!MULTISAMPLED).then_some(blend),
+                    !MULTISAMPLED,
+                    nearer,
+                    true,
+                    false,
+                    &[
+                        ("FADING", if ice { 1.0 } else { 0.0 }),
+                        ("MATERIAL", f64::from(material)),
+                        ("GROUNDED", grounded),
+                    ],
+                    None,
+                ));
+            }
+        }
+        pipelines
+    };
+    let glass = pipeline(
+        "Dive3d glass",
+        "vs_model",
+        "fs_glass",
+        &model_buffers,
+        Some(additive),
+        false,
+        nearer,
+        false,
+        true,
+        &[],
+        None,
+    );
+    let sprites = pipeline(
+        "Dive3d sprites",
+        "vs_sprite",
+        "fs_sprite",
+        &sprite_buffers,
+        Some(additive),
+        false,
+        nearer,
+        false,
+        true,
+        &[],
+        None,
+    );
+    let shafts = pipeline(
+        "Dive3d shafts",
+        "vs_shaft",
+        "fs_shaft",
+        &sprite_buffers,
+        Some(additive),
+        false,
+        nearer,
+        false,
+        true,
+        &[],
+        None,
+    );
+    let beams = pipeline(
+        "Dive3d beams",
+        "vs_beam",
+        "fs_beam",
+        &sprite_buffers,
+        Some(additive),
+        false,
+        nearer,
+        false,
+        true,
+        &[],
+        None,
+    );
+    // Opaque and writing depth, like the models: the discard is what
+    // shapes it, and it is drawn after them so they hide it first.
+    let impostors = FORMS
+        .iter()
+        .map(|&form| {
+            pipeline(
+                "Dive3d impostors",
+                "vs_impostor",
+                "fs_impostor",
+                &sprite_buffers,
+                None,
+                true,
+                nearer,
+                false,
+                false,
+                &[("FORM", f64::from(form))],
+                None,
+            )
+        })
+        .collect();
+    Pipelines {
+        backgrounds,
+        background_cheap,
+        background_shimmer,
+        terrain,
+        models,
+        sealed,
+        mask,
+        fading,
+        glass,
+        sprites,
+        shafts,
+        beams,
+        impostors,
+    }
 }
 
 impl Nautilus {
@@ -1390,385 +1833,33 @@ impl Nautilus {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let model_attributes = wgpu::vertex_attr_array![
-            0 => Float32x3, 1 => Snorm8x4, 2 => Unorm8x4, 3 => Float16x2,
-        ];
-        let instance_attributes = wgpu::vertex_attr_array![
-            4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
-            10 => Float32x4, 11 => Float32x4,
-        ];
-        let terrain_attributes = wgpu::vertex_attr_array![
-            0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
-        ];
-        let sprite_attributes =
-            wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
-        let model_buffers = [
-            Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<mesh::Packed>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &model_attributes,
-            }),
-            Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Instance>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &instance_attributes,
-            }),
-        ];
-        let terrain_buffers = [Some(wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<terrain::Point>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &terrain_attributes,
-        })];
-        let sprite_buffers = [Some(wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Sprite>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &sprite_attributes,
-        })];
-        let additive = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent::OVER,
-        };
-        let pipeline = |label,
-                        vs,
-                        fs,
-                        buffers: &[Option<wgpu::VertexBufferLayout>],
-                        blend: Option<wgpu::BlendState>,
-                        write_depth: bool,
-                        compare: wgpu::CompareFunction,
-                        coverage: bool,
-                        write_alpha: bool,
-                        constants: &[(&str, f64)],
-                        cull: Option<wgpu::Face>| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some(vs),
-                    buffers,
-                    // The material too, which the tunnel's vertices are read
-                    // by (`vs_model`).
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants,
-                        ..Default::default()
-                    },
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fs),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: colour,
-                        blend,
-                        // The sea is handed to Slint with its alpha channel:
-                        // fading models blend their coverage as alpha, but
-                        // must leave the channel opaque behind them.
-                        write_mask: if write_alpha {
-                            wgpu::ColorWrites::ALL
-                        } else {
-                            wgpu::ColorWrites::COLOR
-                        },
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[
-                            constants,
-                            &[
-                                ("SEA_SCALE", scale),
-                                ("PLAIN_TEXTURES", f64::from(u8::from(plain))),
-                            ],
-                        ]
-                        .concat(),
-                        ..Default::default()
-                    },
-                }),
-                // Fins, sails and fronds are single sheets: only sealed models
-                // are culled. The view's basis mirrors the screen, so what
-                // faces the camera turns clockwise on it.
-                primitive: wgpu::PrimitiveState {
-                    front_face: wgpu::FrontFace::Cw,
-                    cull_mode: cull,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH,
-                    depth_write_enabled: Some(write_depth),
-                    depth_compare: Some(compare),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: SAMPLES,
-                    // Fading models out by coverage while multisampled; at one
-                    // sample the fragment shader blends them into the water.
-                    alpha_to_coverage_enabled: coverage && MULTISAMPLED,
-                    ..Default::default()
-                },
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        // Depth is reversed — near at 1, far toward 0 — for precision far out.
-        let nearer = wgpu::CompareFunction::Greater;
-        let backgrounds = (0..4)
-            .map(|sky| {
-                pipeline(
-                    "Dive3d water",
-                    "vs_background",
-                    "fs_background",
-                    &[],
-                    None,
-                    false,
-                    // Only where the depth is still the clear value: nothing drawn.
-                    wgpu::CompareFunction::GreaterEqual,
-                    false,
-                    true,
-                    &[("SKY", f64::from(sky))],
-                    None,
-                )
-            })
-            .collect();
-        let background_cheap = pipeline(
-            "Dive3d water, cheap",
-            "vs_background",
-            "fs_background_cheap",
-            &[],
-            None,
-            false,
-            wgpu::CompareFunction::GreaterEqual,
-            false,
-            true,
-            &[],
-            None,
-        );
-        let background_shimmer = pipeline(
-            "Dive3d water, shimmer",
-            "vs_background",
-            "fs_background_shimmer",
-            &[],
-            None,
-            false,
-            wgpu::CompareFunction::GreaterEqual,
-            false,
-            true,
-            &[],
-            None,
-        );
-        let terrain = pipeline(
-            "Dive3d seabed",
-            "vs_terrain",
-            "fs_terrain",
-            &terrain_buffers,
-            None,
-            true,
-            nearer,
-            false,
-            true,
-            &[],
-            None,
-        );
-        // Models that are fully there, compiled without the discard so the GPU
-        // can skip whatever is hidden before shading it; and those fading in or
-        // out, which are blended over what is behind them, back to front.
-        // Each in a pipeline per material and grounded flag.
-        let per_material = |label,
-                            coverage,
-                            fading: f64,
-                            blend: Option<wgpu::BlendState>,
-                            write_depth: bool,
-                            cull| {
-            let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
-            for &material in &MATERIALS {
-                for grounded in [0.0, 1.0] {
-                    pipelines.push(pipeline(
-                        label,
-                        "vs_model",
-                        "fs_model",
-                        &model_buffers,
-                        blend,
-                        write_depth,
-                        nearer,
-                        coverage,
-                        fading == 0.0,
-                        &[
-                            ("FADING", fading),
-                            (
-                                "FADE_OPAQUE",
-                                f64::from(u8::from(blend.is_none() && write_depth)),
-                            ),
-                            ("MATERIAL", f64::from(material)),
-                            ("GROUNDED", grounded),
-                        ],
-                        cull,
-                    ));
-                }
-            }
-            pipelines
-        };
-        let blend = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::SrcAlpha,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent::REPLACE,
-        };
-        let models = per_material("Dive3d models", false, 0.0, None, true, None);
-        let sealed = per_material(
-            "Dive3d sealed models",
-            false,
-            0.0,
-            None,
-            true,
-            Some(wgpu::Face::Back),
-        );
-        // Before anything else, the corners outside the round window are
-        // marked as nearest of all, so nothing drawn there is shaded.
-        let mask = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Dive3d corners"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_mask"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_mask"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: colour,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::empty(),
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: SAMPLES,
-                ..Default::default()
-            },
-            multiview_mask: None,
-            cache: None,
-        });
-        // One sample has no alpha-to-coverage: blending the coverage over the
-        // water is the dissolve. Multisampled, the coverage itself does it.
-        //
-        // Only the ice sheet works its coverage out per pixel; every other
-        // fading model has one coverage for the whole instance. Those are
-        // compiled without the discard (the CPU drops instances the shader
-        // would discard) so the GPU can reject what the opaque pass already
-        // hides before it shades it; the ice keeps the discard it needs.
-        let fading = {
-            let mut pipelines = Vec::with_capacity(MATERIALS.len() * 2);
-            for &material in &MATERIALS {
-                for grounded in [0.0, 1.0] {
-                    let ice = material == world::material::ICE as i32;
-                    pipelines.push(pipeline(
-                        "Dive3d fading models",
-                        "vs_model",
-                        "fs_model",
-                        &model_buffers,
-                        (!MULTISAMPLED).then_some(blend),
-                        !MULTISAMPLED,
-                        nearer,
-                        true,
-                        false,
-                        &[
-                            ("FADING", if ice { 1.0 } else { 0.0 }),
-                            ("MATERIAL", f64::from(material)),
-                            ("GROUNDED", grounded),
-                        ],
-                        None,
-                    ));
-                }
-            }
-            pipelines
-        };
-        let glass = pipeline(
-            "Dive3d glass",
-            "vs_model",
-            "fs_glass",
-            &model_buffers,
-            Some(additive),
-            false,
-            nearer,
-            false,
-            true,
-            &[],
-            None,
-        );
-        let sprites = pipeline(
-            "Dive3d sprites",
-            "vs_sprite",
-            "fs_sprite",
-            &sprite_buffers,
-            Some(additive),
-            false,
-            nearer,
-            false,
-            true,
-            &[],
-            None,
-        );
-        let shafts = pipeline(
-            "Dive3d shafts",
-            "vs_shaft",
-            "fs_shaft",
-            &sprite_buffers,
-            Some(additive),
-            false,
-            nearer,
-            false,
-            true,
-            &[],
-            None,
-        );
-        let beams = pipeline(
-            "Dive3d beams",
-            "vs_beam",
-            "fs_beam",
-            &sprite_buffers,
-            Some(additive),
-            false,
-            nearer,
-            false,
-            true,
-            &[],
-            None,
-        );
-        // Opaque and writing depth, like the models: the discard is what
-        // shapes it, and it is drawn after them so they hide it first.
-        let impostors = FORMS
-            .iter()
-            .map(|&form| {
-                pipeline(
-                    "Dive3d impostors",
-                    "vs_impostor",
-                    "fs_impostor",
-                    &sprite_buffers,
-                    None,
-                    true,
-                    nearer,
-                    false,
-                    false,
-                    &[("FORM", f64::from(form))],
-                    None,
-                )
-            })
-            .collect();
-
         let underwater = std::env::var_os("SPOTIFY_ROUND_UNDERWATER").is_some();
         let lowpoly = std::env::var_os("SPOTIFY_ROUND_LOWPOLY").is_some();
+        let switches = look_switches(underwater, lowpoly);
+        let Pipelines {
+            backgrounds,
+            background_cheap,
+            background_shimmer,
+            terrain,
+            models,
+            sealed,
+            mask,
+            fading,
+            glass,
+            sprites,
+            shafts,
+            beams,
+            impostors,
+        } = compile(
+            device,
+            &shader,
+            &pipeline_layout,
+            colour,
+            scale,
+            plain,
+            switches,
+        );
+
         let levels = std::env::var("DIVE3D_TERRAIN_LEVELS")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
@@ -1781,6 +1872,12 @@ impl Nautilus {
             "3D dive ready"
         );
         Ok(Self {
+            shader,
+            pipeline_layout,
+            colour_format: colour,
+            scale,
+            plain,
+            switches,
             backgrounds,
             background_cheap,
             background_shimmer,
@@ -1841,6 +1938,33 @@ impl Nautilus {
             #[cfg(test)]
             skip_effects: 0,
         })
+    }
+
+    /// Compile every pipeline again with `switches`.
+    fn recompile(&mut self, device: &wgpu::Device, switches: u32) {
+        let p = compile(
+            device,
+            &self.shader,
+            &self.pipeline_layout,
+            self.colour_format,
+            self.scale,
+            self.plain,
+            switches,
+        );
+        self.backgrounds = p.backgrounds;
+        self.background_cheap = p.background_cheap;
+        self.background_shimmer = p.background_shimmer;
+        self.terrain_pipeline = p.terrain;
+        self.models = p.models;
+        self.sealed = p.sealed;
+        self.mask = p.mask;
+        self.fading = p.fading;
+        self.glass = p.glass;
+        self.sprites = p.sprites;
+        self.shafts = p.shafts;
+        self.beams = p.beams;
+        self.impostors = p.impostors;
+        self.switches = switches;
     }
 
     /// Whether a benchmark asked to leave `part` out. Never, outside the tests.
@@ -1951,7 +2075,7 @@ impl Nautilus {
         if self.skips(part::LIGHTS) {
             uniforms.counts[0] = 0.0;
         }
-        let mut switches = 0;
+        let mut switches = look_switches(self.underwater, self.lowpoly);
         if self.skips(part::NO_NOISE) {
             switches |= shader_switch::NO_NOISE;
         }
@@ -1964,13 +2088,16 @@ impl Nautilus {
         if self.skips(part::CHEAP_BACKGROUND) {
             switches |= shader_switch::CHEAP_BACKGROUND;
         }
-        if self.underwater || self.skips(part::UNDERWATER_GRADE) {
+        if self.skips(part::UNDERWATER_GRADE) {
             switches |= shader_switch::UNDERWATER_GRADE;
         }
-        if self.lowpoly || self.skips(part::TERRAIN_FACETS) {
+        if self.skips(part::TERRAIN_FACETS) {
             switches |= shader_switch::TERRAIN_FACETS;
         }
-        uniforms.counts[1] = switches as f32;
+        // Only a benchmark changes them, and it pays for the compile.
+        if switches != self.switches {
+            self.recompile(&gpu.device, switches);
+        }
         let sky = sky_mode(&uniforms);
         gpu.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&uniforms));

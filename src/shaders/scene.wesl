@@ -203,21 +203,34 @@ fn hash(ix: i32, iz: i32, salt: u32) -> f32 {
     return f32(h & 0x00ffffffu) / 16777216.0;
 }
 
-// Switches the `frame_cost` benchmark sets in `counts.y`, to find what each
-// kind of work costs. Always zero on screen.
+// The shader switches every pipeline is compiled with: the kiosk's look
+// flags and the benchmarks' cheaper paths (`dive3d::shader_switch`). A
+// pipeline constant, never read per pixel: tested from the uniforms, the
+// switches cost every shader their alternatives' registers, a third of the
+// seabed's instructions.
+override SWITCHES: u32 = 0u;
 const NO_NOISE: u32 = 2u;
 
-// Every surface a flat grey, for the same benchmark. A pipeline constant
-// rather than a switch in `counts.y`: tested in the shader, it costs the Pi's
-// GPU about thirty instructions a texture lookup.
+// Every surface a flat grey, for the benchmarks. A pipeline constant of its
+// own, like `SWITCHES`: tested per pixel, it would cost the Pi's GPU about
+// thirty instructions a texture lookup.
 override PLAIN_TEXTURES: bool = false;
 
 fn debug(flag: u32) -> bool {
-    return (u32(g.counts.y) & flag) != 0u;
+    return (SWITCHES & flag) != 0u;
+}
+
+// Always false, but read from the uniforms, so the compiler cannot know it:
+// a branch on it is a fence the Pi's compiler schedules each side of apart.
+// Arithmetic that does not wait on a texture, a noise or a sparkle, is
+// otherwise hoisted up beside the lookup to hide its latency, and the
+// registers both hold at once cost the shader half its threads.
+fn fenced() -> bool {
+    return g.counts.y > 0.5;
 }
 
 fn vnoise(x: f32, z: f32, salt: u32) -> f32 {
-    if (debug(NO_NOISE)) {
+    if (debug(NO_NOISE) || fenced()) {
         return 0.5;
     }
     let fx = floor(x);
@@ -595,7 +608,7 @@ fn sky_at(dir_in: vec3<f32>, l: Leg) -> vec3<f32> {
 }
 
 fn switched(bit: u32) -> bool {
-    return (u32(g.counts.y) & bit) != 0u;
+    return debug(bit);
 }
 
 fn fog_of(distance: f32) -> f32 {
@@ -1780,6 +1793,9 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
         // Gold, glittering.
         case 8u: {
+            if (fenced()) {
+                return vec4<f32>(0.0);
+            }
             let sparkle = pow(fract(sin(dot(floor(p * 140.0), vec3<f32>(12.9, 78.2, 37.7)) + floor(t * 3.0)) * 43758.5), 20.0);
             colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
         }
@@ -2077,6 +2093,9 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
         // Gold, glittering.
         case 8u: {
+            if (fenced()) {
+                return vec4<f32>(0.0);
+            }
             let sparkle = pow(fract(sin(dot(floor(p * 140.0), vec3<f32>(12.9, 78.2, 37.7)) + floor(t * 3.0)) * 43758.5), 20.0);
             colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
         }
