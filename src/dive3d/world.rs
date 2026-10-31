@@ -78,8 +78,9 @@ pub const FLOOR_ALBEDO: [[f32; 3]; BIOMES] = [
     [0.17, 0.16, 0.17],
     [0.36, 0.37, 0.38],
     [0.58, 0.55, 0.47],
-    // Coral: pale reef sand, warmed by the pink and orange it is made of.
-    [0.66, 0.50, 0.38],
+    // Coral: the pale sand of the gutters, ground from the reef itself; the
+    // living reef over it is `reef_tone`.
+    [0.80, 0.72, 0.58],
     // Sargasso: olive silt under the floating weed.
     [0.39, 0.36, 0.22],
     // Vents: fresh black basalt, darker than the cave's.
@@ -91,6 +92,52 @@ pub const FLOOR_ALBEDO: [[f32; 3]; BIOMES] = [
     // The drowned city: grey-green silt over its paving.
     [0.25, 0.27, 0.23],
 ];
+
+/// The living reef's colours, as a reef flat seen from above is a mosaic of
+/// them: ochre and brown acropora, purple and pink encrusting colonies, olive
+/// green and cream boulder corals, and the blue-grey of staghorn tips; the
+/// browns and ochres commonest. Deeper and duller than the corals' own
+/// tints, as a carpet of colonies is shaded by itself.
+const REEF_FLOOR: [[f32; 3]; 9] = [
+    [0.52, 0.40, 0.22],
+    [0.38, 0.28, 0.18],
+    [0.42, 0.29, 0.40],
+    [0.56, 0.46, 0.30],
+    [0.38, 0.42, 0.24],
+    [0.58, 0.38, 0.38],
+    [0.44, 0.33, 0.20],
+    [0.36, 0.40, 0.44],
+    [0.60, 0.52, 0.36],
+];
+
+/// The living reef's colour at (x, z): one colony's hue to a patch of half a
+/// unit or so, blending into the next only across a narrow seam, so the
+/// ground between the modelled corals reads as a carpet of colonies.
+pub fn reef_tone(x: f32, z: f32) -> [f32; 3] {
+    // Warped a little by a second noise, so the patches are not round blobs.
+    let warp = vnoise(x * 2.1 + 9.0, z * 2.1, 72) - 0.5;
+    let at = vnoise(x * 1.2 + warp, z * 1.2 - warp, 70) * 3.0
+        + vnoise(x * 0.31, z * 0.31 + 4.0, 71) * 4.0;
+    let n = REEF_FLOOR.len();
+    let i = at.floor() as usize;
+    let seam = smooth(0.30, 0.70, at - at.floor());
+    let (a, b) = (REEF_FLOOR[i % n], REEF_FLOOR[(i + 1) % n]);
+    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * seam)
+}
+
+/// The seabed's colour at (x, z), its biome's floor with the living reef
+/// laid over the coral's bommies: what the foot of a model standing there is
+/// bedded into, and what the terrain is painted with.
+pub fn floor_colour(seabed: &Seabed, b: &Biome, x: f32, z: f32) -> [f32; 3] {
+    let base = floor_albedo(b);
+    let coral = b.weight(CORAL) as f32;
+    if coral <= 0.0 {
+        return base;
+    }
+    let live = coral * reef_cover(seabed.reef(x, z));
+    let tone = reef_tone(x, z);
+    [0, 1, 2].map(|k| base[k] + (tone[k] - base[k]) * live)
+}
 
 /// The colour of the seabed where `b` is, blended across a biome border.
 pub fn floor_albedo(b: &Biome) -> [f32; 3] {
@@ -321,6 +368,31 @@ pub fn trench_wander(x: f32) -> f32 {
     0.25 * (x * 0.29 + 1.0).sin() + 0.12 * (x * 0.83).sin()
 }
 
+/// The coral reef's plan, over the heightmap's grain: three crossing swells
+/// whose sum is high on the bommies and the ridges that join them and low in
+/// the sand gutters that wind between. Every wave fits the heightmap's 64
+/// units, so the reef repeats with it. `biome_shape` raises the bommies out of
+/// it, the seabed's colour ([`reef_cover`]) says where living coral covers
+/// the ground, and the placers grow the big colonies on its tops.
+pub fn reef_field(x: f32, z: f32, detail: f32) -> f32 {
+    0.5 + 0.22 * (TAU * (x * 0.25 + z * 0.125) + 1.3 * detail).sin()
+        + 0.20 * (TAU * (x * 0.125 - z * 0.25) + 0.9 * detail).sin()
+        + 0.12 * (TAU * (x * 0.375 + z * 0.3125) + 2.1 * detail).sin()
+}
+
+/// How much of the ground at a point of [`reef_field`] is living coral rather
+/// than sand: all of the bommies and their skirts, about two thirds of the
+/// reef, thinning to clean sand down in the gutters.
+pub fn reef_cover(field: f32) -> f32 {
+    smooth(0.28, 0.46, field)
+}
+
+/// How high a bommie stands at a point of [`reef_field`], 0 to 1: its
+/// flat-topped body, where the reef's largest colonies grow.
+pub fn reef_mound(field: f32) -> f32 {
+    smooth(0.50, 0.82, field)
+}
+
 /// The shape each biome gives its own floor, over the shared heightmap: the
 /// same function as `biome_shape` in `scene.wesl`. `across` is signed distance
 /// from the corridor (positive to port), `h` the heightmap's height and
@@ -392,12 +464,15 @@ fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f
     }
     let coral = weight(CORAL);
     if coral > 0.0 {
-        // A reef: rounded bommies rising out of pale sand, with the sandy
-        // channels between them scoured a little deeper.
-        let bommie = 0.5 + 0.5 * (TAU * (x * 0.25 + z * 0.25) + 1.1 * detail).sin();
-        let channel = 0.5 + 0.5 * (TAU * (x * 0.125 - z * 0.25) + 0.6 * detail).sin();
-        let knoll = smooth(0.40, 0.78, bommie * (0.55 + 0.45 * channel));
-        shape += coral * (0.18 * h + 0.30 * knoll - 0.10 * channel + 0.08 * detail);
+        // A reef built of its own coral: flat-topped bommies and the ridges
+        // that join them standing a couple of metres proud, their tops
+        // lumpy with colonies, and the sand gutters that wind between them
+        // scoured deeper ([`reef_field`]).
+        let field = reef_field(x, z, detail);
+        let mound = reef_mound(field);
+        let gutter = 1.0 - smooth(0.12, 0.32, field);
+        shape += coral
+            * (0.15 * h + 0.42 * mound - 0.10 * gutter + 0.06 * detail * mound + 0.03 * detail);
     }
     let sargasso = weight(SARGASSO);
     if sargasso > 0.0 {
@@ -664,6 +739,12 @@ impl Seabed {
 
     fn by_biome(b: &Biome, values: [f32; BIOMES]) -> f32 {
         values[b.a] + (values[b.b] - values[b.a]) * b.w as f32
+    }
+
+    /// The coral reef's plan at (x, z), [`reef_field`] on this seabed's grain:
+    /// high on the bommies, low in the sand gutters.
+    pub fn reef(&self, x: f32, z: f32) -> f32 {
+        reef_field(x, z, crate::dive3d::heightmap::sample(&self.map, x, z)[3])
     }
 
     /// The seabed's height at (x, z), exactly as `ground` in the shader: the
@@ -949,6 +1030,10 @@ impl World<'_> {
 
     pub fn ground(&self, x: f32, z: f32) -> f32 {
         self.seabed.ground(x, z)
+    }
+
+    pub fn reef(&self, x: f32, z: f32) -> f32 {
+        self.seabed.reef(x, z)
     }
 
     pub fn camera(&self) -> f32 {
@@ -1735,7 +1820,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
                 if instance.extra[1] > 0.5 {
                     let (x, z) = (r[0][3], r[2][3]);
                     instance.extra[3] = world.ground(x, z);
-                    let c = floor_albedo(&world.seabed.biome(x, z));
+                    let c = floor_colour(world.seabed, &world.seabed.biome(x, z), x, z);
                     instance.floor = [c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, 0.0];
                 }
             }
@@ -1787,7 +1872,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
             if instance.extra[1] > 0.5 {
                 let (x, z) = (r[0][3], r[2][3]);
                 instance.extra[3] = world.ground(x, z);
-                let c = floor_albedo(&world.seabed.biome(x, z));
+                let c = floor_colour(world.seabed, &world.seabed.biome(x, z), x, z);
                 instance.floor = [c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, 0.0];
             }
         }
@@ -1871,6 +1956,13 @@ fn rocks(w: &World, f: &mut Frame) {
             continue;
         }
         let b = w.biome(x, z);
+        // The reef is built of coral, not strewn with boulders: most of its
+        // stones are left out, and those left are dead coral rock, pale and
+        // crusted, rather than grey basalt.
+        let reef = b.weight(CORAL) as f32;
+        if hash(ix, iz, 17) < reef * 0.9 {
+            continue;
+        }
         let molten = b.weight(CAVE) as f32;
         let tone = World::by_biome(
             &b,
@@ -1890,9 +1982,16 @@ fn rocks(w: &World, f: &mut Frame) {
                 0.0,
                 [size * 1.2, size * flat, size],
             ),
-            [tone, tone * 1.02, tone * 0.98],
+            [
+                tone + 0.30 * reef,
+                tone * 1.02 + 0.20 * reef,
+                tone * 0.98 + 0.12 * reef,
+            ],
         );
         i.grounded();
+        if reef > 0.5 {
+            i.textured(Surface::Coral, 4.0);
+        }
         if molten > 0.5 {
             i.textured(Surface::Basalt, 3.0);
         }
@@ -2173,18 +2272,19 @@ fn gardens(w: &World, f: &mut Frame) {
     }
 }
 
-/// The reef's colours: rose, ochre, lilac, cream, pink, sage, the olive tan
-/// of the commonest acropora and the blue of its tips, muted as living coral
-/// is under water rather than the saturated hues of a picture of it.
+/// The reef's colours: ochre and brown acropora, purple and pink, the olive
+/// green and cream of the boulder corals, the blue of staghorn tips and a
+/// golden accent. Rich, as a shallow reef in clear water is, but still the
+/// colours of living tissue rather than paint.
 const REEF_HUES: [[f32; 3]; 8] = [
-    [0.95, 0.42, 0.48],
-    [0.96, 0.62, 0.30],
-    [0.64, 0.48, 0.88],
-    [0.95, 0.86, 0.62],
-    [0.96, 0.66, 0.68],
-    [0.52, 0.78, 0.62],
-    [0.80, 0.70, 0.42],
-    [0.50, 0.68, 0.88],
+    [0.86, 0.52, 0.24],
+    [0.62, 0.40, 0.24],
+    [0.62, 0.36, 0.78],
+    [0.95, 0.45, 0.58],
+    [0.50, 0.72, 0.36],
+    [0.90, 0.80, 0.55],
+    [0.56, 0.64, 0.82],
+    [0.92, 0.62, 0.22],
 ];
 
 /// One colony's colour: a hue of the reef's, a little lighter or darker and
@@ -2205,25 +2305,81 @@ fn reef_hue(ix: i32, iz: i32, salt: u32) -> [f32; 3] {
 /// boulder corals, a little lighter or darker from one to the next.
 fn brain_hue(ix: i32, iz: i32, salt: u32) -> [f32; 3] {
     const HUES: [[f32; 3]; 4] = [
-        [0.84, 0.72, 0.46],
-        [0.58, 0.74, 0.52],
-        [0.92, 0.66, 0.42],
-        [0.80, 0.64, 0.70],
+        [0.84, 0.66, 0.36],
+        [0.52, 0.72, 0.40],
+        [0.92, 0.60, 0.34],
+        [0.76, 0.54, 0.70],
     ];
     let hue = HUES[(hash(ix, iz, salt) * 4.0) as usize % 4];
     let light = 0.88 + 0.18 * hash(ix, iz, salt + 1);
     hue.map(|c| (c * light).min(1.0))
 }
 
-/// The reef between the gardens' bommies: one small coral to a cell, close
-/// enough that the floor reads as reef rather than sand, of seven kinds:
-/// staghorn and bushy branching corals, finger, table and brain corals,
-/// anemones and sea whips. Near the window each is a model; further off,
-/// where its branches can no longer be told apart, it is a cut-out card in
-/// [`Frame::impostors`], which costs a quad. The two overlap for a unit
-/// either side of the switch, the card dissolving as the window nears it
-/// (`fs_impostor`), so a coral grows into its model rather than popping. The
-/// anemones and whips are too small to need a card.
+/// The kinds of colony the reef is built of, as [`reef_species`] picks them.
+const STAGHORN: usize = 0;
+const TABLE: usize = 1;
+const BRAIN: usize = 2;
+const BUSH: usize = 3;
+const FINGER: usize = 4;
+const SOFT: usize = 5;
+
+/// The patch of reef (x, z) lies in, a unit or so across: a reef is laid out
+/// in stands of one species each, a staghorn thicket here, a terrace of
+/// tables there, a field of boulder corals beyond, not a random mix.
+fn reef_patch(x: f32, z: f32) -> (i32, i32, f32) {
+    let warp = vnoise(x * 0.9 + 11.0, z * 0.9, 75) - 0.5;
+    let (u, v) = (x * 0.75 + warp, z * 0.75 - warp);
+    let (pi, pj) = (u.floor() as i32, v.floor() as i32);
+    (pi, pj, hash(pi, pj, 69))
+}
+
+/// Which of the reef's six kinds of colony grows at (x, z): its patch's, but
+/// for the odd stray of another kind, rolled by `stray`.
+fn reef_species(x: f32, z: f32, stray: f32) -> usize {
+    if stray < 0.15 {
+        return (stray / 0.15 * 6.0) as usize % 6;
+    }
+    let (_, _, roll) = reef_patch(x, z);
+    // Staghorn and tables are the commonest stands, soft corals the rarest.
+    [
+        (0.24, STAGHORN),
+        (0.42, TABLE),
+        (0.58, BRAIN),
+        (0.74, BUSH),
+        (0.88, FINGER),
+        (1.01, SOFT),
+    ]
+    .iter()
+    .find(|(top, _)| roll < *top)
+    .map_or(SOFT, |&(_, kind)| kind)
+}
+
+/// The colour of a colony at (x, z): one hue to the patch, so a stand of one
+/// species reads as one colony grown wide, jittered a little colony by
+/// colony, with the odd colony of another hue.
+fn colony_hue(x: f32, z: f32, ix: i32, iz: i32, salt: u32) -> [f32; 3] {
+    let (pi, pj, _) = reef_patch(x, z);
+    let base = if hash(ix, iz, salt + 7) < 0.15 {
+        reef_hue(ix, iz, salt)
+    } else {
+        reef_hue(pi, pj, salt)
+    };
+    let light = 0.92 + 0.16 * hash(ix, iz, salt + 3);
+    base.map(|c| (c * light).min(1.0))
+}
+
+/// The reef between the gardens' bommies: one coral to a cell, close enough
+/// that the reef's living carpet (the seabed's own colour and texture) is
+/// crowded with colonies, but only where coral covers the ground, so the
+/// sand gutters stay clean. Each patch is one species ([`reef_species`]):
+/// staghorn and bushy branching corals, finger, table and brain corals, and
+/// soft anemones and sea whips; on the bommies' tops they grow larger. Near
+/// the window each is a model; further off, where its branches can no longer
+/// be told apart, it is a cut-out card in [`Frame::impostors`], which costs a
+/// quad. The two overlap for a unit either side of the switch, the card
+/// dissolving as the window nears it (`fs_impostor`), so a coral grows into
+/// its model rather than popping. The anemones and whips are too small to
+/// need a card.
 fn reef(w: &World, f: &mut Frame) {
     const MODELS: f32 = 4.0;
     /// How far inside [`MODELS`] the cards still stand, dissolving.
@@ -2237,38 +2393,38 @@ fn reef(w: &World, f: &mut Frame) {
     }
     for &(ix, iz, x, z) in &cells(w, 0.32, 0.6, 10.0, 60) {
         let coral = w.biome(x, z).weight(CORAL) as f32;
-        let needs = hash(ix, iz, 61) * 0.7 + 0.3;
-        if coral < needs {
+        if coral <= 0.0 {
             continue;
         }
+        let field = w.reef(x, z);
+        let live = coral * reef_cover(field);
+        let needs = hash(ix, iz, 61) * 0.7 + 0.3;
+        if live < needs {
+            continue;
+        }
+        let mound = reef_mound(field);
         let y = w.ground(x, z);
-        let grown = fade(coral, needs);
+        let grown = fade(live, needs);
         let depth = (x - c[0]) * out[0] + (z - c[2]) * out[2];
-        let form = hash(ix, iz, 63);
-        let hue = if (0.76..0.86).contains(&form) {
+        let species = reef_species(x, z, hash(ix, iz, 63));
+        let hue = if species == BRAIN {
             brain_hue(ix, iz, 62)
         } else {
-            reef_hue(ix, iz, 62)
+            colony_hue(x, z, ix, iz, 62)
         };
         let yaw = hash(ix, iz, 64) * TAU;
-        let s = 0.10 + 0.12 * hash(ix, iz, 65);
+        let s = (0.12 + 0.12 * hash(ix, iz, 65)) * (1.0 + 0.6 * mound);
         let tall_by = 0.85 + 0.3 * hash(ix, iz, 68);
         // Its model, its impostor's form (none for the small ones), its
         // scale, and its height and half width in units of that scale.
-        let (model, kind, s, tall, half) = if form < 0.28 {
-            (Model::Coral, Some(0.0), s, 0.45, 0.30)
-        } else if form < 0.46 {
-            (Model::CoralBush, Some(4.0), s * 1.1, 0.31, 0.20)
-        } else if form < 0.62 {
-            (Model::CoralFinger, Some(2.0), s, 0.54, 0.18)
-        } else if form < 0.76 {
-            (Model::CoralTable, Some(1.0), s * 0.75, 0.72, 1.05)
-        } else if form < 0.86 {
-            (Model::CoralBrain, Some(3.0), s * 0.5, 0.76, 0.95)
-        } else if form < 0.94 {
-            (Model::Anemone, None, s * 0.6, 0.49, 0.33)
-        } else {
-            (Model::SeaWhip, None, s * 0.8, 1.0, 0.3)
+        let (model, kind, s, tall, half) = match species {
+            STAGHORN => (Model::Coral, Some(0.0), s * 1.1, 0.45, 0.30),
+            TABLE => (Model::CoralTable, Some(1.0), s * 0.85, 0.72, 1.05),
+            BRAIN => (Model::CoralBrain, Some(3.0), s * 0.6, 0.76, 0.95),
+            BUSH => (Model::CoralBush, Some(4.0), s * 1.15, 0.31, 0.20),
+            FINGER => (Model::CoralFinger, Some(2.0), s, 0.54, 0.18),
+            _ if hash(ix, iz, 66) < 0.5 => (Model::Anemone, None, s * 0.6, 0.49, 0.33),
+            _ => (Model::SeaWhip, None, s * 0.9, 1.0, 0.3),
         };
         if depth < MODELS {
             if !w.visible([x, y + 0.1, z], 0.25) {
@@ -2325,8 +2481,13 @@ struct GardenSite {
     yaw: f32,
 }
 
-/// A coral bommie: branching heads, table plates, brain corals, fans, or a
-/// star and shell on the sand between them.
+/// A bommie's great colony, at reef scale: a staghorn thicket of many heads,
+/// a terrace of table corals stepped one above another, massive boulder
+/// corals a metre or two across, a stand of bushy or finger coral, or soft
+/// corals and sea fans set broadside to the surge. Each is of its patch's
+/// species, as the smaller corals about it are, and grows largest on the
+/// bommies' tops; over many of them a swarm of small reef fish hovers. Down
+/// in the sand gutters there is only the odd star or shell.
 fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
     let GardenSite {
         ix,
@@ -2336,232 +2497,253 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
         z,
         yaw,
     } = site;
-    let hue = |salt: u32| reef_hue(ix, iz, salt);
-    let roll = hash(ix, iz, 80);
-    if roll < 0.30 {
-        // A thicket of branching coral, staghorn and bushy heads together.
-        let heads = 4 + (hash(ix, iz, 81) * 4.0) as i32;
-        for k in 0..heads {
-            let a = yaw + k as f32 * 2.1;
-            let off = 0.05 + 0.24 * hash(ix + k, iz, 82);
-            let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
-            if !w.visible(p, 0.25) {
-                continue;
-            }
-            let s = 0.20 + 0.18 * hash(ix, iz + k, 83);
-            let (model, s) = if hash(ix + k, iz, 95) < 0.35 {
-                (Model::CoralBush, s * 1.15)
-            } else {
-                (Model::Coral, s)
-            };
+    let field = w.reef(x, z);
+    if reef_cover(field) < 0.35 {
+        if hash(ix, iz, 90) < 0.20 {
+            let s = 0.04 + 0.03 * hash(ix, iz, 91);
             f.put(
-                model,
-                place(
-                    p,
-                    yaw + k as f32 * 1.7,
-                    (hash(ix, iz + k, 85) - 0.5) * 0.25,
-                    (hash(ix, iz + k, 86) - 0.5) * 0.25,
-                    [s, s * (0.8 + 0.4 * hash(ix, iz, 87)), s],
-                ),
-                hue(84 + k as u32),
+                Model::Star,
+                place([x, y + 0.005, z], yaw, 0.0, 0.0, [s, s, s]),
+                [0.92, 0.42, 0.26],
             )
-            .moving(anim::SWAY, yaw + k as f32, 0.02, 0.4)
-            .glowing(0.30)
+            .grounded();
+        } else if hash(ix, iz, 90) < 0.32 {
+            let s = 0.09 + 0.05 * hash(ix, iz, 92);
+            f.put(
+                Model::Shell,
+                place([x, y + 0.005, z], yaw, PI, 0.0, [s, s, s * 0.8]),
+                [0.90, 0.78, 0.62],
+            )
             .grounded();
         }
-    } else if roll < 0.44 {
-        // A second, larger colony: a few broad branching heads with a fan
-        // between them, so the bommie has depth rather than a single tuft.
-        let tint = hue(88);
-        for k in 0..3 {
-            let a = yaw + k as f32 * 2.1;
-            let off = 0.08 + 0.16 * hash(ix + k, iz, 89);
-            let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
-            if !w.visible(p, 0.35) {
-                continue;
-            }
-            let s = 0.24 + 0.14 * hash(ix, iz + k, 90);
-            f.put(
-                Model::Coral,
-                place(
-                    p,
-                    a + 0.4,
-                    (hash(ix, iz + k, 91) - 0.5) * 0.2,
-                    (hash(ix, iz + k, 92) - 0.5) * 0.2,
-                    [s, s * (0.85 + 0.3 * hash(ix, iz, 93)), s],
-                ),
-                tint,
-            )
-            .moving(anim::SWAY, a, 0.02, 0.4)
-            .glowing(0.32)
-            .grounded();
-        }
-        let s = 0.12 + 0.10 * hash(ix, iz, 94);
-        f.put(
-            Model::Fan,
-            place([x, y, z + 0.04], yaw + 1.2, 0.0, 0.0, [s, s, s]),
-            [0.95, 0.55, 0.42],
-        )
-        .moving(anim::SWAY, yaw, 0.15, 0.7)
-        .grounded();
-    } else if roll < 0.56 {
-        // Table corals: one broad plate, or a smaller one stepped up beside
-        // it.
-        let plates = 1 + (hash(ix, iz, 120) < 0.45) as i32;
-        for k in 0..plates {
-            let s = (0.12 + 0.10 * hash(ix, iz + k, 121)) * (1.0 - 0.3 * k as f32);
-            let a = yaw + k as f32 * 2.3;
-            let p = [
-                x + a.cos() * 0.12 * k as f32,
-                y - 0.01,
-                z + a.sin() * 0.12 * k as f32,
-            ];
-            if !w.visible(p, s) {
-                continue;
-            }
-            let tilt = (hash(ix, iz + k, 127) - 0.5) * 0.3;
-            f.put(
-                Model::CoralTable,
-                place(p, a, tilt, tilt * 0.5, [s, s * (0.9 + 0.5 * k as f32), s]),
-                hue(122 + k as u32),
-            )
-            .glowing(0.24)
-            .grounded();
-        }
-    } else if roll < 0.66 {
-        // A patch of finger coral.
-        let clumps = 2 + (hash(ix, iz, 123) * 2.0) as i32;
-        let tint = hue(124);
-        for k in 0..clumps {
-            let a = yaw + k as f32 * 2.4;
-            let off = 0.04 + 0.12 * hash(ix + k, iz, 125);
-            let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
-            if !w.visible(p, 0.2) {
-                continue;
-            }
-            let s = 0.16 + 0.12 * hash(ix, iz + k, 126);
-            f.put(Model::CoralFinger, place(p, a, 0.0, 0.0, [s, s, s]), tint)
-                .moving(anim::SWAY, a, 0.015, 0.4)
-                .glowing(0.28)
-                .grounded();
-        }
-    } else if roll < 0.78 {
-        // A brain coral: a low boulder dome, sometimes with a smaller one
-        // beside it, and an anemone in the lee of the two.
-        let s = 0.13 + 0.10 * hash(ix, iz, 90);
-        if w.visible([x, y + 0.04, z], s) {
-            let domes = 1 + (hash(ix, iz, 96) < 0.5) as i32;
-            for k in 0..domes {
+        return;
+    }
+    let mound = reef_mound(field);
+    let grow = 1.0 + 0.7 * mound;
+    let tint = colony_hue(x, z, ix, iz, 84);
+    let shade = |k: i32| {
+        let light = 0.88 + 0.22 * hash(ix + k, iz, 85);
+        tint.map(|c| (c * light).min(1.0))
+    };
+    match reef_species(x, z, hash(ix, iz, 80)) {
+        STAGHORN => {
+            // A staghorn thicket: many heads of one colony crowded together.
+            let heads = 4 + (hash(ix, iz, 81) * 3.0) as i32;
+            for k in 0..heads {
                 let a = yaw + k as f32 * 2.4;
-                let r = s * (1.0 - 0.4 * k as f32);
-                let p = [
-                    x + a.cos() * s * 0.9 * k as f32,
-                    y - 0.015,
-                    z + a.sin() * s * 0.9 * k as f32,
-                ];
+                let off = (0.04 + 0.30 * hash(ix + k, iz, 82)) * grow;
+                let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
+                if !w.visible(p, 0.3) {
+                    continue;
+                }
+                let s = (0.24 + 0.14 * hash(ix, iz + k, 83)) * grow;
                 f.put(
-                    Model::CoralBrain,
+                    Model::Coral,
                     place(
                         p,
-                        a,
-                        0.0,
-                        0.0,
-                        [r, r * (0.75 + 0.3 * hash(ix + k, iz, 97)), r],
+                        yaw + k as f32 * 1.7,
+                        (hash(ix, iz + k, 86) - 0.5) * 0.25,
+                        (hash(ix, iz + k, 87) - 0.5) * 0.25,
+                        [s, s * (0.8 + 0.4 * hash(ix + k, iz, 88)), s],
                     ),
-                    brain_hue(ix, iz, 91 + k as u32),
+                    shade(k),
                 )
-                .glowing(0.16)
+                .moving(anim::SWAY, yaw + k as f32, 0.02, 0.4)
+                .glowing(0.30)
                 .grounded();
             }
-            if hash(ix, iz, 98) < 0.6 {
-                let a = yaw - 1.7;
-                let p = [x + a.cos() * s * 1.2, y - 0.01, z + a.sin() * s * 1.2];
-                let r = 0.08 + 0.05 * hash(ix, iz, 99);
-                f.put(Model::Anemone, place(p, a, 0.0, 0.0, [r, r, r]), hue(100))
+        }
+        TABLE => {
+            // A terrace of table corals, each plate stepped up and out over
+            // the one before, as they shoulder each other for the light.
+            let plates = 2 + (hash(ix, iz, 120) < 0.5) as i32;
+            for k in 0..plates {
+                let s = (0.15 + 0.10 * hash(ix, iz + k, 121)) * grow * (1.0 - 0.22 * k as f32);
+                let a = yaw + k as f32 * 2.3;
+                let reach = 0.16 * grow * k as f32;
+                let p = [x + a.cos() * reach, y - 0.01, z + a.sin() * reach];
+                if !w.visible(p, s * 1.2) {
+                    continue;
+                }
+                let tilt = (hash(ix, iz + k, 127) - 0.5) * 0.3;
+                f.put(
+                    Model::CoralTable,
+                    place(p, a, tilt, tilt * 0.5, [s, s * (0.8 + 0.6 * k as f32), s]),
+                    shade(k),
+                )
+                .glowing(0.24)
+                .grounded();
+            }
+        }
+        BRAIN => {
+            // Massive boulder corals, a metre or two across, with a smaller
+            // dome beside the first and an anemone in their lee.
+            let s = (0.13 + 0.09 * hash(ix, iz, 93)) * grow;
+            if w.visible([x, y + 0.05, z], s * 1.5) {
+                let domes = 1 + (hash(ix, iz, 96) < 0.5) as i32;
+                for k in 0..domes {
+                    let a = yaw + k as f32 * 2.4;
+                    let r = s * (1.0 - 0.4 * k as f32);
+                    let p = [
+                        x + a.cos() * s * 1.6 * k as f32,
+                        y - 0.02,
+                        z + a.sin() * s * 1.6 * k as f32,
+                    ];
+                    f.put(
+                        Model::CoralBrain,
+                        place(
+                            p,
+                            a,
+                            0.0,
+                            0.0,
+                            [r, r * (0.75 + 0.3 * hash(ix + k, iz, 97)), r],
+                        ),
+                        brain_hue(ix, iz, 91 + k as u32),
+                    )
+                    .glowing(0.16)
+                    .grounded();
+                }
+                if hash(ix, iz, 98) < 0.6 {
+                    let a = yaw - 1.7;
+                    let p = [x + a.cos() * s * 1.3, y - 0.01, z + a.sin() * s * 1.3];
+                    let r = 0.08 + 0.05 * hash(ix, iz, 99);
+                    f.put(
+                        Model::Anemone,
+                        place(p, a, 0.0, 0.0, [r, r, r]),
+                        reef_hue(ix, iz, 100),
+                    )
                     .moving(anim::SWAY, a, 0.05, 0.8)
                     .glowing(0.24)
                     .grounded();
+                }
             }
         }
-    } else if roll < 0.84 {
-        let hue = if hash(ix, iz, 88) < 0.5 {
-            [0.85, 0.40, 0.52]
-        } else {
-            [0.92, 0.62, 0.26]
-        };
-        let s = 0.10 + 0.12 * hash(ix, iz, 89);
-        f.put(Model::Fan, place([x, y, z], yaw, 0.0, 0.0, [s, s, s]), hue)
-            .moving(anim::SWAY, yaw, 0.15, 0.7)
-            .grounded();
-    } else if roll < 0.9 {
-        // Soft corals: a clump of sea whips, or a few tube sponges, with an
-        // anemone at their foot.
-        if hash(ix, iz, 130) < 0.5 {
-            let s = 0.22 + 0.14 * hash(ix, iz, 131);
-            let tint = hue(132);
+        kind @ (BUSH | FINGER) => {
+            // A stand of bushy heads or of finger coral, one colony grown
+            // into a low hummock.
+            let (model, base) = if kind == BUSH {
+                (Model::CoralBush, 0.26)
+            } else {
+                (Model::CoralFinger, 0.22)
+            };
+            let clumps = 3 + (hash(ix, iz, 123) * 2.0) as i32;
+            for k in 0..clumps {
+                let a = yaw + k as f32 * 2.4;
+                let off = (0.04 + 0.18 * hash(ix + k, iz, 125)) * grow;
+                let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
+                if !w.visible(p, 0.25) {
+                    continue;
+                }
+                let s = (base + 0.12 * hash(ix, iz + k, 126)) * grow;
+                f.put(model, place(p, a, 0.0, 0.0, [s, s, s]), shade(k))
+                    .moving(anim::SWAY, a, 0.015, 0.4)
+                    .glowing(0.28)
+                    .grounded();
+            }
+        }
+        _ => {
+            // Soft corals: sea fans set broadside to the surge that runs in
+            // across the reef toward the window, a clump of sea whips, and
+            // an anemone at their foot.
+            let fans = 1 + (hash(ix, iz, 130) * 2.0) as i32;
+            for k in 0..fans {
+                let p = [
+                    x + (hash(ix + k, iz, 131) - 0.5) * 0.4,
+                    y - 0.01,
+                    z + (hash(ix, iz + k, 132) - 0.5) * 0.2,
+                ];
+                let s = 0.10 + 0.09 * hash(ix + k, iz, 133);
+                if !w.visible(p, s) {
+                    continue;
+                }
+                let hue = [[0.88, 0.32, 0.50], [0.94, 0.58, 0.22], [0.62, 0.36, 0.80]]
+                    [(hash(ix + k, iz, 134) * 3.0) as usize % 3];
+                f.put(
+                    Model::Fan,
+                    place(p, (hash(ix + k, iz, 135) - 0.5) * 0.5, 0.0, 0.0, [s, s, s]),
+                    hue,
+                )
+                .moving(anim::SWAY, yaw + k as f32, 0.12, 0.7)
+                .grounded();
+            }
+            let s = (0.22 + 0.14 * hash(ix, iz, 136)) * grow;
             f.put(
                 Model::SeaWhip,
                 place([x, y - 0.01, z], yaw, 0.0, 0.0, [s, s, s]),
-                tint,
+                shade(0),
             )
             .moving(anim::SWAY, yaw, 0.08, 0.5)
             .glowing(0.2)
             .grounded();
-        } else {
-            let tint = [[0.78, 0.52, 0.70], [0.86, 0.66, 0.36], [0.56, 0.62, 0.84]]
-                [(hash(ix, iz, 133) * 3.0) as usize % 3];
-            for k in 0..3 {
-                let a = k as f32 * 2.1 + yaw;
-                let h = 0.07 + 0.08 * hash(ix, iz, 134 + k);
-                f.put(
-                    Model::Sponge,
-                    place(
-                        [x + a.cos() * 0.04, y - 0.005, z + a.sin() * 0.04],
-                        a,
-                        (hash(ix + k as i32, iz, 137) - 0.5) * 0.3,
-                        0.0,
-                        [0.022, h, 0.022],
-                    ),
-                    tint,
-                )
-                .glowing(0.18)
-                .grounded();
-            }
+            let a = yaw + 2.6;
+            let r = 0.06 + 0.05 * hash(ix, iz, 138);
+            f.put(
+                Model::Anemone,
+                place(
+                    [x + a.cos() * 0.12, y - 0.01, z + a.sin() * 0.12],
+                    a,
+                    0.0,
+                    0.0,
+                    [r, r, r],
+                ),
+                reef_hue(ix, iz, 139),
+            )
+            .moving(anim::SWAY, a, 0.05, 0.8)
+            .glowing(0.24)
+            .grounded();
         }
-        let a = yaw + 2.6;
-        let r = 0.06 + 0.05 * hash(ix, iz, 138);
-        f.put(
-            Model::Anemone,
-            place(
-                [x + a.cos() * 0.12, y - 0.01, z + a.sin() * 0.12],
-                a,
-                0.0,
-                0.0,
-                [r, r, r],
-            ),
-            hue(139),
-        )
-        .moving(anim::SWAY, a, 0.05, 0.8)
-        .glowing(0.24)
-        .grounded();
-    } else if hash(ix, iz, 90) < 0.6 {
-        let s = 0.04 + 0.03 * hash(ix, iz, 91);
-        f.put(
-            Model::Star,
-            place([x, y + 0.005, z], yaw, 0.0, 0.0, [s, s, s]),
-            [0.92, 0.42, 0.26],
-        )
-        .grounded();
-    } else {
-        let s = 0.09 + 0.05 * hash(ix, iz, 92);
-        f.put(
-            Model::Shell,
-            place([x, y + 0.005, z], yaw, PI, 0.0, [s, s, s * 0.8]),
-            [0.90, 0.78, 0.62],
-        )
-        .grounded();
+    }
+    if mound > 0.1 && hash(ix, iz, 140) < 0.6 {
+        reef_fish(f, w, ix, iz, [x, y + 0.12 + 0.10 * grow, z], 0.22 * grow);
     }
 }
+
+/// A swarm of small reef fish hovering over a coral head: orange anthias,
+/// blue-green chromis, yellow damsels or purple anthias, one kind to a swarm.
+/// Each fish is a cut-out card ([`Frame::impostors`], form 5), a quad, and
+/// `vs_impostor` swims it round and about the swarm's centre by the clock,
+/// darting and turning, so the swarm stays in the static cache.
+fn reef_fish(f: &mut Frame, w: &World, ix: i32, iz: i32, centre: [f32; 3], spread: f32) {
+    const KINDS: [[f32; 3]; 4] = [
+        [1.00, 0.48, 0.30],
+        [0.30, 0.78, 0.86],
+        [1.00, 0.84, 0.20],
+        [0.72, 0.42, 0.95],
+    ];
+    if !w.visible(centre, spread * 1.5) {
+        return;
+    }
+    let kind = KINDS[(hash(ix, iz, 141) * 4.0) as usize % 4];
+    let fish = 8 + (hash(ix, iz, 142) * 14.0) as i32;
+    for k in 0..fish {
+        let r = |salt: u32| hash(ix * 37 + k, iz, salt);
+        let length = 0.020 + 0.010 * r(143);
+        let p = [
+            centre[0] + (r(144) - 0.5) * spread,
+            centre[1] + r(145) * spread * 0.6,
+            centre[2] + (r(146) - 0.5) * spread,
+        ];
+        let light = 0.85 + 0.3 * r(147);
+        f.impostors.push(Sprite {
+            place: [p[0], p[1], p[2], length * 0.55],
+            tint: [
+                kind[0] * light,
+                kind[1] * light,
+                kind[2] * light,
+                r(148) * 10.0,
+            ],
+            stretch: [
+                length * 0.5,
+                FISH_CARD,
+                0.0,
+                spread * (0.25 + 0.35 * r(149)),
+            ],
+        });
+    }
+}
+
+/// The impostor form `vs_impostor` swims as a small reef fish.
+const FISH_CARD: f32 = 5.0;
 
 /// The brine flats: pale salt spires and crusted lumps, with the dark pans
 /// between them and the odd brine shrimp glinting over them.
@@ -5974,16 +6156,17 @@ fn great_swimmers(w: &World, f: &mut Frame) {
     }
 }
 
-/// Manta rays flying slowly through the shallows, over the wrecks and among
-/// the ruins of Atlantis, banking as they go; and green turtles rowing low
-/// over the shallows and through the forest.
+/// Manta rays flying slowly through the shallows, over the wrecks, among the
+/// ruins of Atlantis and over the reef, banking as they go; and green turtles
+/// rowing low over the shallows, through the forest and along the reef.
 fn gliders(w: &World, f: &mut Frame) {
     for (k, x) in procession(w, 0.06, 5.5, 340) {
         let z = lane(x, 1.8 + 2.2 * hash(k, 1, 340), side(k, 340));
         let share = w
             .share(x, z, SHALLOWS)
             .max(w.share(x, z, WRECKS))
-            .max(w.share(x, z, ATLANTIS));
+            .max(w.share(x, z, ATLANTIS))
+            .max(w.share(x, z, CORAL));
         if share < 0.4 || hash(k, 2, 340) < 0.35 {
             continue;
         }
@@ -6012,7 +6195,10 @@ fn gliders(w: &World, f: &mut Frame) {
     }
     for (k, x) in procession(w, 0.035, 4.0, 350) {
         let z = lane(x, 1.2 + 2.0 * hash(k, 1, 350), side(k, 350));
-        let share = w.share(x, z, SHALLOWS).max(w.share(x, z, FOREST));
+        let share = w
+            .share(x, z, SHALLOWS)
+            .max(w.share(x, z, FOREST))
+            .max(w.share(x, z, CORAL));
         if share < 0.4 || hash(k, 2, 350) < 0.4 {
             continue;
         }
@@ -7323,7 +7509,8 @@ fn compose(parent: &[[f32; 4]; 3], child: &[[f32; 4]; 3]) -> [[f32; 4]; 3] {
 
 /// Shafts of sunlight slanting down from the surface where it is shallow and
 /// bright enough: through the shallows, between the forest's trees, over the
-/// wrecks, down into the trench and through the leads in the ice. Each is rooted in a cell of a
+/// wrecks and the shallow reef, down into the trench and through the leads in
+/// the ice. Each is rooted in a cell of a
 /// grid fixed in the world, so the boat sails among them; they breathe as the
 /// waves above gather and scatter the light, and sway with them.
 fn shafts(w: &World, f: &mut Frame) {
@@ -7338,7 +7525,7 @@ fn shafts(w: &World, f: &mut Frame) {
             + 0.35 * b.weight(WRECKS)
             + 0.5 * b.weight(ARCTIC)
             + 0.45 * b.weight(TRENCH)
-            + 0.38 * b.weight(CORAL)
+            + 0.45 * b.weight(CORAL)
             + 0.85 * b.weight(SARGASSO)
             + 0.35 * b.weight(BRINE)) as f32;
         if h > bright.min(1.0) * 0.55 {
@@ -8300,10 +8487,16 @@ mod tests {
             }
             let coral = presence(CORAL);
             if coral > 0.0 {
-                let bommie = 0.5 + 0.5 * (TAU * (x * 0.25 + z * 0.25) + 1.1 * detail).sin();
-                let channel = 0.5 + 0.5 * (TAU * (x * 0.125 - z * 0.25) + 0.6 * detail).sin();
-                let knoll = smooth(0.40, 0.78, bommie * (0.55 + 0.45 * channel));
-                shape += coral * (0.18 * h + 0.30 * knoll - 0.10 * channel + 0.08 * detail);
+                let field = 0.5
+                    + 0.22 * (TAU * (x * 0.25 + z * 0.125) + 1.3 * detail).sin()
+                    + 0.20 * (TAU * (x * 0.125 - z * 0.25) + 0.9 * detail).sin()
+                    + 0.12 * (TAU * (x * 0.375 + z * 0.3125) + 2.1 * detail).sin();
+                let mound = smooth(0.50, 0.82, field);
+                let gutter = 1.0 - smooth(0.12, 0.32, field);
+                shape += coral
+                    * (0.15 * h + 0.42 * mound - 0.10 * gutter
+                        + 0.06 * detail * mound
+                        + 0.03 * detail);
             }
             let sargasso = presence(SARGASSO);
             if sargasso > 0.0 {
