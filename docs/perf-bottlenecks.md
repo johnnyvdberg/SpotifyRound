@@ -22,7 +22,7 @@ limits the kiosk is **the render engine's time per frame plus ~2 ms of UI work**
 | 1 | **No early-Z at all on the Pi 5**: Mesa 26.2.2's v3dv never enables the V3D 7.1 early-Z unit, and the corner mask's `Always` depth test would disable it anyway | **0.79 ms median, 0.80 ms worst** (measured with both fixed), 0.7–1.1 ms in every sea; 25 → 4 places over 11 ms | every frame, render engine (rasteriser/TLB throughput) | mask `GreaterEqual` (T1) + v3dv patch (T2); §3.1 |
 | 2 | **The cave's tunnel**: `fs_model` for the vault, 187 instructions at 2 threads, over the whole window | **4.4–5.5 ms at the seven slowest tunnel views**, 2.2 ms on the cave's median place; all of it the fragment shader | cave 0.15; brine, forest, shallows 0.85 | `fs_vault` at 4 threads (T3); §3.2 |
 | 3 | **The city's buildings**: `fs_model` for `CITY_LIGHTS`, 650–667 instructions at 2 threads, for every part of every building | **5.1 ms at city s0 0.45** (the slowest place once early-Z is on), 2.3 ms at arctic s750000 0.15, 1.0 ms on the city's median | city, and legs that look at it | split by part (T5); §3.3 |
-| 4 | **The UI's present path**, outside `hotspots`: three render jobs and a 1.4 ms TFU conversion a frame after the visual's own; cage is not involved (it scans the app's buffers out) | **≈2.0 ms render engine + ≈1.4 ms TFU a displayed frame** | every kiosk frame, every scene | attribute, then drop the copy (T9); §3.8 |
+| 4 | **The UI's present path**, outside `hotspots`: three render jobs and a 1.4 ms TFU conversion a frame after the visual's own; very likely not cage, which appears to scan the app's buffers out | **≈2.0 ms render engine + ≈1.4 ms TFU a displayed frame** | every kiosk frame, every scene | attribute, then drop the copy (T9); §3.8 |
 | 5 | **Open water above the horizon**: the caustic ceiling (seven `sin`s, a `pow`, a fetch per pixel) and the glint | **0.84–1.01 ms median**, 1.0–1.4 ms in six seas; the ceiling ~0.7 ms of it, the glint 0.10 | every sea, most near the surface | cheaper ceiling (T6); §3.4 |
 | 6 | **The vents' plumes**: 8–12 stacked additive `GLOW` discs per chimney | **up to 3.75 ms**; 2.5–3.4 ms at vents 0.15/0.45, 3.2 ms at abyss s500000 0.85 | vents; legs that look into them | one column per plume (T4); §3.6 |
 | 7 | **Glass**: `fs_glass` 506 instructions at 2 threads; its `vs_model` compiled for any animation, 1078/640 instructions | **1.5 ms on the bloom's median**, up to 3.7 ms; half of it the fragment shader | bloom, abyss, wrecks, arctic | specialise by material and animation (T7); §3.7 |
@@ -177,7 +177,7 @@ Kiosk threads: UI thread 85.6 ms/s, visualizer 29.9 ms/s; cage 15.9 ms/s. The gl
 (`globe::tests::frame_time`, kiosk frozen) is one render job and ~10.2 ms of render engine a
 frame; its uniform upload is a TFU job of ~40 µs. So the other **three render jobs a frame cost
 ≈2.0 ms** of render engine, and besides the globe's upload there is **one TFU job a frame of
-≈1.4 ms**: the UI's present path (§3.8; cage scans the app's buffers out). For reference
+≈1.4 ms**: the UI's present path (§3.8; cage appears to scan the app's buffers out). For reference
 (`gpu_cost::gpu_cost`, kiosk frozen, 1080²): a pass that only clears and stores costs 0.40 ms, one
 that loads and stores 0.77 ms, a clear plus one full-screen textured quad 0.79 ms.
 
@@ -331,27 +331,30 @@ less variety than the per-pixel rooms; check the city's previews and `screenshot
 **Evidence.** Leaving the water out saves 1.74 ms median (up to 3.03 ms: abyss, atlantis,
 arctic and coral at 0.45, where most of the window is open water). The existing
 `CHEAP_BACKGROUND` switch (`DIVE3D_SKIP=16384`, a uniform `debug` bit in the same pipeline: the
-depth gradient only, no beam, glint, ceiling or sky) saves **0.84–1.01 ms median** (two sessions),
-1.94 ms max, and takes the places over 11 ms from 26 to 14. So of the water's 1.74 ms, ~0.9 ms is
+depth gradient only, no beam, glint, ceiling or sky) saves **0.84–1.01 ms median** (three sessions;
+1.00 ms of render engine), 1.94 ms max, and takes the places over 11 ms from 26 to 14 (25 to 13 in
+another session). So of the water's 1.74 ms, ~0.9 ms is
 its shader's work and ~0.8 ms is the pass itself (rasterising, depth-testing and writing the
 uncovered pixels, which a 3-instruction shader would still pay).
 
-Where the shader's 0.9 ms goes, from two throwaway builds measured in one session against the
-same baseline (168 places each):
+Where the shader's 0.9 ms goes, from three throwaway builds, each measured in one session
+against its own baseline (168 places each):
 
 | build | median saved | per sea (median saved) |
 |---|---:|---|
 | below the horizon, return `water_at` at once (what a horizon split would do) | **0.02** (render engine) | nothing anywhere |
+| `water_at` (gradient, sun, searchlight beam, city glow) replaced by the bare gradient | 0.05 | within ±0.25 everywhere, as many seas slower as faster |
 | the open-water glint removed (`SKY` 0 and 2 only) | 0.10 | abyss 0.37, wrecks 0.34, arctic 0.33, bloom 0.33, vents 0.15, the rest 0 |
 | everything but the gradient (`CHEAP_BACKGROUND`) | 0.84 | atlantis 1.43, brine 1.41, wrecks 1.41, trench 1.33, coral 1.08, arctic 1.06, vents 0.92, shallows 0.83, sargasso 0.82, abyss 0.81, city 0.70, bloom 0.53, cave 0.48, forest 0.35 |
 
 The pixels below the horizon already skip the expensive terms (they sit behind `up > 0` and
-`dir.y > 0` branches that whole 16-pixel groups take together), so **the cost is above the
-horizon**, and in most seas it is **`water_ceiling`**, the underside of the surface drawn while
-the boat is within six units of it (`SKY` 1): ~0.7 ms median and 1.0–1.4 ms in atlantis, brine,
-wrecks, trench, coral and arctic. Per pixel it is one caustic fetch, seven `sin`s (swell ×3, chop,
-sun, fine ×2), a `pow(…, 18)` and the wash toward the open water; the glint (`SKY` 0) is four
-`sin`s and a `pow(…, 14)`.
+`dir.y > 0` branches that whole 16-pixel groups take together), and `water_at`, which every water
+pixel runs, is cheap. So **the cost is above the horizon**, and what is left once the glint and `water_at` are
+accounted for is **`water_ceiling`**, the underside of the surface drawn while the boat is within
+six units of it (`SKY` 1): ~0.7 ms median and 1.0–1.4 ms in atlantis, brine, wrecks, trench, coral
+and arctic (the trench's 1.33 ms with no glint at all is the ceiling alone). Per pixel it is one
+caustic fetch, seven `sin`s (swell ×3, chop, sun, fine ×2), a `pow(…, 18)` and the wash toward the
+open water; the glint (`SKY` 0) is four `sin`s and a `pow(…, 14)`.
 
 **Root cause.** One fragment shader per sky (`SKY` override, `sky_mode` on the CPU):
 
@@ -489,13 +492,15 @@ cost **≈2.0 ms a frame**. Of the two TFU jobs a frame, one is the visual's own
 the other takes **≈1.4 ms** (84 ms/s in all), about what the TFU needs to convert a whole 1080²
 RGBA8 image between the linear and the tiled layouts.
 
-**Cage is not the cost: it already scans the app's buffers out.** Read-only, without touching
+**Cage is very likely not the cost: it appears to scan the app's buffers out.** Read-only, without touching
 the kiosk: `kmsprint` on the Pi shows one active plane on the HDMI output (no cursor plane), and
 `DRM_IOCTL_MODE_GETFB2` on the framebuffers it shows (no DRM master needed; a 40-line Python
 `ioctl`, run with the system `python3`) gives four framebuffers in rotation, each
 **1080×1080 `ARGB8888`, linear, pitch 4352**. wlroots renders its own output buffers as
-`XRGB8888` unless told otherwise, and cage does not; four ARGB buffers in rotation are the
-client's swapchain. So cage scans the app's buffers out directly and does no GPU work a frame.
+`XRGB8888` unless told otherwise, and cage does not; four ARGB buffers in rotation are therefore
+the client's swapchain, and cage is scanning them out directly, with no GPU work of its own a frame.
+(Inferred from the format; wlroots' debug log, `cage -D`, or the client's `WAYLAND_DEBUG` would
+confirm it, both of which need the kiosk restarted.)
 (The panel's mode is 1080×1080 at **60.07 Hz**, which matters for §3.9's pacing note.)
 
 What is left is the app's own present path, after the visual's frame: Slint's frame (Skia drawing
@@ -926,8 +931,8 @@ driver unless the brief says otherwise.
   remove any full-screen copy or layout conversion among them: up to ≈1.2 ms of render engine and
   the 1.4 ms TFU job a frame.
 - **Known.** The display scans out the app's own swapchain buffers (four 1080² `ARGB8888` linear
-  framebuffers in rotation, read with `kmsprint` and `DRM_IOCTL_MODE_GETFB2`; §3.8), so cage does
-  no GPU work a frame. Slint draws with Skia on the shared wgpu device, and the visual's texture reaches
+  framebuffers in rotation, read with `kmsprint` and `DRM_IOCTL_MODE_GETFB2`; §3.8), so cage very
+  likely does no GPU work a frame (confirm with `cage -D` when the kiosk is restarted anyway). Slint draws with Skia on the shared wgpu device, and the visual's texture reaches
   it as a `wgpu::Texture` (`ui.rs`, `set_idle_frames`). A rendering notifier makes Slint add a
   clear pass of its own (`ui.rs`, `watch_rendering_if_asked`), so do not add one to measure.
   `SPOTIFY_ROUND_SCENE=nautilus` fixes the dive on screen; `SPOTIFY_ROUND_CONFIG_DIR` points a
@@ -995,6 +1000,6 @@ Measured in this analysis unless a section of `docs/pipeline-optimization.md` (P
 | Coarser terrain mesh | −0.33 ms for a visibly softer seabed; render scale is the better trade. | PO §15 |
 | The cheap and shimmer water pipelines as the default | They drop the ceiling and the glint, which today's shallow seas show (§3.4); T6 keeps them and makes them cheaper. | PO §13, §14 |
 | MSAA; anisotropic filtering | The dive renders one sample (`SAMPLES = 1`) and samples without anisotropy (`anisotropy_clamp: 1`); either would multiply the per-pixel cost this document is about. | — |
-| A KMS overlay for the dive; the LinuxKMS backend | wgpu 30 cannot export or render into an imported image; the LinuxKMS backend does not carry the dive's texture. And cage already scans the app's buffers out (§3.8): what an overlay could still save is Slint's own full-screen draw of the sea, which T9 looks at inside the app. | PO §68, §71, §3.8 |
+| A KMS overlay for the dive; the LinuxKMS backend | wgpu 30 cannot export or render into an imported image; the LinuxKMS backend does not carry the dive's texture. And cage very likely scans the app's buffers out already (§3.8): what an overlay could still save is Slint's own full-screen draw of the sea, which T9 looks at inside the app. | PO §68, §71, §3.8 |
 | A lower render scale as the fix | Deployed as the adaptive controller (`SPOTIFY_ROUND_ADAPTIVE`, 0.6–1.0); it trades sharpness for time and stays a safety net, not the plan. | PO §70, §72 |
 | A depth pre-pass | Would add a second geometry pass (~1.3 ms of geometry today) to save shading that the TLB already skips for occluded quads. | §2, §3.1 |
