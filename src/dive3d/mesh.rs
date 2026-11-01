@@ -1045,9 +1045,9 @@ impl Model {
             Model::Lobster => lobster(),
             Model::Seal => seal(false),
             Model::SeaLion => seal(true),
-            Model::Statue => statue(true),
-            Model::Torso => statue(false),
-            Model::Head => colossal_head(),
+            Model::Statue => cast(SOPHOCLES, statue(true)),
+            Model::Torso => cast(BELVEDERE_TORSO, statue(false)),
+            Model::Head => cast(BEARDED_HEAD, colossal_head()),
             Model::Amphora => amphora(),
             Model::Trireme => trireme(),
             Model::Aqueduct => aqueduct(),
@@ -4328,6 +4328,70 @@ fn statue(head: bool) -> Mesh {
         [1.0; 3],
     ));
     m
+}
+
+/// Imported models (assets/models/CREDITS.md, rebuilt by deploy/models.sh):
+/// scans of the SMK's public-domain casts, reduced offline to 3,000
+/// triangles.
+const SOPHOCLES: &str = include_str!("../../assets/models/sophocles.obj");
+const BELVEDERE_TORSO: &str = include_str!("../../assets/models/belvedere-torso.obj");
+const BEARDED_HEAD: &str = include_str!("../../assets/models/bearded-head.obj");
+
+/// The scanned cast `obj` in the place of `like`, the procedural model it
+/// replaces: as tall and centred as it, each vertex taking the `aux` of
+/// `like`'s nearest so the LODs and sway work unchanged, the marble crusted
+/// with the sea's growth from the foot up.
+fn cast(obj: &str, like: Mesh) -> Mesh {
+    let mut pos = vec![];
+    let mut faces = vec![];
+    for line in obj.lines() {
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("v") => {
+                let v: Vec<f32> = words.map(|w| w.parse().unwrap_or(0.0)).collect();
+                // The files keep their source's handedness: z flips back.
+                pos.push(Vec3::new(v[0], v[1], -v[2]));
+            }
+            Some("f") => faces.extend(words.map(|w| w.parse::<u32>().unwrap_or(1) - 1)),
+            _ => {}
+        }
+    }
+    let bounds = |p: &mut dyn Iterator<Item = Vec3>| {
+        p.fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| (lo.min(q), hi.max(q)))
+    };
+    let (lo, hi) = bounds(&mut pos.iter().copied());
+    let (want_lo, want_hi) = bounds(&mut like.vertices.iter().map(|v| Vec3::from_array(v.pos)));
+    let k = (want_hi[1] - want_lo[1]) / (hi[1] - lo[1]);
+    let (centre, want) = ((lo + hi) * 0.5, (want_lo + want_hi) * 0.5);
+    let mut out = Mesh::default();
+    for p in pos {
+        let p = want + (p - centre) * k;
+        let aux = like
+            .vertices
+            .iter()
+            .min_by(|a, b| {
+                let d = |v: &Vertex| Vec3::from_array(v.pos).distance_squared(p);
+                d(a).total_cmp(&d(b))
+            })
+            .map_or([0.0; 2], |v| v.aux);
+        let y = (p[1] - want_lo[1]) / (want_hi[1] - want_lo[1]);
+        let crust =
+            (1.0 - y / 0.4).clamp(0.0, 1.0) * (0.6 + 0.4 * (p[0] * 37.0 + y * 29.0).sin().abs());
+        let colour = [1.0 - 0.45 * crust, 1.0 - 0.32 * crust, 1.0 - 0.42 * crust];
+        out.vertex(p.to_array(), colour, aux);
+    }
+    out.indices = faces;
+    let mut out = out.smooth();
+    // A vertex the reduction left only on collapsed faces: outward.
+    for v in &mut out.vertices {
+        if v.normal == [0.0; 3] {
+            v.normal = (Vec3::from_array(v.pos) - Vec3::new(want[0], v.pos[1], want[2]))
+                .try_normalize()
+                .unwrap_or(Vec3::Y)
+                .to_array();
+        }
+    }
+    out
 }
 
 /// A colossal head, the fallen colossus's: a unit across, its face to +x,

@@ -1,0 +1,4 @@
+# file	triangles	up axis (0 x, 1 y, 2 z)	fit (height or length)	turn (degrees about y)	source of the original
+sophocles.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/rx913v90j_KAS633_small.stl
+belvedere-torso.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/zs25xf26x_KAS402_small.stl
+bearded-head.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/8k71nn58x_KMS5962_small.stl

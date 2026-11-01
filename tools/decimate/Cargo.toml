@@ -1,0 +1,11 @@
+# Offline only: reduces a scanned model for assets/models (deploy/models.sh).
+[package]
+name = "decimate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+meshopt = "0.4"

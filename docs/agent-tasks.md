@@ -88,6 +88,8 @@ run at once**, from different groups. Model tier is a suggestion.
 | V8 | lostcity | Lost city: travel through large corridors with detailed interiors | Opus | todo |
 | V9 | biomes | Three new biomes unlike the current ones | Opus | todo |
 | V10 | detail | More detail in every biome with headroom | Sonnet | todo |
+| M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started on `v6-atlantis` (statues are SMK scans; `deploy/models.sh`) |
+| M2 | models | Quaternius ships as worn wrecks | Opus | todo |
 
 Order: tooling and perf first (they make room and make change visible), then V1 (sets the visible
 range everything else is built for), then V3/V4, V5, V6/V7, V8, V9, V10.
@@ -187,6 +189,24 @@ requirements, previews and benchmarks.
 With the feature costs (I2) and the per-sea timings, add detail to every sea that has room under
 the 11 ms budget: more variety in placement, small props, textures, motion. Stop where the budget
 ends, and record what each addition costs.
+
+### M1. Imported models
+
+The user wants open models in place of hand-built ones wherever a better one
+exists, from one consistent source: Quaternius (CC0, coloured low-poly,
+animated; e.g. https://quaternius.com/packs/cutefish.html). Statues are scans
+of the SMK's public-domain casts (`assets/models/CREDITS.md`). List each
+original in `assets/models/models.tsv`; `deploy/models.sh` fetches it into
+`target/models/` and reduces it with `tools/decimate`, so a higher quality
+level later is a bigger triangle count and a rerun. Keep the procedural model
+as the template the import is fitted to (`cast` in `mesh.rs`), and keep its
+animation working (`aux`). Each import gets a skip switch and a measured row.
+
+### M2. Ships as wrecks
+
+Quaternius's ships pack (https://quaternius.com/packs/ships.html) as wrecks:
+worn down first, with broken masts, holed and listing hulls, growth and silt,
+bedded by `world::bed` rules like the procedural wrecks.
 
 ## Notes for the user
 

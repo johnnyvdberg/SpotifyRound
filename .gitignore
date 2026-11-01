@@ -5,3 +5,4 @@
 .idea/db-forest-config.xml
 .claude/
 .worktrees/
+/tools/decimate/target
