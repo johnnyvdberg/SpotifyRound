@@ -143,6 +143,15 @@ frame with everything: median 6.94 ms over 13938 paired frames
 | the blue hole's stalactites | `DIVE3D_SKIP_ELEMENTS` bit 17 | hole 0.02 | 0.02 | 0.03 |
 | the blue hole's halocline | bit 18 | hole 0.01 | 0.01 | 0.01 |
 
+### Near detail (V10)
+
+`run v10-off DIVE3D_SKIP_ELEMENTS=524288` against `run v10-on` on the Pi, all 204 places
+(`docs/handoff/v10.md`):
+
+| feature | switch | seas (median ms there) | median ms | worst ms |
+|---|---|---|---|---|
+| near detail: pebbles, shells, stars, urchins, sea cucumbers, worm tubes | `DIVE3D_SKIP_ELEMENTS` bit 19 | every sea but the coral, 0.07-0.25 | 0.13 | 0.42 (arctic 0 @0.85) |
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |
