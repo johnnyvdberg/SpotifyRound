@@ -7774,11 +7774,10 @@ fn wildlife(w: &World, f: &mut Frame) {
     for c in &LIFE {
         let salt = c.salt;
         for (k, x) in procession(w, c.speed, c.spacing, salt) {
-            let z = lane(
-                x,
-                c.lane.0 + (c.lane.1 - c.lane.0) * hash(k, 1, salt),
-                side(k, salt),
-            );
+            // To port, where the window looks: the helm swings the boat
+            // at most fifty degrees off its track, so starboard is never
+            // seen and an animal placed there is work for nothing.
+            let z = lane(x, c.lane.0 + (c.lane.1 - c.lane.0) * hash(k, 1, salt), 1.0);
             let here = World::by_biome(&w.biome(x, z), c.seas);
             if here < 0.15 || hash(k, 2, salt) > here {
                 continue;
