@@ -544,7 +544,7 @@ fn water_at(dir: vec3<f32>) -> vec3<f32> {
 }
 
 // The underside of the water surface, seen from below: the bright caustic
-// web the waves focus, a slow swell and the sun's sheen. `dir` is the view
+// web the waves focus and a slow swell. `dir` is the view
 // ray; the surface lies at y = 0, so the pixel is that intersection. This is
 // the ceiling of a shallow sea and it must read as water, not sky; the sky
 // is only what the surface opens on to inside Snell's window.
@@ -562,20 +562,15 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     let swell = sin(at.x * 0.9 + t * 0.30)
         + 0.7 * sin(at.y * 0.8 - t * 0.26)
         + 0.3 * sin((at.x + at.y) * 1.7 + t * 0.50);
-    let chop = sin(at.x * 2.2 - at.y * 1.8 - t * 0.6);
     let base = mix(g.deep.rgb, g.water.rgb, 0.50) * 1.05;
-    let sun = 0.5 + 0.5 * sin(swell * 0.5);
+    // The swell's light, from its sines' sum alone: the sine of that sum
+    // was only ever read near its straight part.
+    let sun = 0.5 + 0.25 * swell;
     var colour = base * (0.975 + 0.05 * web) * (0.82 + 0.20 * sun)
         + vec3<f32>(0.18, 0.32, 0.31) * web * (0.06 + 0.10 * g.sun.w);
-    // A soft glint where a wave face turns toward the sun; close to the
-    // window, not a net across the whole dome.
-    let sheen = pow(max(0.0, 0.5 + 0.5 * chop), 18.0);
-    colour += vec3<f32>(0.86, 0.92, 0.82) * sheen * 0.05
-        * (0.25 + g.sun.w) * smooth01(10.0, 2.0, reach);
-    // Fine wave cells close to the window: the surface's own ripples, which
-    // the caustic web alone is too smooth to show.
-    let fine = 0.5 + 0.5 * sin(at.x * 3.7 + t * 1.3) * sin(at.y * 3.1 - t * 1.1);
-    colour *= 0.96 + 0.04 * fine * smooth01(18.0, 3.0, reach);
+    // (The sheen of the wave faces and the fine ripples that once lay over
+    // it, three sines and a `pow`, moved no pixel by more than 8/255 once the
+    // wash below had been laid over them, and cost a sixth of the shader.)
     // Keep the ceiling a backdrop: wash it toward the open water so the
     // caustics never compete with the scene in front of them, and dissolve
     // the horizon end into the water's own haze.

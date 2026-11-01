@@ -8,13 +8,13 @@ pipeline                         entry          stage   inst thr loops unif temp
 Dive3d water #0                  fs_background  FS       229   4     0   74    19        0:0    1   12
 Dive3d water #0                  vs_background  VS        36   4     0   24     6        0:0    0    1
 Dive3d water #0                  vs_background  VS-bin    33   4     0   23     7        0:0    0    0
-Dive3d water #1                  fs_background  FS       318   4     0  106    22        0:0    0   15
+Dive3d water #1                  fs_background  FS       264   4     0   87    21        0:0    0   16
 Dive3d water #1                  vs_background  VS        36   4     0   24     6        0:0    0    1
 Dive3d water #1                  vs_background  VS-bin    33   4     0   23     7        0:0    0    0
 Dive3d water #2                  fs_background  FS       321   2     0   98    19        0:0    1   26
 Dive3d water #2                  vs_background  VS        36   4     0   24     6        0:0    0    1
 Dive3d water #2                  vs_background  VS-bin    33   4     0   23     7        0:0    0    0
-Dive3d water #3                  fs_background  FS       398   2     0  133    28        0:0    0   23
+Dive3d water #3                  fs_background  FS       350   2     0  114    27        0:0    0   23
 Dive3d water #3                  vs_background  VS        36   4     0   24     6        0:0    0    1
 Dive3d water #3                  vs_background  VS-bin    33   4     0   23     7        0:0    0    0
 Dive3d water, cheap #0           fs_background_cheap FS       102   4     0   28    10        0:0    0   18
