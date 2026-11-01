@@ -529,12 +529,14 @@ fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f
     }
     let atlantis = weight(ATLANTIS);
     if atlantis > 0.0 {
-        // Level city terraces: broad plateaus in x and z, with soft risers
-        // between them, so the paving keeps a clear, flat floor.
-        let terrace =
-            |v: f32| 2.0 * smooth(-0.22, 0.22, (TAU * v * 0.25 + 0.25 * detail).sin()) - 1.0;
-        shape +=
-            atlantis * (-0.11 * h + 0.22 * terrace(x) + 0.18 * terrace(z * 2.0) + 0.02 * detail);
+        // A rolling seascape that has buried a city: long, low swells of
+        // silt across it and gentle mounds where its ruins lie under the
+        // drift, never level floors with risers. What stands on it is
+        // seated by the bed rules (`seat`), as on any other seabed.
+        let swell = (TAU * (x * 0.125 + z * 0.0625) + 0.9 * detail).sin()
+            + 0.6 * (TAU * (x * 0.0625 - z * 0.1875) + 0.5 * detail).sin();
+        let mounds = smooth(0.40, 0.80, 0.5 + 0.5 * detail);
+        shape += atlantis * (0.06 * h + 0.09 * swell + 0.16 * mounds + 0.04 * detail);
     }
     let cave = weight(CAVE);
     if cave > 0.0 {
@@ -1757,7 +1759,9 @@ trait Tweak {
     /// keeps its texture: glass is never textured. The fourth component,
     /// the instance's longest axis, is kept.
     fn patterned(&mut self, pattern: [f32; 3]) -> &mut Self;
-    /// Marked as debris ([`DEBRIS`]): last, as texturing clears the mark.
+    /// Part of scenery element `e` (one of [`element`]): a still thing only.
+    fn element(&mut self, e: u32) -> &mut Self;
+    /// Part of the debris ([`element::DEBRIS`]).
     fn debris(&mut self) -> &mut Self;
 }
 
@@ -1786,9 +1790,13 @@ impl Tweak for Instance {
         self.surface = [pattern[0], pattern[1], pattern[2], self.surface[3]];
         self
     }
-    fn debris(&mut self) -> &mut Self {
-        self.surface[3] = DEBRIS;
+    fn element(&mut self, e: u32) -> &mut Self {
+        debug_assert!(self.anim[0] == 0.0, "an element is still");
+        self.anim[1] = e as f32;
         self
+    }
+    fn debris(&mut self) -> &mut Self {
+        self.element(element::DEBRIS)
     }
 }
 
@@ -1829,6 +1837,9 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::Ray => carried(Surface::Skin, 2.0),
         Model::Crab | Model::Lobster => carried(Surface::Coral, 2.0),
         Model::Seal | Model::SeaLion => carried(Surface::Skin, 4.0),
+        Model::Trireme => carried(Surface::Wood, 3.0),
+        Model::Amphora => carried(Surface::Coral, 1.5),
+        Model::Mosaic => fixed(Surface::Plain, 1.0),
         Model::Coral | Model::CoralFinger | Model::CoralBush => carried(Surface::Coral, 2.0),
         Model::CoralBrain => carried(Surface::Brain, 1.0),
         Model::Anemone | Model::SeaWhip => carried(Surface::Skin, 3.0),
@@ -2297,13 +2308,14 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body, the jellyfish's swimming and the
     // four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 12] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 13] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
         (wrecks, wood),
         (trench, rock),
         (ruins, marble),
+        (atlantis, marble),
         (cave, rock),
         (polar, None),
         (kelp, None),
@@ -2328,9 +2340,9 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 12] = [
-        "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "cave", "polar", "kelp", "forest",
-        "drifters", "city",
+    const STATIC_NAMES: [&str; 13] = [
+        "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "atlantis", "cave", "polar",
+        "kelp", "forest", "drifters", "city",
     ];
     #[cfg(test)]
     const STEP_NAMES: [&str; 14] = [
@@ -4062,6 +4074,9 @@ fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f
 /// whose fire lights the drowned city.
 fn ruins(w: &World, f: &mut Frame) {
     let marble = [0.48, 0.46, 0.42];
+    // Clear of Atlantis' plan (`atlantis`), which stands among them.
+    let plan = acropolis(w);
+    let clear = |x: f32, z: f32, r: f32| plan.is_none_or(|c| clear_of_plan(c, x, z, r));
     for &(ix, iz, x, z) in &cells(w, 0.55, 1.0, 16.0, 70) {
         // Colonnades stand in rows: whole rows of cells, and gaps between.
         if hash(0, iz, 71) < 0.45 || w.share(x, z, ATLANTIS) < hash(ix, iz, 72) * 0.5 + 0.4 {
@@ -4073,7 +4088,7 @@ fn ruins(w: &World, f: &mut Frame) {
         }
         let x = (ix as f32 + 0.5) * 0.55;
         let z = (iz as f32 + 0.5) * 0.55;
-        if (z - corridor(x)).abs() < 0.5 {
+        if (z - corridor(x)).abs() < 0.5 || !clear(x, z, 0.1) {
             continue;
         }
         let r = 0.055;
@@ -4206,6 +4221,9 @@ fn ruins(w: &World, f: &mut Frame) {
             continue;
         }
         let s = 1.4 + 0.4 * hash(ix, iz, 82);
+        if !clear(x, z, s * 0.6) {
+            continue;
+        }
         // Built on ground level enough to build on, not across a bank.
         let Some(here) = seat(w, x, z, s * 0.5, &bed::BUILT) else {
             continue;
@@ -4410,6 +4428,561 @@ fn ruins(w: &World, f: &mut Frame) {
 /// beyond, whose towers stand as silhouettes and lit windows in the haze.
 /// The split is across the corridor, fixed in the world, so the two grids
 /// never put a tower in the same place whichever way the window turns.
+/// How far to port of the corridor Atlantis' acropolis stands, at the middle
+/// of its leg: the boat passes it at the window, inside the middle ring and
+/// clear of the inner one, which would otherwise wall the window off.
+const ACROPOLIS_ABEAM: f32 = 5.0;
+/// The acropolis's platform, as far out as its stair's foot.
+const ACROPOLIS: f32 = 1.3;
+/// Plato's three ring walls about the acropolis (Critias 116): the innermost
+/// clad in orichalcum, the middle in tin, the outer in brass; radius, colour,
+/// height above the ground, and whether it is clad in metal. Each either
+/// keeps well clear of the corridor (the inner, 2.6 off it) or crosses it
+/// steeply through a gateway (the middle and outer): a ring running nearly
+/// along the corridor would wall the window off.
+const RING_WALLS: [(f32, [f32; 3], f32, bool); 3] = [
+    (2.4, [0.78, 0.44, 0.22], 0.40, true),
+    (6.6, [0.46, 0.47, 0.49], 0.36, false),
+    (8.6, [0.55, 0.42, 0.18], 0.32, true),
+];
+/// The ring canals between the walls, and how wide.
+const CANALS: [f32; 2] = [3.25, 7.6];
+const CANAL_WIDE: f32 = 0.55;
+/// Where the harbour's ships lie, from and to.
+const HARBOUR: (f32, f32) = (9.0, 10.5);
+/// The walls stand open where the corridor passes, this far either side.
+const GATEWAY: f32 = 1.3;
+/// How far to port of the corridor the aqueduct runs.
+const AQUEDUCT_ABEAM: f32 = 3.0;
+
+/// The middle of the Atlantis leg nearest the camera, on the ground: the
+/// acropolis. Atlantis is a city of rings round it, so every element is
+/// placed by its distance from here.
+fn acropolis(w: &World) -> Option<[f32; 2]> {
+    let leg = crate::voyage::LEG as f32;
+    let k0 = (w.camera() / leg).floor() as i32;
+    (k0 - 1..=k0 + 1)
+        .filter(|&k| w.seabed.order[k.rem_euclid(BIOMES as i32) as usize] == ATLANTIS)
+        .map(|k| {
+            let x = (k as f32 + 0.45) * leg;
+            [x, corridor(x) + ACROPOLIS_ABEAM]
+        })
+        .min_by(|a, b| {
+            (a[0] - w.camera())
+                .abs()
+                .total_cmp(&(b[0] - w.camera()).abs())
+        })
+}
+
+/// Whether a thing `radius` round at (x, z) keeps clear of the city plan
+/// about `c`: the acropolis, the ring walls and canals, and the aqueduct's
+/// line beside the corridor. The older ruins (`ruins`) stand only where it
+/// does.
+fn clear_of_plan(c: [f32; 2], x: f32, z: f32, radius: f32) -> bool {
+    let d = (x - c[0]).hypot(z - c[1]);
+    let near = |r: f32, half: f32| (d - r).abs() < half + radius;
+    let aqueduct = d > RING_WALLS[1].0 - 0.3
+        && d < RING_WALLS[2].0 - 0.3
+        && (z - corridor(x) - AQUEDUCT_ABEAM).abs() < 0.2 + radius;
+    d > ACROPOLIS + 0.75 + radius
+        && !RING_WALLS.iter().any(|&(r, ..)| near(r, 0.1))
+        && !CANALS.iter().any(|&r| near(r, CANAL_WIDE * 0.5 + 0.05))
+        && !aqueduct
+}
+
+/// The yaw that turns a model's +x along the direction (dx, dz).
+fn yaw_along(dx: f32, dz: f32) -> f32 {
+    (-dz).atan2(dx)
+}
+
+/// Where the corridor crosses the circle of `radius` about `c`, by x.
+fn crossings(c: [f32; 2], radius: f32) -> Vec<f32> {
+    let off = |x: f32| (x - c[0]).hypot(corridor(x) - c[1]) - radius;
+    let mut out = Vec::new();
+    let mut x = c[0] - radius - 3.0;
+    while x < c[0] + radius + 3.0 {
+        if off(x) * off(x + 0.05) <= 0.0 {
+            out.push(x + 0.025);
+        }
+        x += 0.05;
+    }
+    out
+}
+
+/// Atlantis as Plato tells it (V6): the acropolis with its round temple and
+/// great stair, the fallen colossus at its foot, three ring walls clad in
+/// orichalcum, tin and brass with ring canals between them and a bronze gate
+/// where the corridor passes the middle one, an avenue of statues and
+/// inscribed stelae with mosaic floors along the corridor inside it, an
+/// aqueduct beside the corridor on the way in and out, and beyond the outer
+/// wall the harbour, with sunken triremes among fields of amphorae and the
+/// broken lighthouse at its mouth. Every element is a `world::element`.
+fn atlantis(w: &World, f: &mut Frame) {
+    let Some(c) = acropolis(w) else {
+        return;
+    };
+    // Each element only where Atlantis has the seabed, fading with it.
+    let city = |f: &mut Frame, x: f32, z: f32| {
+        let share = w.share(x, z, ATLANTIS);
+        f.fade = fade(share, 0.5);
+        share >= 0.5
+    };
+    let marble = [0.50, 0.48, 0.44];
+    let port = |x: f32, z: f32| z - corridor(x);
+    let from = |x: f32, z: f32| (x - c[0]).hypot(z - c[1]);
+
+    // The acropolis: a round platform, its temple a ring of columns about
+    // the god's statue, and the great stair down to the corridor's side.
+    let r = ACROPOLIS;
+    let mut low = f32::MAX;
+    let mut high = f32::MIN;
+    for k in 0..8 {
+        let a = k as f32 / 8.0 * TAU;
+        let g = w.ground(c[0] + a.cos() * r, c[1] + a.sin() * r);
+        low = low.min(g);
+        high = high.max(g);
+    }
+    let top = high.max(w.ground(c[0], c[1])) + 0.12;
+    let centre = [c[0], top, c[1]];
+    if city(f, c[0], c[1]) && w.visible(centre, r + 0.8) {
+        f.put(
+            Model::Cylinder,
+            between([c[0], low - 0.25, c[1]], centre, r),
+            [0.44, 0.42, 0.38],
+        )
+        .grounded()
+        .element(element::ACROPOLIS);
+        for k in 0..10 {
+            let a = k as f32 / 10.0 * TAU + 0.15;
+            let p = [c[0] + a.cos() * 0.8, top, c[1] + a.sin() * 0.8];
+            let gone = hash(k, 0, 1500);
+            let h = if gone < 0.3 { 0.15 + gone } else { 0.62 };
+            f.put(
+                Model::Shaft,
+                place(p, 0.0, 0.0, 0.0, [0.05, h, 0.05]),
+                marble,
+            )
+            .element(element::ACROPOLIS);
+            if gone >= 0.3 {
+                f.put(
+                    Model::Capital,
+                    place([p[0], top + h, p[2]], 0.0, 0.0, 0.0, [0.05, 0.035, 0.05]),
+                    marble,
+                )
+                .element(element::ACROPOLIS);
+            }
+        }
+        // Poseidon in his temple, facing his stair.
+        f.put(
+            Model::Statue,
+            place(centre, PI * 0.5, 0.0, 0.0, [0.75; 3]),
+            [0.56, 0.54, 0.50],
+        )
+        .element(element::ACROPOLIS);
+        // The stair: broad steps down from the platform toward the corridor.
+        let steps = 7;
+        for s in 0..steps {
+            let t = s as f32 / steps as f32;
+            let z = c[1] - r - t * 0.55;
+            let floor = w.ground(c[0], z);
+            let y = top + (floor - top) * (t + 1.0 / steps as f32);
+            let y0 = floor.min(y) - 0.1;
+            f.put(
+                Model::Box,
+                place(
+                    [c[0], (y + y0) * 0.5, z],
+                    0.0,
+                    0.0,
+                    0.0,
+                    [0.45 - 0.02 * t, (y - y0) * 0.5, 0.045],
+                ),
+                marble,
+            )
+            .grounded()
+            .element(element::STAIR);
+        }
+    }
+
+    // The fallen colossus beside the stair's foot, inside the inner wall: on
+    // its back along the ring, sunk a third, its head rolled away.
+    {
+        let a = -PI * 0.5 + 0.55;
+        let (x, z) = (c[0] + a.cos() * 1.95, c[1] + a.sin() * 1.95);
+        let y = w.ground(x, z);
+        if city(f, x, z) && w.visible([x, y, z], 1.2) {
+            let along = a + PI * 0.5;
+            let yaw = yaw_along(along.cos(), along.sin());
+            f.put(
+                Model::Torso,
+                place([x, y + 0.05, z], yaw, -PI * 0.5, 0.15, [1.5; 3]),
+                [0.52, 0.50, 0.46],
+            )
+            .grounded()
+            .element(element::COLOSSUS);
+            let (hx, hz) = (x - along.cos() * 0.35 + 0.25, z - along.sin() * 0.35 - 0.2);
+            let hy = w.ground(hx, hz);
+            f.put(
+                Model::Head,
+                place([hx, hy + 0.07, hz], yaw + 2.2, 0.4, 0.3, [0.24; 3]),
+                [0.52, 0.50, 0.46],
+            )
+            .grounded()
+            .element(element::COLOSSUS);
+        }
+    }
+
+    // The ring walls, open where the corridor passes, each with its coping.
+    for &(radius, colour, tall, clad) in &RING_WALLS {
+        let n = (TAU * radius / 0.45).ceil() as usize;
+        let span = TAU * radius / n as f32;
+        for k in 0..n {
+            let a = (k as f32 + 0.5) / n as f32 * TAU;
+            let (x, z) = (c[0] + a.cos() * radius, c[1] + a.sin() * radius);
+            if port(x, z).abs() < GATEWAY || !city(f, x, z) {
+                continue;
+            }
+            let y = w.ground(x, z);
+            if !w.visible([x, y + tall * 0.5, z], span) {
+                continue;
+            }
+            let yaw = yaw_along(-a.sin(), a.cos());
+            let wall = f.put(
+                Model::Box,
+                place(
+                    [x, y + (tall - 0.2) * 0.5, z],
+                    yaw,
+                    0.0,
+                    0.0,
+                    [span * 0.51, (tall + 0.2) * 0.5, 0.06],
+                ),
+                colour,
+            );
+            wall.grounded().element(element::RING_WALLS);
+            if clad {
+                wall.material(material::COPPER);
+            }
+            f.put(
+                Model::Box,
+                place(
+                    [x, y + tall + 0.01, z],
+                    yaw,
+                    0.0,
+                    0.0,
+                    [span * 0.51, 0.02, 0.08],
+                ),
+                [0.42, 0.41, 0.38],
+            )
+            .element(element::RING_WALLS);
+        }
+    }
+
+    // The ring canals: a dark channel between two low quays.
+    for &radius in &CANALS {
+        let n = (TAU * radius / 0.35).ceil() as usize;
+        let span = TAU * radius / n as f32;
+        for k in 0..n {
+            let a = (k as f32 + 0.5) / n as f32 * TAU;
+            let (x, z) = (c[0] + a.cos() * radius, c[1] + a.sin() * radius);
+            if !city(f, x, z) || !w.visible([x, w.ground(x, z), z], span) {
+                continue;
+            }
+            let yaw = yaw_along(-a.sin(), a.cos());
+            let Some(bed) = seat(w, x, z, CANAL_WIDE * 0.5, &bed::FLAT) else {
+                continue;
+            };
+            let (pitch, roll) = bed.tilt(yaw);
+            f.put(
+                Model::Box,
+                place(
+                    [x, bed.y + 0.004, z],
+                    yaw,
+                    pitch,
+                    roll,
+                    [span * 0.52, 0.01, CANAL_WIDE * 0.5],
+                ),
+                [0.10, 0.12, 0.13],
+            )
+            .grounded()
+            .element(element::CANALS);
+            for side in [-1.0f32, 1.0] {
+                let q = radius + side * CANAL_WIDE * 0.5;
+                let (qx, qz) = (c[0] + a.cos() * q, c[1] + a.sin() * q);
+                let qy = w.ground(qx, qz);
+                f.put(
+                    Model::Box,
+                    place([qx, qy, qz], yaw, 0.0, 0.0, [span * 0.52, 0.07, 0.04]),
+                    [0.40, 0.39, 0.36],
+                )
+                .grounded()
+                .element(element::CANALS);
+            }
+        }
+    }
+
+    // The bronze gate where the corridor passes the middle wall: a pylon
+    // either side of the way, one door still hung, the other fallen flat.
+    for (g, x) in crossings(c, RING_WALLS[1].0).into_iter().enumerate() {
+        let lane = corridor(x);
+        let slope = corridor_slope(x);
+        let yaw = yaw_along(1.0, slope);
+        for side in [-1.0f32, 1.0] {
+            let (px, pz) = (x, lane + side * (GATEWAY + 0.05));
+            let y = w.ground(px, pz);
+            if !city(f, px, pz) || !w.visible([px, y + 0.3, pz], 0.5) {
+                continue;
+            }
+            f.put(
+                Model::Box,
+                place([px, y + 0.15, pz], yaw, 0.0, 0.0, [0.08, 0.32, 0.08]),
+                marble,
+            )
+            .grounded()
+            .element(element::GATE);
+            f.put(
+                Model::Box,
+                place([px, y + 0.49, pz], yaw, 0.0, 0.0, [0.10, 0.025, 0.10]),
+                marble,
+            )
+            .element(element::GATE);
+            let bronze = [0.42, 0.28, 0.12];
+            if (side > 0.0) == (g % 2 == 0) {
+                // Still hung, swung half open against the wall.
+                f.put(
+                    Model::Box,
+                    place(
+                        [px + 0.12, y + 0.18, pz - side * 0.13],
+                        yaw + side * 0.9,
+                        0.0,
+                        0.0,
+                        [0.015, 0.18, 0.12],
+                    ),
+                    bronze,
+                )
+                .material(material::COPPER)
+                .element(element::GATE);
+            } else {
+                let (dx, dz) = (px + 0.3, pz + side * 0.25);
+                let Some(lie) = seat(w, dx, dz, 0.2, &bed::FLAT) else {
+                    continue;
+                };
+                let (pitch, roll) = lie.tilt(yaw + 0.3);
+                f.put(
+                    Model::Box,
+                    place(
+                        [dx, lie.y + 0.01, dz],
+                        yaw + 0.3,
+                        pitch,
+                        roll,
+                        [0.12, 0.015, 0.18],
+                    ),
+                    bronze,
+                )
+                .grounded()
+                .material(material::COPPER)
+                .element(element::GATE);
+            }
+        }
+    }
+
+    // Along the corridor inside the middle wall: the avenue of statues on
+    // plinths facing the way, stelae between them, a mosaic floor now and
+    // then; outside it on the way in and out, the aqueduct.
+    let first = (c[0] - 8.5).floor() as i32 * 4;
+    for k in first..first + 17 * 4 {
+        let x = k as f32 * 0.25;
+        let lane = corridor(x);
+        let inside = from(x, lane) < RING_WALLS[1].0 - 0.3;
+        let yaw = yaw_along(1.0, corridor_slope(x));
+        if inside && k % 3 == 0 {
+            let (sx, sz) = (x, lane + 0.95);
+            let y = w.ground(sx, sz);
+            if city(f, sx, sz) && w.visible([sx, y + 0.3, sz], 0.4) {
+                f.put(
+                    Model::Box,
+                    place([sx, y + 0.02, sz], yaw, 0.0, 0.0, [0.075, 0.12, 0.075]),
+                    [0.44, 0.42, 0.38],
+                )
+                .grounded()
+                .element(element::STATUES);
+                if hash(k, 1, 1510) < 0.2 {
+                    // Toppled: lying in front of its plinth, broken at the neck.
+                    let Some(lie) = seat(w, sx - 0.05, sz - 0.22, 0.2, &bed::DRUM) else {
+                        continue;
+                    };
+                    f.put(
+                        Model::Torso,
+                        place(
+                            [sx - 0.05, lie.y + 0.02, sz - 0.22],
+                            yaw + 0.4,
+                            -PI * 0.5,
+                            0.1,
+                            [0.40; 3],
+                        ),
+                        marble,
+                    )
+                    .grounded()
+                    .element(element::STATUES);
+                } else {
+                    f.put(
+                        Model::Statue,
+                        place([sx, y + 0.14, sz], yaw - PI * 0.5, 0.0, 0.0, [0.40; 3]),
+                        marble,
+                    )
+                    .element(element::STATUES);
+                }
+            }
+        } else if inside && k % 6 == 4 {
+            let (sx, sz) = (x, lane + 0.78);
+            let y = w.ground(sx, sz);
+            if city(f, sx, sz) && w.visible([sx, y + 0.1, sz], 0.2) {
+                let lean = (hash(k, 2, 1510) - 0.5) * 0.3;
+                f.put(
+                    Model::Stele,
+                    place([sx, y - 0.02, sz], yaw - PI * 0.5, lean, 0.0, [0.17; 3]),
+                    [0.54, 0.52, 0.47],
+                )
+                .grounded()
+                .element(element::STELAE);
+            }
+        }
+        if inside && k % 10 == 7 {
+            let (mx, mz) = (x, lane + 1.55);
+            if city(f, mx, mz)
+                && from(mx, mz) > ACROPOLIS + 0.5
+                && let Some(floor) = seat(w, mx, mz, 0.36, &bed::FLAT)
+                && w.visible([mx, floor.y, mz], 0.5)
+            {
+                let (pitch, roll) = floor.tilt(yaw);
+                f.put(
+                    Model::Mosaic,
+                    place(
+                        [mx, floor.y - 0.02, mz],
+                        yaw,
+                        pitch,
+                        roll,
+                        [0.36, 0.5, 0.36],
+                    ),
+                    [0.78, 0.76, 0.72],
+                )
+                .grounded()
+                .element(element::MOSAICS);
+            }
+        }
+        let (ax, az) = (x, lane + AQUEDUCT_ABEAM);
+        let d = from(ax, az);
+        if d > RING_WALLS[1].0 + 0.3
+            && d < RING_WALLS[2].0 - 0.3
+            && k % 2 == 0
+            && hash(k, 3, 1510) > 0.12
+        {
+            let piers = [
+                w.ground(ax - 0.2, az),
+                w.ground(ax + 0.2, az),
+                w.ground(ax, az),
+            ];
+            let y = piers.iter().copied().fold(f32::MAX, f32::min) - 0.03;
+            if city(f, ax, az) && w.visible([ax, y + 0.3, az], 0.5) {
+                f.put(
+                    Model::Aqueduct,
+                    place([ax, y, az], yaw, 0.0, 0.0, [0.5, 0.62, 0.5]),
+                    [0.50, 0.48, 0.43],
+                )
+                .grounded()
+                .element(element::AQUEDUCT);
+            }
+        }
+    }
+
+    // The harbour beyond the outer wall: triremes on the bottom, each among
+    // the amphorae of her cargo; the lighthouse at the mouth on the way in.
+    let n = (TAU * HARBOUR.1 / 0.9) as i32;
+    for k in 0..n {
+        let a = k as f32 / n as f32 * TAU;
+        let radius = HARBOUR.0 + (HARBOUR.1 - HARBOUR.0) * hash(k, 0, 1520);
+        let (x, z) = (c[0] + a.cos() * radius, c[1] + a.sin() * radius);
+        if hash(k, 1, 1520) < 0.45 || port(x, z) < 0.9 || !city(f, x, z) {
+            continue;
+        }
+        let s = 0.9 + 0.35 * hash(k, 2, 1520);
+        let yaw = hash(k, 3, 1520) * TAU;
+        let Some(berth) = seat(w, x, z, s * 0.5, &bed::WRECK) else {
+            continue;
+        };
+        if !w.visible([x, berth.y, z], s * 1.2) {
+            continue;
+        }
+        let (pitch, roll) = berth.tilt(yaw);
+        f.put(
+            Model::Trireme,
+            place(
+                [x, berth.foot(&bed::WRECK, 0.15 * s) + 0.03 * s, z],
+                yaw,
+                pitch,
+                roll + 0.25,
+                [s; 3],
+            ),
+            [0.30, 0.24, 0.17],
+        )
+        .grounded()
+        .element(element::TRIREMES);
+        for j in 0..14 {
+            let b = hash(k * 16 + j, 4, 1520) * TAU;
+            let m = 0.25 + 0.7 * hash(k * 16 + j, 5, 1520);
+            let (ax, az) = (x + b.cos() * m * s, z + b.sin() * m * s);
+            let Some(lie) = seat(w, ax, az, 0.04, &bed::FLAT) else {
+                continue;
+            };
+            let turn = hash(k * 16 + j, 6, 1520) * TAU;
+            let standing = hash(k * 16 + j, 7, 1520) < 0.3;
+            let (pitch, roll) = if standing {
+                (0.25, 0.0)
+            } else {
+                (PI * 0.5 - 0.1, 0.0)
+            };
+            let y = if standing { lie.y - 0.02 } else { lie.y + 0.02 };
+            f.put(
+                Model::Amphora,
+                place([ax, y, az], turn, pitch, roll, [0.075; 3]),
+                [0.55, 0.30, 0.18],
+            )
+            .grounded()
+            .element(element::AMPHORAE);
+        }
+    }
+    if let Some(&x) = crossings(c, RING_WALLS[2].0).first() {
+        let (lx, lz) = (x - 0.6, corridor(x - 0.6) + 1.6);
+        let y = w.ground(lx, lz);
+        if city(f, lx, lz) && w.visible([lx, y + 0.6, lz], 0.8) {
+            f.put(
+                Model::Lighthouse,
+                place([lx, y - 0.05, lz], 0.0, 0.0, 0.0, [0.42, 1.25, 0.42]),
+                [0.50, 0.48, 0.44],
+            )
+            .grounded()
+            .element(element::LIGHTHOUSE);
+            for k in 0..4 {
+                let b = 0.4 + k as f32 * 0.5;
+                let (dx, dz) = (lx + b.cos() * (0.45 + 0.12 * k as f32), lz + b.sin() * 0.5);
+                let Some(lie) = seat(w, dx, dz, 0.12, &bed::DRUM) else {
+                    continue;
+                };
+                let (ex, ez) = (b.sin() * 0.1, -b.cos() * 0.1);
+                f.put(
+                    Model::Cylinder,
+                    between(
+                        [dx - ex, lie.y + 0.06, dz - ez],
+                        [dx + ex, lie.y + 0.06, dz + ez],
+                        0.09,
+                    ),
+                    [0.48, 0.46, 0.42],
+                )
+                .grounded()
+                .element(element::LIGHTHOUSE);
+            }
+        }
+    }
+}
+
 const CITY_NEAR: f32 = 3.2;
 const CITY_FAR: f32 = 6.0;
 const CITY_SPLIT: f32 = 12.0;
@@ -6723,10 +7296,64 @@ fn vents(w: &World, f: &mut Frame) {
     }
 }
 
-/// Marks what lies round wrecks, ruins and outcrops in `Instance::surface`'s
-/// last slot, so a benchmark can leave it out (`part::DEBRIS`) though its
-/// meshes are shared.
-pub const DEBRIS: f32 = 2.0;
+/// The scenery a benchmark can leave out element by element
+/// (`DIVE3D_SKIP_ELEMENTS`, a mask of these numbers; `part::DEBRIS` is
+/// [`element::DEBRIS`]), each priced by `feature_costs::features`. The number
+/// rides in a still instance's animation phase (`Instance::anim[1]`), which
+/// nothing reads while it has no animation; 0 is no element.
+pub mod element {
+    /// What lies round wrecks, ruins and outcrops: scour pits, planks, guns,
+    /// ballast, fallen drums and blocks, scree.
+    pub const DEBRIS: u32 = 1;
+    // Atlantis' city plan (V6, `world::atlantis`).
+    pub const ACROPOLIS: u32 = 2;
+    pub const STAIR: u32 = 3;
+    pub const COLOSSUS: u32 = 4;
+    pub const RING_WALLS: u32 = 5;
+    pub const CANALS: u32 = 6;
+    pub const GATE: u32 = 7;
+    pub const STATUES: u32 = 8;
+    pub const STELAE: u32 = 9;
+    pub const MOSAICS: u32 = 10;
+    pub const AQUEDUCT: u32 = 11;
+    pub const TRIREMES: u32 = 12;
+    pub const AMPHORAE: u32 = 13;
+    pub const LIGHTHOUSE: u32 = 14;
+}
+
+/// Every element of [`element`], named for the feature table.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const ELEMENTS: &[(u32, &str)] = &[
+    (element::DEBRIS, "debris round wrecks, ruins and outcrops"),
+    (
+        element::ACROPOLIS,
+        "Atlantis: acropolis, its round temple and Poseidon",
+    ),
+    (element::STAIR, "Atlantis: the great stair"),
+    (element::COLOSSUS, "Atlantis: the fallen colossus"),
+    (
+        element::RING_WALLS,
+        "Atlantis: ring walls of orichalcum, tin and brass",
+    ),
+    (element::CANALS, "Atlantis: ring canals and quays"),
+    (element::GATE, "Atlantis: the bronze gate"),
+    (element::STATUES, "Atlantis: statues on plinths"),
+    (element::STELAE, "Atlantis: inscribed stelae"),
+    (element::MOSAICS, "Atlantis: mosaic floors"),
+    (element::AQUEDUCT, "Atlantis: the aqueduct"),
+    (element::TRIREMES, "Atlantis: sunken triremes"),
+    (element::AMPHORAE, "Atlantis: amphora fields"),
+    (element::LIGHTHOUSE, "Atlantis: the harbour's lighthouse"),
+];
+
+/// The element `i` is part of, or 0.
+pub fn element_of(i: &Instance) -> u32 {
+    if i.anim[0] == 0.0 {
+        i.anim[1] as u32
+    } else {
+        0
+    }
+}
 
 /// Keels of broken ice hanging from the pack.
 fn ice(w: &World, f: &mut Frame) {
@@ -10304,11 +10931,10 @@ mod tests {
             }
             let atlantis = presence(ATLANTIS);
             if atlantis > 0.0 {
-                let terrace = |v: f32| {
-                    2.0 * smooth(-0.22, 0.22, (TAU * v * 0.25 + 0.25 * detail).sin()) - 1.0
-                };
-                shape += atlantis
-                    * (-0.11 * h + 0.22 * terrace(x) + 0.18 * terrace(z * 2.0) + 0.02 * detail);
+                let swell = (TAU * (x * 0.125 + z * 0.0625) + 0.9 * detail).sin()
+                    + 0.6 * (TAU * (x * 0.0625 - z * 0.1875) + 0.5 * detail).sin();
+                let mounds = smooth(0.40, 0.80, 0.5 + 0.5 * detail);
+                shape += atlantis * (0.06 * h + 0.09 * swell + 0.16 * mounds + 0.04 * detail);
             }
             let cave = presence(CAVE);
             if cave > 0.0 {

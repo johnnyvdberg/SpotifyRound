@@ -284,7 +284,10 @@ fn shade(
         let r = ((x * 0.8 + z) * 26.0 + world::vnoise(x * 3.0, z * 3.0, 5) * 4.0).sin();
         ripple = 0.16 * sand * (0.5 + 0.5 * broad) * smooth01(0.3, 1.0, r);
     }
-    let paving = presence(ATLANTIS) + 0.55 * presence(BRINE) + 0.7 * city;
+    // Atlantis' paving shows only in patches where the silt over the buried
+    // city is thin, not as one floor across the swells.
+    let paving =
+        presence(ATLANTIS) * smooth01(0.58, 0.80, broad) + 0.55 * presence(BRINE) + 0.7 * city;
     let mut pave = if paving > 0.0 {
         let frac = |v: f32| v - v.floor();
         let row = (z * 4.0).floor();
