@@ -2410,7 +2410,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body, the jellyfish's swimming and the
     // four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 19] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 20] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
@@ -2430,9 +2430,11 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (sponge_reef, None),
         (blue_hole, None),
         (near_detail, None),
+        (abyss_glow, None),
     ];
-    let steps: [(Placer, Option<[f32; 4]>); 14] = [
+    let steps: [(Placer, Option<[f32; 4]>); 15] = [
         (planes, None),
+        (volcano, None),
         (city_beams, None),
         (tunnel, None),
         (vents, basalt),
@@ -2448,7 +2450,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 18] = [
+    const STATIC_NAMES: [&str; 20] = [
         "rocks",
         "gardens",
         "reef",
@@ -2467,10 +2469,13 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "meadow",
         "sponge_reef",
         "blue_hole",
+        "near_detail",
+        "abyss_glow",
     ];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 14] = [
+    const STEP_NAMES: [&str; 15] = [
         "planes",
+        "volcano",
         "city_beams",
         "tunnel",
         "vents",
@@ -4483,33 +4488,52 @@ fn ruins(w: &World, f: &mut Frame) {
             .debris();
         }
     }
-    // The volcano, far off across the city: a broad, craggy cone with a
-    // crater and a drifting ash plume. It is faded into the water so its
-    // silhouette does not read as a clean pyramid against the surface.
-    for &(ix, iz, x, z) in &cells(w, 14.0, 26.0, 44.0, 90) {
+}
+
+/// The volcano whose fire lights the drowned Atlantis.
+fn volcano(w: &World, f: &mut Frame) {
+    // The volcano, off across the city: a broad, craggy cone with a crater
+    // and a drifting ash plume, just outside the outer ring wall. Its cone is
+    // a dark shape deep in the haze; its fire carries twice as far as the
+    // water lets shapes show ([`LIGHT_SIGHT`]), so the crater's glow and the
+    // lava down its flanks are what the window sees of it.
+    // One every [`VOLCANO_EVERY`] units along the leg, to port beyond the
+    // outer ring, so one always stands abeam.
+    let from = ((w.camera() - 24.0) / VOLCANO_EVERY).floor() as i32;
+    for ix in from..from + (48.0 / VOLCANO_EVERY) as i32 + 1 {
+        let iz = 0;
+        let x = (ix as f32 + 0.5) * VOLCANO_EVERY + 4.0 * (hash(ix, iz, 94) - 0.5);
+        let z = corridor(x) + VOLCANO_ABEAM + 3.0 * hash(ix, iz, 91);
         let share = w.share(x, z, ATLANTIS);
-        if share < 0.4 || hash(ix, iz, 91) < 0.3 {
+        if share < 0.4 {
             continue;
         }
         let presence = fade(share, 0.4);
         f.fade = presence * 0.55;
         let y = w.ground(x, z) - 0.3;
         let h = 3.4;
-        if !w.visible([x, y + h * 0.5, z], 6.0) {
+        if !w.visible_lit([x, y + h * 0.5, z], 6.0) {
             continue;
         }
         let show = presence;
+        // A broad cone, its crater's rim the chimney's flared mouth.
+        let yaw = hash(ix, iz, 92) * TAU;
         f.put(
-            Model::Vent,
-            place([x, y, z], hash(ix, iz, 92) * TAU, 0.0, 0.0, [4.6, h, 4.6]),
+            Model::Cone,
+            place([x, y, z], yaw, 0.0, 0.0, [5.2, h * 0.95, 5.2]),
             [0.14, 0.13, 0.12],
         )
         .grounded();
+        f.put(
+            Model::Vent,
+            place([x, y + h * 0.72, z], yaw, 0.0, 0.0, [1.3, h * 0.28, 1.3]),
+            [0.16, 0.13, 0.11],
+        );
         let crater = [x, y + h * 0.97, z];
         f.glow_sprite(
             crater,
-            0.55,
-            [0.9 * show, 0.32 * show, 0.07 * show],
+            2.4,
+            [2.2 * show, 0.8 * show, 0.18 * show],
             ix as f32,
             2.3,
             1.0,
@@ -4537,22 +4561,24 @@ fn ruins(w: &World, f: &mut Frame) {
                 GLOW,
             );
         }
-        // A thread of lava down one flank.
-        for k in 0..6 {
-            let t = k as f32 / 6.0;
-            let p = [
-                x + t * 2.2 + (t * 9.0).sin() * 0.12,
-                y + h * (0.92 - t * 0.8),
-                z - 0.8,
-            ];
-            f.glow_sprite(
-                p,
-                0.14,
-                [0.55 * show, 0.16 * show, 0.03 * show],
-                ix as f32,
-                2.3,
-                1.0,
-            );
+        // Threads of lava down two flanks.
+        for (side, run) in [(-0.8f32, 2.2f32), (0.9, -1.9)] {
+            for k in 0..6 {
+                let t = k as f32 / 6.0;
+                let p = [
+                    x + t * run + (t * 9.0 + side).sin() * 0.12,
+                    y + h * (0.92 - t * 0.8),
+                    z + side,
+                ];
+                f.glow_sprite(
+                    p,
+                    0.4,
+                    [1.3 * show, 0.4 * show, 0.08 * show],
+                    ix as f32 + side,
+                    2.3,
+                    1.0,
+                );
+            }
         }
     }
 }
@@ -4566,6 +4592,11 @@ fn ruins(w: &World, f: &mut Frame) {
 /// of its leg: the boat passes it at the window, inside the middle ring and
 /// clear of the inner one, which would otherwise wall the window off.
 const ACROPOLIS_ABEAM: f32 = 5.0;
+/// How far apart the volcanoes stand along the Atlantis leg.
+const VOLCANO_EVERY: f32 = 16.0;
+/// How far to port of the corridor the nearest of them stands: past the
+/// outer ring wall and the harbour, beyond the sight, within the light's.
+const VOLCANO_ABEAM: f32 = 14.0;
 /// The acropolis's platform, as far out as its stair's foot.
 const ACROPOLIS: f32 = 1.3;
 /// Plato's three ring walls about the acropolis (Critias 116): the innermost
@@ -11796,6 +11827,65 @@ fn near_detail(w: &World, f: &mut Frame) {
                         .element(element::NEAR_DETAIL);
                 }
             }
+        }
+    }
+}
+
+/// The abyss's walls, picked out by what lives on them: colonies of
+/// bioluminescent zoanthids and sea pens on its steep ground, the flanks of
+/// its folded ridges and the walls of its canyons, blue-green with now and
+/// then a violet one, each pulsing slowly. The rock itself is lost in the
+/// dark past a few units; its light carries twice as far
+/// ([`LIGHT_SIGHT`]), so the walls' shape shows in points of light.
+fn abyss_glow(w: &World, f: &mut Frame) {
+    if skipping(super::part::ABYSS_GLOW) {
+        return;
+    }
+    let c = w.pose.pos;
+    if [-6.0, 0.0, 6.0]
+        .iter()
+        .all(|dx| w.share(c[0] + dx, c[2], ABYSS) <= 0.0)
+    {
+        return;
+    }
+    for &(ix, iz, x, z) in &lit_cells(w, 0.45, 1.0, 14.0, 1600) {
+        let share = w.share(x, z, ABYSS);
+        let needs = hash(ix, iz, 1601) * 0.6 + 0.3;
+        if share < needs {
+            continue;
+        }
+        let y = w.ground(x, z);
+        let e = 0.05;
+        let steep = ((w.ground(x + e, z) - w.ground(x - e, z)).powi(2)
+            + (w.ground(x, z + e) - w.ground(x, z - e)).powi(2))
+        .sqrt()
+            / (2.0 * e);
+        if steep < 0.45 || hash(ix, iz, 1602) > 0.75 {
+            continue;
+        }
+        if !w.visible([x, y + 0.05, z], 0.2) {
+            continue;
+        }
+        let show = fade(share, needs) * smooth(0.45, 1.1, steep);
+        let colour = if hash(ix, iz, 1603) < 0.15 {
+            [0.55, 0.18, 0.85]
+        } else {
+            [0.10, 0.75, 0.62]
+        };
+        // A colony is a few lights in a patch on the rock.
+        for k in 0..3 {
+            let h = |n: u32| hash(ix, iz, 1604 + k * 4 + n);
+            let p = [x + (h(0) - 0.5) * 0.18, 0.0, z + (h(1) - 0.5) * 0.18];
+            let p = [p[0], w.ground(p[0], p[2]) + 0.02, p[2]];
+            let k = show * (0.6 + 0.5 * h(2));
+            f.glow_sprite(
+                p,
+                0.05 + 0.04 * h(3),
+                colour.map(|v| v * k),
+                (ix * 7 + iz) as f32 + k,
+                0.35,
+                1.0,
+            );
         }
     }
 }

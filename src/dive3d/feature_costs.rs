@@ -48,6 +48,10 @@ const PASSES: &[(&str, u64)] = &[
         "wildlife (V5): world::LIFE and the reef's shoals",
         part::LIFE,
     ),
+    (
+        "the abyss's glowing colonies on its walls (V10)",
+        part::ABYSS_GLOW,
+    ),
 ];
 
 /// Below this a pass is not counted as present in a sea.

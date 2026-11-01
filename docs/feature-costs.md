@@ -160,6 +160,17 @@ against 642) are most of it, +0.1-0.3 ms in every sea; the new kelp +0.3 in the 
 glass sponges are cheaper (their sea's worst 9.45 -> 8.71); coral +0.06. Seagrass (44 blades
 for 40) moves nothing measurable (`plants-d`, meadow 7.86 / 9.98).
 
+### The volcano, the abyss's glow and lights through the haze (V10)
+
+`run far-on` against `run plants-c`, all 204 places: median 7.17 -> 7.17 ms, worst 10.28 ->
+10.39 (atlantis 500000 @0.15), none over 11.
+
+Not split per feature: the two runs differ by all three changes. Per sea (median / worst ms,
+before -> after): atlantis 8.39 / 9.85 -> 8.47 / 10.39 (the volcano), abyss 6.35 / 8.92 -> 6.42 /
+9.26 (the glowing colonies), every other sea within run-to-run noise (the glow sprites' fog).
+The colonies' own switch is `part::ABYSS_GLOW`; the volcano's cone and crater are in the cones'
+and vents' effect groups (`DIVE3D_SKIP_EFFECTS`).
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |

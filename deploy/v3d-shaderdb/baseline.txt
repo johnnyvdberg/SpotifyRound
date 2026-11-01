@@ -297,7 +297,7 @@ Dive3d glass material10 anim11 #0 fs_glass       FS       169   4     0   34    
 Dive3d glass material10 anim11 #0 vs_model       VS       470   2     1  211    46        0:0    1   24
 Dive3d glass material10 anim11 #0 vs_model       VS-bin   122   4     0   59    23        0:0    1    0
 Dive3d sprites #0                fs_sprite      FS        52   4     0   13    12        0:0    0    1
-Dive3d sprites #0                vs_sprite      VS       391   2     0  176    42        0:0    2   34
+Dive3d sprites #0                vs_sprite      VS       393   2     0  176    44        0:0    2   33
 Dive3d sprites #0                vs_sprite      VS-bin   230   4     0  105    25        0:0    0   15
 Dive3d shafts #0                 fs_shaft       FS        26   4     0    3     7        0:0    0    2
 Dive3d shafts #0                 vs_shaft       VS       135   4     0   70    21        0:0    2    2

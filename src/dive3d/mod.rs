@@ -808,6 +808,9 @@ mod part {
     /// The wildlife of `world::LIFE` and the shoals and sharks it added to
     /// the older placers (V5): what each sea gained in animals.
     pub const LIFE: u64 = 1 << 40;
+    /// The abyss's bioluminescent colonies on its walls and ridges (V10,
+    /// `world::abyss_glow`).
+    pub const ABYSS_GLOW: u64 = 1 << 41;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -4083,6 +4086,7 @@ mod tests {
             ("terrain facets", part::TERRAIN_FACETS),
             ("sediment", part::SEDIMENT),
             ("debris", part::DEBRIS),
+            ("abyss glow", part::ABYSS_GLOW),
             ("pass: fading ice", part::FADING_ICE),
             ("pass: fading props", part::FADING_PROPS),
             ("probe: depth-first draws", part::DEPTH_FIRST_DRAWS),
