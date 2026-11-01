@@ -345,6 +345,12 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     let up = max(dir.y, 0.002);
     let reach = clamp(-g.camera.y / up, 0.0, 180.0);
     let at = g.camera.xz + dir.xz * reach;
+    // Beyond the sea's sight the surface is the water's own haze.
+    let haze = fog_toward(dir * reach);
+    let open = water_at(dir);
+    if (haze > 0.995) {
+        return open;
+    }
     let caustic = textureSampleLevel(
         caustic_map,
         caustic_sampler,
@@ -355,25 +361,34 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     let p1 = at.x * 0.9 + t * 0.30;
     let p2 = at.y * 0.8 - t * 0.26;
     let p3 = (at.x + at.y) * 1.7 + t * 0.50;
-    let swell = sin(p1) + 0.7 * sin(p2) + 0.3 * sin(p3);
-    let sun = 0.5 + 0.25 * swell;
+    // The swells' light: their slopes' cosines serve as well as the sines
+    // the shader once spent on it.
+    let c1 = cos(p1);
+    let c2 = cos(p2);
+    let c3 = cos(p3);
+    let sun = 0.5 + 0.25 * (c1 + 0.7 * c2 + 0.3 * c3);
     // Worked out as scalars first and laid on the water's colours once at the
     // end: three colours live across the waves' arithmetic cost the shader
     // half its threads.
     var mirror = 0.0;
     var down = 0.0;
     var bright = 0.0;
-    // (`fenced` keeps the compiler from hoisting the waves up beside the
-    // caustic fetch, where both would hold their registers at once.)
-    if (!debug(OLD_CEILING) && !fenced()) {
+    // The facets fade out deep in the haze, where they no longer show and
+    // the pixels skip them. (`fenced` keeps the compiler from hoisting the
+    // waves up beside the caustic fetch, where both would hold their
+    // registers at once.)
+    let facets = 1.0 - smooth01(0.70, 0.90, haze);
+    if (!debug(OLD_CEILING) && facets > 0.0 && !fenced()) {
         // The surface's slope: the three swells' and a short chop across
         // them, and the fine cells of the web, which lie on the wave faces
         // that focus it.
         let p4 = dot(at, vec2<f32>(7.3, -5.6)) - t * 1.7;
         let p5 = dot(at, vec2<f32>(-4.4, 6.9)) - t * 1.5;
         let tilt = 0.40 * (web - 0.35);
-        let sx = 0.09 * cos(p1) + 0.12 * cos(p3) + 0.17 * cos(p4) - 0.11 * cos(p5) + dir.x * tilt;
-        let sz = 0.13 * cos(p2) + 0.12 * cos(p3) - 0.13 * cos(p4) + 0.17 * cos(p5) + dir.z * tilt;
+        let c4 = cos(p4);
+        let c5 = cos(p5);
+        let sx = 0.09 * c1 + 0.12 * c3 + 0.17 * c4 - 0.11 * c5 + dir.x * tilt;
+        let sz = 0.13 * c2 + 0.12 * c3 - 0.13 * c4 + 0.17 * c5 + dir.z * tilt;
         // The ray against the surface's normal (-sx, 1, -sz).
         let inv = inverseSqrt(1.0 + sx * sx + sz * sz);
         let facing = (dir.y - dir.x * sx - dir.z * sz) * inv;
@@ -383,8 +398,8 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
         let rim = window * (1.0 - smooth01(0.72, 0.88, facing));
         // The mirror shows the water below, darker the steeper it looks down.
         down = smooth01(-0.9, 0.2, dir.y - 2.0 * facing * inv);
-        mirror = 0.55 * (1.0 - window);
-        bright = (window * 0.6 + rim * 0.25) * g.sky.w * (0.45 + 0.9 * g.sun.w);
+        mirror = 0.55 * (1.0 - window) * facets;
+        bright = (window * 0.6 + rim * 0.25) * g.sky.w * (0.45 + 0.9 * g.sun.w) * facets;
     }
     let base = mix(g.deep.rgb, g.water.rgb, 0.50) * 1.05;
     var colour = base * (0.975 + 0.05 * web) * (0.82 + 0.20 * sun)
@@ -394,9 +409,8 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     // Keep the ceiling a backdrop: wash it toward the open water so it
     // never competes with the scene in front of it, and dissolve it into the
     // water's own haze at the sea's sight.
-    let open = water_at(dir);
     colour = mix(colour, open, 0.42);
-    colour = mix(colour, open, fog_toward(dir * reach));
+    colour = mix(colour, open, haze);
     return colour;
 }
 
