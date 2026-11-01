@@ -266,7 +266,7 @@ pub fn ice_bake(w: &World, origin: [f32; 2], size: f32, res: u32) -> Vec<u8> {
             let x = origin[0] + u * size;
             let z = origin[1] + v * size;
             let coverage = smooth(0.35, 0.65, w.share(x, z, ARCTIC));
-            let floes = vnoise(x * 0.9, z * 1.3, 14);
+            let floes = floe_light(x, z);
             let lead = 1.0
                 - smooth(
                     0.02,
@@ -282,6 +282,41 @@ pub fn ice_bake(w: &World, origin: [f32; 2], size: f32, res: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+/// How much daylight the pack lets through at (x, z), 0 to 1: the pack is
+/// floes of different ages frozen together, each its own thickness under its
+/// own drifts of snow, with rounded edges where the floes were ground
+/// against each other and thin, bright young ice refrozen in the seams
+/// between them. Seen from below a thick, snowy floe is dark and the seams
+/// glow.
+fn floe_light(x: f32, z: f32) -> f32 {
+    const FLOE: f32 = 2.6;
+    let (u, v) = (x / FLOE, z / (FLOE * 0.8));
+    let (iu, iv) = (u.floor() as i32, v.floor() as i32);
+    let (mut best, mut second, mut id) = (9.0f32, 9.0f32, (0, 0));
+    for dj in -1..=1 {
+        for di in -1..=1 {
+            let (ci, cj) = (iu + di, iv + dj);
+            let px = ci as f32 + 0.15 + 0.7 * hash(ci, cj, 148);
+            let py = cj as f32 + 0.15 + 0.7 * hash(ci, cj, 149);
+            let d = (u - px).hypot(v - py);
+            if d < best {
+                second = best;
+                best = d;
+                id = (ci, cj);
+            } else if d < second {
+                second = d;
+            }
+        }
+    }
+    // Distance to the seam, in floe widths, and the floe's own thickness.
+    let seam = (second - best) * 0.5;
+    let thick = 0.35 + 0.65 * hash(id.0, id.1, 150);
+    let rounded = smooth(0.0, 0.22, seam);
+    let snow = vnoise(x * 0.9, z * 1.3, 14);
+    let light = (1.0 - thick * rounded) * (0.75 + 0.25 * snow);
+    light.clamp(0.0, 1.0)
 }
 
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
@@ -6056,6 +6091,10 @@ fn vents(w: &World, f: &mut Frame) {
     }
 }
 
+/// Marks a keel in the ice's material (`Instance::surface`'s last slot): the
+/// ice sheet's shader shades it as ice lit through, not as the sheet.
+pub const ICE_KEEL: f32 = 1.0;
+
 /// Keels of broken ice hanging from the pack.
 fn ice(w: &World, f: &mut Frame) {
     let top = w.ice();
@@ -6067,13 +6106,29 @@ fn ice(w: &World, f: &mut Frame) {
             continue;
         }
         f.fade = fade(w.share(x, z, ARCTIC), 0.65);
-        let deep = 0.15 + 0.5 * hash(ix, iz, 142);
-        let wide = 0.5 + 0.6 * hash(ix, iz, 143);
+        // Now and then the keel of a grounded floe or a small berg frozen
+        // into the pack: deeper and broader, and only off the boat's lane,
+        // which keeps clear of the ice by less than a berg hangs.
+        let off = (z - corridor(x)).abs();
+        let berg = hash(ix, iz, 146) < 0.14 && off > 3.0;
+        let (deep, wide) = if berg {
+            (
+                0.9 + 0.7 * hash(ix, iz, 142),
+                1.6 + 0.9 * hash(ix, iz, 143),
+            )
+        } else {
+            (
+                0.15 + 0.5 * hash(ix, iz, 142),
+                0.5 + 0.6 * hash(ix, iz, 143),
+            )
+        };
         if !w.visible([x, top - deep * 0.5, z], wide) {
             continue;
         }
-        let v = 0.42 + 0.1 * hash(ix, iz, 144);
-        // Daylight comes through the ice, so the keels glow rather than shade.
+        let v = 0.80 + 0.12 * hash(ix, iz, 144);
+        // Daylight comes through the ice, so the keels glow rather than shade:
+        // their vertices carry the blue-white of light scattered in the ice
+        // (`mesh::keel`), the instance only how bright this one is.
         f.put(
             Model::Keel,
             place(
@@ -6081,11 +6136,12 @@ fn ice(w: &World, f: &mut Frame) {
                 hash(ix, iz, 145) * TAU,
                 0.0,
                 0.0,
-                [wide, deep, wide * 0.5],
+                [wide, deep, wide * (0.28 + 0.12 * hash(ix, iz, 147))],
             ),
-            [v * 0.6, v * 1.1, v * 1.25],
+            [v * 0.62, v * 0.86, v * 0.95],
         )
-        .glowing(0.9);
+        .material(material::ICE)
+        .surface[3] = ICE_KEEL;
     }
 }
 

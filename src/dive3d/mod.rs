@@ -494,6 +494,14 @@ const MATERIALS: [i32; 7] = [
     world::material::CITY as i32,
 ];
 
+/// Whether an instance is the polar ice sheet, whose coverage is worked out
+/// per pixel and so is always drawn blended with its discard. The keels
+/// hanging from it share its material (`fs_model`'s ICE case shades both)
+/// but are marked (`world::ICE_KEEL`) and fade as any other model does.
+fn ice_sheet(i: &Instance) -> bool {
+    i.extra[0].round() as i32 == world::material::ICE as i32 && i.surface[3] < 0.5
+}
+
 /// The index into [`MATERIALS`] of the pipeline for an instance.
 fn material_slot(i: &Instance) -> usize {
     let material = i.extra[0].round() as i32;
@@ -2248,7 +2256,7 @@ impl Nautilus {
         // shaded. The translucent ones keep the order they were placed in:
         // they add up, and in ten bits a channel even the order of adding
         // can show.
-        let fades = |i: &Instance| i.extra[2] < 0.999 || i.extra[0] == world::material::ICE;
+        let fades = |i: &Instance| i.extra[2] < 0.999 || ice_sheet(i);
         // A mirrored instance turns its model inside out.
         let mirrored = |i: &Instance| {
             let [a, b, c] = i.rows.map(|r| [r[0], r[1], r[2]]);
@@ -2262,8 +2270,7 @@ impl Nautilus {
             // Every other fading instance is drawn with the solid pipelines
             // and fades its colour into the water, so it keeps its depth and
             // costs no blend.
-            let ice = i.extra[0].round() as i32 == world::material::ICE as i32;
-            if fades(i) && ice {
+            if fades(i) && ice_sheet(i) {
                 Kind::Fading
             } else if closed[model] && !mirrored(i) {
                 Kind::Sealed
@@ -2337,8 +2344,7 @@ impl Nautilus {
                     // instance at zero coverage would discard every fragment,
                     // so it is not drawn at all.
                     .filter(|(_, i)| {
-                        i.extra[2] > 0.01
-                            || i.extra[0].round() as i32 == world::material::ICE as i32
+                        i.extra[2] > 0.01 || ice_sheet(i)
                     })
                     .map(|(index, i)| Staged {
                         kind: kind_of(model, i),
@@ -3398,7 +3404,7 @@ mod tests {
                             );
                         }
                         let kind =
-                            u8::from(material == world::material::ICE as i32 && i.extra[2] < 0.999);
+                            u8::from(ice_sheet(i));
                         used.insert((
                             kind,
                             material_slot(i),

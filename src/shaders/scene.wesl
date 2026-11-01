@@ -1198,6 +1198,13 @@ fn vs_model(v: Model, i: Instance) -> Lit {
         light = light_at(world, normalize(n));
     }
     out.albedo *= light;
+    // A keel under the polar ice (`world::ICE_KEEL`) is lit through, by the
+    // daylight the sheet above it lets in, not on its faces: its own colour
+    // (`mesh::keel`, pale where thin, glacial blue where thick) at the
+    // sheet's brightness. Only the ice's pipelines compile this.
+    if (MATERIAL == 6 && i.surface.w > 0.5) {
+        out.albedo = i.colour.rgb * v.colour * (0.95 + 0.75 * g.sun.w);
+    }
     // `world::build` finds the ground and the sand's colour under the model,
     // once per instance.
     out.floor_y = i.extra.w;
@@ -1636,6 +1643,15 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         // Its three noise fields and its arctic coverage come baked into one
         // texture instead of three `vnoise` stacks per pixel.
         case 6u: {
+            if (in.surface.w > 0.5) {
+                // A keel: translucent ice, brightest at its silhouette where
+                // the light crosses the least of it; the sheet's thinner
+                // haze, since the water up by the ice is lit from above.
+                let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
+                colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
+                haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
+                break;
+            }
             let baked = textureSampleLevel(
                 ice_bake,
                 surface_sampler,
@@ -1651,7 +1667,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let floes = baked.r;
             let lead = baked.g;
             let bumps = baked.b;
-            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.70 + 0.30 * bumps + 0.40 * floes);
+            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.62 + 0.30 * bumps + 0.55 * floes);
             colour = mix(colour * texture, vec3<f32>(0.82, 0.98, 1.00), lead)
                 * (0.95 + 0.75 * g.sun.w);
         }
@@ -1864,6 +1880,11 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         // lie level along the tunnel and through its passages.
         uv = vec3<f32>(p.x + p.z, 0.0, p.y) * (in.surface.y * 1.35);
     }
+    // A keel under the ice hangs down: its frost runs round it and down it,
+    // as the tunnel's rock does, not streaked down from above.
+    if (MATERIAL == 6 && in.surface.w > 0.5) {
+        uv = vec3<f32>(p.x + p.z, 0.0, p.y) * in.surface.y;
+    }
     let layer = i32(in.surface.x + 0.5);
     let distance = length(p - g.camera.xyz);
     // The tunnel is seen close up: its rock is one sample of a 0.5-unit tile,
@@ -1938,6 +1959,15 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         // Its three noise fields and its arctic coverage come baked into one
         // texture instead of three `vnoise` stacks per pixel.
         case 6u: {
+            if (in.surface.w > 0.5) {
+                // A keel: translucent ice, brightest at its silhouette where
+                // the light crosses the least of it; the sheet's thinner
+                // haze, since the water up by the ice is lit from above.
+                let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
+                colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
+                haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
+                break;
+            }
             let baked = textureSampleLevel(
                 ice_bake,
                 surface_sampler,
@@ -1953,7 +1983,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let floes = baked.r;
             let lead = baked.g;
             let bumps = baked.b;
-            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.70 + 0.30 * bumps + 0.40 * floes);
+            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.62 + 0.30 * bumps + 0.55 * floes);
             colour = mix(colour * texture, vec3<f32>(0.82, 0.98, 1.00), lead)
                 * (0.95 + 0.75 * g.sun.w);
         }

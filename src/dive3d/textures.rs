@@ -311,10 +311,22 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             )
         }
         Surface::Ice => {
+            // Sea ice from below: melt scallops (shallow dished hollows with
+            // bright rims where the ice is thinnest between them), a frost of
+            // platelet crystals over it, trapped bubbles and the odd fracture.
+            // Kept soft and low in contrast: ice glows, it is not stone.
+            let scallop = smooth(0.0, 0.45, cell_edge(u, v, 7, 103));
+            let rim = 1.0 - smooth(0.0, 0.10, cell_edge(u, v, 7, 103));
+            let frost = smooth(0.70, 0.95, fbm(u, v, 32, 2, 104));
             let bubble = smooth(0.08, 0.04, cells(u, v, 20, 100));
-            let fracture = smooth(0.015, 0.0, (fbm(u, v, 3, 4, 101) - 0.5).abs());
-            let c = grey(0.85 + 0.15 * fbm(u, v, 6, 3, 102));
-            mix(c, [1.3, 1.4, 1.45], (bubble * 0.6 + fracture).min(1.0))
+            let fracture = smooth(0.012, 0.0, (fbm(u, v, 3, 4, 101) - 0.5).abs());
+            let c = grey((0.80 + 0.12 * fbm(u, v, 6, 3, 102)) * (1.04 - 0.10 * scallop));
+            let c = mix(c, [0.88, 1.00, 1.10], rim * 0.45);
+            mix(
+                c,
+                [1.25, 1.35, 1.40],
+                (bubble * 0.45 + fracture * 0.8 + frost * 0.35).min(1.0),
+            )
         }
         Surface::Sand => {
             let grain = hash((u * 256.0) as i32, (v * 256.0) as i32, 110);
