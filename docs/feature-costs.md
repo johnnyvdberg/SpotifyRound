@@ -119,3 +119,12 @@ frame with everything: median 8.50 ms over 13872 paired frames
 - The cave tunnel costs 2.0 ms in the cave and 4.7 ms at its worst place.
 - Under 0.05 ms everywhere: the corner mask, per-instance fades, dolphins (not met in these
   places), squid, ice keels, bubbles, embers.
+
+## After perf-b (2026-11-01)
+
+The table above was measured before `perf-b` (city split by part, glass by material, see
+`docs/handoff/perf-b.md`) and is not regenerated here. What moved, from the same 168-place
+`hotspots` runs (not the leave-one-out method of this table): the bloom's median place
+7.45 to 7.13 ms, the worst glass places 1.0 to 1.4 ms faster, the city's worst place 10.89 to
+9.75 ms. Nothing new was added to `dive3d::part` or `dive3d::effect`, so no row is new; regenerate
+the table (`bench-pi.sh features`) when the next task needs it.

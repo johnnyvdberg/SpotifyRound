@@ -74,10 +74,10 @@ run at once**, from different groups. Model tier is a suggestion.
 | P2 | perf-a | One column per vent plume (T4) | Sonnet | todo |
 | P3 | perf-a | Cheaper caustic ceiling (T6) | Sonnet | todo |
 | P4 | perf-a | Draw order for early-Z: opaque front to back, re-check §5's draw-order items | Sonnet | todo |
-| P5 | perf-b | City split by building part (T5) | Sonnet | todo |
-| P6 | perf-b | Glass specialised by material and animation (T7) | Sonnet | todo |
-| P7 | perf-b | Start-up: parallel mesh library, drop unused pipelines (T8) | Sonnet | todo |
-| P8 | perf-b | Pace the dive from the display (T10) | Sonnet | todo |
+| P5 | perf-b | City split by building part (T5) | Sonnet | done on branch `perf-b` (walls still two threads; `docs/handoff/perf-b.md`) |
+| P6 | perf-b | Glass specialised by material and animation (T7) | Sonnet | done on branch `perf-b` |
+| P7 | perf-b | Start-up: parallel mesh library, drop unused pipelines (T8) | Sonnet | done on branch `perf-b` (warm 6.7 to 2.7 s, cold 12.6 to 6.6 s) |
+| P8 | perf-b | Pace the dive from the display (T10) | Sonnet | implemented behind `SPOTIFY_ROUND_PACE=display`, default unchanged; needs the user to evaluate on the kiosk |
 | V1 | water | Realistic visibility: shorter draw distance in water haze, detail reinvested near | Opus | todo |
 | V2 | water | Water surface seen from below | Sonnet | todo |
 | V3 | ground | Ice less blocky | Sonnet | todo |
@@ -191,3 +191,15 @@ ends, and record what each addition costs.
 ## Notes for the user
 
 (Things only the user can do; agents append here.)
+
+- **P8, pacing from the display (branch `perf-b`).** Not evaluated live. To try it: deploy the
+  build, run the kiosk twice for a minute each with `SPOTIFY_ROUND_SCENE=nautilus` and
+  `--log spotify_round::visuals=debug` (the second time also `SPOTIFY_ROUND_PACE=display`). The
+  once-a-second `visualizer` line then carries `taken` (frames the UI showed), `short_gaps` (two
+  takes under 10 ms apart: a dive frame that was never shown) and `long_gaps` (over 25 ms: a frame
+  shown twice). The timer should show about 4 long gaps a minute and the display pacing 0 to 1;
+  also watch a slow pan for stutter. If the display mode ever looks worse (the UI thread's takes
+  not following the refresh), unset the variable: nothing else changed.
+- **P5/P6/P7** change pipelines and the mesh library only; the Pi numbers are in
+  `docs/handoff/perf-b.md`. The new pipelines are not new features, so nothing was added to the
+  skip lists.
