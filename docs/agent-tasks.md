@@ -69,7 +69,7 @@ run at once**, from different groups. Model tier is a suggestion.
 |---|---|---|---|---|
 | I1 | tooling | Screenshot generation that shows changes at a glance | Sonnet | done (`deploy/shots.sh`, `docs/nautilus.md`) |
 | I2 | tooling | Per-feature cost benchmark and `docs/feature-costs.md` | Sonnet | done (`bench-pi.sh features`, `docs/feature-costs.md`) |
-| G1 | tooling | What the GL backend gives us that we build by hand | Sonnet | todo |
+| G1 | tooling | What the GL backend gives us that we build by hand | Sonnet | done: nothing to land (`docs/handoff/g1.md`) |
 | P1 | perf-a | Tunnel's own 4-thread fragment shader (perf-bottlenecks T3) | Sonnet | todo |
 | P2 | perf-a | One column per vent plume (T4) | Sonnet | todo |
 | P3 | perf-a | Cheaper caustic ceiling (T6) | Sonnet | todo |
