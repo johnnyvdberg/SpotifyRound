@@ -44,6 +44,10 @@ const PASSES: &[(&str, u64)] = &[
     ("open-water background", part::BACKGROUND),
     ("sediment: sand line on slopes, silt drifts", part::SEDIMENT),
     ("debris round wrecks, ruins and outcrops", part::DEBRIS),
+    (
+        "wildlife (V5): world::LIFE and the reef's shoals",
+        part::LIFE,
+    ),
 ];
 
 /// Below this a pass is not counted as present in a sea.

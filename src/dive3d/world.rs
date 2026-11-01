@@ -91,6 +91,15 @@ pub fn fog(distance: f32, sight: f32) -> f32 {
 /// pricing what the sight's cull saves (`part::NO_SIGHT_CULL`).
 pub static NO_SIGHT_CULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Benchmarks only: the `part` bits a benchmark leaves out, for the placers
+/// that place a part of their own (`part::LIFE`). Always 0 in the kiosk.
+pub static SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether a benchmark asked to leave out `part` (one of `dive3d::part`).
+fn skipping(part: u64) -> bool {
+    SKIPPED.load(std::sync::atomic::Ordering::Relaxed) & part != 0
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Instance {
@@ -1816,6 +1825,10 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::DiverBoot => carried(Surface::Plates, 6.0),
         Model::Manta => carried(Surface::Skin, 3.0),
         Model::Turtle => carried(Surface::Skin, 2.0),
+        Model::Eel | Model::Gulper => carried(Surface::Skin, 4.0),
+        Model::Ray => carried(Surface::Skin, 2.0),
+        Model::Crab | Model::Lobster => carried(Surface::Coral, 2.0),
+        Model::Seal | Model::SeaLion => carried(Surface::Skin, 4.0),
         Model::Coral | Model::CoralFinger | Model::CoralBush => carried(Surface::Coral, 2.0),
         Model::CoralBrain => carried(Surface::Brain, 1.0),
         Model::Anemone | Model::SeaWhip => carried(Surface::Skin, 3.0),
@@ -1917,6 +1930,14 @@ pub mod bed {
         lean: 0.0,
         steepest: 0.3,
         overhang: 0.12,
+    };
+    /// An animal standing on the bottom, a crab or a resting ray: on its
+    /// feet, along the slope, on any ground it can walk.
+    pub const WALKER: Bed = Bed {
+        sink: 0.0,
+        lean: 1.0,
+        steepest: 1.0,
+        overhang: 0.6,
     };
 }
 
@@ -2290,7 +2311,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (drifters, None),
         (city, None),
     ];
-    let steps: [(Placer, Option<[f32; 4]>); 13] = [
+    let steps: [(Placer, Option<[f32; 4]>); 14] = [
         (planes, None),
         (city_beams, None),
         (tunnel, None),
@@ -2300,6 +2321,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (shoals, None),
         (great_swimmers, None),
         (gliders, None),
+        (wildlife, None),
         (squid, skin),
         (submarines, None),
         (shafts, None),
@@ -2311,7 +2333,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "drifters", "city",
     ];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 13] = [
+    const STEP_NAMES: [&str; 14] = [
         "planes",
         "city_beams",
         "tunnel",
@@ -2321,6 +2343,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "shoals",
         "great_swimmers",
         "gliders",
+        "wildlife",
         "squid",
         "submarines",
         "shafts",
@@ -7023,9 +7046,11 @@ struct Species {
     back: [f32; 3],
     gate: [f32; BIOMES],
     salt: u32,
+    /// The `dive3d::part` that leaves the species out, or 0 for none.
+    part: u64,
 }
 
-const SPECIES: [Species; 5] = [
+const SPECIES: [Species; 9] = [
     // Big fish high in open water, silversides mid-water, yellow grunts low
     // among the reefs and ruins, fry right down by the seabed, and golden
     // jacks under the sargasso's rafts.
@@ -7040,6 +7065,7 @@ const SPECIES: [Species; 5] = [
             1.0, 0.8, 1.0, 1.0, 0.0, 0.0, 0.5, 0.8, 0.8, 0.5, 0.1, 0.3, 0.4, 0.6,
         ],
         salt: 200,
+        part: 0,
     },
     Species {
         z: 3.0,
@@ -7052,6 +7078,7 @@ const SPECIES: [Species; 5] = [
             1.0, 1.0, 0.8, 0.6, 0.15, 0.0, 0.8, 0.7, 1.0, 0.7, 0.2, 0.4, 0.9, 1.0,
         ],
         salt: 210,
+        part: 0,
     },
     Species {
         z: 2.0,
@@ -7064,6 +7091,7 @@ const SPECIES: [Species; 5] = [
             1.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.4, 0.0, 0.1, 0.0, 0.7,
         ],
         salt: 220,
+        part: 0,
     },
     Species {
         z: 1.2,
@@ -7076,6 +7104,7 @@ const SPECIES: [Species; 5] = [
             1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.6, 0.4, 1.0, 0.6, 0.2, 0.5, 0.3, 0.4,
         ],
         salt: 230,
+        part: 0,
     },
     Species {
         z: 4.0,
@@ -7088,6 +7117,62 @@ const SPECIES: [Species; 5] = [
             0.6, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0, 0.1, 0.8, 1.0, 0.0, 0.2, 0.3, 0.2,
         ],
         salt: 240,
+        part: 0,
+    },
+    // V5: the reef's own fish. Blue chromis in clouds over the coral heads,
+    // orange anthias low against them, the forest's garibaldi in loose
+    // groups, and swarms of pale shrimp round the vents.
+    Species {
+        z: 1.6,
+        depth: 0.8,
+        size: 0.013,
+        speed: 0.020,
+        band: (0.12, 0.40),
+        back: [0.10, 0.30, 0.62],
+        gate: [
+            0.7, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        salt: 250,
+        part: super::part::LIFE,
+    },
+    Species {
+        z: 1.3,
+        depth: 0.6,
+        size: 0.011,
+        speed: -0.015,
+        band: (0.06, 0.22),
+        back: [0.80, 0.34, 0.30],
+        gate: [
+            0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        salt: 260,
+        part: super::part::LIFE,
+    },
+    Species {
+        z: 1.5,
+        depth: 0.8,
+        size: 0.022,
+        speed: 0.012,
+        band: (0.10, 0.45),
+        back: [0.95, 0.42, 0.06],
+        gate: [
+            0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        salt: 270,
+        part: super::part::LIFE,
+    },
+    Species {
+        z: 1.1,
+        depth: 0.5,
+        size: 0.007,
+        speed: 0.008,
+        band: (0.04, 0.16),
+        back: [0.85, 0.72, 0.66],
+        gate: [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.3, 0.0, 0.0,
+        ],
+        salt: 280,
+        part: super::part::LIFE,
     },
 ];
 
@@ -7097,6 +7182,9 @@ const SPECIES: [Species; 5] = [
 fn shoals(w: &World, f: &mut Frame) {
     let cam = w.camera();
     for sp in &SPECIES {
+        if sp.part != 0 && skipping(sp.part) {
+            continue;
+        }
         let spacing = 3.0;
         let u = cam - sp.speed * w.t;
         // Far enough either way that no school comes or goes in view.
@@ -7438,6 +7526,457 @@ fn gliders(w: &World, f: &mut Frame) {
             [0.20, 0.17, 0.10],
         )
         .moving(anim::FLUKE, phase, 0.22, 1.5);
+    }
+}
+
+/// How an animal of [`LIFE`] moves.
+#[derive(Clone, Copy, PartialEq)]
+enum Motion {
+    /// Swimming through open water `height` over the seabed, with the
+    /// procession, its body waving (`anim::SWIM`).
+    Cruise,
+    /// Looking out of a hole in the bottom, tail buried, head raised and
+    /// swaying: a moray.
+    Lurk,
+    /// Lying on the bottom along its slope, the rim of the disc rippling.
+    Rest,
+    /// Gliding low over the bottom, the wings beating (`anim::FLUKE`).
+    Glide,
+    /// Walking the bottom along its slope, each animal to and fro on its own
+    /// short track, legs scuttling (`anim::WRITHE`).
+    Walk,
+    /// Swimming in loops under the ice or among the trees, rolling as it
+    /// turns, hind flippers beating (`anim::FLUKE`).
+    Play,
+    /// A siphonophore: a chain of small swimming bells along a drifting
+    /// stem, the stroke running down it, each bell faintly lit.
+    Chain,
+}
+
+/// An animal of [`LIFE`]: what it is, where and how often it is met, and
+/// how it moves. Adding a species is a row here plus, if it needs one, a
+/// mesh in `mesh.rs`.
+struct Creature {
+    model: Model,
+    motion: Motion,
+    /// How common it is in each sea, 0 to 1: the share of the procession's
+    /// slots that hold a group of them there.
+    seas: [f32; BIOMES],
+    /// Along the voyage, units a second (negative against it), and the
+    /// distance between slots of the procession.
+    speed: f32,
+    spacing: f32,
+    /// How far from the corridor its slots keep, from and to.
+    lane: (f32, f32),
+    /// How many in a group, from and to, and how far they spread.
+    group: (u32, u32),
+    spread: f32,
+    /// Its length (or span), from and to; the model's own unit is half that
+    /// for the swimmers (tail -1 to snout +1), the whole of it for the others.
+    size: (f32, f32),
+    /// Height over the seabed, from and to (`Cruise`, `Glide`, `Play` away
+    /// from the ice).
+    height: (f32, f32),
+    colour: [f32; 3],
+    glow: f32,
+    salt: u32,
+}
+
+/// Every sea's own animals beyond the shoals and the great swimmers (V5).
+const LIFE: [Creature; 10] = [
+    // Morays looking out of the wrecks' and reef's holes.
+    Creature {
+        model: Model::Eel,
+        motion: Motion::Lurk,
+        seas: [
+            0.25, 0.0, 0.9, 0.45, 0.0, 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.15,
+        ],
+        speed: 0.0,
+        spacing: 0.9,
+        lane: (0.9, 2.2),
+        group: (1, 2),
+        spread: 0.25,
+        size: (0.10, 0.16),
+        height: (0.0, 0.0),
+        colour: [0.30, 0.30, 0.16],
+        glow: 0.0,
+        salt: 400,
+    },
+    // Gulper eels hanging in the abyss's dark, their tails' tips lit.
+    Creature {
+        model: Model::Gulper,
+        motion: Motion::Cruise,
+        seas: [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0,
+        ],
+        speed: -0.015,
+        spacing: 1.6,
+        lane: (1.2, 3.0),
+        group: (1, 1),
+        spread: 0.0,
+        size: (0.30, 0.45),
+        height: (0.5, 1.6),
+        colour: [0.06, 0.05, 0.06],
+        glow: 0.25,
+        salt: 410,
+    },
+    // Stingrays lying on the shallows' and the reef's sand...
+    Creature {
+        model: Model::Ray,
+        motion: Motion::Rest,
+        seas: [
+            0.8, 0.0, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.6, 0.2, 0.0, 0.0, 0.0, 0.0,
+        ],
+        speed: 0.0,
+        spacing: 1.3,
+        lane: (0.8, 2.0),
+        group: (1, 3),
+        spread: 0.35,
+        size: (0.10, 0.17),
+        height: (0.0, 0.0),
+        colour: [0.42, 0.36, 0.26],
+        glow: 0.0,
+        salt: 420,
+    },
+    // ...and gliding low over it.
+    Creature {
+        model: Model::Ray,
+        motion: Motion::Glide,
+        seas: [
+            0.5, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        speed: 0.035,
+        spacing: 2.4,
+        lane: (1.0, 2.4),
+        group: (1, 2),
+        spread: 0.3,
+        size: (0.12, 0.18),
+        height: (0.05, 0.18),
+        colour: [0.36, 0.32, 0.24],
+        glow: 0.0,
+        salt: 430,
+    },
+    // Crabs crowding round the vents, on the brine's crust, in the trench.
+    Creature {
+        model: Model::Crab,
+        motion: Motion::Walk,
+        seas: [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.5, 0.0, 0.0, 1.0, 0.8, 0.0, 0.0,
+        ],
+        speed: 0.0,
+        spacing: 0.7,
+        lane: (0.7, 1.7),
+        group: (3, 9),
+        spread: 0.30,
+        size: (0.04, 0.06),
+        height: (0.0, 0.0),
+        colour: [0.86, 0.80, 0.70],
+        glow: 0.0,
+        salt: 440,
+    },
+    // Spiny lobsters among the wrecks and the ruins.
+    Creature {
+        model: Model::Lobster,
+        motion: Motion::Walk,
+        seas: [
+            0.1, 0.2, 0.8, 0.6, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.3,
+        ],
+        speed: 0.0,
+        spacing: 0.9,
+        lane: (0.8, 1.8),
+        group: (1, 3),
+        spread: 0.20,
+        size: (0.06, 0.09),
+        height: (0.0, 0.0),
+        colour: [0.55, 0.22, 0.12],
+        glow: 0.0,
+        salt: 450,
+    },
+    // Seals rolling under the ice.
+    Creature {
+        model: Model::Seal,
+        motion: Motion::Play,
+        seas: [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        speed: 0.10,
+        spacing: 2.4,
+        lane: (1.2, 2.6),
+        group: (1, 3),
+        spread: 0.5,
+        size: (0.16, 0.20),
+        height: (0.0, 0.0),
+        colour: [0.34, 0.35, 0.36],
+        glow: 0.0,
+        salt: 460,
+    },
+    // Sea lions playing among the forest's trees and over the shallows.
+    Creature {
+        model: Model::SeaLion,
+        motion: Motion::Play,
+        seas: [
+            0.3, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        speed: 0.16,
+        spacing: 3.8,
+        lane: (1.2, 2.8),
+        group: (2, 4),
+        spread: 0.6,
+        size: (0.18, 0.23),
+        height: (0.5, 1.4),
+        colour: [0.30, 0.22, 0.13],
+        glow: 0.0,
+        salt: 470,
+    },
+    // Reef sharks patrolling over the coral and the shallows.
+    Creature {
+        model: Model::Shark,
+        motion: Motion::Cruise,
+        seas: [
+            0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        speed: -0.06,
+        spacing: 3.0,
+        lane: (1.4, 3.0),
+        group: (1, 2),
+        spread: 0.5,
+        size: (0.18, 0.24),
+        height: (0.35, 0.9),
+        colour: [0.36, 0.38, 0.40],
+        glow: 0.0,
+        salt: 480,
+    },
+    // Siphonophores: long chains of bells adrift in the abyss and the bloom.
+    Creature {
+        model: Model::Bell,
+        motion: Motion::Chain,
+        seas: [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0,
+        ],
+        speed: 0.01,
+        spacing: 3.0,
+        lane: (1.2, 2.8),
+        group: (1, 1),
+        spread: 0.0,
+        size: (0.022, 0.030),
+        height: (0.6, 1.6),
+        colour: [0.55, 0.75, 1.0],
+        glow: 0.5,
+        salt: 490,
+    },
+];
+
+/// Places every animal of [`LIFE`] (`part::LIFE`).
+fn wildlife(w: &World, f: &mut Frame) {
+    if skipping(super::part::LIFE) {
+        return;
+    }
+    for c in &LIFE {
+        let salt = c.salt;
+        for (k, x) in procession(w, c.speed, c.spacing, salt) {
+            // To port, where the window looks: the helm swings the boat
+            // at most fifty degrees off its track, so starboard is never
+            // seen and an animal placed there is work for nothing.
+            let z = lane(x, c.lane.0 + (c.lane.1 - c.lane.0) * hash(k, 1, salt), 1.0);
+            let here = World::by_biome(&w.biome(x, z), c.seas);
+            if here < 0.15 || hash(k, 2, salt) > here {
+                continue;
+            }
+            // Fades in as its sea comes in, by the margin its chance has.
+            let fade_in = smooth(0.0, 0.25, here - hash(k, 2, salt)) * smooth(0.15, 0.4, here);
+            let n = c.group.0 + (hash(k, 3, salt) * (c.group.1 - c.group.0 + 1) as f32) as u32;
+            let n = n.min(c.group.1);
+            for d in 0..n as i32 {
+                let r = |i: i32| hash(k * 16 + d, i, salt + 1);
+                let (px, pz) = if d == 0 {
+                    (x, z)
+                } else {
+                    let a = r(0) * TAU;
+                    let m = c.spread * (0.4 + 0.6 * r(1));
+                    (x + a.cos() * m, z + a.sin() * m)
+                };
+                let size = c.size.0 + (c.size.1 - c.size.0) * r(2);
+                let phase = r(3) * TAU;
+                creature(w, f, c, [px, pz], size, phase, r(4), fade_in);
+            }
+        }
+    }
+}
+
+/// One animal of `c` at (x, z): `size` long, its own `phase` and `pick`
+/// (0 to 1) for whatever else varies.
+#[allow(clippy::too_many_arguments)]
+fn creature(
+    w: &World,
+    f: &mut Frame,
+    c: &Creature,
+    at: [f32; 2],
+    size: f32,
+    phase: f32,
+    pick: f32,
+    fade_in: f32,
+) {
+    let [x, z] = at;
+    let ahead = if c.speed < 0.0 { PI } else { 0.0 };
+    let shade = 0.85 + 0.3 * pick;
+    let colour = [
+        c.colour[0] * shade,
+        c.colour[1] * shade,
+        c.colour[2] * shade,
+    ];
+    let show = |p: [f32; 3]| w.reveal(p, size) * fade_in;
+    match c.motion {
+        Motion::Cruise => {
+            let y = (w.ground(x, z) + c.height.0 + (c.height.1 - c.height.0) * pick)
+                .min(w.surface() - 0.3)
+                + 0.04 * (w.t * 0.2 + phase).sin();
+            let p = [x, y, z];
+            f.fade = show(p);
+            if f.fade <= 0.001 {
+                return;
+            }
+            let eel = matches!(c.model, Model::Gulper | Model::Eel);
+            let beat = c.speed.abs().max(0.02) / (0.35 * size) * TAU;
+            f.put(
+                c.model,
+                place(
+                    p,
+                    ahead + 0.15 * (w.t * 0.11 + phase).sin(),
+                    0.05 * (w.t * 0.17 + phase).sin(),
+                    0.0,
+                    [size * 0.5; 3],
+                ),
+                colour,
+            )
+            .moving(anim::SWIM, phase, if eel { 0.30 } else { 0.18 }, beat)
+            .glowing(c.glow);
+        }
+        Motion::Lurk => {
+            // Most of the body down its hole; what shows rises from the
+            // sand, the head raised, turning to look about.
+            let yaw = phase + 0.5 * (w.t * 0.13 + phase).sin();
+            let lift = 0.35 + 0.1 * pick;
+            let ground = w.ground(x, z);
+            let p = [x, ground - 0.15 * size, z];
+            f.fade = show(p);
+            if f.fade <= 0.001 {
+                return;
+            }
+            f.put(c.model, place(p, yaw, lift, 0.0, [size * 0.5; 3]), colour)
+                .moving(anim::SWIM, phase, 0.10, 1.4);
+        }
+        Motion::Rest | Motion::Walk => {
+            let yaw = phase;
+            let Some(seat) = seat(w, x, z, size * 0.5, &bed::WALKER) else {
+                return;
+            };
+            let (mut px, mut pz) = (x, z);
+            let mut walk = 0.0;
+            if c.motion == Motion::Walk {
+                // To and fro along its own short track, sideways for a crab.
+                let track = if c.model == Model::Crab {
+                    yaw + PI * 0.5
+                } else {
+                    yaw
+                };
+                let s = (w.t * 0.12 + phase).sin();
+                walk = (w.t * 0.12 + phase).cos().abs();
+                px += track.cos() * s * 0.08;
+                pz -= track.sin() * s * 0.08;
+            }
+            let y = w.ground(px, pz) + if c.motion == Motion::Rest { 0.004 } else { 0.0 };
+            let (pitch, roll) = seat.tilt(yaw);
+            let p = [px, y, pz];
+            f.fade = show(p);
+            if f.fade <= 0.001 {
+                return;
+            }
+            let instance = f.put(c.model, place(p, yaw, pitch, roll, [size; 3]), colour);
+            if c.motion == Motion::Walk {
+                instance.moving(anim::WRITHE, phase, 0.05 * walk, 9.0);
+            } else {
+                instance.moving(anim::FLUKE, phase, 0.015, 1.1);
+            }
+        }
+        Motion::Glide => {
+            let y = w.ground(x, z) + c.height.0 + (c.height.1 - c.height.0) * pick;
+            let p = [x, y, z];
+            f.fade = show(p);
+            if f.fade <= 0.001 {
+                return;
+            }
+            f.put(
+                c.model,
+                place(
+                    p,
+                    ahead + 0.2 * (w.t * 0.09 + phase).sin(),
+                    0.04 * (w.t * 0.3 + phase).sin(),
+                    0.10 * (w.t * 0.13 + phase).sin(),
+                    [size; 3],
+                ),
+                colour,
+            )
+            .moving(anim::FLUKE, phase, 0.10, 2.2);
+        }
+        Motion::Play => {
+            // Loops: a slow wave up and down and from side to side, banking
+            // into each turn and now and then rolling right over.
+            let u = w.t * 0.45 + phase;
+            let top = if w.share(x, z, ARCTIC) > 0.3 {
+                w.ice() - 0.25 - 0.45 * pick
+            } else {
+                (w.ground(x, z) + c.height.0 + (c.height.1 - c.height.0) * pick)
+                    .min(w.surface() - 0.3)
+            };
+            let p = [x, top + 0.14 * u.sin(), z + 0.25 * (u * 0.7).sin()];
+            f.fade = show(p);
+            if f.fade <= 0.001 {
+                return;
+            }
+            let pitch = (0.14 * 0.45 * u.cos() / c.speed.abs().max(0.05)).atan() * 0.6;
+            let yaw = ahead - 0.4 * (u * 0.7).cos();
+            let roll = 0.6 * (u * 0.7).cos() + if pick > 0.6 { u * 0.5 } else { 0.0 };
+            let beat = c.speed.abs() / (0.5 * size) * TAU;
+            f.put(c.model, place(p, yaw, pitch, roll, [size; 3]), colour)
+                .moving(anim::FLUKE, phase, 0.06, beat);
+        }
+        Motion::Chain => {
+            // A stem drifting in a slow curve, twenty-odd bells along it,
+            // largest at the head; each bell takes the stroke a little after
+            // the one before, so it runs down the colony.
+            let y0 = w.ground(x, z) + c.height.0 + (c.height.1 - c.height.0) * pick;
+            let bells = 22;
+            let step = size * 1.7;
+            let head = [x, y0, z];
+            if w.reveal(head, step * bells as f32) <= 0.001 {
+                return;
+            }
+            for b in 0..bells {
+                let fb = b as f32;
+                let bend = 0.35 * (fb * 0.15 + w.t * 0.08 + phase).sin();
+                let p = [
+                    x - fb * step * bend.cos(),
+                    y0 - fb * step * 0.35 + 0.05 * (w.t * 0.2 + phase + fb * 0.2).sin(),
+                    z + fb * step * bend.sin(),
+                ];
+                f.fade = show(p);
+                if f.fade <= 0.001 {
+                    continue;
+                }
+                let s = size * (1.0 - 0.025 * fb);
+                f.glass(
+                    Model::Bell,
+                    place(p, phase + fb, 1.3, 0.0, [s, s * 1.2, s]),
+                    c.colour,
+                )
+                .moving(anim::PULSE, phase - fb * 0.45, 0.18, TAU * 0.9)
+                .material(material::JELLY)
+                .glowing(c.glow);
+                if b % 3 == 0 {
+                    f.sprite(p, s * 1.6, [0.15, 0.30, 0.45], GLOW);
+                }
+            }
+        }
     }
 }
 
@@ -8522,7 +9061,10 @@ fn submarines(w: &World, f: &mut Frame) {
     // Lamplit amber, never blown out to white however dark the water.
     let glow = 0.5 + 1.1 * dark;
     if w.visible(p, SUB_LENGTH * 0.55) {
-        f.put(Model::Submarine, hull, [0.33, 0.34, 0.36])
+        // Darker than it was when the loft's normals faced in and the hull
+        // was lit from inside: the same weight against the water, now with
+        // its round form.
+        f.put(Model::Submarine, hull, [0.21, 0.215, 0.23])
             .material(material::COPPER);
         let spin = (t - start) * meeting.revolutions() * TAU;
         f.put(

@@ -339,15 +339,17 @@ fn loft(
         rings.push(r);
     }
     let head = m.vertex([x1, section(x1).0, 0.0], colour(x1, 0.0), along(x1));
+    // Wound so the normals `smooth` works out face out of the body: the
+    // vertex lighting takes them as they are.
     for s in 0..ring {
         let t = (s + 1) % ring;
-        m.tri(tail, rings[0][t], rings[0][s]);
-        m.tri(head, rings[rings.len() - 1][s], rings[rings.len() - 1][t]);
+        m.tri(tail, rings[0][s], rings[0][t]);
+        m.tri(head, rings[rings.len() - 1][t], rings[rings.len() - 1][s]);
     }
     for w in rings.windows(2) {
         for s in 0..ring {
             let t = (s + 1) % ring;
-            m.quad(w[0][s], w[0][t], w[1][t], w[1][s]);
+            m.quad(w[0][s], w[1][s], w[1][t], w[0][t]);
         }
     }
     m.smooth()
@@ -602,10 +604,30 @@ pub enum Model {
     /// A round picture palace: a ribbed drum, neon fins round its lower
     /// wall, a projecting glass marquee ringed in light, and a lit cupola.
     Theatre,
+    /// A moray eel: a long, flattened body under one fin from neck to tail,
+    /// the head blunt, the jaw a little open. Lies along +x, tail at -1.
+    Eel,
+    /// A gulper eel of the abyss: a whip of a body behind a mouth that is
+    /// most of the animal, its tail ending in a lit tip.
+    Gulper,
+    /// A stingray: a round disc, thin at its rim, and a whip of a tail.
+    Ray,
+    /// A crab standing on its legs: a broad shell, four pairs of jointed
+    /// legs splayed out round it and two claws held forward.
+    Crab,
+    /// A spiny lobster: carapace, segmented tail fanning at its end, long
+    /// antennae swept forward and back, small legs.
+    Lobster,
+    /// A seal: a spindle of a body, a round head, fore flippers held in,
+    /// hind flippers trailing as a fluke.
+    Seal,
+    /// A sea lion: longer and slimmer than a seal, with a pointed snout and
+    /// long winglike fore flippers.
+    SeaLion,
 }
 
 impl Model {
-    pub const ALL: [Model; 64] = [
+    pub const ALL: [Model; 71] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -670,6 +692,13 @@ impl Model {
         Model::Arcade,
         Model::Factory,
         Model::Theatre,
+        Model::Eel,
+        Model::Gulper,
+        Model::Ray,
+        Model::Crab,
+        Model::Lobster,
+        Model::Seal,
+        Model::SeaLion,
     ];
 
     /// Whether this is one of the drowned city's models, whose triangles
@@ -982,6 +1011,13 @@ impl Model {
             Model::Arcade => arcade(),
             Model::Factory => factory(),
             Model::Theatre => theatre(),
+            Model::Eel => eel(false),
+            Model::Gulper => eel(true),
+            Model::Ray => ray(),
+            Model::Crab => crab(),
+            Model::Lobster => lobster(),
+            Model::Seal => seal(false),
+            Model::SeaLion => seal(true),
         }
     }
 }
@@ -3876,6 +3912,286 @@ pub const SUB_RADIUS: f32 = 0.075;
 pub const SUB_LANTERN: [f32; 3] = [0.205, SUB_RADIUS + 0.044, 0.0];
 pub const SUB_SCREW: [f32; 3] = [-0.488, 0.0, 0.0];
 
+/// A moray, or with `gulper` the abyss's gulper eel: from the tail (-1) to
+/// the snout (+1), so instances scale by half a length. `aux.x` runs along
+/// the body for the swimming wave, which an eel carries down its whole length.
+fn eel(gulper: bool) -> Mesh {
+    let mut m = loft(
+        -1.0,
+        1.0,
+        24,
+        8,
+        move |x| {
+            let t = (x + 1.0) / 2.0;
+            if gulper {
+                // A thread of a body, then the head swelling into the mouth's
+                // pouch over the front fifth.
+                let pouch = smooth(0.70, 0.92, t) * (1.0 - smooth(0.96, 1.0, t));
+                let h = 0.012 + 0.020 * t + 0.13 * pouch;
+                (0.03 * pouch, h, h * 1.2, h * 0.75)
+            } else {
+                // Even along its length, tapering only at the tail's end and
+                // rounding off at the snout; the fin is a ridge on the back.
+                let h = 0.070 * smooth(0.0, 0.35, t).sqrt() * (1.0 - 0.35 * smooth(0.90, 1.0, t))
+                    + 0.006;
+                (0.0, h * 1.25, h, h * 0.55)
+            }
+        },
+        move |x, up| {
+            if gulper {
+                [0.55, 0.55, 0.6]
+            } else {
+                // Mottled: dark blotches on the paler ground, a pale throat.
+                let blot = ((x * 23.0).sin() * (up * 7.0 + x * 9.0).cos()).abs();
+                let v = if up < -0.4 {
+                    1.5
+                } else if blot > 0.6 {
+                    0.55
+                } else {
+                    1.0
+                };
+                [v, v, v * 0.8]
+            }
+        },
+    );
+    if gulper {
+        // The lit tip of the tail, which the shader's glow lifts.
+        m.append(
+            sphere_with(1, |_| 0.025, |_| [6.0, 3.0, 4.5]).map(|p| [p[0] - 1.0, p[1], p[2]], |n| n),
+        );
+    }
+    m.with_aux(|p| [p[0], 0.0])
+}
+
+/// A stingray's disc, from its tail's root (-0.3) to the snout (+0.3) and as
+/// wide, its rim thin; a whip of a tail behind with a fold of fin. The
+/// wings' undulation is `anim::FLUKE` by the distance from the body (`aux`),
+/// as the manta's.
+fn ray() -> Mesh {
+    let mut m = loft(
+        -0.30,
+        0.30,
+        14,
+        18,
+        |x| {
+            let t = (x + 0.30) / 0.60;
+            // Round, the widest a little ahead of the middle.
+            let span = (1.0 - ((x - 0.03) / 0.33).powi(2)).max(0.0).sqrt() * 0.30;
+            let thick = 0.040 * (t * PI).sin().powf(0.6) + 0.003;
+            (0.0, thick, thick * 0.4, span.max(0.02))
+        },
+        // Sand-coloured above, as a ray that lies on the sand is.
+        countershade(1.6, 2.6),
+    )
+    .map(
+        |p| {
+            [
+                p[0],
+                p[1] * (1.0 - 0.75 * smooth(0.08, 0.30, p[2].abs())),
+                p[2],
+            ]
+        },
+        |n| n,
+    )
+    .smooth();
+    let tail = lathe(
+        &[(0.0, 0.0), (0.016, 0.0), (0.003, 0.50), (0.0, 0.52)],
+        5,
+        |_, _| 1.0,
+        |_, _| [0.5; 3],
+        |_| [0.0; 2],
+    )
+    .map(|p| [-0.27 - p[1], p[0], p[2]], |n| [-n[1], n[0], n[2]]);
+    m.append(tail);
+    m.with_aux(|p| {
+        [
+            1.0 - 2.0 * ((p[2].abs() - 0.06) / 0.24).clamp(0.0, 1.0),
+            0.0,
+        ]
+    })
+}
+
+/// A crab, standing: its shell's centre over the origin, a unit across the
+/// legs' span, feet at y = 0, facing +x. `aux.x` is how far out along a leg a
+/// vertex is, for `anim::WRITHE`'s scuttle, which moves the feet and leaves
+/// the shell still.
+fn crab() -> Mesh {
+    let mut m = sphere_with(
+        2,
+        |p| 1.0 + 0.08 * (p[2] * 9.0).cos() * p[1].max(0.0),
+        |p| {
+            if p[1] < -0.2 {
+                [1.6, 1.4, 1.2]
+            } else {
+                [1.0; 3]
+            }
+        },
+    )
+    .scaled([0.26, 0.10, 0.34])
+    .map(|p| [p[0], p[1] + 0.18, p[2]], |n| n);
+    for side in [-1.0f32, 1.0] {
+        for leg in 0..4 {
+            let x = 0.12 - 0.09 * leg as f32;
+            let root = [x, 0.17, side * 0.28];
+            let knee = [x * 1.4 - 0.03, 0.30, side * 0.52];
+            let foot = [x * 1.7 - 0.06, 0.0, side * 0.62];
+            m.append(rod(root, knee, 0.030, 0.024, [0.9; 3]));
+            m.append(rod(knee, foot, 0.024, 0.008, [0.9; 3]));
+        }
+        // A claw held forward: an arm, and the pincer's palm and finger.
+        let elbow = [0.30, 0.20, side * 0.30];
+        m.append(rod([0.16, 0.17, side * 0.18], elbow, 0.03, 0.035, [1.0; 3]));
+        m.append(rod(
+            elbow,
+            [0.46, 0.16, side * 0.16],
+            0.06,
+            0.02,
+            [1.2, 1.1, 1.0],
+        ));
+        m.append(rod(
+            [0.36, 0.13, side * 0.24],
+            [0.47, 0.10, side * 0.13],
+            0.025,
+            0.008,
+            [1.6, 1.5, 1.4],
+        ));
+    }
+    m.with_aux(|p| {
+        [
+            ((p[2].abs() - 0.30) / 0.32).clamp(0.0, 1.0) * (1.0 - p[1] * 2.0).max(0.2),
+            0.0,
+        ]
+    })
+}
+
+/// A spiny lobster, from its tail fan (-0.5) to its eyes (+0.25), the
+/// antennae reaching on ahead of them; on its legs, feet at y = 0. `aux.x`
+/// is how far out along a leg or feeler a vertex is (`anim::WRITHE`).
+fn lobster() -> Mesh {
+    let mut m = loft(
+        -0.48,
+        0.26,
+        16,
+        8,
+        |x| {
+            let t = (x + 0.48) / 0.74;
+            // The tail's segments as ripples in its height.
+            let seg = if x < -0.05 {
+                0.010 * (x * 60.0).cos().abs()
+            } else {
+                0.0
+            };
+            let h = 0.075 * (t * PI).sin().powf(0.5) + 0.010 + seg;
+            (0.13, h, h * 0.7, h * 0.95)
+        },
+        |x, up| {
+            // Banded: pale spots on the dark shell.
+            let spot = ((x * 40.0).sin() * (up * 6.0).cos()).abs();
+            let v = if up < -0.3 {
+                1.4
+            } else if spot > 0.8 {
+                1.8
+            } else {
+                0.9
+            };
+            [v, v * 0.9, v * 0.8]
+        },
+    );
+    let fan = extrude(
+        &[[-0.46, 0.0], [-0.58, 0.10], [-0.62, 0.0], [-0.58, -0.10]],
+        0.012,
+        [1.0; 3],
+    )
+    .laid_flat()
+    .map(|p| [p[0], p[1] + 0.12, p[2]], |n| n);
+    m.append(fan);
+    for side in [-1.0f32, 1.0] {
+        // The great spiny antennae, swept forward and out, then back.
+        let base = [0.24, 0.17, side * 0.04];
+        let mid = [0.55, 0.26, side * 0.20];
+        m.append(rod(base, mid, 0.018, 0.010, [1.1; 3]));
+        m.append(rod(mid, [0.70, 0.18, side * 0.45], 0.010, 0.003, [1.1; 3]));
+        for leg in 0..4 {
+            let x = 0.16 - 0.07 * leg as f32;
+            let knee = [x + 0.02, 0.16, side * 0.15];
+            m.append(rod([x, 0.10, side * 0.05], knee, 0.012, 0.010, [0.9; 3]));
+            m.append(rod(
+                knee,
+                [x + 0.04, 0.0, side * 0.21],
+                0.010,
+                0.004,
+                [0.9; 3],
+            ));
+        }
+    }
+    m.with_aux(|p| [((p[2].abs() - 0.06) / 0.30).clamp(0.0, 1.0), 0.0])
+}
+
+/// A seal, or with `lion` a sea lion: from the hind flippers (-0.5) to the
+/// snout (+0.45), so instances scale by about half a length. `aux.x` along
+/// the body for `anim::FLUKE`, which beats the hind flippers up and down.
+fn seal(lion: bool) -> Mesh {
+    let mut m = loft(
+        -0.42,
+        0.45,
+        18,
+        12,
+        move |x| {
+            let t = (x + 0.42) / 0.87;
+            let girth = if lion { 0.075 } else { 0.095 };
+            let mut h = girth * (t * PI).sin().powf(if lion { 0.7 } else { 0.5 }) + 0.010;
+            // The neck pinches in behind the head.
+            let neck = (-((x - 0.30) / 0.06).powi(2)).exp();
+            h *= 1.0 - 0.25 * neck;
+            if lion && x > 0.38 {
+                h = h.min(0.030); // the pointed muzzle
+            }
+            (0.0, h, h * 0.9, h * 0.95)
+        },
+        move |x, up| {
+            if lion {
+                countershade(0.7, 1.3)(x, up)
+            } else {
+                // Grey, spotted on the back, paler beneath.
+                let spot = ((x * 31.0).sin() * (up * 11.0).cos()).abs() > 0.85;
+                let v = if up < -0.2 {
+                    1.6
+                } else if spot {
+                    0.55
+                } else {
+                    1.0
+                };
+                [v, v, v * 1.02]
+            }
+        },
+    );
+    let hind = extrude(
+        &[[-0.38, 0.0], [-0.52, 0.09], [-0.47, 0.0], [-0.52, -0.09]],
+        0.010,
+        [0.8; 3],
+    )
+    .laid_flat();
+    let fore = if lion {
+        extrude(
+            &[[0.18, -0.04], [0.08, -0.05], [-0.02, -0.24]],
+            0.009,
+            [0.8; 3],
+        )
+    } else {
+        extrude(
+            &[[0.16, -0.06], [0.10, -0.07], [0.08, -0.15]],
+            0.010,
+            [0.9; 3],
+        )
+    };
+    let left = fore.clone().map(|p| [p[0], p[1], p[2] + 0.07], |n| n);
+    let right = fore.map(|p| [p[0], p[1], p[2] - 0.07], |n| n);
+    for part in [hind, left, right] {
+        m.append(part);
+    }
+    m.with_aux(|p| [p[0] * 2.0, 0.0])
+}
+
 fn submarine() -> Mesh {
     const R: f32 = SUB_RADIUS;
     let ogive = |t: f32| 1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(2);
@@ -4355,6 +4671,41 @@ impl Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lofted bodies' normals face out of them: the vertex shader lights
+    /// a model by its normals as they are, so a body wound inside out is lit
+    /// from below, and a fish's back goes black under the sun.
+    #[test]
+    fn lofted_bodies_face_out() {
+        let bodies = [
+            ("fish", fish()),
+            ("shark", shark()),
+            ("whale", whale()),
+            ("dolphin", dolphin(false)),
+            ("turtle", turtle()),
+            ("manta", manta()),
+            ("penguin", penguin()),
+            ("eel", eel(false)),
+            ("ray", ray()),
+            ("seal", seal(false)),
+            ("sea lion", seal(true)),
+        ];
+        for (name, m) in bodies {
+            // How far each normal points away from the body's long axis
+            // (x): about 1 for a body facing out, about -1 inside out, and
+            // about 0 for the sheet fins, which point across it either way.
+            let out: Vec<f32> = m
+                .vertices
+                .iter()
+                .map(|v| {
+                    let r = (v.pos[1] * v.pos[1] + v.pos[2] * v.pos[2]).sqrt().max(1e-6);
+                    (v.normal[1] * v.pos[1] + v.normal[2] * v.pos[2]) / r
+                })
+                .collect();
+            let mean = out.iter().sum::<f32>() / out.len().max(1) as f32;
+            assert!(mean > 0.1, "{name} faces {mean} out");
+        }
+    }
 
     #[test]
     fn closed_shapes_are_sealed_and_sheets_are_not() {

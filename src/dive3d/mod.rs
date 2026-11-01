@@ -786,6 +786,9 @@ mod part {
     /// What lies round wrecks, ruins and outcrops: scour pits, planks,
     /// guns, ballast, fallen drums and blocks, scree (`world::DEBRIS`).
     pub const DEBRIS: u64 = 1 << 39;
+    /// The wildlife of `world::LIFE` and the shoals and sharks it added to
+    /// the older placers (V5): what each sea gained in animals.
+    pub const LIFE: u64 = 1 << 40;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -879,6 +882,15 @@ mod effect {
     /// `Ziggurat`, `Arcade`, `Factory` and `Theatre`: the city's other
     /// buildings.
     pub const CITY_BLOCKS: u64 = 1 << 42;
+    /// `Eel` and `Gulper`: morays in the wrecks and reef, gulpers in the
+    /// abyss.
+    pub const EELS: u64 = 1 << 43;
+    /// `Ray`: stingrays on the sand.
+    pub const RAYS: u64 = 1 << 44;
+    /// `Crab` and `Lobster`: what walks the seabed.
+    pub const CRABS: u64 = 1 << 45;
+    /// `Seal` and `SeaLion`: under the ice and in the forest.
+    pub const SEALS: u64 = 1 << 46;
 
     pub const MODEL_BITS: u64 = ((1 << 31) - 1)
         | CORALS
@@ -888,7 +900,11 @@ mod effect {
         | TOWERS
         | CITY_GLASS
         | CITY_WORKS
-        | CITY_BLOCKS;
+        | CITY_BLOCKS
+        | EELS
+        | RAYS
+        | CRABS
+        | SEALS;
     pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
     pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
 
@@ -1000,6 +1016,30 @@ mod effect {
             "Ziggurat, Arcade, Factory, Theatre",
             "the drowned city's stepped hall, arcade, works and picture palace",
         ),
+        (
+            "eels",
+            EELS,
+            "Eel, Gulper",
+            "morays in wrecks, reef and ruins; gulper eels in the abyss",
+        ),
+        (
+            "rays",
+            RAYS,
+            "Ray",
+            "stingrays on the shallows' and reef's sand",
+        ),
+        (
+            "crabs",
+            CRABS,
+            "Crab, Lobster",
+            "crabs at the vents, brine and trench; lobsters at wrecks and ruins",
+        ),
+        (
+            "seals",
+            SEALS,
+            "Seal, SeaLion",
+            "seals under the ice, sea lions in the forest",
+        ),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
         ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
         (
@@ -1088,6 +1128,10 @@ fn model_bit(model: usize) -> u64 {
         Model::Dome | Model::Walkway => effect::CITY_GLASS,
         Model::Pipework | Model::Sign => effect::CITY_WORKS,
         Model::Ziggurat | Model::Arcade | Model::Factory | Model::Theatre => effect::CITY_BLOCKS,
+        Model::Eel | Model::Gulper => effect::EELS,
+        Model::Ray => effect::RAYS,
+        Model::Crab | Model::Lobster => effect::CRABS,
+        Model::Seal | Model::SeaLion => effect::SEALS,
     }
 }
 
@@ -2185,6 +2229,8 @@ impl Nautilus {
             self.skips(part::NO_SIGHT_CULL),
             std::sync::atomic::Ordering::Relaxed,
         );
+        #[cfg(test)]
+        world::SKIPPED.store(self.skip, std::sync::atomic::Ordering::Relaxed);
         world::build(&world, &mut self.frame, &mut self.static_cache);
         // Bake the ice sheet's noise for the region around the camera, and
         // re-bake only when the camera has moved far enough that the margin
