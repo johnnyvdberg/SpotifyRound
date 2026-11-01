@@ -78,8 +78,8 @@ run at once**, from different groups. Model tier is a suggestion.
 | P6 | perf-b | Glass specialised by material and animation (T7) | Sonnet | done on branch `perf-b` |
 | P7 | perf-b | Start-up: parallel mesh library, drop unused pipelines (T8) | Sonnet | done on branch `perf-b` (warm 6.7 to 2.7 s, cold 12.6 to 6.6 s) |
 | P8 | perf-b | Pace the dive from the display (T10) | Sonnet | implemented behind `SPOTIFY_ROUND_PACE=display`, default unchanged; needs the user to evaluate on the kiosk |
-| V1 | water | Realistic visibility: shorter draw distance in water haze, detail reinvested near | Opus | todo |
-| V2 | water | Water surface seen from below | Sonnet | todo |
+| V1 | water | Realistic visibility: shorter draw distance in water haze, detail reinvested near | Opus | done on branch `water` (median 7.63 -> 6.76 ms with the reinvestment; `docs/handoff/water.md`) |
+| V2 | water | Water surface seen from below | Sonnet | done on branch `water` (mirror, facets, Snell window; +0.1 ms median, worst 10.25 ms coral) |
 | V3 | ground | Ice less blocky | Sonnet | todo |
 | V4 | ground | Terrain integration and per-biome placement realism | Opus | todo |
 | V5 | life | More wildlife, specific to each biome | Opus | todo |
@@ -217,3 +217,8 @@ ends, and record what each addition costs.
 - perf-a (2026-11-01): review the vent plumes' look (`docs/handoff/img/perf-a-vents.jpg`). The Docker
   VM's disk filled up twice during the work (reclaim with `docker system prune`), and the Pi's `/tmp`
   is crowded with other runs' 47 MB test binaries, which `bench-pi.sh` never removes.
+- water (V1/V2, 2026-11-01): look at the seas' new sight (`docs/handoff/img/water-murky.jpg`,
+  `water-clear.jpg`): the far distance is hazier everywhere and gone beyond each sea's sight
+  (`world::SIGHT`, a table in `docs/nautilus.md`), the abyss's far wall and Atlantis' farthest
+  temples among it; tune a sea by its one number. The surface from below
+  (`water-surface.jpg`) is best judged live, since its facets move.
