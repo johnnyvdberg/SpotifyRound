@@ -115,6 +115,14 @@ override MATERIAL: i32 = -1;
 // a vertex, binning and drawing: a still model compiles none of them.
 override ANIM: i32 = -1;
 
+// Which part of a drowned-city model (`mesh::city`: 0 plain brass and stone,
+// 1 windowed walls, 2 lit panes, 3 neon) this pipeline draws, or -1 for every
+// part, taken from each pixel. The city's models are drawn in index ranges
+// by part, each with only its own shading: the whole of `city_light` kept
+// every pixel in two threads, though a neon tube or a plain roof needs a
+// fraction of it.
+override CITY_PART: i32 = -1;
+
 // What every colour is multiplied by as it is stored: the sea is kept in ten
 // bits a channel, which hold no more than 1, so it is stored at half its
 // brightness, to keep the highlights up to 2 that the old grade and
@@ -1322,11 +1330,10 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     out.keep = 1.0;
     let seed = in.surface.w;
     let local = in.local;
-    let kind = length(in.local_normal) - 1.0;
+    let kind = select(length(in.local_normal) - 1.0, f32(CITY_PART), CITY_PART >= 0);
     let facing = clamp(dot(n, v), 0.0, 1.0);
     let edge = 1.0 - facing;
     let fresnel = edge * edge * edge;
-    let r = reflect(-v, n);
     // The haze the water scatters round every silhouette: a rim of the
     // water's own colour where a surface turns away, so a dark tower stands
     // off the dark water behind it instead of merging with it.
@@ -1370,6 +1377,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     // over the city: a matcap worked out from the reflected ray.
     let brass = in.floor_y;
     if (brass > 0.01) {
+        let r = reflect(-v, n);
         let band = exp(-60.0 * (r.y - 0.30) * (r.y - 0.30));
         out.sheen += vec3<f32>(1.0, 0.74, 0.40) * brass * (1.0 - foot)
             * (env * (0.22 + 0.9 * fresnel) + vec3<f32>(0.06, 0.05, 0.04) * band);

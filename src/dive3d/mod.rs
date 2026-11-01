@@ -390,10 +390,13 @@ pub(crate) struct Nautilus {
     background_shimmer: wgpu::RenderPipeline,
     terrain_pipeline: wgpu::RenderPipeline,
     /// Solid models: one pipeline per entry of [`MATERIALS`] and grounded
-    /// flag.
-    models: Vec<wgpu::RenderPipeline>,
+    /// flag. The city's slots are `None`: it is drawn by `city`.
+    models: Vec<Option<wgpu::RenderPipeline>>,
     /// The same for sealed models, their back faces culled.
-    sealed: Vec<wgpu::RenderPipeline>,
+    sealed: Vec<Option<wgpu::RenderPipeline>>,
+    /// The city's models, a pipeline for each of their parts
+    /// ([`mesh::city`]), the solid ones first, then the sealed.
+    city: Vec<wgpu::RenderPipeline>,
     /// Marks the corners of the sea outside the round window as covered.
     mask: wgpu::RenderPipeline,
     /// The same, for models fading in or out, which only they may discard.
@@ -565,6 +568,11 @@ fn slot_material(slot: usize) -> usize {
 /// The pipeline for an instance: its material's, of the pair for things that
 /// stand on the seabed or swim free, and of those, its animation's.
 fn pipeline_slot(i: &Instance) -> usize {
+    // The city has one pipeline set for all of it: nothing there moves or is
+    // grounded in the shader's sense (`every_instance_has_a_pipeline`).
+    if i.extra[0].round() as i32 == world::material::CITY as i32 {
+        return material_slot(i) * 2 * ANIMS.len();
+    }
     let grounded = i.extra[1] > 0.5;
     // The grounded pipelines leave the swimmers' animation out (`vs_model`).
     debug_assert!(
@@ -1095,8 +1103,9 @@ struct Pipelines {
     background_cheap: wgpu::RenderPipeline,
     background_shimmer: wgpu::RenderPipeline,
     terrain: wgpu::RenderPipeline,
-    models: Vec<wgpu::RenderPipeline>,
-    sealed: Vec<wgpu::RenderPipeline>,
+    models: Vec<Option<wgpu::RenderPipeline>>,
+    sealed: Vec<Option<wgpu::RenderPipeline>>,
+    city: Vec<wgpu::RenderPipeline>,
     mask: wgpu::RenderPipeline,
     fading: Vec<Option<wgpu::RenderPipeline>>,
     glass: Vec<wgpu::RenderPipeline>,
@@ -1322,7 +1331,11 @@ fn compile(
             for &material in &MATERIALS {
                 for grounded in [0.0, 1.0] {
                     for &anim in &ANIMS {
-                        pipelines.push(pipeline(
+                        if material == world::material::CITY as i32 {
+                            pipelines.push(None);
+                            continue;
+                        }
+                        pipelines.push(Some(pipeline(
                             &model_label(label, material, grounded, anim),
                             "vs_model",
                             "fs_model",
@@ -1343,7 +1356,7 @@ fn compile(
                                 ("ANIM", f64::from(anim)),
                             ],
                             cull,
-                        ));
+                        )));
                     }
                 }
             }
@@ -1366,6 +1379,41 @@ fn compile(
         true,
         Some(wgpu::Face::Back),
     );
+    // The drowned city, a pipeline for each part of its models: its fragment
+    // shader is long (windows, rooms, lifts), and the neon tubes, panes and
+    // plain brass beside them need little of it. Its instances neither
+    // animate nor stand on the seabed (`pipeline_slot`).
+    let city = [None, Some(wgpu::Face::Back)]
+        .into_iter()
+        .flat_map(|cull| (0..mesh::city::PARTS).map(move |part| (cull, part)))
+        .map(|(cull, part)| {
+            let label = if cull.is_some() {
+                "Dive3d sealed models"
+            } else {
+                "Dive3d models"
+            };
+            pipeline(
+                &format!("{label} city part{part}"),
+                "vs_model",
+                "fs_model",
+                &model_buffers,
+                None,
+                true,
+                nearer,
+                false,
+                true,
+                &[
+                    ("FADING", 0.0),
+                    ("FADE_OPAQUE", 1.0),
+                    ("MATERIAL", f64::from(world::material::CITY as i32)),
+                    ("GROUNDED", 0.0),
+                    ("ANIM", 0.0),
+                    ("CITY_PART", part as f64),
+                ],
+                cull,
+            )
+        })
+        .collect();
     // Before anything else, the corners outside the round window are
     // marked as nearest of all, so nothing drawn there is shaded. Its test
     // is `GreaterEqual`, which passes everywhere over the cleared depth just
@@ -1531,6 +1579,7 @@ fn compile(
         terrain,
         models,
         sealed,
+        city,
         mask,
         fading,
         glass,
@@ -1904,6 +1953,7 @@ impl Nautilus {
             terrain,
             models,
             sealed,
+            city,
             mask,
             fading,
             glass,
@@ -1945,6 +1995,7 @@ impl Nautilus {
             terrain_pipeline: terrain,
             models,
             sealed,
+            city,
             mask,
             fading,
             glass,
@@ -2017,6 +2068,7 @@ impl Nautilus {
         self.terrain_pipeline = p.terrain;
         self.models = p.models;
         self.sealed = p.sealed;
+        self.city = p.city;
         self.mask = p.mask;
         self.fading = p.fading;
         self.glass = p.glass;
@@ -2573,7 +2625,11 @@ impl Nautilus {
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
                 }
                 if tunnel_drawn && !this.skips(part::MODELS) && !this.skips(part::TUNNEL) {
-                    pass.set_pipeline(&this.models[pipeline_slot(&all[tunnel_instance as usize])]);
+                    pass.set_pipeline(
+                        this.models[pipeline_slot(&all[tunnel_instance as usize])]
+                            .as_ref()
+                            .expect("the tunnel is not the city"),
+                    );
                     pass.set_vertex_buffer(0, this.tunnel.slice(..));
                     pass.set_index_buffer(this.tunnel_indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..tunnel_count, 0, tunnel_instance..tunnel_instance + 1);
@@ -2582,7 +2638,49 @@ impl Nautilus {
                     pass.set_vertex_buffer(0, this.vertices.slice(..));
                     pass.set_index_buffer(this.indices.slice(..), wgpu::IndexFormat::Uint32);
                     let mut bound = None;
-                    for d in this.draws.iter().filter(|d| d.kind == wanted) {
+                    let drawn: Vec<&Draw> =
+                        this.draws.iter().filter(|d| d.kind == wanted).collect();
+                    let mut next = 0;
+                    while next < drawn.len() {
+                        let d = drawn[next];
+                        next += 1;
+                        // The city goes part by part: a run of its draws with
+                        // each part's pipeline in turn, over the part's
+                        // range of every model.
+                        if wanted != Kind::Fading
+                            && MATERIALS[slot_material(d.slot)] == world::material::CITY as i32
+                        {
+                            let end = drawn[next - 1..]
+                                .iter()
+                                .take_while(|e| e.slot == d.slot)
+                                .count()
+                                + next
+                                - 1;
+                            let run = &drawn[next - 1..end];
+                            next = end;
+                            let base = usize::from(wanted == Kind::Sealed) * mesh::city::PARTS;
+                            for part in 0..mesh::city::PARTS {
+                                let mut set = false;
+                                for e in run {
+                                    let l = this.lods[e.model][e.lod];
+                                    let before: u32 = l.parts[..part].iter().sum();
+                                    if l.parts[part] == 0 || this.skips(part::DRAW_CALLS) {
+                                        continue;
+                                    }
+                                    if !set {
+                                        pass.set_pipeline(&this.city[base + part]);
+                                        set = true;
+                                    }
+                                    pass.draw_indexed(
+                                        l.first + before..l.first + before + l.parts[part],
+                                        l.base,
+                                        e.first..e.first + e.count,
+                                    );
+                                }
+                            }
+                            bound = None;
+                            continue;
+                        }
                         if wanted == Kind::Fading {
                             let ice =
                                 MATERIALS[slot_material(d.slot)] == world::material::ICE as i32;
@@ -2594,8 +2692,8 @@ impl Nautilus {
                         }
                         if bound != Some(d.slot) {
                             pass.set_pipeline(match wanted {
-                                Kind::Sealed => &this.sealed[d.slot],
-                                Kind::Solid => &this.models[d.slot],
+                                Kind::Sealed => this.sealed[d.slot].as_ref().expect("not the city"),
+                                Kind::Solid => this.models[d.slot].as_ref().expect("not the city"),
                                 Kind::Fading => this.fading[d.slot]
                                     .as_ref()
                                     .expect("only the ice fades by pixel"),
@@ -3166,6 +3264,21 @@ mod tests {
     #[test]
     fn every_instance_has_a_pipeline() {
         use std::collections::BTreeSet;
+        let library = mesh::Library::build();
+        for (model, lods) in mesh::Model::ALL.iter().zip(&library.lods) {
+            for l in lods {
+                let parts: u32 = l.parts.iter().sum();
+                assert_eq!(
+                    parts != 0,
+                    model.is_city(),
+                    "{model:?}: parts are for the city"
+                );
+                assert!(
+                    parts == 0 || parts == l.count,
+                    "{model:?}: its parts cover its indices"
+                );
+            }
+        }
         let mut used: BTreeSet<(u8, usize, usize, usize)> = BTreeSet::new();
         let mut glass = BTreeSet::new();
         for visit in [0u64, 500_000] {
@@ -3196,6 +3309,17 @@ mod tests {
                             "{:?} has material {material}, which has no pipeline",
                             mesh::Model::ALL[model]
                         );
+                        if material == world::material::CITY as i32 {
+                            // Drawn part by part, by the one pipeline set.
+                            assert!(
+                                mesh::Model::ALL[model].is_city(),
+                                "a city material on a model with no parts"
+                            );
+                            assert!(
+                                i.extra[1] < 0.5 && i.anim[0] == 0.0,
+                                "the city neither animates nor stands on the seabed"
+                            );
+                        }
                         let kind =
                             u8::from(material == world::material::ICE as i32 && i.extra[2] < 0.999);
                         used.insert((

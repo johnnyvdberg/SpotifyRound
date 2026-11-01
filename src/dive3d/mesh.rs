@@ -672,6 +672,24 @@ impl Model {
         Model::Theatre,
     ];
 
+    /// Whether this is one of the drowned city's models, whose triangles
+    /// are marked part by part ([`city`]).
+    pub fn is_city(self) -> bool {
+        matches!(
+            self,
+            Model::Tower
+                | Model::Rotunda
+                | Model::Dome
+                | Model::Walkway
+                | Model::Pipework
+                | Model::Sign
+                | Model::Ziggurat
+                | Model::Arcade
+                | Model::Factory
+                | Model::Theatre
+        )
+    }
+
     pub fn index(self) -> usize {
         self as usize
     }
@@ -2327,6 +2345,8 @@ pub mod city {
     pub const WINDOWS: f32 = 1.0;
     pub const PANES: f32 = 2.0;
     pub const NEON: f32 = 3.0;
+    /// How many kinds there are.
+    pub const PARTS: usize = 4;
 }
 
 /// Add `part` to `m`, turned to face outward and marked as `kind` of city
@@ -3958,6 +3978,10 @@ pub struct Lod {
     /// The longest edge of what it changed: how fine the colours and normals
     /// it carries there are.
     pub edge: f32,
+    /// A city model's indices run part by part ([`city`]): how many indices
+    /// each part takes, in the order of its constants. All zero for the
+    /// rest, which are drawn in one piece.
+    pub parts: [u32; city::PARTS],
 }
 
 /// Reorder a mesh with meshoptimizer: pack the vertices actually referenced,
@@ -3980,6 +4004,8 @@ struct Built {
     sealed: bool,
     /// Per level, `(error, stray, edge)` against the full one.
     measures: Vec<(f32, f32, f32)>,
+    /// Per level, a city model's indices per part.
+    parts: Vec<[u32; city::PARTS]>,
 }
 
 impl Built {
@@ -4008,6 +4034,18 @@ impl Built {
                 }
             }
         }
+        // The city's triangles run part by part, each part its own range, so
+        // each can be drawn with a shader that has only its own shading.
+        let parts = levels
+            .iter_mut()
+            .map(|mesh| {
+                if model.is_city() {
+                    by_part(mesh)
+                } else {
+                    [0; city::PARTS]
+                }
+            })
+            .collect();
         let measures = levels
             .iter()
             .map(|mesh| {
@@ -4023,8 +4061,26 @@ impl Built {
             sealed: closed.iter().all(Option::is_some),
             levels,
             measures,
+            parts,
         }
     }
+}
+
+/// Sort a city mesh's triangles by the part they belong to (the kind its
+/// vertices carry in `aux.x`), keeping their order within a part, which
+/// `optimized` made friendly to the vertex cache; the parts share no vertices.
+/// Returns how many indices each part has.
+fn by_part(mesh: &mut Mesh) -> [u32; city::PARTS] {
+    let kind =
+        |t: &[u32; 3]| (mesh.vertices[t[0] as usize].aux[0].round() as usize).min(city::PARTS - 1);
+    let mut triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+    triangles.sort_by_key(|t| kind(t));
+    let mut counts = [0u32; city::PARTS];
+    for t in &triangles {
+        counts[kind(t)] += 3;
+    }
+    mesh.indices = triangles.into_iter().flatten().collect();
+    counts
 }
 
 impl Library {
@@ -4076,7 +4132,9 @@ impl Library {
         for built in models {
             sealed.push(built.sealed);
             let mut list = Vec::new();
-            for (mesh, &(error, stray, edge)) in built.levels.iter().zip(&built.measures) {
+            for ((mesh, &(error, stray, edge)), &parts) in
+                built.levels.iter().zip(&built.measures).zip(&built.parts)
+            {
                 list.push(Lod {
                     first: indices.len() as u32,
                     count: mesh.indices.len() as u32,
@@ -4085,6 +4143,7 @@ impl Library {
                     error,
                     stray,
                     edge,
+                    parts,
                 });
                 vertices.extend(mesh.vertices.iter().map(Packed::from));
                 indices.extend_from_slice(&mesh.indices);
