@@ -9690,9 +9690,9 @@ fn submarines(w: &World, f: &mut Frame) {
     if w.visible(p, SUB_LENGTH * 0.55) {
         // Darker than it was when the loft's normals faced in and the hull
         // was lit from inside: the same weight against the water, now with
-        // its round form.
-        f.put(Model::Submarine, hull, [0.21, 0.215, 0.23])
-            .material(material::COPPER);
+        // its round form. Plain plated iron: copper's sheen, now that the
+        // hull faces the lamps, blew out to white by the city's lights.
+        f.put(Model::Submarine, hull, [0.21, 0.215, 0.23]);
         let spin = (t - start) * meeting.revolutions() * TAU;
         f.put(
             Model::Screw,
