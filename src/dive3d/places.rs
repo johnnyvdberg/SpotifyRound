@@ -158,6 +158,22 @@ pub fn all() -> Vec<Place> {
             seed,
         ));
     }
+    // Down the drowned city's galleria (`gallery` in `world.rs`): before
+    // its great arch, under it, along the rooms, and out at the far end.
+    let city = leg_of(super::world::CITY, seed) as f64;
+    for (name, at) in [
+        ("approach", 0.17),
+        ("entrance", 0.21),
+        ("rooms", 0.33),
+        ("deep", 0.53),
+        ("exit", 0.62),
+    ] {
+        places.push(Place::new(
+            format!("{city}-city-gallery-{name}"),
+            city + at,
+            seed,
+        ));
+    }
     // Another submarine met on the way: the encounters run on the visit's
     // clock (`submarines` in `world.rs`), so these are moments of visits 0
     // and 500000 when one is in view.
