@@ -361,7 +361,7 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     // caustics never compete with the scene in front of them, and dissolve
     // the horizon end into the water's own haze.
     colour = mix(colour, water_at(dir), 0.42);
-    colour = mix(colour, water_at(dir), smooth01(30.0, 120.0, reach));
+    colour = mix(colour, water_at(dir), fog_toward(dir * reach));
     return colour;
 }
 
@@ -398,8 +398,25 @@ fn switched(bit: u32) -> bool {
     return debug(bit);
 }
 
+// How much of something `distance` away the water hides: `g.water.w` is
+// `world::SIGHT_K` over the sea's sight, and the curve is scaled to reach
+// exactly one at the sight (`world::fog`), where the placers stop placing.
+const SIGHT_SCALE: f32 = 1.09977;
+// How much further than the sight a light shows (`world::LIGHT_SIGHT`).
+const LIGHT_SIGHT: f32 = 2.0;
+// How much shorter the haze's way is looking straight up (`world::UP_CLEAR`).
+const UP_CLEAR: f32 = 0.6;
+
 fn fog_of(distance: f32) -> f32 {
-    return 1.0 - exp(-distance * g.water.w);
+    return min((1.0 - exp(-distance * g.water.w)) * SIGHT_SCALE, 1.0);
+}
+
+// The fog toward something along `v` from the window. Looking up, the window
+// looks toward the light: a shape against the bright surface shows further
+// than one level with the window against the dark water (`world::upward`).
+fn fog_toward(v: vec3<f32>) -> f32 {
+    let d = length(v);
+    return fog_of(d * (1.0 - UP_CLEAR * smooth01(0.0, 0.4, v.y / d)));
 }
 
 // Sun, sky, searchlight and point lights on a surface at `p` facing `n`.
@@ -461,13 +478,16 @@ fn fog_at(p: vec3<f32>) -> vec4<f32> {
     // Distant rock dissolves into the light scattered by the water above it,
     // not into the darker water looking level: that is what softens a far
     // silhouette against the surface instead of drawing a hard cut-out.
+    // At the sight it is the open water behind it exactly, so what the
+    // placers leave out beyond there is never missed.
+    let fog = fog_toward(v);
     let skyward = smooth01(-0.20, 0.20, dir.y);
     let haze = mix(
         water_at(dir),
         vec3<f32>(0.075, 0.20, 0.22),
-        skyward * 0.55,
+        skyward * 0.55 * (1.0 - fog),
     );
-    return vec4<f32>(haze, fog_of(d));
+    return vec4<f32>(haze, fog);
 }
 
 // ---------------------------------------------------------------------------
@@ -1647,7 +1667,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             // rectangle across the window.
             let edge = 1.0 - smooth01(0.80, 1.0, max(abs(in.local.x), abs(in.local.z)));
             coverage = baked.a * edge;
-            haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.55;
+            haze = fog_of(length(p - g.camera.xyz)) * 0.55;
             let floes = baked.r;
             let lead = baked.g;
             let bumps = baked.b;
@@ -1666,7 +1686,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // Lights show further through the water than what they light: the
     // windows of a tower the haze has all but hidden still glow.
     if (MATERIAL == CITY_LIGHTS) {
-        shaded += lamps * (1.0 - 0.8 * haze);
+        shaded += lamps * (1.0 - fog_of(length(p - g.camera.xyz) / LIGHT_SIGHT));
     }
     if (switched(32u)) {
         let t = in.fog.a;
@@ -1949,7 +1969,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             // rectangle across the window.
             let edge = 1.0 - smooth01(0.80, 1.0, max(abs(in.local.x), abs(in.local.z)));
             coverage = baked.a * edge;
-            haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.55;
+            haze = fog_of(length(p - g.camera.xyz)) * 0.55;
             let floes = baked.r;
             let lead = baked.g;
             let bumps = baked.b;
@@ -1968,7 +1988,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // Lights show further through the water than what they light: the
     // windows of a tower the haze has all but hidden still glow.
     if (MATERIAL == CITY_LIGHTS) {
-        shaded += lamps * (1.0 - 0.8 * haze);
+        shaded += lamps * (1.0 - fog_of(length(p - g.camera.xyz) / LIGHT_SIGHT));
     }
     if (switched(32u)) {
         let t = in.fog.a;
@@ -2229,7 +2249,8 @@ fn vs_shaft(
     // `tint.w` marks a shaft lit by its own light, as from the lava cave's
     // chimneys, rather than by the sun's.
     let strength = select(g.sun.w, 1.0, tint.w > 0.5);
-    out.colour = tint.rgb * strength * smooth01(0.35, 1.1, d) * (1.0 - fog_of(d)) * SEA_SCALE;
+    // A shaft is light in the water: it shows further than the sight.
+    out.colour = tint.rgb * strength * smooth01(0.35, 1.1, d) * (1.0 - fog_of(d / LIGHT_SIGHT)) * SEA_SCALE;
     return out;
 }
 
@@ -2302,7 +2323,7 @@ fn vs_plume(
     // 0.886 half-widths long, and one comes every PLUME_SPACING.
     let puffs = round(length_run / PLUME_SPACING);
     let thickness = 0.886 * puffs / length_run;
-    out.colour = tint.rgb * thickness * (1.0 - fog_of(length(centre - g.camera.xyz)));
+    out.colour = tint.rgb * thickness * (1.0 - fog_of(length(centre - g.camera.xyz) / LIGHT_SIGHT));
     out.shape = vec4<f32>(tint.w, place.w - tint.w, puffs, run.w);
     return out;
 }

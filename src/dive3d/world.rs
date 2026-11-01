@@ -49,6 +49,48 @@ pub const VIEW: f32 = 0.41;
 /// Toward the sun, high and a little ahead and to the side, not normalised.
 pub const SUN: [f32; 3] = [0.30, 1.0, 0.25];
 
+/// How far the window can see through each sea's water, in units (one is
+/// about eleven metres): the distance at which the haze reaches the water's
+/// full colour, beyond which nothing is drawn. The polar water under the
+/// ice, the trench's and the tropical reef's are the clearest; the bloom,
+/// the vents, the brine's milk and the abyss's dark the shortest. The
+/// drowned city's lit windows are the one thing that shows beyond it (light
+/// carries further than the shapes it falls on), out to [`LIGHT_SIGHT`] times
+/// as far.
+pub const SIGHT: [f32; BIOMES] = [
+    // shallows, forest, wrecks, atlantis, cave, abyss, arctic,
+    10.0, 8.0, 7.5, 13.0, 8.0, 7.0, 13.0, //
+    // trench, coral, sargasso, vents, brine, bloom, city
+    13.0, 12.0, 10.0, 6.0, 6.5, 5.5, 11.0,
+];
+/// How sharply the haze thickens: the fog is `1 - exp(-SIGHT_K d / sight)`,
+/// scaled to reach exactly one at `sight` (`fog_of` in `scene.wesl`).
+pub const SIGHT_K: f32 = 2.4;
+/// How much further than the sight a light shows through the water.
+pub const LIGHT_SIGHT: f32 = 2.0;
+/// Looking up, the window looks toward the light, and a shape against the
+/// bright surface shows further than one against the dark water level with
+/// it: straight up the haze's way is this much shorter (`fog_toward` in
+/// `scene.wesl`).
+pub const UP_CLEAR: f32 = 0.6;
+
+/// How much of a distance along `v` counts toward the haze ([`UP_CLEAR`]).
+pub fn upward(v: [f32; 3], length: f32) -> f32 {
+    let t = (v[1] / length.max(1e-6) / 0.4).clamp(0.0, 1.0);
+    1.0 - UP_CLEAR * t * t * (3.0 - 2.0 * t)
+}
+
+/// The haze between the window and something `distance` away when the
+/// window sees `sight` far: 0 at the glass, exactly 1 at `sight`.
+pub fn fog(distance: f32, sight: f32) -> f32 {
+    let scale = 1.0 / (1.0 - (-SIGHT_K).exp());
+    ((1.0 - (-SIGHT_K * distance / sight).exp()) * scale).min(1.0)
+}
+
+/// Benchmarks only: draw everything out to where it used to be drawn, for
+/// pricing what the sight's cull saves (`part::NO_SIGHT_CULL`).
+pub static NO_SIGHT_CULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Instance {
@@ -1142,6 +1184,23 @@ impl World<'_> {
         Seabed::by_biome(b, values)
     }
 
+    /// How far the window sees in the water it is in ([`SIGHT`], blended
+    /// across a border as the shader's haze is).
+    pub fn sight(&self) -> f32 {
+        let here = Biome::in_order(f64::from(self.pose.pos[0]), &self.seabed.order);
+        Self::by_biome(&here, SIGHT)
+    }
+
+    /// The distance beyond which nothing is placed: the sight, or, for a
+    /// benchmark pricing the cull, as far as anything was ever placed.
+    pub fn cull(&self) -> f32 {
+        if NO_SIGHT_CULL.load(std::sync::atomic::Ordering::Relaxed) {
+            f32::MAX
+        } else {
+            self.sight()
+        }
+    }
+
     pub fn ground(&self, x: f32, z: f32) -> f32 {
         self.seabed.ground(x, z)
     }
@@ -1177,6 +1236,31 @@ impl World<'_> {
     /// which is round: the corners of the square the sea is drawn into are
     /// behind the brass.
     pub fn visible(&self, p: [f32; 3], radius: f32) -> bool {
+        self.visible_within(p, radius, self.cull())
+    }
+
+    /// [`World::visible`] for what is lit from within: its light shows
+    /// [`LIGHT_SIGHT`] times as far as the sight.
+    pub fn visible_lit(&self, p: [f32; 3], radius: f32) -> bool {
+        self.visible_within(p, radius, self.cull() * LIGHT_SIGHT)
+    }
+
+    fn visible_within(&self, p: [f32; 3], radius: f32, cull: f32) -> bool {
+        // Beyond the sight the water hides it whole.
+        if cull < f32::MAX {
+            let d = [
+                p[0] - self.pose.pos[0],
+                p[1] - self.pose.pos[1],
+                p[2] - self.pose.pos[2],
+            ];
+            let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            // Its nearest point, as seen toward its top: the haze's way to
+            // what is above the window is the shorter.
+            let high = [d[0], d[1] + radius, d[2]];
+            if (length - radius) * upward(high, length) > cull + self.margin(cull) {
+                return false;
+            }
+        }
         if self.slack > 0.0 {
             return self.within(p, radius);
         }
@@ -1868,6 +1952,30 @@ impl<'a> IntoIterator for &'a Cells {
 /// abeam holds, so nothing kept off the glass appears or vanishes as the
 /// boat swings. The footprint is taken from half as near, to hold them.
 fn cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
+    // Nothing further than the sight shows, less what a placement can
+    // reach toward the window from its cell's point.
+    cells_within(
+        w,
+        size,
+        near,
+        far.min(w.cull() / (1.0 - UP_CLEAR) + 3.0),
+        salt,
+    )
+}
+
+/// [`cells`] for what is lit from within, which shows [`LIGHT_SIGHT`]
+/// times as far as the sight.
+fn lit_cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
+    cells_within(
+        w,
+        size,
+        near,
+        far.min(w.cull() * LIGHT_SIGHT / (1.0 - UP_CLEAR) + 3.0),
+        salt,
+    )
+}
+
+fn cells_within(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
     let far = far + w.margin(far);
     let ([x0, x1, z0, z1], o, r) = footprint(w, near * 0.5, far);
     let c = w.pose.pos;
@@ -1903,6 +2011,9 @@ pub struct StaticCache {
     /// far, and the cached set must follow.
     built: Option<([f32; 3], [f32; 3])>,
     seed: f32,
+    /// The distance it was placed out to ([`World::cull`]): the sight
+    /// changes across a border, and a benchmark may turn the cull off.
+    cull: f32,
     /// Placed for the window exactly, with no margin: a test's reference
     /// for what should be in view.
     #[cfg(test)]
@@ -1915,6 +2026,7 @@ impl Default for StaticCache {
             frame: Frame::new(),
             built: None,
             seed: f32::NAN,
+            cull: f32::NAN,
             #[cfg(test)]
             exact: false,
         }
@@ -1998,7 +2110,9 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     ];
     let seed = world.seabed.seed;
     let (at, out) = (world.pose.pos, world.pose.basis[2]);
+    let cull = world.cull();
     let stale = !cache.seed.eq(&seed)
+        || !((cull - cache.cull).abs() < 0.25)
         || cache.built.is_none_or(|(was, looked)| {
             let moved = (at[0] - was[0]).hypot(at[2] - was[2]);
             let turned = out[0] * looked[0] + out[1] * looked[1] + out[2] * looked[2];
@@ -2053,6 +2167,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         }
         cache.built = Some((at, out));
         cache.seed = seed;
+        cache.cull = cull;
     }
     for (m, src) in cache.frame.solid.iter().enumerate() {
         frame.solid[m].extend_from_slice(src);
@@ -4061,14 +4176,16 @@ fn street_shop(w: &World, ix: i32, iz: i32, x: f32, z: f32) -> Option<Building> 
 /// bubbles, the kelp — is the shader's.
 fn city(w: &World, f: &mut Frame) {
     let c = w.pose.pos;
-    for &(ix, iz, _, _) in &cells(w, CITY_NEAR, 0.5, 20.0, CITY_SALT) {
+    // A tower is its lit windows beyond the sight, so it is placed out to
+    // where they still show.
+    for &(ix, iz, _, _) in &lit_cells(w, CITY_NEAR, 0.5, 20.0, CITY_SALT) {
         let Some(b) = building(w, ix, iz, false) else {
             continue;
         };
         let height = b.top() - b.y;
         let centre = [b.x, b.y + height * 0.5, b.z];
         f.fade = fade(b.share, 0.3);
-        if w.visible(centre, height * 0.55 + b.reach()) {
+        if w.visible_lit(centre, height * 0.55 + b.reach()) {
             place_building(w, f, &b);
             crown_glow(f, &b);
         }
@@ -4137,12 +4254,14 @@ fn city(w: &World, f: &mut Frame) {
             building_life(w, f, &b);
         }
     }
-    for &(ix, iz, _, _) in &cells(w, CITY_FAR, 8.0, 60.0, CITY_FAR_SALT) {
+    // The far blocks are their lit windows in the haze: they show further
+    // than the sight.
+    for &(ix, iz, _, _) in &lit_cells(w, CITY_FAR, 8.0, 60.0, CITY_FAR_SALT) {
         let Some(b) = building(w, ix, iz, true) else {
             continue;
         };
         let height = b.top() - b.y;
-        if !w.visible([b.x, b.y + height * 0.5, b.z], height * 0.55 + b.reach()) {
+        if !w.visible_lit([b.x, b.y + height * 0.5, b.z], height * 0.55 + b.reach()) {
             continue;
         }
         f.fade = fade(b.share, 0.3);

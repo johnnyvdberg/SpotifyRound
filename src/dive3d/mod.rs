@@ -759,6 +759,10 @@ mod part {
     /// Not a part: the tunnel before the seabed and the models even when the
     /// boat is along its axis (the order it takes everywhere else).
     pub const TUNNEL_FIRST: u64 = 1 << 34;
+    /// Not a part: place and draw everything out to where it was drawn before
+    /// the seas had a sight (`world::SIGHT`), the haze unchanged, to price
+    /// what the cull at the sight saves.
+    pub const NO_SIGHT_CULL: u64 = 1 << 35;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -2144,6 +2148,10 @@ impl Nautilus {
             t,
             slack: 0.0,
         };
+        world::NO_SIGHT_CULL.store(
+            self.skips(part::NO_SIGHT_CULL),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         world::build(&world, &mut self.frame, &mut self.static_cache);
         // Bake the ice sheet's noise for the region around the camera, and
         // re-bake only when the camera has moved far enough that the margin
@@ -3105,7 +3113,10 @@ fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32, haze: f32, bias: 
         return 0;
     }
     let pixels = scale * (sea * 0.5) / (world::VIEW * near);
-    let bias = bias * (haze * near).exp().min(16.0);
+    // What the haze leaves of a difference: the fog over it, out to the
+    // sight where it hides it all (`haze` is `world::SIGHT_K` over the sight).
+    let clear = 1.0 - world::fog(near, world::SIGHT_K / haze);
+    let bias = bias / clear.max(1.0 / 16.0);
     let (error_limit, edge_limit) = lod_limits();
     (1..lods.len())
         .rev()
@@ -3242,9 +3253,9 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     // the sargasso's weed and the vents' plumes thicken it. The drowned
     // city's water is clear enough that its towers stand as silhouettes
     // across the avenue and their windows show from much further.
-    let haze = blend([
-        0.18, 0.22, 0.15, 0.18, 0.20, 0.22, 0.12, 0.11, 0.13, 0.18, 0.24, 0.14, 0.27, 0.09,
-    ]);
+    // The haze reaches the water's full colour at the sea's sight
+    // (`world::SIGHT`), where the placers stop placing.
+    let haze = world::SIGHT_K / blend(world::SIGHT);
     // How much this sea has a sky the water can open on to: the shallow seas
     // can through Snell's window, the polar ice through its leads; the cave,
     // the deep, the bloom and the drowned city cannot.
