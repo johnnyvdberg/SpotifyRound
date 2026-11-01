@@ -86,7 +86,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | V6 | atlantis | At least ten new Atlantis elements | Opus | done, merged into `main` (fourteen elements, rolling seabed; `docs/handoff/v6.md`) |
 | V7 | atlantis | Underwater Greek temple environment | Opus | done, merged into `main` (octastyle temple the boat sails through; `docs/handoff/v7.md`) |
 | V8 | lostcity | Lost city: travel through large corridors with detailed interiors | Opus | done, merged into `main` (the drowned city's galleria; `docs/handoff/v8.md`) |
-| V9 | biomes | Three new biomes unlike the current ones | Opus | in progress (`v9-biomes`) |
+| V9 | biomes | Three new biomes unlike the current ones | Opus | done, merged into `main` (meadow, glass sponges, blue hole; `docs/handoff/v9.md`) |
 | V10 | detail | More detail in every biome with headroom | Sonnet | todo |
 | M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01; Poly Haven is next for rocks and props |
 | M2 | models | Quaternius ships as worn wrecks | Opus | todo |

@@ -41,8 +41,8 @@ Spotify **Premium** account.
   of the procedural scenes takes over the screen, chosen at random on every visit. The **Earth** is a
   rotating Blue Marble with Black Marble city lights, drifting clouds and their shadows, sun glint,
   sunset colour along the terminator and a scattering atmosphere. The **Nautilus** is the view from its salon window on a Jules Verne voyage, drawn as a
-  3D scene: fourteen seas from sunlit kelp shallows and a coral reef to a lava cave, a drowned city,
-  the abyss and the polar ice (see [docs/nautilus.md](docs/nautilus.md)). Swipe down on the player
+  3D scene: seventeen seas from sunlit kelp shallows, a coral reef and a seagrass meadow to a blue
+  hole, a lava cave, a drowned city, a glass-sponge reef, the abyss and the polar ice (see [docs/nautilus.md](docs/nautilus.md)). Swipe down on the player
   to summon the visualiser, swipe left or right on the dive to travel on to the next sea or back,
   and tap anywhere to fade back.
 - **Touch first**: swipes are the only navigation — right for the queue, left for playlists, with the
@@ -552,7 +552,7 @@ Earth textures: NASA **Blue Marble** (day) and **Black Marble** (night lights), 
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). They live in `assets/earth/`.
 
 **The Nautilus.** The view from the Nautilus' salon window, after *Twenty Thousand Leagues Under the
-Seas*, drawn as a real 3D scene in `dive3d/`: a voyage of fourteen five-minute legs through a new,
+Seas*, drawn as a real 3D scene in `dive3d/`: a voyage of seventeen five-minute legs through a new,
 random seabed on every visit, sailed by a helm that moves the boat as the twenty-metre hull it is.
 What it must show, sea by sea, how it may move and what it may cost on the Pi are in
 **[docs/nautilus.md](docs/nautilus.md)**, together with the reference sheets and the benchmarks

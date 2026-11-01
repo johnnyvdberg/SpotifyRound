@@ -130,6 +130,19 @@ frame with everything: median 6.94 ms over 13938 paired frames
 | Atlantis Doric temple (V7) | bit 15 | atlantis 0.18 (`hotspots` pairs: +0.20 median, +0.03 at the worst place) | 0.13 | 0.18 |
 | the drowned city's galleria and its rooms (V8) | `DIVE3D_SKIP_ELEMENTS` bit 16 | city: median -0.53 (it hides towers), worst place +0.39 (`hotspots` pairs) | | +0.39 |
 
+### The new seas' rows (V9)
+
+`features v9 DIVE3D_HOTSPOT_SCENES=meadow,sponges,hole` on the Pi (`docs/handoff/v9.md`):
+
+| feature | switch | seas (median ms there) | median ms | worst ms |
+|---|---|---|---|---|
+| glass sponges | `DIVE3D_SKIP_EFFECTS` bit 50 | sponges 1.32 | 1.32 | 3.72 (sponges 500000 @0.15) |
+| seagrass | bit 48 | meadow 1.08 | 1.08 | 1.46 (meadow 500000 @0.15) |
+| mangroves | bit 49 | meadow 0.50 | 0.50 | 0.78 (meadow 0 @0.85) |
+| the blue hole's wall | bit 51 | hole -0.33 (it hides what lies behind it) | -0.33 | 0.07 |
+| the blue hole's stalactites | `DIVE3D_SKIP_ELEMENTS` bit 17 | hole 0.02 | 0.02 | 0.03 |
+| the blue hole's halocline | bit 18 | hole 0.01 | 0.01 | 0.01 |
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |

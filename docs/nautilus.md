@@ -3,7 +3,7 @@
 The Nautilus is one of the idle visualisers: the view from the salon window of Captain Nemo's
 submarine on a voyage after *Twenty Thousand Leagues Under the Seas*, drawn as a real 3D scene in
 `src/dive3d/` with its shaders in `src/shaders/scene.wesl`. This page says what the scene must do
-and look like: first what holds everywhere, then what each of its fourteen seas must contain. How
+and look like: first what holds everywhere, then what each of its seventeen seas must contain. How
 the frame spends its time is in [pipeline-optimization.md](pipeline-optimization.md).
 
 <p align="center">
@@ -18,7 +18,7 @@ the frame spends its time is in [pipeline-optimization.md](pipeline-optimization
 
 ### The voyage
 
-- The voyage is a circuit of **fourteen legs of five minutes each**, one sea to a leg. Every visit
+- The voyage is a circuit of **seventeen legs of five minutes each**, one sea to a leg. Every visit
   shuffles the order (`voyage::order_for`) from its seed; seed 0 is the canonical reference circuit.
 - Every visit gets a **new seabed**: a random heightmap of rolling ground, folded ridges and the odd
   canyon, periodic over 64 units. It shelves between the seas, so the boat drops into the abyss and
@@ -30,7 +30,8 @@ the frame spends its time is in [pipeline-optimization.md](pipeline-optimization
 - The course **weaves at every boundary**, so each sea gives way to the next in the middle of a turn
   rather than at an invisible line.
 - Each biome keeps its id in every per-biome table (the original eight first, the six newer seas
-  after them, the drowned city last, as biome 13), in Rust and in the shader alike.
+  after them, the drowned city as biome 13, then the meadow, the glass sponges and the blue hole as
+  14 to 16), in Rust and in the shader alike.
 
 ### The boat and the window
 
@@ -106,7 +107,8 @@ What lies on the bottom is bedded into it, by rules kept as data (`world::bed`, 
   light the waves focus under it. Washed toward the open water and dissolved into the haze at the
   sea's sight, so it stays low in contrast.
 - The **sky shows only where a ray can leave the water**: inside Snell's window overhead and through
-  the leads in the polar ice. The cave, the vents, the bloom, the drowned city and the abyss have no
+  the leads in the polar ice. The cave, the vents, the bloom, the drowned city, the glass sponges and
+  the abyss have no
   sky at all.
 - **Daylight loses its red first** on the way down, so the deeper the boat, the bluer the light.
 - Each sea has its **own water**: its colour, its haze with distance and how much sun reaches it.
@@ -116,10 +118,11 @@ What lies on the bottom is bedded into it, by rules kept as data (`world::bed`, 
 
   | sea | sight | | sea | sight |
   |---|---:|---|---|---:|
+  | blue hole | 16 | | glass sponges | 8.5 |
   | polar ice, trench | 13 | | forest, cave | 8 |
   | Atlantis | 13 | | wrecks | 7.5 |
   | coral reef | 12 | | abyss | 7 |
-  | drowned city | 11 | | brine flats | 6.5 |
+  | drowned city, meadow | 11 | | brine flats | 6.5 |
   | shallows, sargasso | 10 | | vents | 6 |
   | | | | bloom | 5.5 |
 
@@ -194,6 +197,15 @@ What lies on the bottom is bedded into it, by rules kept as data (`world::bed`, 
 - A **party of divers** in Rouquayrol-Denayrouze suits walking the seabed, the leader carrying a
   Ruhmkorff lamp, on paths that bend round the trees.
 - **Sun shafts** falling between the trees.
+
+### Seagrass meadow
+
+- A **sunlit shelf of seagrass**, shallow and green-lit: beds of strap blades swaying, standing a
+  little proud where their roots hold the sand, cut by shallow tidal channels, with **bare white
+  blowouts** between where cushion stars and conchs lie.
+- To port the shelf shoals toward a **mangrove shore**: the prop roots of red mangroves arch down out
+  of the surface to the floor, crusted with oysters and sponges where they stand in the water.
+- **Turtles** grazing, rays on the sand, fry and silversides; sun shafts. Green, clear water.
 
 ### Sargasso
 
@@ -283,6 +295,26 @@ What lies on the bottom is bedded into it, by rules kept as data (`world::bed`, 
 - Jellyfish are the most detailed animals: a scalloped, canalled bell with an inner shell and a warm
   stomach, frilled oral arms and a fringe of trailing tentacles, in five species, lit as separate
   materials in the additive glass pass.
+
+### Glass-sponge reef
+
+- Cold, deep and dark before the abyss: **mounds of silt crowned with glass sponges**, pale lattice
+  tubes flaring at the rim, spiralling ribs and hoops open so the water shows through, faintly lit
+  as if ghosts of themselves; the dead ones grey, short and fallen on the mounds' flanks, their
+  skeletons broken into the silt as pale spicule mats.
+- **Rockfish** hanging still over them, crabs and squat lobsters, siphonophores drifting by.
+- Grey-blue water, little light; no sky.
+
+### Blue hole
+
+- A **vertical sinkhole** in a shallow white bank: the bank bright and turquoise under a clear sky,
+  then an elliptic shaft the boat sinks into and climbs out of, its wall (`Model::HoleWall`)
+  **banded with limestone strata**, darker down the shaft, broken by two overhanging **ledges with
+  stalactites** under them from when it was a dry cave.
+- A **halocline** across the shaft a little under the first ledge, shimmering like a second surface
+  as the boat passes through it.
+- The clearest water of the voyage, turquoise over the bank and an ever deeper ultramarine down the
+  shaft; sun shafts falling into it; mantas, turtles and sharks over the bank.
 
 ### Abyss
 
