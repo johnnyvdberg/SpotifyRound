@@ -770,6 +770,9 @@ mod part {
     /// The seabed's levels of detail as they were before the sight let them
     /// be finer (`terrain::COARSE_SPACING`).
     pub const COARSE_SEABED: u64 = 1 << 36;
+    /// The water surface's mirror, moving wave facets and Snell's window in
+    /// the ceiling of the shallow seas.
+    pub const SURFACE_FACETS: u64 = 1 << 37;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -1114,6 +1117,8 @@ mod shader_switch {
     pub const UNDERWATER_GRADE: u32 = 32;
     /// The low-poly facet bands in `fs_terrain`.
     pub const TERRAIN_FACETS: u32 = 64;
+    /// The water's ceiling without its mirror, wave facets and Snell's window.
+    pub const OLD_CEILING: u32 = 128;
 }
 
 /// Every render pipeline the scene draws with, compiled for one set of
@@ -2247,6 +2252,9 @@ impl Nautilus {
         }
         if self.skips(part::TERRAIN_FACETS) {
             switches |= shader_switch::TERRAIN_FACETS;
+        }
+        if self.skips(part::SURFACE_FACETS) {
+            switches |= shader_switch::OLD_CEILING;
         }
         // Only a benchmark changes them, and it pays for the compile.
         if switches != self.switches {

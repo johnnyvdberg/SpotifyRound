@@ -217,6 +217,8 @@ fn hash(ix: i32, iz: i32, salt: u32) -> f32 {
 // seabed's instructions.
 override SWITCHES: u32 = 0u;
 const NO_NOISE: u32 = 2u;
+// The water's ceiling as it was before its mirror and Snell's window.
+const OLD_CEILING: u32 = 128u;
 
 // Every surface a flat grey, for the benchmarks. A pipeline constant of its
 // own, like `SWITCHES`: tested per pixel, it would cost the Pi's GPU about
@@ -329,11 +331,16 @@ fn water_at(dir: vec3<f32>) -> vec3<f32> {
     return c;
 }
 
-// The underside of the water surface, seen from below: the bright caustic
-// web the waves focus and a slow swell. `dir` is the view
+// The underside of the water surface, seen from below. `dir` is the view
 // ray; the surface lies at y = 0, so the pixel is that intersection. This is
-// the ceiling of a shallow sea and it must read as water, not sky; the sky
-// is only what the surface opens on to inside Snell's window.
+// the ceiling of a shallow sea and it must read as water, not sky: from
+// below, a surface is a mirror of the dim water under it except where a ray
+// meets it within the critical angle, 48.6 degrees of its normal, and leaves
+// for the sky. Level, that is Snell's window overhead, which the side window
+// barely looks up to; but the waves tilt the surface, so the faces turned
+// toward the window flash bright out of the mirror, brightest at the
+// window's rim, and the swells and a chop running across them keep the
+// facets moving. The caustic web is the light the waves focus under it.
 fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     let up = max(dir.y, 0.002);
     let reach = clamp(-g.camera.y / up, 0.0, 180.0);
@@ -345,23 +352,51 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
         0.0,
     ).r;
     let web = smooth01(0.30, 0.96, caustic);
-    let swell = sin(at.x * 0.9 + t * 0.30)
-        + 0.7 * sin(at.y * 0.8 - t * 0.26)
-        + 0.3 * sin((at.x + at.y) * 1.7 + t * 0.50);
-    let base = mix(g.deep.rgb, g.water.rgb, 0.50) * 1.05;
-    // The swell's light, from its sines' sum alone: the sine of that sum
-    // was only ever read near its straight part.
+    let p1 = at.x * 0.9 + t * 0.30;
+    let p2 = at.y * 0.8 - t * 0.26;
+    let p3 = (at.x + at.y) * 1.7 + t * 0.50;
+    let swell = sin(p1) + 0.7 * sin(p2) + 0.3 * sin(p3);
     let sun = 0.5 + 0.25 * swell;
+    // Worked out as scalars first and laid on the water's colours once at the
+    // end: three colours live across the waves' arithmetic cost the shader
+    // half its threads.
+    var mirror = 0.0;
+    var down = 0.0;
+    var bright = 0.0;
+    // (`fenced` keeps the compiler from hoisting the waves up beside the
+    // caustic fetch, where both would hold their registers at once.)
+    if (!debug(OLD_CEILING) && !fenced()) {
+        // The surface's slope: the three swells' and a short chop across
+        // them, and the fine cells of the web, which lie on the wave faces
+        // that focus it.
+        let p4 = dot(at, vec2<f32>(7.3, -5.6)) - t * 1.7;
+        let p5 = dot(at, vec2<f32>(-4.4, 6.9)) - t * 1.5;
+        let tilt = 0.40 * (web - 0.35);
+        let sx = 0.09 * cos(p1) + 0.12 * cos(p3) + 0.17 * cos(p4) - 0.11 * cos(p5) + dir.x * tilt;
+        let sz = 0.13 * cos(p2) + 0.12 * cos(p3) - 0.13 * cos(p4) + 0.17 * cos(p5) + dir.z * tilt;
+        // The ray against the surface's normal (-sx, 1, -sz).
+        let inv = inverseSqrt(1.0 + sx * sx + sz * sz);
+        let facing = (dir.y - dir.x * sx - dir.z * sz) * inv;
+        // Inside the critical angle the sky, outside it the mirror, with the
+        // horizon crowded into a bright rim between them.
+        let window = smooth01(0.56, 0.72, facing);
+        let rim = window * (1.0 - smooth01(0.72, 0.88, facing));
+        // The mirror shows the water below, darker the steeper it looks down.
+        down = smooth01(-0.9, 0.2, dir.y - 2.0 * facing * inv);
+        mirror = 0.55 * (1.0 - window);
+        bright = (window * 0.6 + rim * 0.25) * g.sky.w * (0.45 + 0.9 * g.sun.w);
+    }
+    let base = mix(g.deep.rgb, g.water.rgb, 0.50) * 1.05;
     var colour = base * (0.975 + 0.05 * web) * (0.82 + 0.20 * sun)
         + vec3<f32>(0.18, 0.32, 0.31) * web * (0.06 + 0.10 * g.sun.w);
-    // (The sheen of the wave faces and the fine ripples that once lay over
-    // it, three sines and a `pow`, moved no pixel by more than 8/255 once the
-    // wash below had been laid over them, and cost a sixth of the shader.)
-    // Keep the ceiling a backdrop: wash it toward the open water so the
-    // caustics never compete with the scene in front of them, and dissolve
-    // the horizon end into the water's own haze.
-    colour = mix(colour, water_at(dir), 0.42);
-    colour = mix(colour, water_at(dir), fog_toward(dir * reach));
+    let below = mix(g.deep.rgb, g.water.rgb, down) * 1.1;
+    colour = mix(colour, below, mirror) + vec3<f32>(0.62, 0.84, 0.88) * g.tint.rgb * bright;
+    // Keep the ceiling a backdrop: wash it toward the open water so it
+    // never competes with the scene in front of it, and dissolve it into the
+    // water's own haze at the sea's sight.
+    let open = water_at(dir);
+    colour = mix(colour, open, 0.42);
+    colour = mix(colour, open, fog_toward(dir * reach));
     return colour;
 }
 

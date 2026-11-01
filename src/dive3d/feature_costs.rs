@@ -37,6 +37,10 @@ const PASSES: &[(&str, u64)] = &[
     ("corner mask", part::MASK),
     ("cave tunnel", part::TUNNEL),
     ("open-water background", part::BACKGROUND),
+    (
+        "water surface: mirror, wave facets, Snell's window",
+        part::SURFACE_FACETS,
+    ),
 ];
 
 /// Below this a pass is not counted as present in a sea.
