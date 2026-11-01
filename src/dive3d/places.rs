@@ -141,6 +141,23 @@ pub fn all() -> Vec<Place> {
     ] {
         places.push(Place::new(format!("{cave}-cave-{name}"), cave + at, seed));
     }
+    // Through the Doric temple in Atlantis (`temple` in `world.rs`): before
+    // it, at its front, in the cella by the goddess, at the back and out
+    // toward the gate. The camera runs a little ahead of a place's moment.
+    let atlantis = leg_of(super::world::ATLANTIS, seed) as f64;
+    for (name, at) in [
+        ("approach", 0.17),
+        ("front", 0.23),
+        ("cella", 0.38),
+        ("back", 0.51),
+        ("gate", 0.59),
+    ] {
+        places.push(Place::new(
+            format!("{atlantis}-atlantis-temple-{name}"),
+            atlantis + at,
+            seed,
+        ));
+    }
     // Another submarine met on the way: the encounters run on the visit's
     // clock (`submarines` in `world.rs`), so these are moments of visits 0
     // and 500000 when one is in view.

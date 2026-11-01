@@ -108,7 +108,7 @@ frame with everything: median 6.94 ms over 13938 paired frames
 | corner mask | pass | under 0.05 ms in every sea | | |
 | dolphins | model | not in view | | |
 
-### The life and Atlantis groups' rows (V5/V6)
+### The life and Atlantis groups' rows (V5/V6/V7)
 
 `features` on the Pi, medians where the feature shows (`docs/handoff/v5.md`, `v6.md`):
 
@@ -127,6 +127,7 @@ frame with everything: median 6.94 ms over 13938 paired frames
 | Atlantis acropolis (V6) | bit 2 | trench 0.24 | 0.07 | 0.24 |
 | Atlantis stair, colossus, gate, statues, stelae, mosaics, lighthouse (V6) | bits 3, 4, 7–10, 14 | under 0.05 everywhere | 0.01 or less | 0.06 |
 | debris (V4, now an element) | bit 1 | trench 0.09 | 0.04 | 0.21 |
+| Atlantis Doric temple (V7) | bit 15 | atlantis 0.18 (`hotspots` pairs: +0.20 median, +0.03 at the worst place) | 0.13 | 0.18 |
 
 ### The ground group's rows (V3/V4)
 
