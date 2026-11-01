@@ -152,6 +152,10 @@ override FORM: i32 = -1;
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
 const LEG: f32 = 16.5;
+// Where the bottom current comes from, in xz: silt drifts against the sides
+// of grounded things that face it (`vs_model`). One for every sea, from
+// ahead and off to port of the voyage's way.
+const CURRENT: vec2<f32> = vec2<f32>(0.8, -0.6);
 const BLEND: f32 = 0.10;
 const BIOMES: i32 = 14;
 const SHALLOWS: i32 = 0;
@@ -1209,6 +1213,20 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // once per instance.
     out.floor_y = i.extra.w;
     out.floor = i.floor.rgb;
+    if (GROUNDED) {
+        // The sand line follows the slope under the model (`world::
+        // ground_under` packs it), so a stone on a bank is buried to the same
+        // depth all round rather than to one level through it; and silt
+        // drifts up against the side that faces the current, more against a
+        // big thing than a small one. Per vertex, so the pixel pays nothing.
+        let packed = i.floor.w;
+        let qx = floor(packed / 1025.0);
+        let slope = (vec2<f32>(qx, packed - qx * 1025.0) / 256.0) - 2.0;
+        out.floor_y += dot(slope, world.xz - vec2<f32>(i.m0.w, i.m2.w));
+        let tall = length(vec3<f32>(i.m0.y, i.m1.y, i.m2.y));
+        let facing = max(dot(normalize(n).xz, CURRENT), 0.0);
+        out.floor_y += min(0.25 * tall, 0.06) * facing * facing;
+    }
     // Nothing that swims is grounded, so the glass pass reads these two
     // slots as how hard the bell is contracted here (the light of the stroke
     // runs down the arms and threads with it) and as the animal's own tint
