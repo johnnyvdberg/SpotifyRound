@@ -91,7 +91,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | V7 | atlantis | Underwater Greek temple environment | Opus | done, merged into `main` (octastyle temple the boat sails through; `docs/handoff/v7.md`) |
 | V8 | lostcity | Lost city: travel through large corridors with detailed interiors | Opus | done, merged into `main` (the drowned city's galleria; `docs/handoff/v8.md`) |
 | V9 | biomes | Three new biomes unlike the current ones | Opus | done, merged into `main` (meadow, glass sponges, blue hole; `docs/handoff/v9.md`) |
-| V10 | detail | More detail in every biome with headroom | Sonnet | started: near seabed detail merged (+0.13 ms; `docs/handoff/v10.md`); rocks and volcano/abyss next |
+| V10 | detail | More detail in every biome with headroom | Sonnet | near detail, faceted rocks, kelp, seagrass, glass sponges and coral merged (`docs/handoff/v10.md`); volcano/abyss next |
 | M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01; Poly Haven is next for rocks and props |
 | M2 | models | Quaternius ships as worn wrecks | Opus | todo |
 | M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |
@@ -215,7 +215,9 @@ Useful: `coast_rocks_*`, cliffs and boulders (for the rocks task), ceramic and
 antique vases (amphorae), barrels, `cannon_01`, lanterns, chairs and tables (the
 galleria's rooms). The 1k glTF shares the full-resolution mesh (about 1.3 M
 triangles for a rock), so `tools/decimate` needs a glTF reader that bakes the
-diffuse texture into vertex colours. Kenney (direct CC0 zips) is the fallback.
+diffuse texture into vertex colours. Kenney (direct CC0 zips) is the fallback. Poly Haven also has `bronze_ray_statue`,
+`bronze_shark_statue` and `bronze_whale_statue` (Atlantis) and `dutch_ship_large_01/02` and
+`dutch_ship_medium` (M2's wrecks); it has no coral or sponges.
 Meshy has no credits left.
 
 ### M2. Ships as wrecks
