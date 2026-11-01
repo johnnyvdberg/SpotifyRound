@@ -75,6 +75,26 @@ with the salon window halfway along its port side. `helm.rs` steers it.
 - **Nothing in the corners.** The panel is round; the corners of the square the sea is drawn into
   are masked off before anything is drawn, and nothing outside the round window is drawn at all.
 
+### On the seabed
+
+What lies on the bottom is bedded into it, by rules kept as data (`world::bed`, applied by
+`world::seat`), not placed on it:
+
+- Each kind of thing has a **bed**: how much of it is sunk, whether it leans with the slope (stones,
+  starfish, hulls, fallen drums) or stands plumb (stalks, sponges, columns, temples), the steepest
+  ground it is found on, and how far the ground may fall away under it. Nothing hangs over a lip or
+  straddles a hollow; what would is left out (a wreck tries a few berths near its cell first).
+- The **sand line** on a grounded model follows the slope under it, and **silt drifts** up the side
+  that faces the bottom current (`CURRENT` in `scene.wesl`), more against a big thing than a small one.
+- How **stony** each sea's bottom is and how many of its boulders are **bedrock outcrops** (long,
+  tilted with their strata, scree below them down the slope) are per-sea tables (`world::STONES`,
+  `world::OUTCROPS`): stony in the abyss, the trench and the vents, few stones on the Sargasso's
+  silt, the bloom's ooze and the brine's crust, almost none on the reef, no outcrops through
+  Atlantis' paving.
+- **Wrecks** lie settled to the bilge along the slope, with scour pits dark with shell and gravel at
+  bow and stern and planks, guns and ballast strewn down-current; **ruins** have their fallen drums
+  rolled to rest with chips of their fall, and rubble before each temple front.
+
 ### Water, light and sky
 
 - The **ceiling of every shallow sea is water**: the underside of the surface as a soft, slow,
@@ -251,6 +271,12 @@ with the salon window halfway along its port side. `helm.rs` steers it.
 ### Polar ice
 
 - The **underside of the pack ice**, with keels of broken ice hanging from it and its edges fading.
+- The pack is **floes** of different thickness, rounded where they ground together, with bright
+  refrozen seams between them; its texture has melt scallops and frost.
+- The **keels** are pressure ridges of rubble worn round, rounded lobes of different depths under a
+  ragged outline, several levels of detail (`mesh::keel`); now and then a deeper, broader one off the
+  lane. They are **lit through**: pale blue-white where the ice is thin, a deeper glacial blue down
+  their thick middles, brightest at their silhouettes, in the sheet's own pipeline and haze.
 - **Leads** in the ice opening on to the real sky, where the **aurora** shows; the sky is a baked
   cubemap.
 - **Penguins** flying past and **narwhals**; sponges and starfish on the polar floor.

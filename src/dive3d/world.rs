@@ -265,7 +265,13 @@ pub fn ice_bake(w: &World, origin: [f32; 2], size: f32, res: u32) -> Vec<u8> {
             let v = (j as f32 + 0.5) / res as f32;
             let x = origin[0] + u * size;
             let z = origin[1] + v * size;
-            let coverage = smooth(0.35, 0.65, w.share(x, z, ARCTIC));
+            let share = w.share(x, z, ARCTIC);
+            let coverage = smooth(0.35, 0.65, share);
+            // Away from the ice the shader discards the sheet, so its fields
+            // are only worked out a texel or so past where it begins.
+            if share < 0.3 {
+                continue;
+            }
             let floes = floe_light(x, z);
             let lead = 1.0
                 - smooth(
