@@ -71,10 +71,10 @@ run at once**, from different groups. Model tier is a suggestion.
 | I1 | tooling | Screenshot generation that shows changes at a glance | Sonnet | todo |
 | I2 | tooling | Per-feature cost benchmark and `docs/feature-costs.md` | Sonnet | todo |
 | G1 | tooling | What the GL backend gives us that we build by hand | Sonnet | todo |
-| P1 | perf-a | Tunnel's own 4-thread fragment shader (perf-bottlenecks T3) | Sonnet | todo |
-| P2 | perf-a | One column per vent plume (T4) | Sonnet | todo |
-| P3 | perf-a | Cheaper caustic ceiling (T6) | Sonnet | todo |
-| P4 | perf-a | Draw order for early-Z: opaque front to back, re-check §5's draw-order items | Sonnet | todo |
+| P1 | perf-a | Tunnel's own 4-thread fragment shader (perf-bottlenecks T3) | Sonnet | done on `perf-a` (cave 0.15 -1.9 ms; `docs/handoff/perf-a.md`) |
+| P2 | perf-a | One column per vent plume (T4) | Sonnet | done on `perf-a` (vents -1.4 ms median; the look changes slightly, user to review) |
+| P3 | perf-a | Cheaper caustic ceiling (T6) | Sonnet | partly done on `perf-a` (median -0.3 ms, six seas -0.1...-0.5; the rest needs a visible change) |
+| P4 | perf-a | Draw order for early-Z: opaque front to back, re-check §5's draw-order items | Sonnet | done on `perf-a` (tunnel after the seabed along its axis, cave -0.55 ms; seabed-first and nearest-first re-measured, not adopted) |
 | P5 | perf-b | City split by building part (T5) | Sonnet | todo |
 | P6 | perf-b | Glass specialised by material and animation (T7) | Sonnet | todo |
 | P7 | perf-b | Start-up: parallel mesh library, drop unused pipelines (T8) | Sonnet | todo |
@@ -192,3 +192,7 @@ ends, and record what each addition costs.
 ## Notes for the user
 
 (Things only the user can do; agents append here.)
+
+- perf-a (2026-11-01): review the vent plumes' look (`docs/handoff/img/perf-a-vents.jpg`). The Docker
+  VM's disk filled up twice during the work (reclaim with `docker system prune`), and the Pi's `/tmp`
+  is crowded with other runs' 47 MB test binaries, which `bench-pi.sh` never removes.
