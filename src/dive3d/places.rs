@@ -63,7 +63,10 @@ pub fn biome_name(id: usize) -> &'static str {
         10 => "vents",
         11 => "brine",
         12 => "bloom",
-        _ => "city",
+        13 => "city",
+        14 => "meadow",
+        15 => "sponges",
+        _ => "hole",
     }
 }
 
@@ -173,6 +176,20 @@ pub fn all() -> Vec<Place> {
             city + at,
             seed,
         ));
+    }
+    // Down the blue hole and out (`blue_hole` in `world.rs`): over the
+    // bank to its rim, sinking past the ledges and the halocline, on the
+    // floor, and climbing out up the far wall.
+    let hole = leg_of(super::world::BLUE_HOLE, seed) as f64;
+    for (name, at) in [
+        ("rim", 0.18),
+        ("descent", 0.25),
+        ("halocline", 0.30),
+        ("floor", 0.45),
+        ("ascent", 0.70),
+        ("out", 0.80),
+    ] {
+        places.push(Place::new(format!("{hole}-hole-{name}"), hole + at, seed));
     }
     // Another submarine met on the way: the encounters run on the visit's
     // clock (`submarines` in `world.rs`), so these are moments of visits 0

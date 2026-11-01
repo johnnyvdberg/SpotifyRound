@@ -20,7 +20,7 @@ pub const VERTICES: usize = SIDE * SIDE + 4 * SIDE;
 /// The spacing of each level's vertices, finest first. Each level's tiles are
 /// `RATIO` of the next finer level's across.
 ///
-/// The seas' sight (`world::SIGHT`) is at most thirteen units, so the far
+/// The seas' sight (`world::SIGHT`) is at most sixteen units, so the far
 /// level need not reach as far as it once did, and every level is the finer
 /// for it: the finest reaches about four units, the middle about seventeen,
 /// the coarsest thirty. [`COARSE_SPACING`] is the old set, for a benchmark.
@@ -68,8 +68,11 @@ pub struct Point {
 /// The surface texture each biome's floor wears, as `surface_of` in
 /// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt, then reef,
 /// silt, basalt, salt (the ice layer's crystalline tone), ooze (silt) and the
-/// drowned city's silted paving.
-const LAYERS: [usize; 14] = [12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13];
+/// drowned city's silted paving; the meadow's sand, the glass sponges' silt
+/// and the blue hole's sand.
+const LAYERS: [usize; crate::voyage::BIOMES] = [
+    12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13, 12, 13, 12,
+];
 /// How much of a layer index's fraction the living reef takes: under one
 /// half, so the layer still rounds to itself (`REEF_SHARE` in `scene.wesl`).
 const REEF_SHARE: f32 = 0.45;
@@ -88,6 +91,9 @@ const VENTS: usize = 10;
 const BRINE: usize = 11;
 const BLOOM: usize = 12;
 const CITY: usize = 13;
+const MEADOW: usize = 14;
+const SPONGE_REEF: usize = 15;
+const BLUE_HOLE: usize = 16;
 
 /// `smoothstep` as the shader writes it.
 fn smooth01(a: f32, b: f32, v: f32) -> f32 {
@@ -278,7 +284,41 @@ fn shade(
         tint[1] += city * (0.03 * rust + 0.03 * (broad - 0.5));
         tint[2] -= city * 0.03 * rust;
     }
-    let sand = shallows + 0.55 * forest + 0.35 * wrecks + 0.6 * arctic + 0.75 * (coral - reef);
+    let meadow = presence(MEADOW);
+    if meadow > 0.0 {
+        // Green sand where the grass grows thick, its litter darkening it,
+        // and bare white blowouts between the beds.
+        let bed = smooth01(0.38, 0.62, broad);
+        noise += meadow * (0.05 * (grain - 0.5) - 0.08 * bed);
+        tint[0] -= meadow * 0.10 * bed;
+        tint[1] += meadow * 0.04 * bed;
+        tint[2] -= meadow * 0.10 * bed;
+    }
+    let sponges = presence(SPONGE_REEF);
+    if sponges > 0.0 {
+        // Grey silt, and pale mats of dead sponges' glassy spicules round
+        // the mounds.
+        let mats = smooth01(0.55, 0.80, broad);
+        noise += sponges * (0.08 * (grain - 0.5) + 0.12 * mats);
+        tint[2] += sponges * 0.05 * mats;
+    }
+    let hole = presence(BLUE_HOLE);
+    if hole > 0.0 {
+        // White sand on the bank; the shaft's walls grey limestone, stained
+        // in bands where the water's chemistry changes.
+        let wall = 1.0 - flat;
+        let band = (world::vnoise(x * 0.3, z * 0.3, 67) * 4.0 + 0.0).sin();
+        let rock = [0.40, 0.40, 0.38];
+        base = [0, 1, 2].map(|j| base[j] + (rock[j] - base[j]) * hole * wall * 0.8);
+        noise += hole * (0.06 * (grain - 0.5) + 0.06 * wall * band);
+    }
+    let sand = 0.6 * meadow
+        + 0.8 * hole
+        + shallows
+        + 0.55 * forest
+        + 0.35 * wrecks
+        + 0.6 * arctic
+        + 0.75 * (coral - reef);
     if sand > 0.0 {
         // Ripples in patches, so the sand does not corrugate as one sheet.
         let r = ((x * 0.8 + z) * 26.0 + world::vnoise(x * 3.0, z * 3.0, 5) * 4.0).sin();
@@ -352,7 +392,9 @@ fn shade(
         + presence(CORAL)
         + presence(VENTS)
         + 0.7 * presence(BRINE)
-        + city;
+        + city
+        + 0.5 * sponges
+        + hole;
     let cavity = cavity * (0.10 + 0.10 * hard);
     let colour = [
         base[0] * (1.0 + tint[0]) * (1.0 + cavity),

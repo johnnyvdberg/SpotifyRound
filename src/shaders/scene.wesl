@@ -48,8 +48,8 @@ struct Globals {
     ice: vec4<f32>,
     lights: array<vec4<f32>, 8>,
     light_colours: array<vec4<f32>, 8>,
-    // This visit's fourteen-leg biome circuit, four legs a vector.
-    order: array<vec4<f32>, 4>,
+    // This visit's seventeen-leg biome circuit, four legs a vector.
+    order: array<vec4<f32>, 5>,
     // The biome mix at the window and how much of this sea has a sky over
     // it: xy is the pair, z the blend, w the sky's strength there.
     sky: vec4<f32>,
@@ -157,7 +157,7 @@ const LEG: f32 = 16.5;
 // ahead and off to port of the voyage's way.
 const CURRENT: vec2<f32> = vec2<f32>(0.8, -0.6);
 const BLEND: f32 = 0.10;
-const BIOMES: i32 = 14;
+const BIOMES: i32 = 17;
 const SHALLOWS: i32 = 0;
 const FOREST: i32 = 1;
 const WRECKS: i32 = 2;
@@ -172,6 +172,9 @@ const VENTS: i32 = 10;
 const BRINE: i32 = 11;
 const BLOOM: i32 = 12;
 const CITY: i32 = 13;
+const MEADOW: i32 = 14;
+const SPONGE_REEF: i32 = 15;
+const BLUE_HOLE: i32 = 16;
 
 // One component of a four-leg vector. A dynamic index into a uniform vector
 // is not worth the risk on every shader the Pi compiles, so this is unrolled.
@@ -200,7 +203,10 @@ fn order(n: i32) -> i32 {
     if (k < 12u) {
         return i32(leg_component(g.order[2], k - 8u));
     }
-    return i32(leg_component(g.order[3], k - 12u));
+    if (k < 16u) {
+        return i32(leg_component(g.order[3], k - 12u));
+    }
+    return i32(leg_component(g.order[4], k - 16u));
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +298,7 @@ fn presence(l: Leg, id: i32) -> f32 {
     return select(0.0, 1.0 - l.w, l.a == id) + select(0.0, l.w, l.b == id);
 }
 
-fn by_biome(l: Leg, values: array<f32, 14>) -> f32 {
+fn by_biome(l: Leg, values: array<f32, 17>) -> f32 {
     var v = values;
     return mix(v[l.a], v[l.b], l.w);
 }
@@ -805,7 +811,7 @@ fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> 
 }
 
 fn floor_albedo(l: Leg) -> vec3<f32> {
-    var albedos = array<vec3<f32>, 14>(
+    var albedos = array<vec3<f32>, 17>(
         vec3<f32>(0.62, 0.56, 0.42),
         vec3<f32>(0.40, 0.36, 0.26),
         vec3<f32>(0.32, 0.30, 0.26),
@@ -820,6 +826,9 @@ fn floor_albedo(l: Leg) -> vec3<f32> {
         vec3<f32>(0.74, 0.73, 0.68),
         vec3<f32>(0.20, 0.20, 0.24),
         vec3<f32>(0.25, 0.27, 0.23),
+        vec3<f32>(0.55, 0.52, 0.38),
+        vec3<f32>(0.30, 0.31, 0.31),
+        vec3<f32>(0.72, 0.68, 0.56),
     );
     return mix(albedos[l.a], albedos[l.b], l.w);
 }
@@ -827,8 +836,9 @@ fn floor_albedo(l: Leg) -> vec3<f32> {
 fn surface_of(l: Leg) -> vec2<i32> {
     // Sand, sand, silt, sand, basalt, silt, sand, silt, then reef, silt,
     // basalt, salt (ice's crystalline layer), ooze (silt) and the drowned
-    // city's silted paving: by biome.
-    var layers = array<i32, 14>(12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13);
+    // city's silted paving, then the meadow's sand, the glass sponges' silt
+    // and the blue hole's sand: by biome.
+    var layers = array<i32, 17>(12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13, 12, 13, 12);
     return vec2<i32>(layers[l.a], layers[l.b]);
 }
 
