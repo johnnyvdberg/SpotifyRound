@@ -478,8 +478,9 @@ the Pi 5's V3D; run it before trusting a Pi measurement. So:
   screen is late.
 
 `SPOTIFY_ROUND_SCENE=globe` (or `nautilus`) shows that scene from the start, for measuring one with
-`SPOTIFY_ROUND_FULL_SPEED`, and `WGPU_BACKEND=gl` runs everything on the Pi's OpenGL ES driver
-instead of Vulkan.
+`SPOTIFY_ROUND_FULL_SPEED`. `WGPU_BACKEND` picks the backend (`gl`, `vulkan`). The display runs on
+Vulkan, because wgpu's OpenGL ES backend cannot present to cage's window; the tests and benchmarks
+run headless on the Pi's OpenGL ES driver, which is faster there (it has early-Z).
 
 **Optimistic UI.** Commands apply their result before Spotify confirms it, so the display never lags
 behind a press. Play/pause, shuffle, repeat, seek, skips and playlist starts update the model

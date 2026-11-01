@@ -11,12 +11,16 @@ ruled out in §5), `docs/pipeline-optimization.md` (history; check it before re-
 
 ## State on 2026-11-01
 
-- The Pi runs **OpenGL ES** (`src/gpu.rs::backend_order`): Mesa's GL driver gives the V3D 7.1
-  early-Z, its Vulkan driver does not. With the corner mask's `GreaterEqual` test this took the
-  dive from a 9.89 to an 8.43 ms median and 12.43 to 10.91 ms worst (30 places). Live, the kiosk
-  draws one render job a frame and no TFU uploads (Vulkan: four render jobs and two TFU jobs).
-  T1 and T2 of `perf-bottlenecks.md` are therefore done/obsolete; every other number in that
-  document was measured on Vulkan without early-Z and must be re-measured before it is trusted.
+- The Pi **measures on OpenGL ES, but the kiosk shows Vulkan** (`src/gpu.rs::backend_order`).
+  Mesa's GL driver gives the V3D 7.1 early-Z, its Vulkan driver does not: with the corner mask's
+  `GreaterEqual` test the headless dive went from a 9.89 to an 8.43 ms median and 12.43 to 10.91
+  ms worst (30 places). But wgpu 30's GL backend presents to a Wayland window only when its
+  instance is made on the compositor's `wl_display`, which Slint does not hand out before the
+  window exists: the GL kiosk deployed 2026-11-01 00:14 rendered every frame and showed none (a
+  black screen with the cursor on it). The display runs Vulkan again; tests, benches and previews
+  stay on GL. So `bench-pi.sh` numbers are the GL ones, and the kiosk is 0.9-2.6 ms a frame slower
+  until GL can present (a winit `wl_display` handed to the instance before Slint's window).
+  T1 and T2 of `perf-bottlenecks.md` are done/obsolete for GL only.
 - The offline shader tool (`deploy/v3d-shaderdb`) compiles through **Vulkan** (v3dv). The GL
   driver uses the same V3D compiler backend, so threads/temps/spills carry over, but confirm a
   borderline shader on the Pi with `V3D_DEBUG=shaderdb MESA_SHADER_CACHE_DISABLE=true
