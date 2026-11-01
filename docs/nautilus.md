@@ -61,7 +61,8 @@ with the salon window halfway along its port side. `helm.rs` steers it.
 
 - **Nothing pops in.** Things that come and go fade: encounters fade over the rim of the glass as
   they swim into view, a sea's scenery fades by coverage as its biome comes and goes, the ice fades
-  at its edges, and placers fade at the edge of their range. The static scenery cache is rebuilt
+  at its edges, and placers fade at the edge of their range. What lies beyond the sea's sight is
+  not drawn: the haze has made it the open water's colour exactly before it goes. The static scenery cache is rebuilt
   once the window has moved 0.2 units or turned 0.04 rad, and placed for a view widened by that
   much, so nothing is missing at the rim or at a placer's depth cut-off in between.
 - **No hard switches of detail.** A model is drawn coarser only where the difference from the full
@@ -77,14 +78,36 @@ with the salon window halfway along its port side. `helm.rs` steers it.
 
 ### Water, light and sky
 
-- The **ceiling of every shallow sea is water**: the underside of the surface as a soft, slow,
-  low-contrast shimmer of swells and sun, a backdrop rather than a second scene.
+- The **ceiling of every shallow sea is water**: the underside of the surface seen from below, a
+  backdrop rather than a second scene. Outside the critical angle the surface is a **mirror** of the
+  dim water under it; swells and two short chops across them tilt it into **moving facets**, and
+  the faces turned toward the window within 48.6° of their normal show the sky through them
+  (**Snell's window**), brightest at its rim, as flashes out of the mirror; the caustic web is the
+  light the waves focus under it. Washed toward the open water and dissolved into the haze at the
+  sea's sight, so it stays low in contrast.
 - The **sky shows only where a ray can leave the water**: inside Snell's window overhead and through
   the leads in the polar ice. The cave, the vents, the bloom, the drowned city and the abyss have no
   sky at all.
 - **Daylight loses its red first** on the way down, so the deeper the boat, the bluer the light.
 - Each sea has its **own water**: its colour, its haze with distance and how much sun reaches it.
-  The haze also sets how far the window can see and how coarse a distant model may be.
+- Each sea has its own **sight** (`world::SIGHT`, one unit is about eleven metres): the haze
+  reaches the water's full colour exactly there, and **nothing beyond it is drawn** (placement,
+  models, seabed tiles, impostors). Real water limits sight to tens of metres, less in murky seas:
+
+  | sea | sight | | sea | sight |
+  |---|---:|---|---|---:|
+  | polar ice, trench | 13 | | forest, cave | 8 |
+  | Atlantis | 13 | | wrecks | 7.5 |
+  | coral reef | 12 | | abyss | 7 |
+  | drowned city | 11 | | brine flats | 6.5 |
+  | shallows, sargasso | 10 | | vents | 6 |
+  | | | | bloom | 5.5 |
+
+  The haze is `1 - exp(-2.4 d / sight)` scaled to reach one at the sight, so half of a thing is
+  hidden at about a quarter of the sight. Looking up the haze's way is up to 0.6 shorter (a shape
+  against the bright surface shows further than one against the dark water level with the window),
+  and light carries twice as far as shapes: the drowned city's lit windows, sun shafts and the
+  vents' plumes show out to twice the sight. The haze also sets how coarse a distant model may be.
 - **Sun shafts** slant down where the sea is shallow and bright enough, rooted in a grid fixed in the
   world so the boat sails among them, breathing and swaying with the waves above.
 - **Light sources**: the sun through the surface, the searchlight as a real spotlight turning with

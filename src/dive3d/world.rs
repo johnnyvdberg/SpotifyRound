@@ -2112,7 +2112,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     let (at, out) = (world.pose.pos, world.pose.basis[2]);
     let cull = world.cull();
     let stale = !cache.seed.eq(&seed)
-        || !((cull - cache.cull).abs() < 0.25)
+        || (cull - cache.cull).abs().partial_cmp(&0.25) != Some(std::cmp::Ordering::Less)
         || cache.built.is_none_or(|(was, looked)| {
             let moved = (at[0] - was[0]).hypot(at[2] - was[2]);
             let turned = out[0] * looked[0] + out[1] * looked[1] + out[2] * looked[2];
