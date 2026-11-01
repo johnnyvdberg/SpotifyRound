@@ -9,7 +9,8 @@
 //! single image and a scene index, so it needs no knowledge of the scene itself.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -25,6 +26,77 @@ use crate::ui::{AppWindow, WindowExt};
 /// frame Slint is drawing is never the one being written.
 pub(crate) const SLOTS: usize = 3;
 const FPS: u64 = crate::app::TARGET_FPS;
+
+/// What sets the rate the visualizer renders at (`SPOTIFY_ROUND_PACE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pacing {
+    /// A CPU timer at exactly `TARGET_FPS`: the default.
+    Timer,
+    /// The display: the next frame is rendered when the UI thread has taken
+    /// the last one. The UI shows a new image at most once per refresh and
+    /// takes the next as that refresh ends, so the rate is the panel's own
+    /// (60.07 Hz on the Pi's 1280x1112 mode, where a 60.00 Hz timer falls a
+    /// frame behind every 14 s: one frame shown twice).
+    Display,
+}
+
+impl Pacing {
+    fn from_env() -> Self {
+        match std::env::var("SPOTIFY_ROUND_PACE") {
+            Ok(v) if v.eq_ignore_ascii_case("display") => Pacing::Display,
+            _ => Pacing::Timer,
+        }
+    }
+}
+
+/// How the UI thread takes the visualizer's frames: a count the render thread
+/// can wait on, and the gaps between takes, which show a frame shown twice
+/// (a gap of two refreshes) or one that was never shown (two takes in one).
+#[derive(Default)]
+struct Takes {
+    count: Mutex<u64>,
+    changed: Condvar,
+    last: Mutex<Option<Instant>>,
+    short_gaps: AtomicU32,
+    long_gaps: AtomicU32,
+    takes: AtomicU32,
+}
+
+impl Takes {
+    /// Called on the UI thread as it shows a frame.
+    fn record(&self) {
+        let now = Instant::now();
+        if let Some(before) = self.last.lock().unwrap().replace(now) {
+            let gap = now.duration_since(before);
+            if gap < Duration::from_millis(10) {
+                self.short_gaps.fetch_add(1, Ordering::Relaxed);
+            } else if gap > Duration::from_millis(25) {
+                self.long_gaps.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.takes.fetch_add(1, Ordering::Relaxed);
+        *self.count.lock().unwrap() += 1;
+        self.changed.notify_all();
+    }
+
+    /// Wait until `n` frames have been taken, or `timeout` has passed (a UI
+    /// that stopped drawing must not stop the scene for good).
+    fn wait_for(&self, n: u64, timeout: Duration) {
+        let count = self.count.lock().unwrap();
+        let _ = self
+            .changed
+            .wait_timeout_while(count, timeout, |taken| *taken < n);
+    }
+
+    /// Takes, gaps under 10 ms and gaps over 25 ms since the last call.
+    fn drain(&self) -> (u32, u32, u32) {
+        (
+            self.takes.swap(0, Ordering::Relaxed),
+            self.short_gaps.swap(0, Ordering::Relaxed),
+            self.long_gaps.swap(0, Ordering::Relaxed),
+        )
+    }
+}
 
 /// One visualisation that can take over the idle screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,6 +290,12 @@ pub fn spawn(
             };
 
             let budget = Duration::from_secs(1) / FPS as u32;
+            let pacing = Pacing::from_env();
+            let takes = Arc::new(Takes::default());
+            let mut sent = 0u64;
+            if pacing == Pacing::Display {
+                tracing::info!("the visualizer is paced by the display");
+            }
             let mut clocks = [0.0f64; Scene::ALL.len()];
             let mut sequences = [0usize; Scene::ALL.len()];
             let mut seed = world_seed();
@@ -303,14 +381,17 @@ pub fn spawn(
                 // Shown right after the UI thread submits it: both run there,
                 // in order. Only the sea image swaps.
                 let slot = active * SLOTS + current;
+                let counted = Arc::clone(&takes);
                 if ui
                     .upgrade_in_event_loop(move |ui| {
                         ui.show_idle_frame(slot);
+                        counted.record();
                     })
                     .is_err()
                 {
                     return;
                 }
+                sent += 1;
                 // Two frames in flight, no more: submitting faster than the GPU
                 // finishes only queues work up ahead of the UI's frames, until
                 // every frame on screen is late. One would leave the GPU idle
@@ -370,7 +451,17 @@ pub fn spawn(
                             }
                         }
                     }
-                    tracing::debug!(fps = drawn, ms, gpu_ms, slots, "visualizer");
+                    let (taken, short_gaps, long_gaps) = takes.drain();
+                    tracing::debug!(
+                        fps = drawn,
+                        ms,
+                        gpu_ms,
+                        slots,
+                        taken,
+                        short_gaps,
+                        long_gaps,
+                        "visualizer"
+                    );
                     let frames = drawn as i32;
                     if ui
                         .upgrade_in_event_loop(move |ui| ui.set_scene_stats(frames, ms, gpu_ms))
@@ -383,6 +474,14 @@ pub fn spawn(
                     reported = Instant::now();
                 }
 
+                if pacing == Pacing::Display {
+                    // The next frame starts once the UI has taken this one,
+                    // so one is always waiting for the next refresh and
+                    // never two (the first would never be shown).
+                    takes.wait_for(sent, Duration::from_millis(100));
+                    deadline = Instant::now();
+                    continue;
+                }
                 deadline += budget;
                 // A frame that ran long is not made up for by rushing the next
                 // ones out back to back.
@@ -432,6 +531,71 @@ fn pace(deadline: Instant) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A minute of the display and the producer in virtual time, to see what
+    /// each pacing does to the frames. The UI shows a new image at each refresh
+    /// (every `refresh` seconds) if a frame has been posted since the last,
+    /// taking every frame posted in the meantime: the last of them is shown,
+    /// the others never are. Returns the refreshes that repeated a frame and
+    /// the frames that were never shown.
+    fn simulate(pacing: Pacing, refresh: f64, render: f64, jitter: f64) -> (u32, u32) {
+        let (mut repeats, mut skipped) = (0, 0);
+        let mut posted: Vec<f64> = Vec::new();
+        let mut rng = 12345u64;
+        let mut noise = move || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 33) as f64 / (1u64 << 31) as f64 * jitter
+        };
+        // When each frame is posted: by the timer at 1/60 s, or a render
+        // after the UI took the last.
+        let minute = 60.0;
+        let refreshes = (minute / refresh) as usize;
+        let mut next_post = 0.0f64;
+        let mut taken_at = 0.0f64;
+        let mut waiting = pacing == Pacing::Display;
+        for k in 1..=refreshes {
+            let v = k as f64 * refresh;
+            match pacing {
+                Pacing::Timer => {
+                    while next_post + render <= v {
+                        posted.push(next_post + render + noise());
+                        next_post += 1.0 / FPS as f64;
+                    }
+                }
+                Pacing::Display => {
+                    if waiting && taken_at + render <= v {
+                        posted.push(taken_at + render + noise());
+                        waiting = false;
+                    }
+                }
+            }
+            let ready: Vec<f64> = posted.iter().copied().filter(|&t| t <= v).collect();
+            posted.retain(|&t| t > v);
+            if ready.is_empty() {
+                repeats += 1;
+            } else {
+                skipped += ready.len() as u32 - 1;
+                taken_at = v;
+                waiting = pacing == Pacing::Display;
+            }
+        }
+        (repeats, skipped)
+    }
+
+    #[test]
+    fn the_display_sets_the_rate_where_a_timer_drifts() {
+        // The Pi's panel: 85.5 MHz over 1280 x 1112 is 60.07 Hz.
+        let refresh = 1.0 / 60.07;
+        let (t_rep, t_skip) = simulate(Pacing::Timer, refresh, 0.009, 0.0015);
+        let (d_rep, d_skip) = simulate(Pacing::Display, refresh, 0.009, 0.0015);
+        println!(
+            "timer: {t_rep} repeats, {t_skip} skipped; display: {d_rep} repeats, {d_skip} skipped"
+        );
+        assert!(t_rep + t_skip >= 3, "a timer drifts against the panel");
+        assert!(d_rep + d_skip <= 1, "the display's own beat does not");
+    }
 
     #[test]
     fn an_empty_mask_still_offers_a_scene() {
