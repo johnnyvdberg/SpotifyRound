@@ -1189,31 +1189,33 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.surface = i.surface;
     out.fade = i.extra.z;
     out.fog = fog_at(world);
-    // The GPU path: sun, lamp, point lights and caustics at the vertex.
-    var light = vec3<f32>(0.0);
-    if (switched(4u)) {
-        let light_n = normalize(n);
-        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
-        light = g.tint.rgb * (
-            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(light_n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
-            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (light_n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
-        );
+    if (MATERIAL == 6) {
+        // The ice: the sheet works its colour out per pixel from its bake
+        // and never reads this; a keel under it (`world::ICE_KEEL`) is lit
+        // through, by the daylight the sheet lets in, not on its faces: its
+        // own colour (`mesh::keel`, pale where thin, glacial blue where
+        // thick) at the sheet's brightness. Neither needs the lights.
+        out.albedo *= 0.95 + 0.75 * g.sun.w;
     } else {
-        light = light_at(world, normalize(n));
-    }
-    out.albedo *= light;
-    // A keel under the polar ice (`world::ICE_KEEL`) is lit through, by the
-    // daylight the sheet above it lets in, not on its faces: its own colour
-    // (`mesh::keel`, pale where thin, glacial blue where thick) at the
-    // sheet's brightness. Only the ice's pipelines compile this.
-    if (MATERIAL == 6 && i.surface.w > 0.5) {
-        out.albedo = i.colour.rgb * v.colour * (0.95 + 0.75 * g.sun.w);
+        // The GPU path: sun, lamp, point lights and caustics at the vertex.
+        var light = vec3<f32>(0.0);
+        if (switched(4u)) {
+            let light_n = normalize(n);
+            let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
+            light = g.tint.rgb * (
+                vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(light_n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
+                + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (light_n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
+            );
+        } else {
+            light = light_at(world, normalize(n));
+        }
+        out.albedo *= light;
     }
     // `world::build` finds the ground and the sand's colour under the model,
     // once per instance.
     out.floor_y = i.extra.w;
     out.floor = i.floor.rgb;
-    if (GROUNDED) {
+    if (GROUNDED && MATERIAL != 6) {
         // The sand line follows the slope under the model (`world::
         // ground_under` packs it), so a stone on a bank is buried to the same
         // depth all round rather than to one level through it; and silt

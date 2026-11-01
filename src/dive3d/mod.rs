@@ -1349,7 +1349,11 @@ fn compile(
             for &material in &MATERIALS {
                 for grounded in [0.0, 1.0] {
                     for &anim in &ANIMS {
-                        if material == world::material::CITY as i32 {
+                        // The city has its own set; the ice hangs from the
+                        // pack and never stands on the seabed.
+                        if material == world::material::CITY as i32
+                            || (material == world::material::ICE as i32 && grounded > 0.5)
+                        {
                             pipelines.push(None);
                             continue;
                         }
@@ -1491,7 +1495,7 @@ fn compile(
             for grounded in [0.0, 1.0] {
                 for &anim in &ANIMS {
                     let ice = material == world::material::ICE as i32;
-                    if !ice {
+                    if !ice || grounded > 0.5 {
                         pipelines.push(None);
                         continue;
                     }
