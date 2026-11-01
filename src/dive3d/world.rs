@@ -220,6 +220,10 @@ pub mod material {
     /// The drowned city's brass and iron, its windows, lit glass and neon:
     /// `city_light` in `scene.wesl`, marked part by part (`mesh::city`).
     pub const CITY: f32 = 11.0;
+    /// A keel under the polar pack, lit through rather than on its faces
+    /// (`fs_model`'s case 12), in a pipeline of its own so the sheet's
+    /// shader carries none of it.
+    pub const KEEL: f32 = 12.0;
 }
 
 // Sprite kinds.
@@ -6576,11 +6580,9 @@ fn vents(w: &World, f: &mut Frame) {
     }
 }
 
-/// Marks a keel in the ice's material (`Instance::surface`'s last slot): the
-/// ice sheet's shader shades it as ice lit through, not as the sheet.
-pub const ICE_KEEL: f32 = 1.0;
-/// Marks what lies round wrecks, ruins and outcrops in the same slot, so a
-/// benchmark can leave it out (`part::DEBRIS`) though its meshes are shared.
+/// Marks what lies round wrecks, ruins and outcrops in `Instance::surface`'s
+/// last slot, so a benchmark can leave it out (`part::DEBRIS`) though its
+/// meshes are shared.
 pub const DEBRIS: f32 = 2.0;
 
 /// Keels of broken ice hanging from the pack.
@@ -6630,8 +6632,7 @@ fn ice(w: &World, f: &mut Frame) {
             ),
             [v * 0.62, v * 0.86, v * 0.95],
         )
-        .material(material::ICE)
-        .surface[3] = ICE_KEEL;
+        .material(material::KEEL);
     }
 }
 

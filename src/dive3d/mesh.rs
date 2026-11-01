@@ -3849,7 +3849,7 @@ fn keel() -> Mesh {
         };
         [x, y, z]
     };
-    blob(4, shape, |_, q| {
+    blob(3, shape, |_, q| {
         let thick = (-q[1]).clamp(0.0, 1.0);
         let edge = (q[0] * q[0] + q[2] * q[2]).sqrt().min(1.0);
         let thin = (1.0 - thick).max(edge * edge * 0.6);

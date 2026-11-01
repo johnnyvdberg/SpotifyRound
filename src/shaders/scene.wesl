@@ -1189,9 +1189,9 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.surface = i.surface;
     out.fade = i.extra.z;
     out.fog = fog_at(world);
-    if (MATERIAL == 6) {
+    if (MATERIAL == 6 || MATERIAL == 12) {
         // The ice: the sheet works its colour out per pixel from its bake
-        // and never reads this; a keel under it (`world::ICE_KEEL`) is lit
+        // and never reads this; a keel under it (`material::KEEL`) is lit
         // through, by the daylight the sheet lets in, not on its faces: its
         // own colour (`mesh::keel`, pale where thin, glacial blue where
         // thick) at the sheet's brightness. Neither needs the lights.
@@ -1215,7 +1215,7 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // once per instance.
     out.floor_y = i.extra.w;
     out.floor = i.floor.rgb;
-    if (GROUNDED && MATERIAL != 6 && !switched(128u)) {
+    if (GROUNDED && !switched(128u)) {
         // The sand line follows the slope under the model (`world::
         // ground_under` packs it), so a stone on a bank is buried to the same
         // depth all round rather than to one level through it; and silt
@@ -1659,19 +1659,18 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let sparkle = pow(fract(sin(dot(floor(p * 140.0), vec3<f32>(12.9, 78.2, 37.7)) + floor(t * 3.0)) * 43758.5), 20.0);
             colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
         }
+        // A keel under the pack: translucent ice, brightest at its
+        // silhouette where the light crosses the least of it; the sheet's
+        // thinner haze, since the water up by the ice is lit from above.
+        case 12u: {
+            let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
+            colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
+            haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
+        }
         // The pack ice from below: floes glowing with daylight, open leads.
         // Its three noise fields and its arctic coverage come baked into one
         // texture instead of three `vnoise` stacks per pixel.
         case 6u: {
-            if (in.surface.w > 0.5) {
-                // A keel: translucent ice, brightest at its silhouette where
-                // the light crosses the least of it; the sheet's thinner
-                // haze, since the water up by the ice is lit from above.
-                let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
-                colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
-                haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
-                break;
-            }
             let baked = textureSampleLevel(
                 ice_bake,
                 surface_sampler,
@@ -1902,7 +1901,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     // A keel under the ice hangs down: its frost runs round it and down it,
     // as the tunnel's rock does, not streaked down from above.
-    if (MATERIAL == 6 && in.surface.w > 0.5) {
+    if (MATERIAL == 12) {
         uv = vec3<f32>(p.x + p.z, 0.0, p.y) * in.surface.y;
     }
     let layer = i32(in.surface.x + 0.5);
@@ -1975,19 +1974,18 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let sparkle = pow(fract(sin(dot(floor(p * 140.0), vec3<f32>(12.9, 78.2, 37.7)) + floor(t * 3.0)) * 43758.5), 20.0);
             colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
         }
+        // A keel under the pack: translucent ice, brightest at its
+        // silhouette where the light crosses the least of it; the sheet's
+        // thinner haze, since the water up by the ice is lit from above.
+        case 12u: {
+            let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
+            colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
+            haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
+        }
         // The pack ice from below: floes glowing with daylight, open leads.
         // Its three noise fields and its arctic coverage come baked into one
         // texture instead of three `vnoise` stacks per pixel.
         case 6u: {
-            if (in.surface.w > 0.5) {
-                // A keel: translucent ice, brightest at its silhouette where
-                // the light crosses the least of it; the sheet's thinner
-                // haze, since the water up by the ice is lit from above.
-                let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
-                colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
-                haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
-                break;
-            }
             let baked = textureSampleLevel(
                 ice_bake,
                 surface_sampler,

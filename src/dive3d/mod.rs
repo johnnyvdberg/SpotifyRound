@@ -484,7 +484,7 @@ pub(crate) struct Nautilus {
 /// material per instance: an unlisted material is a bug, which
 /// `every_instance_has_a_pipeline` catches. Each has a second pipeline for
 /// models that stand on the seabed (`GROUNDED`).
-const MATERIALS: [i32; 7] = [
+const MATERIALS: [i32; 8] = [
     0,
     world::material::LAVA as i32,
     world::material::COPPER as i32,
@@ -492,14 +492,13 @@ const MATERIALS: [i32; 7] = [
     world::material::ICE as i32,
     world::material::GOLD as i32,
     world::material::CITY as i32,
+    world::material::KEEL as i32,
 ];
 
 /// Whether an instance is the polar ice sheet, whose coverage is worked out
-/// per pixel and so is always drawn blended with its discard. The keels
-/// hanging from it share its material (`fs_model`'s ICE case shades both)
-/// but are marked (`world::ICE_KEEL`) and fade as any other model does.
+/// per pixel and so is always drawn blended with its discard.
 fn ice_sheet(i: &Instance) -> bool {
-    i.extra[0].round() as i32 == world::material::ICE as i32 && i.surface[3] < 0.5
+    i.extra[0].round() as i32 == world::material::ICE as i32
 }
 
 /// The index into [`MATERIALS`] of the pipeline for an instance.
@@ -1357,10 +1356,12 @@ fn compile(
             for &material in &MATERIALS {
                 for grounded in [0.0, 1.0] {
                     for &anim in &ANIMS {
-                        // The city has its own set; the ice hangs from the
-                        // pack and never stands on the seabed.
+                        // The city has its own set; the ice and its keels
+                        // hang from the pack and never stand on the seabed.
                         if material == world::material::CITY as i32
-                            || (material == world::material::ICE as i32 && grounded > 0.5)
+                            || ((material == world::material::ICE as i32
+                                || material == world::material::KEEL as i32)
+                                && grounded > 0.5)
                         {
                             pipelines.push(None);
                             continue;
