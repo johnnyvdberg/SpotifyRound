@@ -210,16 +210,19 @@ impl Graphics {
 /// The backends to try, in order. `WGPU_BACKEND` picks one instead (`gl`,
 /// `vulkan`, …), to compare the Pi's two drivers.
 ///
-/// On the Pi (Linux on arm64) OpenGL ES comes first: Mesa's GL driver runs
-/// the V3D 7.1's early-Z, and its Vulkan driver (v3dv, as of Mesa 26.2) never
-/// does, which made every frame of the dive 0.9-2.6 ms slower. Vulkan is the
-/// fallback there and the first choice elsewhere; any other backend is only a
-/// convenience so the display still works on a machine without either.
-fn backend_order() -> Vec<wgpu::Backends> {
+/// Headless on the Pi (Linux on arm64) OpenGL ES comes first: Mesa's GL driver
+/// runs the V3D 7.1's early-Z, and its Vulkan driver (v3dv, as of Mesa 26.2)
+/// never does, which made every frame of the dive 0.9-2.6 ms slower. The display
+/// cannot use it: wgpu 30's EGL backend only presents to a Wayland window when
+/// its instance is created on the compositor's `wl_display`, which Slint does not
+/// hand out before the window exists, so under cage a GL device draws every
+/// frame and none reaches the screen. The display runs Vulkan first everywhere;
+/// any other backend is only a convenience for a machine without it.
+fn backend_order(headless: bool) -> Vec<wgpu::Backends> {
     if let Some(chosen) = wgpu::Backends::from_env() {
         return vec![chosen];
     }
-    if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    if headless && cfg!(all(target_os = "linux", target_arch = "aarch64")) {
         vec![
             wgpu::Backends::GL,
             wgpu::Backends::VULKAN,
@@ -234,7 +237,7 @@ fn backend_order() -> Vec<wgpu::Backends> {
 /// [`backend_order`] that opens.
 pub fn install() -> Result<Graphics> {
     let mut last = "no GPU adapter available".to_owned();
-    let order = backend_order();
+    let order = backend_order(false);
     for backends in order {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
@@ -286,7 +289,7 @@ pub fn install() -> Result<Graphics> {
 #[cfg(test)]
 pub fn headless() -> Result<Graphics> {
     let mut last = anyhow::anyhow!("no GPU adapter available");
-    for backends in backend_order() {
+    for backends in backend_order(true) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle_from_env()
