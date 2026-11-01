@@ -624,10 +624,28 @@ pub enum Model {
     /// A sea lion: longer and slimmer than a seal, with a pointed snout and
     /// long winglike fore flippers.
     SeaLion,
+    /// A draped marble figure on y = 0, a unit tall, facing +x.
+    Statue,
+    /// The same figure with its head broken off: the fallen colossus.
+    Torso,
+    /// The colossus's head, lying apart, a unit across.
+    Head,
+    /// A storage amphora standing on its point, a unit tall.
+    Amphora,
+    /// A trireme's hull with its bronze ram and some oars, stern -1 to ram +1.
+    Trireme,
+    /// One bay of an aqueduct: piers, arch and channel, a unit long and tall.
+    Aqueduct,
+    /// An inscribed stele with a gabled top on a base, a unit tall, face +x.
+    Stele,
+    /// A mosaic floor of tesserae, two units square.
+    Mosaic,
+    /// The harbour's broken lighthouse tower, a unit tall.
+    Lighthouse,
 }
 
 impl Model {
-    pub const ALL: [Model; 71] = [
+    pub const ALL: [Model; 80] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -699,6 +717,15 @@ impl Model {
         Model::Lobster,
         Model::Seal,
         Model::SeaLion,
+        Model::Statue,
+        Model::Torso,
+        Model::Head,
+        Model::Amphora,
+        Model::Trireme,
+        Model::Aqueduct,
+        Model::Stele,
+        Model::Mosaic,
+        Model::Lighthouse,
     ];
 
     /// Whether this is one of the drowned city's models, whose triangles
@@ -1018,6 +1045,15 @@ impl Model {
             Model::Lobster => lobster(),
             Model::Seal => seal(false),
             Model::SeaLion => seal(true),
+            Model::Statue => cast(SOPHOCLES, statue(true)),
+            Model::Torso => cast(BELVEDERE_TORSO, statue(false)),
+            Model::Head => cast(BEARDED_HEAD, colossal_head()),
+            Model::Amphora => amphora(),
+            Model::Trireme => trireme(),
+            Model::Aqueduct => aqueduct(),
+            Model::Stele => stele(),
+            Model::Mosaic => mosaic(),
+            Model::Lighthouse => lighthouse(),
         }
     }
 }
@@ -4190,6 +4226,460 @@ fn seal(lion: bool) -> Mesh {
         m.append(part);
     }
     m.with_aux(|p| [p[0] * 2.0, 0.0])
+}
+
+/// A draped figure standing on y = 0, a unit tall, facing +x: a fluted
+/// chiton to the feet, the chest and shoulders, one arm raised as if it once
+/// held a spear, the other down at its side; with `head`, its head, else a
+/// broken neck (the fallen colossus, whose head lies apart as
+/// [`Model::Head`]).
+fn statue(head: bool) -> Mesh {
+    // The folds of the drapery: deep at the hem, fading up the body.
+    let folds = |y: f32, a: f32| 1.0 + 0.10 * (a * 9.0).sin() * (1.0 - y / 0.55).max(0.0);
+    // The folds' shadows, and the sea's growth crusting the drapery from
+    // the hem up, greener and darker the lower it is.
+    let shade = |y: f32, a: f32| {
+        let v = 0.92 + 0.08 * (a * 9.0).sin() * (1.0 - y / 0.55).max(0.0);
+        let crust =
+            (1.0 - y / 0.45).clamp(0.0, 1.0) * (0.6 + 0.4 * (a * 5.0 + y * 31.0).sin().abs());
+        [
+            v * (1.0 - 0.45 * crust),
+            v * (1.0 - 0.32 * crust),
+            v * (1.0 - 0.42 * crust),
+        ]
+    };
+    let mut m = lathe(
+        &[
+            (0.0, 0.0),
+            (0.13, 0.0),
+            (0.12, 0.10),
+            (0.10, 0.30),
+            (0.095, 0.48),
+            (0.10, 0.56),
+            (0.125, 0.70),
+            (0.115, 0.76),
+            (0.05, 0.80),
+            (0.04, 0.83),
+            (0.0, 0.83),
+        ],
+        16,
+        folds,
+        shade,
+        |y| [0.0, y],
+    )
+    .map(
+        // Broader across the shoulders than through the chest.
+        |p| {
+            [
+                p[0] * 0.72,
+                p[1],
+                p[2] * (1.0 + 0.25 * smooth(0.55, 0.76, p[1])),
+            ]
+        },
+        |n| n,
+    )
+    .smooth();
+    if head {
+        m.append(
+            sphere_with(
+                2,
+                |p| 1.0 + 0.12 * p[0].max(0.0).powi(4),
+                |p| {
+                    // Hair, bound up, a shade darker than the face.
+                    if p[1] > 0.2 || p[0] < -0.3 {
+                        [0.85; 3]
+                    } else {
+                        [1.0; 3]
+                    }
+                },
+            )
+            .scaled([0.062, 0.075, 0.058])
+            .map(|p| [p[0] + 0.005, p[1] + 0.895, p[2]], |n| n),
+        );
+    }
+    // The himation: a fold of cloak across the chest from the left shoulder.
+    m.append(rod(
+        [0.04, 0.77, -0.11],
+        [0.06, 0.55, 0.10],
+        0.035,
+        0.03,
+        [0.9; 3],
+    ));
+    // The raised arm, bent at the elbow, and the one hanging down.
+    m.append(rod(
+        [0.0, 0.75, 0.10],
+        [0.03, 0.66, 0.20],
+        0.035,
+        0.03,
+        [1.0; 3],
+    ));
+    m.append(rod(
+        [0.03, 0.66, 0.20],
+        [0.06, 0.95, 0.22],
+        0.03,
+        0.022,
+        [1.0; 3],
+    ));
+    m.append(rod(
+        [0.0, 0.75, -0.10],
+        [0.01, 0.50, -0.14],
+        0.035,
+        0.026,
+        [1.0; 3],
+    ));
+    m
+}
+
+/// Imported models (assets/models/CREDITS.md, rebuilt by deploy/models.sh):
+/// scans of the SMK's public-domain casts, reduced offline to 3,000
+/// triangles.
+const SOPHOCLES: &str = include_str!("../../assets/models/sophocles.obj");
+const BELVEDERE_TORSO: &str = include_str!("../../assets/models/belvedere-torso.obj");
+const BEARDED_HEAD: &str = include_str!("../../assets/models/bearded-head.obj");
+
+/// The scanned cast `obj` in the place of `like`, the procedural model it
+/// replaces: as tall and centred as it, each vertex taking the `aux` of
+/// `like`'s nearest so the LODs and sway work unchanged, the marble crusted
+/// with the sea's growth from the foot up.
+fn cast(obj: &str, like: Mesh) -> Mesh {
+    let mut pos = vec![];
+    let mut faces = vec![];
+    for line in obj.lines() {
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("v") => {
+                let v: Vec<f32> = words.map(|w| w.parse().unwrap_or(0.0)).collect();
+                // The files keep their source's handedness: z flips back.
+                pos.push(Vec3::new(v[0], v[1], -v[2]));
+            }
+            Some("f") => faces.extend(words.map(|w| w.parse::<u32>().unwrap_or(1) - 1)),
+            _ => {}
+        }
+    }
+    let bounds = |p: &mut dyn Iterator<Item = Vec3>| {
+        p.fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| (lo.min(q), hi.max(q)))
+    };
+    let (lo, hi) = bounds(&mut pos.iter().copied());
+    let (want_lo, want_hi) = bounds(&mut like.vertices.iter().map(|v| Vec3::from_array(v.pos)));
+    let k = (want_hi[1] - want_lo[1]) / (hi[1] - lo[1]);
+    let (centre, want) = ((lo + hi) * 0.5, (want_lo + want_hi) * 0.5);
+    let mut out = Mesh::default();
+    for p in pos {
+        let p = want + (p - centre) * k;
+        let aux = like
+            .vertices
+            .iter()
+            .min_by(|a, b| {
+                let d = |v: &Vertex| Vec3::from_array(v.pos).distance_squared(p);
+                d(a).total_cmp(&d(b))
+            })
+            .map_or([0.0; 2], |v| v.aux);
+        let y = (p[1] - want_lo[1]) / (want_hi[1] - want_lo[1]);
+        let crust =
+            (1.0 - y / 0.4).clamp(0.0, 1.0) * (0.6 + 0.4 * (p[0] * 37.0 + y * 29.0).sin().abs());
+        let colour = [1.0 - 0.45 * crust, 1.0 - 0.32 * crust, 1.0 - 0.42 * crust];
+        out.vertex(p.to_array(), colour, aux);
+    }
+    out.indices = faces;
+    let mut out = out.smooth();
+    // A vertex the reduction left only on collapsed faces: outward.
+    for v in &mut out.vertices {
+        if v.normal == [0.0; 3] {
+            v.normal = (Vec3::from_array(v.pos) - Vec3::new(want[0], v.pos[1], want[2]))
+                .try_normalize()
+                .unwrap_or(Vec3::Y)
+                .to_array();
+        }
+    }
+    out
+}
+
+/// A colossal head, the fallen colossus's: a unit across, its face to +x,
+/// a straight nose, heavy brows, curled hair bound with a fillet.
+fn colossal_head() -> Mesh {
+    sphere_with(
+        3,
+        |p| {
+            let face = p[0].max(0.0);
+            let nose = if p[1].abs() < 0.25 && p[2].abs() < 0.12 && p[1] > -0.15 {
+                0.14 * face.powi(3)
+            } else {
+                0.0
+            };
+            let brow = 0.05 * face * (-((p[1] - 0.22) / 0.06).powi(2)).exp();
+            let curls = if p[1] > 0.3 || p[0] < -0.2 {
+                0.05 + 0.03 * (p[0] * 23.0).sin() * (p[2] * 19.0).sin()
+            } else {
+                0.0
+            };
+            let chin = 1.0 - 0.15 * (-p[1]).max(0.0) * (1.0 - face);
+            (1.0 + nose + brow + curls) * chin
+        },
+        |p| {
+            if p[1] > 0.3 || p[0] < -0.2 {
+                [0.86; 3]
+            } else {
+                [1.0; 3]
+            }
+        },
+    )
+    .scaled([0.5, 0.62, 0.45])
+}
+
+/// A storage amphora standing on its point, a unit tall: the ovoid body,
+/// the narrow neck and lip, two handles from neck to shoulder.
+fn amphora() -> Mesh {
+    let mut m = lathe(
+        &[
+            (0.0, 0.0),
+            (0.05, 0.02),
+            (0.12, 0.12),
+            (0.24, 0.35),
+            (0.27, 0.55),
+            (0.22, 0.72),
+            (0.09, 0.80),
+            (0.07, 0.94),
+            (0.10, 0.97),
+            (0.09, 1.0),
+            (0.0, 0.99),
+        ],
+        12,
+        |_, _| 1.0,
+        |y, _| if y > 0.78 { [1.1; 3] } else { [1.0; 3] },
+        |y| [0.0, y],
+    );
+    for side in [-1.0f32, 1.0] {
+        m.append(rod(
+            [0.0, 0.90, side * 0.07],
+            [0.0, 0.93, side * 0.17],
+            0.018,
+            0.018,
+            [1.0; 3],
+        ));
+        m.append(rod(
+            [0.0, 0.93, side * 0.17],
+            [0.0, 0.70, side * 0.21],
+            0.018,
+            0.018,
+            [1.0; 3],
+        ));
+    }
+    m
+}
+
+/// A trireme on the bottom, from her stern (-1) to the ram (+1): a long,
+/// shallow hull, the bronze ram at the waterline, the stern sweeping up into
+/// its curl, the outrigger along each side and a few oars still in their
+/// ports. Vertex colour 2 marks the bronze (the instance tints it).
+fn trireme() -> Mesh {
+    let mut m = loft(
+        -1.0,
+        0.92,
+        24,
+        10,
+        |x| {
+            let t = (x + 1.0) / 1.92;
+            let beam = 0.11 * (t * PI).sin().powf(0.45) + 0.01;
+            // The stern rises out of the water, the bow stays low.
+            let sheer = 0.05 * smooth(0.7, 0.0, t);
+            (sheer, beam * 0.55 + sheer * 0.3, beam * 0.75, beam)
+        },
+        |_, up| if up > 0.6 { [0.8, 0.75, 0.7] } else { [1.0; 3] },
+    );
+    // The ram: three fins of bronze round a point.
+    m.append(
+        lathe(
+            &[(0.0, 0.0), (0.04, 0.0), (0.02, 0.16), (0.0, 0.18)],
+            6,
+            |_, _| 1.0,
+            |_, _| [2.2, 1.6, 0.9],
+            |_| [0.0; 2],
+        )
+        .map(|p| [0.88 + p[1], p[0] - 0.05, p[2]], |n| [n[1], n[0], n[2]]),
+    );
+    // The stern's curl.
+    m.append(rod(
+        [-0.95, 0.05, 0.0],
+        [-1.05, 0.22, 0.0],
+        0.025,
+        0.015,
+        [0.9; 3],
+    ));
+    m.append(rod(
+        [-1.05, 0.22, 0.0],
+        [-0.98, 0.30, 0.0],
+        0.015,
+        0.008,
+        [0.9; 3],
+    ));
+    for side in [-1.0f32, 1.0] {
+        // The outrigger, and oars at odd angles.
+        m.append(rod(
+            [-0.7, 0.07, side * 0.12],
+            [0.6, 0.07, side * 0.12],
+            0.012,
+            0.012,
+            [0.85; 3],
+        ));
+        for k in 0..5 {
+            let x = -0.5 + k as f32 * 0.25;
+            let droop = 0.1 + 0.08 * ((k as f32 * 2.3 + side).sin());
+            m.append(rod(
+                [x, 0.07, side * 0.12],
+                [x - 0.1, 0.07 - droop, side * 0.45],
+                0.008,
+                0.006,
+                [0.8; 3],
+            ));
+        }
+    }
+    m
+}
+
+/// One bay of an aqueduct, a unit long along x and a unit tall: two piers,
+/// a round arch of voussoirs between them, and the channel along its top.
+fn aqueduct() -> Mesh {
+    let stone = [1.0; 3];
+    let mut m = Mesh::default();
+    for side in [-1.0f32, 1.0] {
+        m.append(block([0.10, 0.32, 0.09], [side * 0.40, 0.32, 0.0], stone));
+    }
+    let n = fewer(9, 5);
+    for k in 0..n {
+        let a = PI * (k as f32 + 0.5) / n as f32;
+        let (s, c) = a.sin_cos();
+        let (r, y0) = (0.33, 0.62);
+        let stone = block([0.035, 0.07, 0.09], [0.0, 0.0, 0.0], [0.95; 3]).map(
+            move |p| {
+                [
+                    c * (r + p[1]) - s * p[0],
+                    y0 + s * (r + p[1]) + c * p[0],
+                    p[2],
+                ]
+            },
+            move |q| [c * q[1] - s * q[0], s * q[1] + c * q[0], q[2]],
+        );
+        m.append(stone);
+    }
+    // The spandrels and the channel on top.
+    m.append(block([0.5, 0.06, 0.09], [0.0, 0.96, 0.0], stone));
+    m.append(block([0.5, 0.02, 0.06], [0.0, 1.03, 0.07], [0.8; 3]));
+    m.append(block([0.5, 0.02, 0.06], [0.0, 1.03, -0.07], [0.8; 3]));
+    m
+}
+
+/// An inscribed stele: a slab a unit tall with a gabled top, the lines of its
+/// inscription cut into its face (+x) as darker bands, on a low base.
+fn stele() -> Mesh {
+    let mut m = extrude(
+        &[
+            [-0.22, 0.0],
+            [0.22, 0.0],
+            [0.20, 0.90],
+            [0.0, 1.0],
+            [-0.20, 0.90],
+        ],
+        0.08,
+        [1.0; 3],
+    )
+    .map(|p| [p[2], p[1], p[0]], |n| [n[2], n[1], n[0]]);
+    for line in 0..9 {
+        let y = 0.25 + line as f32 * 0.065;
+        m.append(block([0.004, 0.012, 0.15], [0.041, y, 0.0], [0.45; 3]));
+    }
+    m.append(block([0.09, 0.04, 0.27], [0.0, 0.04, 0.0], [0.9; 3]));
+    m
+}
+
+/// A mosaic floor, two units square on y = 0 and a little thick: tesserae in
+/// a meander border round a field of waves and a rosette of dolphins' blue
+/// and ochre, each tile its own colour (the instance's colour washes it).
+fn mosaic() -> Mesh {
+    let n = 16usize;
+    let mut m = Mesh::default();
+    let cell = 2.0 / n as f32;
+    let palette = [
+        [1.0, 0.95, 0.85],
+        [0.25, 0.32, 0.55],
+        [0.80, 0.52, 0.25],
+        [0.55, 0.20, 0.15],
+        [0.35, 0.55, 0.60],
+    ];
+    for i in 0..n {
+        for j in 0..n {
+            let (u, v) = (i as i32, j as i32);
+            let edge = u.min(v).min(n as i32 - 1 - u).min(n as i32 - 1 - v);
+            let pick = if edge == 0 {
+                3
+            } else if edge == 1 {
+                // The meander: a key pattern round the border.
+                if (u + v) % 4 < 2 { 0 } else { 1 }
+            } else {
+                let (x, z) = (u as f32 - 7.5, v as f32 - 7.5);
+                let r = (x * x + z * z).sqrt();
+                let a = z.atan2(x);
+                if r < 2.0 {
+                    2
+                } else if r < 5.0 && (a * 4.0 + r).sin() > 0.3 {
+                    4
+                } else if ((x + z) * 0.9).sin() > 0.6 {
+                    1
+                } else {
+                    0
+                }
+            };
+            let c = palette[pick];
+            let jit = 0.92 + 0.16 * jitter((i * n + j) as u32, 5);
+            let c = [c[0] * jit, c[1] * jit, c[2] * jit];
+            let (x0, z0) = (-1.0 + i as f32 * cell, -1.0 + j as f32 * cell);
+            let g = cell * 0.06;
+            let a = m.vertex([x0 + g, 0.04, z0 + g], c, [0.0; 2]);
+            let b = m.vertex([x0 + g, 0.04, z0 + cell - g], c, [0.0; 2]);
+            let d = m.vertex([x0 + cell - g, 0.04, z0 + cell - g], c, [0.0; 2]);
+            let e = m.vertex([x0 + cell - g, 0.04, z0 + g], c, [0.0; 2]);
+            m.quad(a, b, d, e);
+        }
+    }
+    for v in &mut m.vertices {
+        v.normal = [0.0, 1.0, 0.0];
+    }
+    // The bed the tesserae are set in.
+    m.append(block([1.0, 0.02, 1.0], [0.0, 0.015, 0.0], [0.45; 3]));
+    m
+}
+
+/// The harbour's lighthouse, broken off: a tapering round tower a unit tall
+/// on a square base, its gallery's corbels at three quarters, the masonry
+/// coursed, its top ragged where the lantern fell.
+fn lighthouse() -> Mesh {
+    let mut m = lathe(
+        &[
+            (0.30, 0.0),
+            (0.26, 0.15),
+            (0.22, 0.70),
+            (0.27, 0.74),
+            (0.27, 0.78),
+            (0.20, 0.79),
+            (0.19, 1.0),
+            (0.0, 1.0),
+        ],
+        14,
+        |y, a| {
+            if y > 0.95 {
+                1.0 - 0.25 * (a * 3.0).sin().max(0.0)
+            } else {
+                1.0
+            }
+        },
+        |y, _| {
+            let course = ((y * 28.0).fract() < 0.1) as u8 as f32;
+            let v = 1.0 - 0.18 * course;
+            [v, v, v * 0.96]
+        },
+        |y| [0.0, y],
+    );
+    m.append(block([0.36, 0.06, 0.36], [0.0, 0.03, 0.0], [0.9; 3]));
+    m
 }
 
 fn submarine() -> Mesh {

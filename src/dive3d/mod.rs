@@ -480,6 +480,10 @@ pub(crate) struct Nautilus {
     /// (`DIVE3D_SKIP_EFFECTS`); see [`effect`].
     #[cfg(test)]
     skip_effects: u64,
+    /// The scenery elements a benchmark leaves out (`DIVE3D_SKIP_ELEMENTS`,
+    /// a mask of `world::element` numbers).
+    #[cfg(test)]
+    skip_elements: u64,
 }
 
 /// The materials models get a pipeline of their own for, as `MATERIAL` in
@@ -891,6 +895,10 @@ mod effect {
     pub const CRABS: u64 = 1 << 45;
     /// `Seal` and `SeaLion`: under the ice and in the forest.
     pub const SEALS: u64 = 1 << 46;
+    /// Atlantis' city plan (V6): `Statue`, `Torso`, `Head`, `Amphora`,
+    /// `Trireme`, `Aqueduct`, `Stele`, `Mosaic` and `Lighthouse`; its
+    /// elements one by one are `world::element`'s.
+    pub const ATLANTIS_PLAN: u64 = 1 << 47;
 
     pub const MODEL_BITS: u64 = ((1 << 31) - 1)
         | CORALS
@@ -904,7 +912,8 @@ mod effect {
         | EELS
         | RAYS
         | CRABS
-        | SEALS;
+        | SEALS
+        | ATLANTIS_PLAN;
     pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
     pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
 
@@ -1040,6 +1049,12 @@ mod effect {
             "Seal, SeaLion",
             "seals under the ice, sea lions in the forest",
         ),
+        (
+            "atlantis plan",
+            ATLANTIS_PLAN,
+            "Statue, Torso, Head, Amphora, Trireme, Aqueduct, Stele, Mosaic, Lighthouse",
+            "Atlantis' statues, colossus, harbour, aqueduct, stelae, mosaics, lighthouse",
+        ),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
         ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
         (
@@ -1132,6 +1147,15 @@ fn model_bit(model: usize) -> u64 {
         Model::Ray => effect::RAYS,
         Model::Crab | Model::Lobster => effect::CRABS,
         Model::Seal | Model::SeaLion => effect::SEALS,
+        Model::Statue
+        | Model::Torso
+        | Model::Head
+        | Model::Amphora
+        | Model::Trireme
+        | Model::Aqueduct
+        | Model::Stele
+        | Model::Mosaic
+        | Model::Lighthouse => effect::ATLANTIS_PLAN,
     }
 }
 
@@ -2160,6 +2184,8 @@ impl Nautilus {
             skip: 0,
             #[cfg(test)]
             skip_effects: 0,
+            #[cfg(test)]
+            skip_elements: 0,
         })
     }
 
@@ -2419,7 +2445,17 @@ impl Nautilus {
         #[cfg(not(test))]
         let hides = 0u64;
         let depth_first = self.skips(part::DEPTH_FIRST_DRAWS);
-        let no_debris = self.skips(part::DEBRIS);
+        // The scenery elements a benchmark leaves out (`world::element`).
+        #[cfg(test)]
+        let elements = self.skip_elements
+            | if self.skips(part::DEBRIS) {
+                1 << world::element::DEBRIS
+            } else {
+                0
+            };
+        #[cfg(not(test))]
+        let elements = 0u64;
+        let shown = |i: &Instance| elements == 0 || elements & (1 << world::element_of(i)) == 0;
         let order = &mut self.order;
         order.clear();
         for (model, list) in self.frame.solid.iter().enumerate() {
@@ -2427,7 +2463,7 @@ impl Nautilus {
                 list.iter()
                     .enumerate()
                     .filter(|_| !hides_model(hides, model))
-                    .filter(|(_, i)| !(no_debris && i.surface[3] == world::DEBRIS))
+                    .filter(|(_, i)| shown(i))
                     // The ice's coverage is per pixel; every other fading
                     // instance at zero coverage would discard every fragment,
                     // so it is not drawn at all.
@@ -2448,6 +2484,7 @@ impl Nautilus {
                 list.iter()
                     .enumerate()
                     .filter(|_| !hides_model(hides, model))
+                    .filter(|(_, i)| shown(i))
                     .map(|(index, i)| Staged {
                         kind: Kind::Glass,
                         slot: glass_slot(i) as u32,
@@ -3590,6 +3627,9 @@ mod tests {
         if let Ok(skip) = std::env::var("DIVE3D_SKIP_EFFECTS") {
             scene.skip_effects = mask(&skip);
         }
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP_ELEMENTS") {
+            scene.skip_elements = mask(&skip);
+        }
         let render = scene.render;
         const THUMB: u32 = 360;
         const ACROSS: u32 = 4;
@@ -3647,6 +3687,9 @@ mod tests {
         }
         if let Ok(skip) = std::env::var("DIVE3D_SKIP_EFFECTS") {
             scene.skip_effects = mask(&skip);
+        }
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP_ELEMENTS") {
+            scene.skip_elements = mask(&skip);
         }
         let render = scene.render;
         let seed: u64 = std::env::var("DIVE3D_PREVIEW_SEED")
@@ -4272,6 +4315,9 @@ mod tests {
         if let Ok(skip) = std::env::var("DIVE3D_SKIP_EFFECTS") {
             scene.skip_effects = mask(&skip);
         }
+        if let Ok(skip) = std::env::var("DIVE3D_SKIP_ELEMENTS") {
+            scene.skip_elements = mask(&skip);
+        }
         println!(
             "skip {:#x} (DIVE3D_SKIP), effects {:#x} (DIVE3D_SKIP_EFFECTS)",
             scene.skip, scene.skip_effects
@@ -4392,6 +4438,9 @@ mod tests {
             }
             if let Ok(skip) = std::env::var("DIVE3D_SKIP_EFFECTS") {
                 scene.skip_effects = mask(&skip);
+            }
+            if let Ok(skip) = std::env::var("DIVE3D_SKIP_ELEMENTS") {
+                scene.skip_elements = mask(&skip);
             }
             // Build the seabed and warm its pipelines before timing it.
             for i in 0..4 {

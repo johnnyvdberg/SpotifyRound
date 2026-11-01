@@ -108,6 +108,26 @@ frame with everything: median 6.94 ms over 13938 paired frames
 | corner mask | pass | under 0.05 ms in every sea | | |
 | dolphins | model | not in view | | |
 
+### The life and Atlantis groups' rows (V5/V6)
+
+`features` on the Pi, medians where the feature shows (`docs/handoff/v5.md`, `v6.md`):
+
+| feature | switch | seas (median ms there) | median ms | worst ms |
+|---|---|---|---|---|
+| wildlife: `world::LIFE` and the reef's new shoals (V5) | `DIVE3D_SKIP` bit 40 (`part::LIFE`) | abyss 0.15, brine 0.23, trench 0.18, vents 0.21, the rest 0.07–0.16 | 0.15 | 0.48 (shallows) |
+| crabs (V5) | `DIVE3D_SKIP_EFFECTS` bit 45 | abyss 0.15, city 0.13, atlantis 0.12 | 0.04 | 0.21 (city) |
+| rays (V5) | bit 44 | arctic 0.05 | 0.02 | 0.05 |
+| eels (V5) | bit 43 | trench 0.03 | 0.02 | 0.05 |
+| seals and sea lions (V5) | bit 46 | shallows 0.03 | 0.01 | 0.03 |
+| Atlantis ring walls (V6) | `DIVE3D_SKIP_ELEMENTS` bit 5 | atlantis 0.25, trench 0.39, vents 0.20 | 0.20 | 0.65 (trench) |
+| Atlantis canals and quays (V6) | bit 6 | atlantis 0.17 | 0.12 | 0.33 |
+| Atlantis amphora fields (V6) | bit 13 | trench 0.18 | 0.12 | 0.25 |
+| Atlantis triremes (V6) | bit 12 | trench 0.15 | 0.11 | 0.20 |
+| Atlantis aqueduct (V6) | bit 11 | atlantis 0.13 | 0.09 | 0.16 |
+| Atlantis acropolis (V6) | bit 2 | trench 0.24 | 0.07 | 0.24 |
+| Atlantis stair, colossus, gate, statues, stelae, mosaics, lighthouse (V6) | bits 3, 4, 7–10, 14 | under 0.05 everywhere | 0.01 or less | 0.06 |
+| debris (V4, now an element) | bit 1 | trench 0.09 | 0.04 | 0.21 |
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |

@@ -82,12 +82,14 @@ run at once**, from different groups. Model tier is a suggestion.
 | V2 | water | Water surface seen from below | Sonnet | done on branch `water` (mirror, facets, Snell window; +0.1 ms median, worst 10.25 ms coral) |
 | V3 | ground | Ice less blocky | Sonnet | done, merged into `main` (rounded keels lit through, bergs, floes; `docs/handoff/ground.md`) |
 | V4 | ground | Terrain integration and per-biome placement realism | Opus | done, merged into `main` (`world::bed` rules; `docs/handoff/ground.md`) |
-| V5 | life | More wildlife, specific to each biome | Opus | todo |
-| V6 | atlantis | At least ten new Atlantis elements | Opus | todo |
+| V5 | life | More wildlife, specific to each biome | Opus | done, merged into `main` (`docs/handoff/v5.md`) |
+| V6 | atlantis | At least ten new Atlantis elements | Opus | done, merged into `main` (fourteen elements, rolling seabed; `docs/handoff/v6.md`) |
 | V7 | atlantis | Underwater Greek temple environment | Opus | todo |
 | V8 | lostcity | Lost city: travel through large corridors with detailed interiors | Opus | todo |
 | V9 | biomes | Three new biomes unlike the current ones | Opus | todo |
 | V10 | detail | More detail in every biome with headroom | Sonnet | todo |
+| M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01 |
+| M2 | models | Quaternius ships as worn wrecks | Opus | todo |
 
 Order: tooling and perf first (they make room and make change visible), then V1 (sets the visible
 range everything else is built for), then V3/V4, V5, V6/V7, V8, V9, V10.
@@ -187,6 +189,24 @@ requirements, previews and benchmarks.
 With the feature costs (I2) and the per-sea timings, add detail to every sea that has room under
 the 11 ms budget: more variety in placement, small props, textures, motion. Stop where the budget
 ends, and record what each addition costs.
+
+### M1. Imported models
+
+The user wants open models in place of hand-built ones wherever a better one
+exists, from one consistent source: Quaternius (CC0, coloured low-poly,
+animated; e.g. https://quaternius.com/packs/cutefish.html). Statues are scans
+of the SMK's public-domain casts (`assets/models/CREDITS.md`). List each
+original in `assets/models/models.tsv`; `deploy/models.sh` fetches it into
+`target/models/` and reduces it with `tools/decimate`, so a higher quality
+level later is a bigger triangle count and a rerun. Keep the procedural model
+as the template the import is fitted to (`cast` in `mesh.rs`), and keep its
+animation working (`aux`). Each import gets a skip switch and a measured row.
+
+### M2. Ships as wrecks
+
+Quaternius's ships pack (https://quaternius.com/packs/ships.html) as wrecks:
+worn down first, with broken masts, holed and listing hulls, growth and silt,
+bedded by `world::bed` rules like the procedural wrecks.
 
 ## Notes for the user
 

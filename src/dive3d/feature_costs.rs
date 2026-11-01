@@ -3,7 +3,8 @@
 //! `features` times the frame with and without every entry of
 //! [`super::part`] (the passes in [`PASSES`]) and [`super::effect`] (every
 //! model group and sprite kind, found from `MODEL_GROUPS` and
-//! `SPRITE_GROUPS`, so a new group is measured with no change here), at the
+//! `SPRITE_GROUPS`, and every scenery element of `world::ELEMENTS`, so a new
+//! group or element is measured with no change here), at the
 //! places where it is in view, and writes `docs/feature-costs.md`'s table.
 //! Run it on the Pi with `deploy/bench-pi.sh features TAG`; see that
 //! document for how to read the table.
@@ -43,7 +44,6 @@ const PASSES: &[(&str, u64)] = &[
     ("cave tunnel", part::TUNNEL),
     ("open-water background", part::BACKGROUND),
     ("sediment: sand line on slopes, silt drifts", part::SEDIMENT),
-    ("debris round wrecks, ruins and outcrops", part::DEBRIS),
     (
         "wildlife (V5): world::LIFE and the reef's shoals",
         part::LIFE,
@@ -133,9 +133,11 @@ fn features() {
                 let seconds = leg_start(n as f64) + place.clamp(0.0, 0.99) * span;
                 scene.skip = 0;
                 scene.skip_effects = 0;
+                scene.skip_elements = 0;
                 // Warm, then see what is in view over the sampled frames.
                 let mut models = 0u64;
                 let mut sprites = 0u64;
+                let mut elements = 0u64;
                 for i in 0..3 + frames {
                     scene
                         .draw(
@@ -157,49 +159,61 @@ fn features() {
                         for sprite in &scene.frame.sprites {
                             sprites |= sprite_bit(sprite.tint[3]);
                         }
+                        for lists in [&scene.frame.solid, &scene.frame.glass] {
+                            for i in lists.iter().flatten() {
+                                elements |= 1 << world::element_of(i);
+                            }
+                        }
                     }
                 }
-                // (name, kind, part mask, effect mask, in view)
-                let mut variants: Vec<(String, &'static str, u64, u64, bool)> = Vec::new();
+                // (name, kind, part mask, effect mask, element mask, in view)
+                let mut variants: Vec<(String, &'static str, u64, u64, u64, bool)> = Vec::new();
                 for &(name, bit) in PASSES {
-                    variants.push((name.to_string(), "pass", bit, 0, true));
+                    variants.push((name.to_string(), "pass", bit, 0, 0, true));
                 }
                 for &(name, bit, _, _) in effect::MODEL_GROUPS {
-                    variants.push((name.to_string(), "model", 0, bit, models & bit != 0));
+                    variants.push((name.to_string(), "model", 0, bit, 0, models & bit != 0));
                 }
                 for &(name, bit, _) in effect::SPRITE_GROUPS {
-                    variants.push((name.to_string(), "sprite", 0, bit, sprites & bit != 0));
+                    variants.push((name.to_string(), "sprite", 0, bit, 0, sprites & bit != 0));
+                }
+                for &(e, name) in world::ELEMENTS {
+                    let bit = 1u64 << e;
+                    variants.push((name.to_string(), "element", 0, 0, bit, elements & bit != 0));
                 }
                 // Only what is in view is timed; a group nothing of which is
                 // in view is recorded as not in view, at no cost.
                 let mut deltas: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
-                let time = |scene: &mut Nautilus, at: f64, slot: usize, p: u64, e: u64| {
-                    scene.skip = p;
-                    scene.skip_effects = e;
-                    let begun = std::time::Instant::now();
-                    scene.draw(&gpu, at, visit, slot).expect("a frame");
-                    gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-                    begun.elapsed().as_secs_f64() * 1e3
-                };
+                let time =
+                    |scene: &mut Nautilus, at: f64, slot: usize, (p, e, m): (u64, u64, u64)| {
+                        scene.skip = p;
+                        scene.skip_effects = e;
+                        scene.skip_elements = m;
+                        let begun = std::time::Instant::now();
+                        scene.draw(&gpu, at, visit, slot).expect("a frame");
+                        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                        begun.elapsed().as_secs_f64() * 1e3
+                    };
                 for i in 0..frames {
                     let at = seconds + i as f64 * 0.02;
                     let slot = i % crate::visuals::SLOTS;
-                    for (v, (_, _, p, e, in_view)) in variants.iter().enumerate() {
+                    for (v, (_, _, p, e, m, in_view)) in variants.iter().enumerate() {
                         if !in_view {
                             continue;
                         }
+                        let none = (0, 0, 0);
                         let (base, taken) = if (i + v) % 2 == 0 {
-                            let b = time(&mut scene, at, slot, 0, 0);
-                            (b, time(&mut scene, at, slot, *p, *e))
+                            let b = time(&mut scene, at, slot, none);
+                            (b, time(&mut scene, at, slot, (*p, *e, *m)))
                         } else {
-                            let t = time(&mut scene, at, slot, *p, *e);
-                            (time(&mut scene, at, slot, 0, 0), t)
+                            let t = time(&mut scene, at, slot, (*p, *e, *m));
+                            (time(&mut scene, at, slot, none), t)
                         };
                         baselines.push(base);
                         deltas[v].push(base - taken);
                     }
                 }
-                for (v, (name, kind, _, _, in_view)) in variants.iter().enumerate() {
+                for (v, (name, kind, _, _, _, in_view)) in variants.iter().enumerate() {
                     let ms = if *in_view {
                         median(&mut deltas[v])
                     } else {
