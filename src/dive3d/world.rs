@@ -2308,7 +2308,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body, the jellyfish's swimming and the
     // four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 13] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 14] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
@@ -2316,6 +2316,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (trench, rock),
         (ruins, marble),
         (atlantis, marble),
+        (temple, marble),
         (cave, rock),
         (polar, None),
         (kelp, None),
@@ -2340,9 +2341,9 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 13] = [
-        "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "atlantis", "cave", "polar",
-        "kelp", "forest", "drifters", "city",
+    const STATIC_NAMES: [&str; 14] = [
+        "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "atlantis", "temple", "cave",
+        "polar", "kelp", "forest", "drifters", "city",
     ];
     #[cfg(test)]
     const STEP_NAMES: [&str; 14] = [
@@ -4485,6 +4486,7 @@ fn clear_of_plan(c: [f32; 2], x: f32, z: f32, radius: f32) -> bool {
         && d < RING_WALLS[2].0 - 0.3
         && (z - corridor(x) - AQUEDUCT_ABEAM).abs() < 0.2 + radius;
     d > ACROPOLIS + 0.75 + radius
+        && !in_temple(c, x, z, radius)
         && !RING_WALLS.iter().any(|&(r, ..)| near(r, 0.1))
         && !CANALS.iter().any(|&r| near(r, CANAL_WIDE * 0.5 + 0.05))
         && !aqueduct
@@ -4507,6 +4509,589 @@ fn crossings(c: [f32; 2], radius: f32) -> Vec<f32> {
         x += 0.05;
     }
     out
+}
+
+/// The Doric temple inside the middle ring wall (V7): an octastyle
+/// peripteros of eight by thirteen columns, as the Parthenon, laid along the corridor so the
+/// Nautilus sails in at its front, down its roofless cella and out at the
+/// back, ending this far before the gate in the middle wall.
+const TEMPLE_BEFORE_GATE: f32 = 0.6;
+/// Column spacing, centre to centre, and the columns' lower radius and
+/// shaft height: Doric proportions, the shaft five and a half diameters.
+const TEMPLE_BAY: f32 = 0.42;
+const TEMPLE_R: f32 = 0.085;
+const TEMPLE_SHAFT: f32 = 0.92;
+/// Columns along the sides and across the fronts, and half the span of
+/// their centres each way.
+const TEMPLE_COLUMNS: [u32; 2] = [13, 8];
+const TEMPLE_SPAN: [f32; 2] = [6.0 * TEMPLE_BAY, 3.5 * TEMPLE_BAY];
+/// Half the stylobate, along and across: the columns and a margin.
+const TEMPLE_HALF: [f32; 2] = [TEMPLE_SPAN[0] + 0.2, TEMPLE_SPAN[1] + 0.2];
+
+/// The temple's middle on the corridor and its axis, a unit vector along
+/// the corridor there; across is the axis turned to port.
+struct Temple {
+    centre: [f32; 2],
+    along: [f32; 2],
+}
+
+impl Temple {
+    fn of(c: [f32; 2]) -> Self {
+        // Where the corridor meets the middle wall past the acropolis: the
+        // gate, by bisection (the corridor is within it abeam the acropolis
+        // and beyond it a ring's radius on).
+        let off = |x: f32| (x - c[0]).hypot(corridor(x) - c[1]) - RING_WALLS[1].0;
+        let (mut a, mut b) = (c[0], c[0] + RING_WALLS[1].0 + 1.0);
+        for _ in 0..24 {
+            let m = 0.5 * (a + b);
+            if off(m) < 0.0 {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        let x = a - TEMPLE_BEFORE_GATE - TEMPLE_HALF[0] - 0.16;
+        let slope = corridor_slope(x);
+        let n = (1.0 + slope * slope).sqrt();
+        Temple {
+            centre: [x, corridor(x)],
+            along: [1.0 / n, slope / n],
+        }
+    }
+
+    /// The seabed point `u` along the axis and `v` across it to port.
+    fn at(&self, u: f32, v: f32) -> [f32; 2] {
+        let [ax, az] = self.along;
+        [
+            self.centre[0] + u * ax - v * az,
+            self.centre[1] + u * az + v * ax,
+        ]
+    }
+
+    /// (u, v) of a seabed point.
+    fn local(&self, x: f32, z: f32) -> [f32; 2] {
+        let (dx, dz) = (x - self.centre[0], z - self.centre[1]);
+        let [ax, az] = self.along;
+        [dx * ax + dz * az, -dx * az + dz * ax]
+    }
+
+    fn yaw(&self) -> f32 {
+        yaw_along(self.along[0], self.along[1])
+    }
+}
+
+/// Whether a thing `radius` round at (x, z) stands on the temple's ground.
+fn in_temple(c: [f32; 2], x: f32, z: f32, radius: f32) -> bool {
+    let [u, v] = Temple::of(c).local(x, z);
+    u.abs() < TEMPLE_HALF[0] + 0.5 + radius && v.abs() < TEMPLE_HALF[1] + 0.35 + radius
+}
+
+/// The temple (V7, `element::TEMPLE`): stylobate and steps half drowned in
+/// silt, the peristyle with columns standing, broken or fallen in lines of
+/// drums, the entablature where both its columns stand, the pediments
+/// fallen in pieces before and behind, the cella's walls ruined low on the
+/// window's side, and the goddess in it to port. Sponges, fans and
+/// anemones have taken the stone. Nothing stands over the Nautilus' way:
+/// the middle columns of each front fell long ago and the roof is gone.
+fn temple(w: &World, f: &mut Frame) {
+    let Some(c) = acropolis(w) else {
+        return;
+    };
+    let t = Temple::of(c);
+    let middle = t.at(0.0, 0.0);
+    if w.share(middle[0], middle[1], ATLANTIS) < 0.5
+        || !w.visible([middle[0], w.ground(middle[0], middle[1]), middle[1]], 3.4)
+    {
+        return;
+    }
+    f.fade = fade(w.share(middle[0], middle[1], ATLANTIS), 0.5);
+    let marble = [0.50, 0.48, 0.44];
+    let worn = [0.42, 0.40, 0.36];
+    let yaw = t.yaw();
+    let ground = |u: f32, v: f32| {
+        let p = t.at(u, v);
+        w.ground(p[0], p[1])
+    };
+    // The floor lies level near the lowest of the ground along the way
+    // through, so the silt drifts over it rather than the floor rising
+    // under the boat, which keeps to the seabed's height.
+    let mut low = f32::MAX;
+    let mut sum = 0.0;
+    let mut n = 0.0;
+    for i in -9..=9 {
+        for v in [-0.4, 0.0, 0.4] {
+            let g = ground(i as f32 * 0.3, v);
+            low = low.min(g);
+            sum += g;
+            n += 1.0;
+        }
+    }
+    let top = (low + 0.08).min(sum / n);
+    let mut deepest = top;
+    for i in -6..=6 {
+        for v in [-1.0, 0.0, 1.0] {
+            deepest = deepest.min(ground(i as f32 * 0.45, v * TEMPLE_HALF[1]));
+        }
+    }
+    let point = |u: f32, v: f32, y: f32| {
+        let p = t.at(u, v);
+        [p[0], y, p[1]]
+    };
+
+    // The krepidoma: three steps, the stylobate on top.
+    for k in 0..3 {
+        let out = k as f32 * 0.08;
+        let y1 = top - k as f32 * 0.06;
+        let y0 = deepest - 0.2;
+        f.put(
+            Model::Box,
+            place(
+                point(0.0, 0.0, (y0 + y1) * 0.5),
+                yaw,
+                0.0,
+                0.0,
+                [TEMPLE_HALF[0] + out, (y1 - y0) * 0.5, TEMPLE_HALF[1] + out],
+            ),
+            if k == 0 { marble } else { worn },
+        )
+        .grounded()
+        .element(element::TEMPLE);
+    }
+
+    // The peristyle: what became of each column.
+    enum Column {
+        Whole,
+        Broken(f32),
+        Fallen,
+    }
+    let ring: Vec<(f32, f32, u32)> = {
+        let mut out = Vec::new();
+        let mut k = 0;
+        for i in 0..TEMPLE_COLUMNS[0] {
+            for side in [-1.0, 1.0] {
+                out.push((
+                    i as f32 * TEMPLE_BAY - TEMPLE_SPAN[0],
+                    side * TEMPLE_SPAN[1],
+                    k,
+                ));
+                k += 1;
+            }
+        }
+        for end in [-1.0, 1.0] {
+            for j in 1..TEMPLE_COLUMNS[1] - 1 {
+                out.push((
+                    end * TEMPLE_SPAN[0],
+                    j as f32 * TEMPLE_BAY - TEMPLE_SPAN[1],
+                    k,
+                ));
+                k += 1;
+            }
+        }
+        out
+    };
+    let fate = |u: f32, v: f32, k: u32| {
+        let h = hash(k as i32, 0, 1600);
+        if u.abs() > TEMPLE_SPAN[0] - 0.5 * TEMPLE_BAY && v.abs() < TEMPLE_BAY {
+            // The middle of each front, in the Nautilus' way: long fallen.
+            Column::Fallen
+        } else if h < if u.abs() < TEMPLE_SPAN[0] - 0.1 {
+            0.72
+        } else {
+            0.55
+        } {
+            // The long sides mostly stand, so the colonnade reads as one.
+            Column::Whole
+        } else if h < 0.86 {
+            Column::Broken(0.2 + 0.6 * hash(k as i32, 1, 1600))
+        } else {
+            Column::Fallen
+        }
+    };
+    let crown = top + TEMPLE_SHAFT + 0.06;
+    let mut whole = std::collections::HashSet::new();
+    for &(u, v, k) in &ring {
+        let foot = point(u, v, top);
+        if !w.visible([foot[0], top + 0.5, foot[2]], 0.6) {
+            continue;
+        }
+        f.put(
+            Model::Box,
+            place(foot, yaw, 0.0, 0.0, [TEMPLE_R * 1.3, 0.015, TEMPLE_R * 1.3]),
+            marble,
+        )
+        .grounded()
+        .element(element::TEMPLE);
+        match fate(u, v, k) {
+            Column::Whole => {
+                whole.insert(k);
+                f.put(
+                    Model::Shaft,
+                    place(foot, 0.0, 0.0, 0.0, [TEMPLE_R, TEMPLE_SHAFT, TEMPLE_R]),
+                    marble,
+                )
+                .grounded()
+                .element(element::TEMPLE);
+                f.put(
+                    Model::Capital,
+                    place(
+                        [foot[0], top + TEMPLE_SHAFT, foot[2]],
+                        yaw,
+                        0.0,
+                        0.0,
+                        [TEMPLE_R, 0.06, TEMPLE_R],
+                    ),
+                    marble,
+                )
+                .element(element::TEMPLE);
+            }
+            Column::Broken(part) => {
+                let h = TEMPLE_SHAFT * part;
+                f.put(
+                    Model::Shaft,
+                    place(foot, 0.0, 0.0, 0.0, [TEMPLE_R, h, TEMPLE_R]),
+                    marble,
+                )
+                .grounded()
+                .element(element::TEMPLE);
+                f.put(
+                    Model::Break,
+                    place(
+                        [foot[0], top + h - 0.005, foot[2]],
+                        part * 11.0,
+                        0.0,
+                        0.0,
+                        [TEMPLE_R * 0.86, TEMPLE_R * 0.8, TEMPLE_R * 0.86],
+                    ),
+                    marble,
+                )
+                .element(element::TEMPLE);
+                fallen_drums(w, f, &t, u, v, k, 2, top);
+            }
+            Column::Fallen => {
+                // In the Nautilus' way only a stump; elsewhere the whole
+                // shaft lies where it fell, outward, in a line of drums.
+                if v.abs() < TEMPLE_BAY {
+                    continue;
+                }
+                fallen_drums(w, f, &t, u, v, k, 5, top);
+            }
+        }
+    }
+
+    // The entablature, architrave and cornice, over each bay of the long
+    // sides and the fronts' corner bays whose two columns both stand.
+    let bay = |a: (f32, f32), b: (f32, f32)| {
+        let (u, v) = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+        let along_axis = (a.1 - b.1).abs() < 1e-3;
+        let turn = if along_axis { 0.0 } else { PI * 0.5 };
+        (point(u, v, 0.0), yaw + turn)
+    };
+    let find = |u: f32, v: f32| {
+        ring.iter()
+            .find(|r| (r.0 - u).abs() < 1e-3 && (r.1 - v).abs() < 1e-3)
+            .map(|r| r.2)
+    };
+    let mut bays = Vec::new();
+    for i in 0..TEMPLE_COLUMNS[0] - 1 {
+        for side in [-1.0, 1.0] {
+            let v = side * TEMPLE_SPAN[1];
+            let u = i as f32 * TEMPLE_BAY - TEMPLE_SPAN[0];
+            bays.push((u, v, u + TEMPLE_BAY, v));
+        }
+    }
+    for end in [-1.0, 1.0] {
+        let u = end * TEMPLE_SPAN[0];
+        // Not over the middle bays, which lost their columns.
+        for (v0, v1) in [(-3.5, -2.5), (-2.5, -1.5), (1.5, 2.5), (2.5, 3.5)] {
+            bays.push((u, v0 * TEMPLE_BAY, u, v1 * TEMPLE_BAY));
+        }
+    }
+    for (u0, v0, u1, v1) in bays {
+        let (Some(a), Some(b)) = (find(u0, v0), find(u1, v1)) else {
+            continue;
+        };
+        if !whole.contains(&a) || !whole.contains(&b) {
+            continue;
+        }
+        let (p, turn) = bay((u0, v0), (u1, v1));
+        f.put(
+            Model::Box,
+            place(
+                [p[0], crown + 0.07, p[2]],
+                turn,
+                0.0,
+                0.0,
+                [TEMPLE_BAY * 0.5, 0.07, TEMPLE_R * 1.15],
+            ),
+            marble,
+        )
+        .element(element::TEMPLE);
+        f.put(
+            Model::Box,
+            place(
+                [p[0], crown + 0.17, p[2]],
+                turn,
+                0.0,
+                0.0,
+                [TEMPLE_BAY * 0.5, 0.035, TEMPLE_R * 1.45],
+            ),
+            worn,
+        )
+        .element(element::TEMPLE);
+    }
+
+    // The pediments, fallen in pieces before and behind, clear of the way.
+    for (u, v, size, k) in [
+        (-3.3, 1.2, 0.6, 0),
+        (-3.1, -1.0, 0.45, 1),
+        (3.3, -1.1, 0.65, 2),
+    ] {
+        let p = t.at(u, v);
+        let Some(st) = seat(w, p[0], p[1], size * 0.6, &bed::FLAT) else {
+            continue;
+        };
+        let turn = yaw + PI * 0.5 + (hash(k, 2, 1600) - 0.5) * 0.8;
+        let (pitch, _) = st.tilt(turn);
+        f.put(
+            Model::Prism,
+            place(
+                [p[0], st.y - 0.02, p[1]],
+                turn,
+                pitch,
+                1.35,
+                [size, size * 0.32, 0.06],
+            ),
+            marble,
+        )
+        .grounded()
+        .element(element::TEMPLE);
+    }
+
+    // The cella: its walls ruined to their lowest on the window's side and
+    // where the doorways were, the goddess standing at the back to port.
+    let cella = [
+        TEMPLE_SPAN[0] - 1.4 * TEMPLE_BAY,
+        TEMPLE_SPAN[1] - 1.05 * TEMPLE_BAY,
+    ];
+    let block = 0.3;
+    let wall = |f: &mut Frame, u: f32, v: f32, h: f32, turn: f32| {
+        if h <= 0.02 {
+            return;
+        }
+        f.put(
+            Model::Box,
+            place(
+                point(u, v, top + h * 0.5),
+                yaw + turn,
+                0.0,
+                0.0,
+                [block * 0.5, h * 0.5, 0.05],
+            ),
+            worn,
+        )
+        .grounded()
+        .element(element::TEMPLE);
+    };
+    let steps = (2.0 * cella[0] / block).round() as i32;
+    for i in 0..steps {
+        let u = -cella[0] + (i as f32 + 0.5) * block;
+        for side in [-1.0f32, 1.0] {
+            let h = hash(i, side as i32, 1601);
+            let high = if side > 0.0 {
+                0.08 + 0.3 * h * h
+            } else {
+                0.15 + 0.6 * h
+            };
+            wall(f, u, side * cella[1], high, 0.0);
+        }
+    }
+    let across = (2.0 * cella[1] / block).round() as i32;
+    for end in [-1.0f32, 1.0] {
+        for j in 0..across {
+            let v = -cella[1] + (j as f32 + 0.5) * block;
+            let h = if v.abs() < 0.3 {
+                0.03
+            } else {
+                0.2 + 0.4 * hash(j, end as i32, 1602)
+            };
+            wall(f, end * cella[0], v, h, PI * 0.5);
+        }
+    }
+    {
+        let (u, v) = (cella[0] - 0.35, 0.72);
+        let base = point(u, v, top);
+        f.put(
+            Model::Box,
+            place(
+                [base[0], top + 0.1, base[2]],
+                yaw,
+                0.0,
+                0.0,
+                [0.14, 0.1, 0.12],
+            ),
+            worn,
+        )
+        .grounded()
+        .element(element::TEMPLE);
+        // Facing across the cella, toward the boat as it passes.
+        f.put(
+            Model::Statue,
+            place(
+                [base[0], top + 0.2, base[2]],
+                yaw - PI * 0.5,
+                0.0,
+                0.0,
+                [0.78; 3],
+            ),
+            [0.60, 0.58, 0.53],
+        )
+        .element(element::TEMPLE);
+    }
+
+    // What has grown on the stone: fans on the steps' edges, sponges and
+    // anemones on the floor and the fallen drums.
+    for k in 0..34 {
+        let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+        let u = (hash(k, 3, 1600) - 0.5) * 2.0 * TEMPLE_HALF[0];
+        let v = side * (0.45 + hash(k, 4, 1600) * (TEMPLE_HALF[1] + 0.2 - 0.45));
+        let p = t.at(u, v);
+        let y = top.max(w.ground(p[0], p[1]));
+        let h = hash(k, 5, 1600);
+        let turn = h * TAU;
+        if h < 0.35 {
+            let s = 0.06 + 0.07 * hash(k, 6, 1600);
+            let hue = if h < 0.18 {
+                [0.85, 0.30, 0.32]
+            } else {
+                [0.88, 0.60, 0.24]
+            };
+            f.put(
+                Model::Fan,
+                place([p[0], y, p[1]], turn, 0.0, 0.0, [s; 3]),
+                hue,
+            )
+            .moving(anim::SWAY, turn, 0.15, 0.7)
+            .element(element::TEMPLE);
+        } else if h < 0.7 {
+            for j in 0..3 {
+                let a = j as f32 * 2.1 + turn;
+                let tall = 0.05 + 0.06 * hash(k, 7 + j, 1600);
+                f.put(
+                    Model::Sponge,
+                    place(
+                        [p[0] + a.cos() * 0.03, y - 0.005, p[1] + a.sin() * 0.03],
+                        a,
+                        0.0,
+                        0.0,
+                        [0.016, tall, 0.016],
+                    ),
+                    [0.80, 0.70, 0.48],
+                )
+                .element(element::TEMPLE);
+            }
+        } else {
+            let s = 0.03 + 0.02 * hash(k, 8, 1600);
+            f.put(
+                Model::Anemone,
+                place([p[0], y, p[1]], turn, 0.0, 0.0, [s; 3]),
+                [0.92, 0.55, 0.60],
+            )
+            .element(element::TEMPLE);
+        }
+    }
+}
+
+/// `count` drums of a column at (u, v) of temple `t`, fallen outward from
+/// the temple and lying in a line where they came to rest.
+#[allow(clippy::too_many_arguments)]
+fn fallen_drums(
+    w: &World,
+    f: &mut Frame,
+    t: &Temple,
+    u: f32,
+    v: f32,
+    k: u32,
+    count: u32,
+    top: f32,
+) {
+    let out = if v.abs() / TEMPLE_SPAN[1] > u.abs() / TEMPLE_SPAN[0] {
+        [0.0, v.signum()]
+    } else {
+        [u.signum(), 0.0]
+    };
+    let swing = (hash(k as i32, 2, 1603) - 0.5) * 0.9;
+    let (s, co) = swing.sin_cos();
+    let dir = [out[0] * co - out[1] * s, out[0] * s + out[1] * co];
+    let drum = TEMPLE_SHAFT / 5.0;
+    for j in 0..count {
+        let d = 0.15 + (j as f32 + 0.5) * drum * 1.02;
+        let (a, b) = (
+            t.at(
+                u + dir[0] * (d - drum * 0.48),
+                v + dir[1] * (d - drum * 0.48),
+            ),
+            t.at(
+                u + dir[0] * (d + drum * 0.48),
+                v + dir[1] * (d + drum * 0.48),
+            ),
+        );
+        let r = TEMPLE_R * (1.0 - 0.16 * (j as f32 + 0.5) / 5.0);
+        let rest = |p: [f32; 2]| top.max(w.ground(p[0], p[1])) + r * 0.9;
+        f.put(
+            Model::Cylinder,
+            between([a[0], rest(a), a[1]], [b[0], rest(b), b[1]], r),
+            [0.47, 0.45, 0.41],
+        )
+        .grounded()
+        .element(element::TEMPLE);
+    }
+}
+
+/// Light let down through the roofless temple and between its columns,
+/// each frame, breathing as the surface far above moves.
+fn temple_light(w: &World, f: &mut Frame) {
+    let Some(c) = acropolis(w) else {
+        return;
+    };
+    let t = Temple::of(c);
+    let middle = t.at(0.0, 0.0);
+    let share = w.share(middle[0], middle[1], ATLANTIS);
+    if share < 0.5 {
+        return;
+    }
+    let sun = norm(SUN);
+    let floor = w.ground(middle[0], middle[1]);
+    for k in 0..10 {
+        let u = (k as f32 - 4.5) * 0.55 + 0.2 * (hash(k, 0, 1604) - 0.5);
+        let v = 0.25 + 1.1 * hash(k, 1, 1604);
+        let foot = t.at(u, v);
+        let length = 2.2;
+        let start = [
+            foot[0] + sun[0] * length,
+            floor + sun[1] * length,
+            foot[1] + sun[2] * length,
+        ];
+        let run = [foot[0] - start[0], floor - start[1], foot[1] - start[2]];
+        let middle = add(start, [run[0] * 0.5, run[1] * 0.5, run[2] * 0.5]);
+        if !w.visible(middle, length * 0.5) {
+            continue;
+        }
+        let breathe = 0.4
+            + 0.6
+                * (w.t * (0.21 + 0.1 * hash(k, 2, 1604)) + k as f32 * 1.7)
+                    .sin()
+                    .max(0.0);
+        let width = 0.07 + 0.05 * hash(k, 3, 1604);
+        // At Atlantis' depth the sun is all but gone (`g.sun.w`), so these
+        // carry their own strength (`tint.w`, as the cave's chimneys do):
+        // dim, a pale green-blue, the light the temple was remembered by.
+        let bright = 0.30 * breathe * fade(share, 0.5) / (0.5 + width * 6.0);
+        f.shafts.push(Sprite {
+            place: [start[0], start[1], start[2], width],
+            tint: [0.32 * bright, 0.70 * bright, 0.66 * bright, 1.0],
+            stretch: [run[0], run[1], run[2], 0.0],
+        });
+    }
 }
 
 /// Atlantis as Plato tells it (V6): the acropolis with its round temple and
@@ -4791,7 +5376,7 @@ fn atlantis(w: &World, f: &mut Frame) {
     for k in first..first + 17 * 4 {
         let x = k as f32 * 0.25;
         let lane = corridor(x);
-        let inside = from(x, lane) < RING_WALLS[1].0 - 0.3;
+        let inside = from(x, lane) < RING_WALLS[1].0 - 0.3 && !in_temple(c, x, lane, 0.3);
         let yaw = yaw_along(1.0, corridor_slope(x));
         if inside && k % 3 == 0 {
             let (sx, sz) = (x, lane + 0.95);
@@ -7319,6 +7904,7 @@ pub mod element {
     pub const TRIREMES: u32 = 12;
     pub const AMPHORAE: u32 = 13;
     pub const LIGHTHOUSE: u32 = 14;
+    pub const TEMPLE: u32 = 15;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -7344,6 +7930,10 @@ pub const ELEMENTS: &[(u32, &str)] = &[
     (element::TRIREMES, "Atlantis: sunken triremes"),
     (element::AMPHORAE, "Atlantis: amphora fields"),
     (element::LIGHTHOUSE, "Atlantis: the harbour's lighthouse"),
+    (
+        element::TEMPLE,
+        "Atlantis: the Doric temple the Nautilus passes through",
+    ),
 ];
 
 /// The element `i` is part of, or 0.
@@ -9901,6 +10491,7 @@ fn compose(parent: &[[f32; 4]; 3], child: &[[f32; 4]; 3]) -> [[f32; 4]; 3] {
 /// grid fixed in the world, so the boat sails among them; they breathe as the
 /// waves above gather and scatter the light, and sway with them.
 fn shafts(w: &World, f: &mut Frame) {
+    temple_light(w, f);
     let sun = norm(SUN);
     let far = 7.0;
     let top = w.surface();
