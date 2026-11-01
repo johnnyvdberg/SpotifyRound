@@ -2408,7 +2408,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body, the jellyfish's swimming and the
     // four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 18] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 19] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
@@ -2427,6 +2427,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (meadow, None),
         (sponge_reef, None),
         (blue_hole, None),
+        (near_detail, None),
     ];
     let steps: [(Placer, Option<[f32; 4]>); 14] = [
         (planes, None),
@@ -8503,6 +8504,8 @@ pub mod element {
     // The blue hole (V9, `world::blue_hole`).
     pub const STALACTITES: u32 = 17;
     pub const HALOCLINE: u32 = 18;
+    // Every sea (V10, `world::near_detail`).
+    pub const NEAR_DETAIL: u32 = 19;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -8543,6 +8546,10 @@ pub const ELEMENTS: &[(u32, &str)] = &[
     (
         element::HALOCLINE,
         "the blue hole: the halocline across its shaft",
+    ),
+    (
+        element::NEAR_DETAIL,
+        "pebbles, shells, stars, urchins, sea cucumbers and worm tubes near the window",
     ),
 ];
 
@@ -11620,6 +11627,159 @@ fn blue_hole(w: &World, f: &mut Frame) {
             )
             .glowing(0.05)
             .element(element::HALOCLINE);
+        }
+    }
+}
+
+/// What [`near_detail`] strews: a pebble, a shell, a sea star, an urchin, a
+/// sea cucumber or a tuft of worm tubes.
+const STREWN_KINDS: usize = 6;
+
+/// Per sea, how much of the near seabed [`near_detail`] strews (the share of
+/// its cells that carry something) and the odds of each of
+/// [`STREWN_KINDS`]. The coral reef has no room left in its budget.
+const STREWN: [(f32, [f32; STREWN_KINDS]); BIOMES] = [
+    (0.30, [0.35, 0.30, 0.15, 0.10, 0.05, 0.05]), // shallows
+    (0.30, [0.40, 0.10, 0.15, 0.25, 0.05, 0.05]), // forest
+    (0.35, [0.50, 0.15, 0.10, 0.10, 0.05, 0.10]), // wrecks
+    (0.25, [0.60, 0.15, 0.10, 0.10, 0.05, 0.00]), // Atlantis
+    (0.30, [0.80, 0.00, 0.00, 0.05, 0.05, 0.10]), // cave
+    (0.15, [0.20, 0.00, 0.25, 0.00, 0.45, 0.10]), // abyss
+    (0.25, [0.50, 0.10, 0.20, 0.15, 0.05, 0.00]), // polar
+    (0.15, [0.30, 0.00, 0.20, 0.00, 0.40, 0.10]), // trench
+    (0.00, [1.00, 0.00, 0.00, 0.00, 0.00, 0.00]), // coral
+    (0.20, [0.40, 0.30, 0.10, 0.10, 0.10, 0.00]), // sargasso
+    (0.30, [0.50, 0.00, 0.00, 0.00, 0.00, 0.50]), // vents
+    (0.20, [0.30, 0.20, 0.00, 0.00, 0.30, 0.20]), // brine
+    (0.20, [0.40, 0.20, 0.20, 0.10, 0.10, 0.00]), // bloom
+    (0.20, [0.80, 0.10, 0.00, 0.10, 0.00, 0.00]), // city
+    (0.20, [0.20, 0.40, 0.20, 0.10, 0.10, 0.00]), // meadow
+    (0.20, [0.30, 0.00, 0.30, 0.00, 0.30, 0.10]), // glass sponges
+    (0.20, [0.60, 0.30, 0.10, 0.00, 0.00, 0.00]), // blue hole
+];
+
+/// The small things on the seabed just under the window, in every sea that
+/// has room for them: they give the near ground a scale and a grain that the
+/// heightmap's texture cannot.
+fn near_detail(w: &World, f: &mut Frame) {
+    for &(ix, iz, x, z) in &cells(w, 0.16, 0.35, 3.0, 1500) {
+        let b = w.biome(x, z);
+        // Each cell takes one of the two seas it lies between, dithered by
+        // the blend, so the change is a mix rather than a seam.
+        let sea = if hash(ix, iz, 1501) < b.w as f32 {
+            b.b
+        } else {
+            b.a
+        };
+        let (density, odds) = STREWN[sea];
+        let needs = hash(ix, iz, 1502);
+        if needs >= density {
+            continue;
+        }
+        let y = w.ground(x, z);
+        if !w.visible([x, y, z], 0.08) {
+            continue;
+        }
+        f.fade = fade(density, needs);
+        let mut pick = hash(ix, iz, 1503);
+        let mut kind = 0;
+        while kind + 1 < STREWN_KINDS && pick >= odds[kind] {
+            pick -= odds[kind];
+            kind += 1;
+        }
+        let yaw = hash(ix, iz, 1504) * TAU;
+        let h = |k: u32| hash(ix, iz, 1505 + k);
+        let deep = matches!(sea, ABYSS | TRENCH | SPONGE_REEF);
+        match kind {
+            0 => {
+                let s = 0.02 + 0.04 * h(0) * h(0);
+                let model = [Model::Rock0, Model::Rock1, Model::Rock2][(h(1) * 3.0) as usize % 3];
+                let grey = 0.38 + 0.3 * h(2);
+                f.put(
+                    model,
+                    place(
+                        [x, y - s * 0.25, z],
+                        yaw,
+                        0.0,
+                        0.0,
+                        [s, s * (0.5 + 0.3 * h(3)), s * 0.8],
+                    ),
+                    [grey * 1.05, grey, grey * 0.9],
+                )
+                .grounded()
+                .element(element::NEAR_DETAIL);
+            }
+            1 => {
+                let s = 0.022 + 0.018 * h(0);
+                let tone = 0.7 + 0.25 * h(2);
+                f.put(
+                    Model::Shell,
+                    place([x, y + 0.004, z], yaw, 0.3 * h(1), 0.0, [s, s * 1.3, s]),
+                    [tone, tone * 0.8, tone * 0.66],
+                )
+                .grounded()
+                .element(element::NEAR_DETAIL);
+            }
+            2 => {
+                // Deep down, pale and thin-armed brittle stars; higher up,
+                // fat sea stars in orange, red or purple.
+                let s = 0.025 + 0.02 * h(0);
+                let (thin, colour) = if deep {
+                    (0.5, [0.74, 0.68, 0.62])
+                } else {
+                    let c = [[0.82, 0.36, 0.14], [0.72, 0.16, 0.12], [0.46, 0.2, 0.42]];
+                    (1.0, c[(h(1) * 3.0) as usize % 3])
+                };
+                f.put(
+                    Model::Star,
+                    place([x, y + 0.004, z], yaw, 0.0, 0.0, [s, s * 1.6 * thin, s]),
+                    colour,
+                )
+                .grounded()
+                .element(element::NEAR_DETAIL);
+            }
+            3 => {
+                let s = 0.014 + 0.012 * h(0);
+                let dark = 0.10 + 0.06 * h(1);
+                f.put(
+                    Model::Sphere,
+                    place([x, y + s * 0.4, z], yaw, 0.0, 0.0, [s, s * 0.7, s]),
+                    [dark * 1.2, dark * 0.85, dark * 1.3],
+                )
+                .grounded()
+                .element(element::NEAR_DETAIL);
+            }
+            4 => {
+                let s = 0.04 + 0.03 * h(0);
+                let colour = if deep {
+                    [0.78, 0.5, 0.52]
+                } else {
+                    [0.32, 0.24, 0.18]
+                };
+                f.put(
+                    Model::Capsule,
+                    place([x, y + s * 0.25, z], yaw, 0.0, 0.0, [s, s * 0.32, s * 0.4]),
+                    colour,
+                )
+                .grounded()
+                .element(element::NEAR_DETAIL);
+            }
+            _ => {
+                // A tuft of three chalky worm tubes.
+                for k in 0..3 {
+                    let a = yaw + k as f32 * 2.1;
+                    let root = [x + 0.012 * a.cos(), y - 0.005, z + 0.012 * a.sin()];
+                    let tall = 0.03 + 0.03 * h(1 + k);
+                    let tip = [
+                        root[0] + 0.006 * a.cos(),
+                        root[1] + tall,
+                        root[2] + 0.006 * a.sin(),
+                    ];
+                    f.put(Model::Tube, between(root, tip, 0.004), [0.82, 0.8, 0.74])
+                        .grounded()
+                        .element(element::NEAR_DETAIL);
+                }
+            }
         }
     }
 }
