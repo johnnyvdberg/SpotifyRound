@@ -1916,6 +1916,8 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
     match model {
         Model::Rock0 | Model::Rock1 | Model::Rock2 => fixed(Surface::Rock, 3.0),
         Model::Kelp => carried(Surface::Kelp, 3.0),
+        // The woven texture is the closest to the silica lattice.
+        Model::GlassSponge => carried(Surface::Canvas, 4.0),
         Model::Fish => carried(Surface::Scales, 1.0),
         Model::Shark => carried(Surface::Skin, 2.0),
         Model::Whale => carried(Surface::Skin, 4.0),
@@ -2821,17 +2823,25 @@ fn kelp(w: &World, f: &mut Frame) {
         if !w.visible([x, y + height * 0.5, z], height * 0.6) {
             continue;
         }
+        // Each plant its own: olive to brown, broad or narrow, leaning a
+        // little as the current has set it.
         let gold = 0.8 + 0.4 * hash(ix, iz, 23);
+        let brown = hash(ix, iz, 26);
+        let broad = 0.75 + 0.5 * hash(ix, iz, 27);
         f.put(
             Model::Kelp,
             place(
                 [x, y, z],
                 hash(ix, iz, 24) * TAU,
-                0.0,
-                0.0,
-                [0.9, height, 0.9],
+                (hash(ix, iz, 28) - 0.5) * 0.16,
+                (hash(ix, iz, 29) - 0.5) * 0.16,
+                [0.9 * broad, height, 0.9 * broad],
             ),
-            [0.46 * gold, 0.46 * gold, 0.14 * gold],
+            [
+                (0.46 + 0.08 * brown) * gold,
+                (0.46 - 0.12 * brown) * gold,
+                (0.14 + 0.02 * brown) * gold,
+            ],
         )
         .moving(anim::SWAY, hash(ix, iz, 25) * TAU, 0.08, 0.8)
         .grounded();
@@ -3064,19 +3074,19 @@ fn gardens(w: &World, f: &mut Frame) {
     }
 }
 
-/// The reef's colours: ochre and brown acropora, purple and pink, the olive
-/// green and cream of the boulder corals, the blue of staghorn tips and a
-/// golden accent, all muted as living tissue is under a few metres of water,
-/// rather than the saturated colours of a lit photograph.
+/// The reef's colours, from photographs of Indo-Pacific reefs: gold and tan
+/// acropora, pink and purple, orange, green, cream, blue-tipped staghorn and
+/// red. They are the colours seen close by in clear water; the water's own
+/// tint and haze mute them with distance.
 const REEF_HUES: [[f32; 3]; 8] = [
-    [0.66, 0.50, 0.32],
-    [0.50, 0.39, 0.28],
-    [0.50, 0.40, 0.56],
-    [0.70, 0.50, 0.50],
-    [0.46, 0.54, 0.36],
-    [0.74, 0.68, 0.54],
-    [0.50, 0.56, 0.62],
-    [0.72, 0.56, 0.30],
+    [0.70, 0.52, 0.30],
+    [0.78, 0.46, 0.56],
+    [0.56, 0.40, 0.68],
+    [0.84, 0.56, 0.32],
+    [0.48, 0.60, 0.38],
+    [0.82, 0.74, 0.56],
+    [0.44, 0.56, 0.70],
+    [0.76, 0.38, 0.34],
 ];
 
 /// One colony's colour: a hue of the reef's, a little lighter or darker and
@@ -11407,6 +11417,8 @@ fn meadow(w: &World, f: &mut Frame) {
         }
         f.fade = fade(here, needs);
         let shade = 0.85 + 0.3 * hash(ix, iz, 1407);
+        // Beds differ: some lush and green, some olive with silt.
+        let olive = hash(ix, iz, 1411);
         f.put(
             Model::Seagrass,
             place(
@@ -11416,7 +11428,11 @@ fn meadow(w: &World, f: &mut Frame) {
                 0.0,
                 [0.30, tall, 0.30],
             ),
-            [shade, shade * (0.95 + 0.1 * hash(ix, iz, 1409)), shade],
+            [
+                shade * (1.0 + 0.12 * olive),
+                shade * (0.95 + 0.1 * hash(ix, iz, 1409)) * (1.0 - 0.08 * olive),
+                shade * (1.0 - 0.25 * olive),
+            ],
         )
         .moving(anim::SWAY, hash(ix, iz, 1410) * TAU, 0.10, 0.55)
         .grounded();

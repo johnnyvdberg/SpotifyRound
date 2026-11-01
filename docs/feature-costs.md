@@ -152,6 +152,14 @@ frame with everything: median 6.94 ms over 13938 paired frames
 |---|---|---|---|---|
 | near detail: pebbles, shells, stars, urchins, sea cucumbers, worm tubes | `DIVE3D_SKIP_ELEMENTS` bit 19 | every sea but the coral, 0.07-0.25 | 0.13 | 0.42 (arctic 0 @0.85) |
 
+### Rocks, plants, sponges and coral redone (V10)
+
+`run plants-c` against `run v10-on`, all 204 places (`docs/handoff/v10.md`): median 6.98 -> 7.17
+ms, worst 10.19 -> 10.28 (hole 0.85), none over 11. Faceted rocks (flat-shaded, 960 vertices
+against 642) are most of it, +0.1-0.3 ms in every sea; the new kelp +0.3 in the shallows; the
+glass sponges are cheaper (their sea's worst 9.45 -> 8.71); coral +0.06. Seagrass (44 blades
+for 40) moves nothing measurable (`plants-d`, meadow 7.86 / 9.98).
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |

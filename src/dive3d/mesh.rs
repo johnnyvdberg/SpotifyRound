@@ -493,6 +493,61 @@ fn sphere_with(
     m.smooth()
 }
 
+/// A boulder broken out of bedded rock: a ball chipped by a few planes into
+/// flat faces, its base cut flat to sit on the sand, and its colour banded in
+/// strata that wander a little, with a darker parting between beds. Every
+/// triangle is flat-shaded, so the faces read as faces.
+fn rock(salt: u32) -> Mesh {
+    // The chipping planes: normals spread over the sphere, each cutting a
+    // little or a lot off its side.
+    let planes: Vec<([f32; 3], f32)> = (0..9u32)
+        .map(|k| {
+            let u = jitter(k, salt) * 2.0 - 1.0;
+            let a = jitter(k, salt + 1) * std::f32::consts::TAU;
+            let r = (1.0 - u * u).sqrt();
+            (
+                [r * a.cos(), u * 0.8, r * a.sin()],
+                0.80 + 0.17 * jitter(k, salt + 2),
+            )
+        })
+        .collect();
+    let radius = |p: [f32; 3]| {
+        let mut d: f32 = 1.0;
+        for &(n, cut) in &planes {
+            let along = p[0] * n[0] + p[1] * n[1] + p[2] * n[2];
+            if along > 0.25 {
+                d = d.min(cut / along);
+            }
+        }
+        // The flattened base: the plane y = -0.75.
+        if p[1] < -0.2 {
+            d = d.min(-0.75 / p[1]);
+        }
+        d
+    };
+    let tilt = 0.9 * (jitter(1, salt + 9) - 0.5);
+    let bed = |q: [f32; 3]| {
+        let h = (q[1] + tilt * q[0] + 0.06 * (q[2] * 5.0 + salt as f32).sin()) * 5.0;
+        let band = h.floor();
+        let v = 0.58 + 0.55 * jitter(band as i32 as u32, salt + 5);
+        let parting = 0.68 + 0.32 * ((h - band) * 5.0).min(1.0);
+        let warm = 0.94 + 0.14 * jitter(band as i32 as u32, salt + 6);
+        let v = v * parting;
+        [v * warm, v, v * (1.0 / warm) * 0.98]
+    };
+    let corners = icosphere(2u32.saturating_sub(COARSER.get()));
+    let mut m = Mesh::default();
+    for t in corners.as_chunks::<3>().0 {
+        let p = t.map(|c| {
+            let d = radius(c);
+            [c[0] * d, c[1] * d, c[2] * d]
+        });
+        let aux = [0.0, (p[0][1] + p[1][1] + p[2][1] + 3.0) / 6.0];
+        m.facet_tri(p, p.map(bed), aux);
+    }
+    m
+}
+
 /// Every model the scene draws, by name. The order is the order of the draw
 /// ranges in [`Library`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -774,24 +829,7 @@ impl Model {
         let none = |_: f32| [0.0, 0.0];
         match self {
             Model::Sphere => sphere_with(2, |_| 1.0, |_| [1.0; 3]),
-            Model::Rock0 | Model::Rock1 | Model::Rock2 => {
-                let salt = self.index() as u32 * 7 + 3;
-                sphere_with(
-                    2,
-                    move |p| {
-                        // Lumpy, with a flattened base so it sits on the sand.
-                        let lumps = (p[0] * 3.1 + salt as f32).sin() * (p[1] * 2.7).cos() * 0.12
-                            + (p[2] * 4.3 + salt as f32 * 0.7).sin() * 0.08;
-                        let base = if p[1] < -0.3 { 0.75 } else { 1.0 };
-                        (1.0 + lumps) * base
-                    },
-                    move |p| {
-                        let v =
-                            0.80 + 0.30 * jitter((p[0] * 50.0 + p[2] * 31.0) as i32 as u32, salt);
-                        [v, v, v * 0.97]
-                    },
-                )
-            }
+            Model::Rock0 | Model::Rock1 | Model::Rock2 => rock(self.index() as u32 * 7 + 3),
             Model::Cylinder => lathe(
                 &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
                 12,
@@ -1327,31 +1365,76 @@ fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 }
 
 fn kelp() -> Mesh {
-    // A stipe with blades on alternate sides, twisting as it climbs.
+    // Giant kelp: a thin stipe with a blade at every node, each node turned
+    // about two fifths of a turn from the last so the blades spiral round
+    // it. Each blade is a ruffled lance on a short float, leaning up and out,
+    // longer and paler toward the canopy. Lengths and angles wander from node
+    // to node, so no two parts of the plant repeat.
     let mut m = Mesh::default();
-    let segments = fewer(28, 7);
+    let segments = fewer(12, 4);
     let mut previous: Option<(u32, u32)> = None;
+    let bend = |y: f32| [0.025 * (y * 4.1).sin(), 0.018 * (y * 2.3 + 1.0).sin()];
     for i in 0..=segments {
         let y = i as f32 / segments as f32;
-        let blade = (y * 26.0).sin();
-        let width = 0.012 + 0.030 * blade.max(0.0).powf(1.5) * (0.4 + y);
-        let side = blade.signum() * 0.010 * (0.4 + y);
-        let twist = y * 4.0;
-        let (s, c) = twist.sin_cos();
-        let a = m.vertex(
-            [(side - width) * c, y, (side - width) * s],
-            [0.9 + 0.2 * y; 3],
-            [0.0, y],
-        );
-        let b = m.vertex(
-            [(side + width) * c, y, (side + width) * s],
-            [0.9 + 0.2 * y; 3],
-            [0.0, y],
-        );
+        let [bx, bz] = bend(y);
+        let w = 0.006;
+        let shade = [0.62 + 0.2 * y; 3];
+        let a = m.vertex([bx - w, y, bz], shade, [0.0, y]);
+        let b = m.vertex([bx + w, y, bz], shade, [0.0, y]);
         if let Some((pa, pb)) = previous {
             m.quad(pa, pb, b, a);
         }
         previous = Some((a, b));
+    }
+    let nodes = fewer(12, 5);
+    let steps = fewer(3, 2);
+    for k in 0..nodes {
+        let r = |n: u32| jitter(k as u32, 9100 + n);
+        let y0 = 0.06 + 0.92 * (k as f32 + 0.3 * r(0)) / nodes as f32;
+        let [bx, bz] = bend(y0);
+        let turn = k as f32 * 2.4 + 0.5 * r(1);
+        let (s, c) = turn.sin_cos();
+        let long = (0.07 + 0.10 * y0) * (0.7 + 0.6 * r(2));
+        let wide = 0.016 + 0.012 * r(3);
+        let lean = 0.45 + 0.5 * r(4);
+        let mut last: Option<(u32, u32)> = None;
+        for j in 0..=steps {
+            let t = j as f32 / steps as f32;
+            // Out along the blade, rising as it goes and curling over a
+            // little at the tip.
+            let out = 0.01 + long * t * lean.sin();
+            let up = long * t * lean.cos() - 0.25 * long * t * t * (1.0 - lean.cos());
+            let half = wide * (PI * (0.15 + 0.80 * t)).sin().max(0.0).powf(0.7);
+            // The ruffle: the blade's two edges ride up and down out of step.
+            let ruffle = 0.006 * (t * 9.0 + r(5) * 6.0).sin();
+            let centre = [bx + c * out, y0 + up, bz + s * out];
+            let across = [-s * half, ruffle, c * half];
+            let tone = 0.68 + 0.32 * y0 + 0.12 * t;
+            let colour = [tone, tone, tone * (0.9 + 0.2 * t)];
+            let h = (y0 + up).min(1.0);
+            let a = m.vertex(
+                [
+                    centre[0] - across[0],
+                    centre[1] - across[1],
+                    centre[2] - across[2],
+                ],
+                colour,
+                [0.0, h],
+            );
+            let b = m.vertex(
+                [
+                    centre[0] + across[0],
+                    centre[1] + across[1],
+                    centre[2] + across[2],
+                ],
+                colour,
+                [0.0, h],
+            );
+            if let Some((pa, pb)) = last {
+                m.quad(pa, pb, b, a);
+            }
+            last = Some((a, b));
+        }
     }
     m.smooth()
 }
@@ -1897,8 +1980,8 @@ fn coral() -> Mesh {
             fork_chance: 0.9,
             length: 0.20,
             shrink: 0.74,
-            radius: 0.036,
-            taper: 0.72,
+            radius: 0.046,
+            taper: 0.78,
             spread: 0.85,
             fork_angle: 0.60,
             rise: 0.16,
@@ -1924,7 +2007,7 @@ fn coral_bush() -> Mesh {
             fork_chance: 0.9,
             length: 0.16,
             shrink: 0.75,
-            radius: 0.042,
+            radius: 0.050,
             taper: 0.85,
             spread: 0.85,
             fork_angle: 0.50,
@@ -5211,8 +5294,12 @@ pub fn hole_wall_radius(a: f32, y: f32) -> f32 {
 
 /// A patch of seagrass (`Model::Seagrass`).
 fn seagrass() -> Mesh {
+    // Turtle grass after photographs of real beds: narrow ribbons of every
+    // length, arching over as they rise and turning on themselves, most of
+    // them green, some yellowed, the odd one dead and brown; their tips
+    // paler and browner where the epiphytes crust them.
     let mut m = Mesh::default();
-    let blades = fewer(40, 10);
+    let blades = fewer(44, 10);
     let rows = fewer(4, 2);
     for b in 0..blades {
         let h = |k: u32| jitter(b as u32, 900 + k);
@@ -5220,21 +5307,29 @@ fn seagrass() -> Mesh {
         let a = h(0) * TAU;
         let r = h(1).sqrt() * 0.95;
         let foot = Vec3::new(a.cos() * r, 0.0, a.sin() * r);
-        let tall = 0.55 + 0.45 * h(2);
-        let lean = h(3) * TAU;
-        let lean = Vec3::new(lean.cos(), 0.0, lean.sin()) * (0.15 + 0.25 * h(4));
-        // The strap faces across its lean.
-        let face = Vec3::new(-lean.z, 0.0, lean.x).normalize_or(Vec3::X);
-        let width = 0.035 + 0.02 * h(5);
-        let shade = 0.85 + 0.3 * h(6);
+        let tall = 0.5 + 0.55 * h(2) * h(2).sqrt();
+        let heading = h(3) * TAU;
+        let lean = Vec3::new(heading.cos(), 0.0, heading.sin()) * (0.12 + 0.5 * h(4)) * tall;
+        let width = 0.024 + 0.014 * h(5);
+        let turn = (h(7) - 0.5) * 1.6;
+        let (green, tip) = match h(6) {
+            v if v < 0.08 => ([0.36, 0.28, 0.16], [0.42, 0.34, 0.22]),
+            v if v < 0.30 => ([0.40, 0.50, 0.18], [0.62, 0.58, 0.32]),
+            v => {
+                let shade = 0.8 + 0.35 * v;
+                (
+                    [0.24 * shade, 0.50 * shade, 0.18 * shade],
+                    [0.58, 0.56, 0.34],
+                )
+            }
+        };
         let mut previous: Option<(u32, u32)> = None;
         for i in 0..=rows {
             let t = i as f32 / rows as f32;
-            let at = foot + Vec3::Y * (tall * t) + lean * (t * t);
-            // Green at the root, paler and browner where the epiphytes
-            // crust the tip.
-            let green = [0.26 * shade, 0.50 * shade, 0.18 * shade];
-            let tip = [0.58, 0.56, 0.34];
+            let at = foot + Vec3::Y * (tall * t * (1.0 - 0.25 * t * h(4))) + lean * (t * t);
+            // The strap faces across its lean, turning a little as it rises.
+            let spin = heading + PI * 0.5 + turn * t;
+            let face = Vec3::new(spin.cos(), 0.0, spin.sin());
             let k = smooth01(0.55, 1.0, t);
             let colour = [0, 1, 2].map(|j| green[j] + (tip[j] - green[j]) * k);
             let w = width * (1.0 - 0.6 * t * t);
@@ -5321,64 +5416,95 @@ fn mangrove() -> Mesh {
 /// rim, its wall a lattice of ribs spiralling both ways round it and hoops
 /// across them, flat strips facing out, so the silica lattice is open.
 fn glass_sponge() -> Mesh {
-    let mut m = Mesh::default();
-    let radius =
-        |y: f32| 0.20 + 0.07 * y + 0.10 * smooth01(0.78, 1.0, y) - 0.06 * smooth01(0.12, 0.0, y);
-    let colour = |y: f32| {
-        let k = smooth01(0.0, 0.30, y);
-        [0.50 + 0.38 * k, 0.48 + 0.40 * k, 0.42 + 0.40 * k]
+    // A hexactinellid's vase, after the glass-sponge reefs of the Pacific
+    // shelf: a thin-walled tube that swells, narrows and flares into a
+    // ruffled rim, lobed rather than round, with two smaller tubes budded
+    // from its flank, each open at the top. The silica lattice is too fine to
+    // model: it shows as a faint diagonal mesh in the colour, cream where the
+    // spicules cross.
+    let vase = |salt: u32, tall: f32| {
+        let outside = [
+            (0.0, 0.0),
+            (0.17, 0.0),
+            (0.20, 0.12 * tall),
+            (0.24, 0.40 * tall),
+            (0.21, 0.66 * tall),
+            (0.27, 0.88 * tall),
+            (0.34, 1.0 * tall),
+        ];
+        let inside = [
+            (0.34, 1.0 * tall),
+            (0.30, 1.0 * tall),
+            (0.22, 0.86 * tall),
+            (0.17, 0.62 * tall),
+            (0.15, 0.30 * tall),
+            (0.0, 0.25 * tall),
+        ];
+        let phase = jitter(1, salt) * TAU;
+        let shape = move |y: f32, a: f32| {
+            // Lobes round the tube, and the rim ruffled finer still.
+            let lobes = 0.10 * (a * 3.0 + phase).sin() + 0.06 * (a * 5.0 + phase * 2.0).sin();
+            let ruffle = 0.08 * smooth01(0.75 * tall, tall, y) * (a * 9.0 + phase).sin();
+            1.0 + lobes + ruffle
+        };
+        let aux = move |y: f32| [0.0, (y / tall).min(1.0)];
+        let mut m = lathe_down_to(
+            &outside,
+            18,
+            8,
+            shape,
+            move |y, a| {
+                let t = y / tall;
+                // The lattice's diamonds: pale where the spicule bundles
+                // cross, the thin wall between them darker, so the tube reads
+                // as a sieve rather than a pipe.
+                let cross = ((a * 4.0 + t * 7.0).sin() * (a * 4.0 - t * 7.0).sin()).abs();
+                let mesh = 0.62 + 0.38 * (1.0 - cross).powi(3);
+                // Grey-brown silt round the foot, clean above.
+                let clean = smooth01(0.0, 0.35, t);
+                let k = mesh * (0.55 + 0.45 * clean) * 0.78;
+                [0.92 * k, 0.88 * k, 0.78 * k]
+            },
+            aux,
+        );
+        // The inner wall, in its own shadow: the opening reads as a hole.
+        m.append(lathe_down_to(
+            &inside,
+            18,
+            8,
+            shape,
+            move |y, _| {
+                let k = 0.22 + 0.18 * (y / tall);
+                [0.80 * k, 0.78 * k, 0.72 * k]
+            },
+            aux,
+        ));
+        m
     };
-    let ribs = fewer(12, 5);
-    let rise = fewer(6, 3);
-    let wide = 0.013;
-    // A strip from `a` to `b`, `w` wide, facing out from the axis.
-    let strip = |m: &mut Mesh, a: Vec3, b: Vec3, w: f32| {
-        let along = (b - a).normalize_or(Vec3::Y);
-        let mid = (a + b) * 0.5;
-        let outward = Vec3::new(mid.x, 0.0, mid.z).normalize_or(Vec3::X);
-        let side = along.cross(outward).normalize_or(Vec3::X) * w;
-        let ids = [a - side, a + side, b + side, b - side]
-            .map(|p| m.vertex(p.to_array(), colour(p.y), [0.0, p.y]));
-        m.quad(ids[0], ids[1], ids[2], ids[3]);
-    };
-    let point = |a: f32, y: f32| {
-        let r = radius(y);
-        Vec3::new(a.cos() * r, y, a.sin() * r)
-    };
-    // The ribs, spiralling up both ways round the tube: the real lattice's
-    // diagonals, which cross in a fine square mesh.
-    let twist = TAU / ribs as f32 * 2.0;
-    for turn in [-1.0f32, 1.0] {
-        for k in 0..ribs {
-            let a0 = k as f32 / ribs as f32 * TAU;
-            for i in 0..rise {
-                let (y0, y1) = (i as f32 / rise as f32, (i + 1) as f32 / rise as f32);
-                strip(
-                    &mut m,
-                    point(a0 + turn * twist * y0, y0),
-                    point(a0 + turn * twist * y1, y1),
-                    wide,
-                );
-            }
-        }
-    }
-    // The hoops, and the rim's stout ridge.
-    let hoops = fewer(6, 3);
-    let round = fewer(16, 8);
-    for i in 1..=hoops {
-        let y = i as f32 / hoops as f32;
-        let w = if i == hoops { wide * 2.2 } else { wide * 0.8 };
-        for k in 0..round {
-            let (a0, a1) = (
-                k as f32 / round as f32 * TAU,
-                (k + 1) as f32 / round as f32 * TAU,
-            );
-            strip(&mut m, point(a0, y), point(a1, y), w);
-        }
-    }
-    for v in &mut m.vertices {
-        let p = Vec3::from_array(v.pos);
-        v.normal = Vec3::new(p.x, 0.35, p.z).normalize_or(Vec3::Y).to_array();
+    let mut m = vase(5, 1.0);
+    // The buds: smaller tubes leaning out from low on the flank.
+    for (k, (angle, size, lean, at)) in
+        [(0.6f32, 0.55f32, 0.55f32, 0.18f32), (3.4, 0.42, 0.75, 0.30)]
+            .into_iter()
+            .enumerate()
+    {
+        let bud = vase(11 + k as u32, 1.0).scaled([size, size, size]);
+        let (s, c) = lean.sin_cos();
+        let (sa, ca) = angle.sin_cos();
+        let tilt = move |p: [f32; 3]| {
+            // Lean over toward +x, then turn to `angle` and set on the flank.
+            let x = p[0] * c + p[1] * s;
+            let y = -p[0] * s + p[1] * c;
+            [x * ca - p[2] * sa, y, x * sa + p[2] * ca]
+        };
+        let base = [0.12 * ca, at, 0.12 * sa];
+        m.append(bud.map(
+            move |p| {
+                let q = tilt(p);
+                [q[0] + base[0], q[1] + base[1], q[2] + base[2]]
+            },
+            tilt,
+        ));
     }
     m
 }
