@@ -299,9 +299,24 @@ Dive3d fading models material6 grounded sway #0 vs_model       VS-bin    91   4 
 Dive3d fading models material6 grounded any-anim #0 fs_model       FS        94   4     0   36    16        0:0    1    2
 Dive3d fading models material6 grounded any-anim #0 vs_model       VS       529   4     0  229    32        0:0    0   38
 Dive3d fading models material6 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d glass #0                  fs_glass       FS       506   2     0  127    49        0:0    2   35
-Dive3d glass #0                  vs_model       VS      1078   2     1  428    63        0:0    3   87
-Dive3d glass #0                  vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d glass material0 anim0 #0  fs_glass       FS        57   4     0    4    20        0:0    0    2
+Dive3d glass material0 anim0 #0  vs_model       VS       385   2     1  176    46        0:0    1   24
+Dive3d glass material0 anim0 #0  vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d glass material0 anim4 #0  fs_glass       FS        57   4     0    4    20        0:0    0    2
+Dive3d glass material0 anim4 #0  vs_model       VS       400   2     1  187    47        0:0    1   22
+Dive3d glass material0 anim4 #0  vs_model       VS-bin    92   4     0   49    20        0:0    1    1
+Dive3d glass material7 anim5 #0  fs_glass       FS       193   2     0   57    40        0:0    0    2
+Dive3d glass material7 anim5 #0  vs_model       VS       468   2     1  214    50        0:0    1   28
+Dive3d glass material7 anim5 #0  vs_model       VS-bin   119   4     0   62    23        0:0    1    2
+Dive3d glass material3 anim0 #0  fs_glass       FS       153   4     0   39    26        0:0    0    9
+Dive3d glass material3 anim0 #0  vs_model       VS       383   2     1  179    46        0:0    1   23
+Dive3d glass material3 anim0 #0  vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d glass material9 anim10 #0 fs_glass       FS        85   4     0   14    28        0:0    0    3
+Dive3d glass material9 anim10 #0 vs_model       VS       539   2     1  232    54        0:0    2   33
+Dive3d glass material9 anim10 #0 vs_model       VS-bin   199   4     0   98    29        0:0    1    2
+Dive3d glass material10 anim11 #0 fs_glass       FS       169   4     0   34    30        0:0    0    2
+Dive3d glass material10 anim11 #0 vs_model       VS       469   2     1  211    48        0:0    1   24
+Dive3d glass material10 anim11 #0 vs_model       VS-bin   122   4     0   59    23        0:0    1    0
 Dive3d sprites #0                fs_sprite      FS        52   4     0   13    12        0:0    0    1
 Dive3d sprites #0                vs_sprite      VS       388   2     0  175    42        0:0    1   34
 Dive3d sprites #0                vs_sprite      VS-bin   230   4     0  105    25        0:0    0   15

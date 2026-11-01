@@ -1640,12 +1640,13 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
 // stripes, how strongly its gonads show and how bright the lights round its
 // margin are.
 fn jelly_glass(in: Lit, n: vec3<f32>, v: vec3<f32>, rim: f32) -> vec3<f32> {
+    let material = select(in.material, u32(MATERIAL), MATERIAL >= 0);
     let beat = in.floor_y;
     let own = in.floor * in.glow * 0.5;
     let clock = g.camera.w;
     let q = in.local;
     let ang = atan2(q.z, q.x);
-    if (in.material == 7u) {
+    if (material == 7u) {
         // A medusa's bell: clear jelly whose edges glow (Fresnel) and whose
         // margin is a bright ring, veined with radial canals that fade
         // toward the margin; the gonads show through the crown, and the
@@ -1673,7 +1674,7 @@ fn jelly_glass(in: Lit, n: vec3<f32>, v: vec3<f32>, rim: f32) -> vec3<f32> {
             + vec3<f32>(1.0, 0.86, 0.70) * stomach * (0.04 + 0.20 * in.glow)
             + vec3<f32>(0.35, 1.0, 0.78) * lights * 0.55;
     }
-    if (in.material == 10u) {
+    if (material == 10u) {
         // A comb jelly: almost invisible jelly, its eight comb rows lit by
         // the beating cilia, whose rainbow runs from pole to pole.
         let y = clamp(q.y, 0.0, 1.0);
@@ -1700,13 +1701,14 @@ fn jelly_glass(in: Lit, n: vec3<f32>, v: vec3<f32>, rim: f32) -> vec3<f32> {
 @if(!full_hd)
 @fragment
 fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
+    let material = select(in.material, u32(MATERIAL), MATERIAL >= 0);
     let p = in.world;
     let n = normalize(in.normal);
     let v = normalize(g.camera.xyz - p);
     let rim = 1.0 - abs(dot(n, v));
     let lit = light_at(p, v) * 0.25 + vec3<f32>(0.3);
     var glow = in.albedo * (0.15 + 0.85 * rim * rim) * lit + in.albedo * in.glow;
-    if (in.material == 3u) {
+    if (material == 3u) {
         // A crystal: its facets are read by a warm key from the searchlight,
         // or from the passage's mouth where the beam does not reach, and a
         // violet heart where the point faces the window.
@@ -1722,7 +1724,7 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
             + vec3<f32>(1.0, 0.90, 0.76) * spec * (0.10 + 0.4 * cone)
             + vec3<f32>(0.45, 0.30, 0.85) * core * in.glow * 0.10;
     }
-    if (in.material == 7u || in.material == 9u || in.material == 10u) {
+    if (material == 7u || material == 9u || material == 10u) {
         glow = jelly_glass(in, n, v, rim);
     }
     return vec4<f32>(glow * in.fade * (1.0 - fog_of(length(p - g.camera.xyz))) * SEA_SCALE, 0.0);
@@ -1935,13 +1937,14 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
 @if(full_hd)
 @fragment
 fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
+    let material = select(in.material, u32(MATERIAL), MATERIAL >= 0);
     let p = in.world;
     let n = normalize(in.normal);
     let v = normalize(g.camera.xyz - p);
     let rim = 1.0 - abs(dot(n, v));
     var colour = in.albedo * (0.2 + 0.8 * rim * rim) * 1.25
         + in.albedo * in.glow;
-    if (in.material == 3u) {
+    if (material == 3u) {
         // A crystal: the facets' own normals and baked violet-to-warm
         // colours, a glance of the searchlight where its cone reaches the
         // seam, and a violet heart where the point faces the window. No
@@ -1962,7 +1965,7 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
             + vec3<f32>(1.0, 0.90, 0.76) * spec * (0.14 + 0.45 * cone) * (0.18 + 0.8 * in.glow)
             + vec3<f32>(0.45, 0.30, 0.85) * core * in.glow * 0.15;
     }
-    if (in.material == 7u || in.material == 9u || in.material == 10u) {
+    if (material == 7u || material == 9u || material == 10u) {
         // A jelly glows the fog's colour far off, which is what makes a
         // shoal of them shine down the bloom; near, its own colours show.
         // It fades in with its placement, as the other profile's glass does.

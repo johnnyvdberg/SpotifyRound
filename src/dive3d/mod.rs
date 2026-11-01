@@ -400,7 +400,8 @@ pub(crate) struct Nautilus {
     /// Only the ice is drawn this way (`kind_of`), so only its slots are
     /// compiled; the rest are `None`.
     fading: Vec<Option<wgpu::RenderPipeline>>,
-    glass: wgpu::RenderPipeline,
+    /// Glass: one pipeline per entry of [`GLASS`].
+    glass: Vec<wgpu::RenderPipeline>,
     sprites: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
     /// Searchlight beams of other submarines.
@@ -506,6 +507,37 @@ fn anim_slot(i: &Instance) -> usize {
         .iter()
         .position(|&a| a == kind)
         .unwrap_or(ANIMS.len() - 1)
+}
+
+/// The translucent models, each with a pipeline of its own for the material
+/// (`MATERIAL` in `scene.wesl`: which of `fs_glass`'s paths) and animation
+/// (`ANIM`) it has: `(material, anim)`. A glass pipeline that took both from
+/// each instance was the largest shader in the dive, 1078 vertex instructions
+/// and 506 fragment ones at two threads, for every jellyfish pixel. The order
+/// follows the models' own (`mesh::Model`), which the unsorted additive draws
+/// keep: added in another order the sums could differ in the last bit.
+const GLASS: [(i32, i32); 6] = [
+    // The bloom's glass sponges and its sea pens.
+    (0, 0),
+    (0, world::anim::WRITHE as i32),
+    // A medusa's bell, then its arms and fringe, and the comb jelly.
+    (world::material::JELLY as i32, world::anim::PULSE as i32),
+    // The cave's and the passages' crystals.
+    (world::material::CRYSTAL as i32, 0),
+    (
+        world::material::JELLY_SOFT as i32,
+        world::anim::TRAIL as i32,
+    ),
+    (world::material::COMB as i32, world::anim::GLIDE as i32),
+];
+
+/// The index into [`GLASS`] of the pipeline for a translucent instance.
+fn glass_slot(i: &Instance) -> usize {
+    let (material, anim) = (i.extra[0].round() as i32, i.anim[0].round() as i32);
+    GLASS
+        .iter()
+        .position(|&g| g == (material, anim))
+        .unwrap_or(0)
 }
 
 /// A model pipeline's label, naming what it was compiled for, so the
@@ -1067,7 +1099,7 @@ struct Pipelines {
     sealed: Vec<wgpu::RenderPipeline>,
     mask: wgpu::RenderPipeline,
     fading: Vec<Option<wgpu::RenderPipeline>>,
-    glass: wgpu::RenderPipeline,
+    glass: Vec<wgpu::RenderPipeline>,
     sprites: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
     beams: wgpu::RenderPipeline,
@@ -1415,19 +1447,24 @@ fn compile(
         }
         pipelines
     };
-    let glass = pipeline(
-        "Dive3d glass",
-        "vs_model",
-        "fs_glass",
-        &model_buffers,
-        Some(additive),
-        false,
-        nearer,
-        false,
-        true,
-        &[],
-        None,
-    );
+    let glass = GLASS
+        .iter()
+        .map(|&(material, anim)| {
+            pipeline(
+                &format!("Dive3d glass material{material} anim{anim}"),
+                "vs_model",
+                "fs_glass",
+                &model_buffers,
+                Some(additive),
+                false,
+                nearer,
+                false,
+                true,
+                &[("MATERIAL", f64::from(material)), ("ANIM", f64::from(anim))],
+                None,
+            )
+        })
+        .collect();
     let sprites = pipeline(
         "Dive3d sprites",
         "vs_sprite",
@@ -2216,7 +2253,7 @@ impl Nautilus {
                     }),
             );
         }
-        // Glass has one shader for every material.
+        // Glass has a pipeline for each material and animation.
         for (model, list) in self.frame.glass.iter().enumerate() {
             order.extend(
                 list.iter()
@@ -2224,7 +2261,7 @@ impl Nautilus {
                     .filter(|_| !hides_model(hides, model))
                     .map(|(index, i)| Staged {
                         kind: Kind::Glass,
-                        slot: 0,
+                        slot: glass_slot(i) as u32,
                         model: model as u32,
                         lod: level_of(model, i) as u32,
                         depth: 0.0,
@@ -2562,7 +2599,7 @@ impl Nautilus {
                                 Kind::Fading => this.fading[d.slot]
                                     .as_ref()
                                     .expect("only the ice fades by pixel"),
-                                Kind::Glass => &this.glass,
+                                Kind::Glass => &this.glass[d.slot],
                             });
                             bound = Some(d.slot);
                         }
@@ -3169,13 +3206,11 @@ mod tests {
                         ));
                     }
                 }
-                for (model, list) in frame.glass.iter().enumerate() {
+                for list in &frame.glass {
                     for i in list {
-                        glass.insert((
-                            mesh::Model::ALL[model] as usize,
-                            i.extra[0].round() as i32,
-                            i.anim[0].round() as i32,
-                        ));
+                        let combo = (i.extra[0].round() as i32, i.anim[0].round() as i32);
+                        assert!(GLASS.contains(&combo), "glass {combo:?} has no pipeline");
+                        glass.insert(glass_slot(i));
                     }
                 }
             }
