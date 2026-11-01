@@ -80,8 +80,8 @@ run at once**, from different groups. Model tier is a suggestion.
 | P8 | perf-b | Pace the dive from the display (T10) | Sonnet | implemented behind `SPOTIFY_ROUND_PACE=display`, default unchanged; needs the user to evaluate on the kiosk |
 | V1 | water | Realistic visibility: shorter draw distance in water haze, detail reinvested near | Opus | todo |
 | V2 | water | Water surface seen from below | Sonnet | todo |
-| V3 | ground | Ice less blocky | Sonnet | todo |
-| V4 | ground | Terrain integration and per-biome placement realism | Opus | todo |
+| V3 | ground | Ice less blocky | Sonnet | done on `ground` (rounded keels lit through, bergs, floes; `docs/handoff/ground.md`) |
+| V4 | ground | Terrain integration and per-biome placement realism | Opus | done on `ground`, Pi numbers pending (`world::bed` rules; `docs/handoff/ground.md`) |
 | V5 | life | More wildlife, specific to each biome | Opus | todo |
 | V6 | atlantis | At least ten new Atlantis elements | Opus | todo |
 | V7 | atlantis | Underwater Greek temple environment | Opus | todo |
