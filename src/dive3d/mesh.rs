@@ -642,10 +642,25 @@ pub enum Model {
     Mosaic,
     /// The harbour's broken lighthouse tower, a unit tall.
     Lighthouse,
+    /// A patch of seagrass a unit across and tall: strap blades leaning
+    /// every way, their tips crusted with epiphytes, swaying by `aux.y`.
+    Seagrass,
+    /// A red mangrove's prop roots: from a trunk at y = 1 (the surface) they
+    /// arch out and down to the floor at y = 0, a unit round, their feet
+    /// crusted with oysters and sponges.
+    Mangrove,
+    /// A glass sponge: a flared vase of pale silica lattice, a unit tall and
+    /// about as wide at the rim, its ribs and hoops open so the water shows
+    /// through.
+    GlassSponge,
+    /// The blue hole's wall: an elliptic shaft a unit round and a unit
+    /// deep, faced inward, banded with limestone strata, broken by two
+    /// overhanging ledges and lipped over the bank at the top.
+    HoleWall,
 }
 
 impl Model {
-    pub const ALL: [Model; 80] = [
+    pub const ALL: [Model; 84] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -726,6 +741,10 @@ impl Model {
         Model::Stele,
         Model::Mosaic,
         Model::Lighthouse,
+        Model::Seagrass,
+        Model::Mangrove,
+        Model::GlassSponge,
+        Model::HoleWall,
     ];
 
     /// Whether this is one of the drowned city's models, whose triangles
@@ -1054,6 +1073,10 @@ impl Model {
             Model::Stele => stele(),
             Model::Mosaic => mosaic(),
             Model::Lighthouse => lighthouse(),
+            Model::Seagrass => seagrass(),
+            Model::Mangrove => mangrove(),
+            Model::GlassSponge => glass_sponge(),
+            Model::HoleWall => hole_wall(),
         }
     }
 }
@@ -5156,6 +5179,273 @@ impl Mesh {
                 .all(|(&(a, b), &n)| n == 1 && edges.get(&(b, a)) == Some(&1));
         closed.then_some(volume > 0.0)
     }
+}
+
+/// The two ledges in the blue hole's wall, as shares of its depth from the
+/// floor: each an overhang with a recess under it, where the stalactites
+/// hang (`world::blue_hole`).
+pub const HOLE_LEDGES: [f32; 2] = [0.40, 0.66];
+
+/// The blue hole's wall's radius at angle `a` round it and height `y` up it,
+/// in its own frame: lumpy rock, the two ledges' overhangs with their
+/// recesses under them, the talus at its foot.
+pub fn hole_wall_radius(a: f32, y: f32) -> f32 {
+    let lumps = 0.030 * (a * 7.0 + y * 9.0).sin()
+        + 0.018 * (a * 13.0 - y * 17.0 + 1.3).sin()
+        + 0.010 * (a * 29.0 + y * 31.0).sin();
+    let mut r = 1.0 + lumps;
+    for &ledge in &HOLE_LEDGES {
+        let wander = 0.015 * (a * 3.0 + ledge * 20.0).sin();
+        // Each ledge is broken: stout in places, gone in others.
+        let stout = smooth01(
+            -0.3,
+            0.6,
+            (a * 2.0 + ledge * 9.0).sin() + 0.4 * (a * 5.0).sin(),
+        );
+        let lip = (-((y - ledge - wander) / 0.025).powi(2)).exp();
+        let recess = (-((y - ledge - wander + 0.06) / 0.045).powi(2)).exp();
+        r += (0.08 * recess - 0.06 * lip) * stout;
+    }
+    r - 0.16 * smooth01(0.10, 0.0, y)
+}
+
+/// A patch of seagrass (`Model::Seagrass`).
+fn seagrass() -> Mesh {
+    let mut m = Mesh::default();
+    let blades = fewer(40, 10);
+    let rows = fewer(4, 2);
+    for b in 0..blades {
+        let h = |k: u32| jitter(b as u32, 900 + k);
+        // Scattered over the disc, denser to the middle.
+        let a = h(0) * TAU;
+        let r = h(1).sqrt() * 0.95;
+        let foot = Vec3::new(a.cos() * r, 0.0, a.sin() * r);
+        let tall = 0.55 + 0.45 * h(2);
+        let lean = h(3) * TAU;
+        let lean = Vec3::new(lean.cos(), 0.0, lean.sin()) * (0.15 + 0.25 * h(4));
+        // The strap faces across its lean.
+        let face = Vec3::new(-lean.z, 0.0, lean.x).normalize_or(Vec3::X);
+        let width = 0.035 + 0.02 * h(5);
+        let shade = 0.85 + 0.3 * h(6);
+        let mut previous: Option<(u32, u32)> = None;
+        for i in 0..=rows {
+            let t = i as f32 / rows as f32;
+            let at = foot + Vec3::Y * (tall * t) + lean * (t * t);
+            // Green at the root, paler and browner where the epiphytes
+            // crust the tip.
+            let green = [0.26 * shade, 0.50 * shade, 0.18 * shade];
+            let tip = [0.58, 0.56, 0.34];
+            let k = smooth01(0.55, 1.0, t);
+            let colour = [0, 1, 2].map(|j| green[j] + (tip[j] - green[j]) * k);
+            let w = width * (1.0 - 0.6 * t * t);
+            let left = m.vertex((at - face * w).to_array(), colour, [0.0, t * tall]);
+            let right = m.vertex((at + face * w).to_array(), colour, [0.0, t * tall]);
+            if let Some((pl, pr)) = previous {
+                m.quad(pl, pr, right, left);
+            }
+            previous = Some((left, right));
+        }
+    }
+    m.smooth()
+}
+
+/// `smoothstep`.
+fn smooth01(a: f32, b: f32, v: f32) -> f32 {
+    let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A red mangrove's prop roots (`Model::Mangrove`).
+fn mangrove() -> Mesh {
+    let bark = [0.34, 0.28, 0.22];
+    let crust = [0.62, 0.55, 0.42];
+    let sponge = [0.78, 0.42, 0.18];
+    let algae = [0.30, 0.38, 0.22];
+    let mut m = Mesh::default();
+    // The trunk, out through the surface.
+    m.append(rod([0.0, 0.62, 0.0], [0.02, 1.15, -0.01], 0.07, 0.06, bark));
+    let roots = fewer(11, 5);
+    let spans = fewer(7, 4);
+    for k in 0..roots {
+        let h = |n: u32| jitter(k as u32, 950 + n);
+        let a = (k as f32 + 0.4 * h(0)) / roots as f32 * TAU;
+        let out = Vec3::new(a.cos(), 0.0, a.sin());
+        let from = Vec3::new(0.0, 0.62 + 0.32 * h(1), 0.0) + out * 0.04;
+        let reach = 0.45 + 0.5 * h(2);
+        let to = out * reach + Vec3::new(0.0, -0.03, 0.0);
+        // A high arch, out first and then down: a quadratic through a
+        // point well out and a little above where it leaves the trunk.
+        let bend = out * (reach * 0.55) + Vec3::Y * (from.y + 0.08);
+        let blotch = h(3) < 0.4;
+        let knots: Vec<Knot> = (0..=spans)
+            .map(|i| {
+                let t = i as f32 / spans as f32;
+                let at = from * (1.0 - t) * (1.0 - t) + bend * 2.0 * t * (1.0 - t) + to * t * t;
+                // Crusted where the root stands in the water low down,
+                // green with algae higher, bare bark near the trunk.
+                let low = smooth01(0.35, 0.0, at.y);
+                let mid = smooth01(0.7, 0.4, at.y) * (1.0 - low);
+                let mut c = [0, 1, 2].map(|j| bark[j] + (algae[j] - bark[j]) * mid);
+                c = [0, 1, 2].map(|j| c[j] + (crust[j] - c[j]) * low);
+                if blotch && (0.1..0.25).contains(&at.y) {
+                    c = sponge;
+                }
+                Knot {
+                    at,
+                    radius: 0.026 - 0.010 * t,
+                    colour: c,
+                    aux: [0.0; 2],
+                }
+            })
+            .collect();
+        m.append(tube(&knots, 6, 4));
+    }
+    // Aerial roots dropping straight from the trunk, not yet in the floor.
+    if COARSER.get() == 0 {
+        for k in 0..4 {
+            let a = k as f32 * 1.7 + 0.3;
+            let at = Vec3::new(a.cos() * 0.08, 0.0, a.sin() * 0.08);
+            m.append(rod(
+                (at + Vec3::Y * 0.95).to_array(),
+                (at + Vec3::Y * (0.30 + 0.12 * k as f32)).to_array(),
+                0.010,
+                0.006,
+                bark,
+            ));
+        }
+    }
+    m
+}
+
+/// A glass sponge (`Model::GlassSponge`): a slender tube flaring at its
+/// rim, its wall a lattice of ribs spiralling both ways round it and hoops
+/// across them, flat strips facing out, so the silica lattice is open.
+fn glass_sponge() -> Mesh {
+    let mut m = Mesh::default();
+    let radius =
+        |y: f32| 0.20 + 0.07 * y + 0.10 * smooth01(0.78, 1.0, y) - 0.06 * smooth01(0.12, 0.0, y);
+    let colour = |y: f32| {
+        let k = smooth01(0.0, 0.30, y);
+        [0.50 + 0.38 * k, 0.48 + 0.40 * k, 0.42 + 0.40 * k]
+    };
+    let ribs = fewer(16, 6);
+    let rise = fewer(8, 3);
+    let wide = 0.011;
+    // A strip from `a` to `b`, `w` wide, facing out from the axis.
+    let strip = |m: &mut Mesh, a: Vec3, b: Vec3, w: f32| {
+        let along = (b - a).normalize_or(Vec3::Y);
+        let mid = (a + b) * 0.5;
+        let outward = Vec3::new(mid.x, 0.0, mid.z).normalize_or(Vec3::X);
+        let side = along.cross(outward).normalize_or(Vec3::X) * w;
+        let ids = [a - side, a + side, b + side, b - side]
+            .map(|p| m.vertex(p.to_array(), colour(p.y), [0.0, p.y]));
+        m.quad(ids[0], ids[1], ids[2], ids[3]);
+    };
+    let point = |a: f32, y: f32| {
+        let r = radius(y);
+        Vec3::new(a.cos() * r, y, a.sin() * r)
+    };
+    // The ribs, spiralling up both ways round the tube: the real lattice's
+    // diagonals, which cross in a fine square mesh.
+    let twist = TAU / ribs as f32 * 2.0;
+    for turn in [-1.0f32, 1.0] {
+        for k in 0..ribs {
+            let a0 = k as f32 / ribs as f32 * TAU;
+            for i in 0..rise {
+                let (y0, y1) = (i as f32 / rise as f32, (i + 1) as f32 / rise as f32);
+                strip(
+                    &mut m,
+                    point(a0 + turn * twist * y0, y0),
+                    point(a0 + turn * twist * y1, y1),
+                    wide,
+                );
+            }
+        }
+    }
+    // The hoops, and the rim's stout ridge.
+    let hoops = fewer(8, 3);
+    let round = fewer(24, 10);
+    for i in 1..=hoops {
+        let y = i as f32 / hoops as f32;
+        let w = if i == hoops { wide * 2.2 } else { wide * 0.8 };
+        for k in 0..round {
+            let (a0, a1) = (
+                k as f32 / round as f32 * TAU,
+                (k + 1) as f32 / round as f32 * TAU,
+            );
+            strip(&mut m, point(a0, y), point(a1, y), w);
+        }
+    }
+    for v in &mut m.vertices {
+        let p = Vec3::from_array(v.pos);
+        v.normal = Vec3::new(p.x, 0.35, p.z).normalize_or(Vec3::Y).to_array();
+    }
+    m
+}
+
+/// The blue hole's wall (`Model::HoleWall`).
+fn hole_wall() -> Mesh {
+    let mut m = Mesh::default();
+    let around = fewer(96, 32);
+    let up = fewer(44, 14);
+    let radius = hole_wall_radius;
+    let colour = |a: f32, y: f32| {
+        // Strata: pale and grey beds, a few of them ochre, wavering round
+        // the shaft, each mottled in patches.
+        let bed = (y * 13.0 + 0.5 * (a * 3.0).sin()).sin();
+        let fine = (y * 47.0 + 0.6 * (a * 5.0).cos()).sin();
+        let pale = [0.70, 0.69, 0.64];
+        let grey = [0.44, 0.45, 0.46];
+        let ochre = [0.56, 0.47, 0.36];
+        let c = if bed > 0.25 {
+            pale
+        } else if bed > -0.65 {
+            grey
+        } else {
+            ochre
+        };
+        let patch = jitter(((a * 9.0) as i32 * 97 + (y * 25.0) as i32) as u32, 960);
+        let streak = 0.92 + 0.08 * (a * 41.0).sin() * (a * 17.0 + y * 3.0).cos();
+        // Darker down the shaft, where the light from the mouth has gone.
+        let k = (0.90 + 0.08 * fine) * streak * (0.80 + 0.35 * patch) * (0.55 + 0.45 * y.min(1.0));
+        // The sulphide's faint stain under the halocline, and green growth
+        // over the top, where the light falls.
+        let stain = 0.35 * (-((y - 0.30) / 0.05).powi(2)).exp();
+        let growth = smooth01(0.82, 0.98, y);
+        let c = [0, 1, 2].map(|j| c[j] * k);
+        let c = [0, 1, 2].map(|j| c[j] + ([0.22, 0.19, 0.16][j] - c[j]) * stain);
+        [0, 1, 2].map(|j| c[j] + ([0.38, 0.44, 0.30][j] - c[j]) * growth * 0.6)
+    };
+    // The rows from just under the floor to the rim, then the lip turned
+    // out over the bank.
+    let mut rows: Vec<(f32, f32)> = (0..=up)
+        .map(|i| (-0.04 + 1.04 * i as f32 / up as f32, 0.0))
+        .collect();
+    rows.push((1.035, 0.15));
+    rows.push((1.06, 0.32));
+    let mut grid = Vec::with_capacity(rows.len());
+    for &(y, flare) in &rows {
+        let ring: Vec<u32> = (0..around)
+            .map(|k| {
+                let a = k as f32 / around as f32 * TAU;
+                let r = radius(a, y.min(1.0)) + flare;
+                m.vertex(
+                    [a.cos() * r, y, a.sin() * r],
+                    colour(a, y.min(1.0)),
+                    [0.0; 2],
+                )
+            })
+            .collect();
+        grid.push(ring);
+    }
+    for j in 0..grid.len() - 1 {
+        for k in 0..around {
+            let n = (k + 1) % around;
+            // Wound to face in, toward the shaft's axis.
+            m.quad(grid[j][k], grid[j][n], grid[j + 1][n], grid[j + 1][k]);
+        }
+    }
+    m.smooth()
 }
 
 #[cfg(test)]

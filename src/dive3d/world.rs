@@ -38,6 +38,12 @@ pub const BLOOM: usize = 12;
 /// The drowned city, added after the five: brass-and-iron towers lit from
 /// within, standing in rows either side of the avenue the Nautilus takes.
 pub const CITY: usize = 13;
+/// The three seas added last (V9): a shallow seagrass meadow among mangrove
+/// roots, a deep, cold reef of glass sponges, and a blue hole sunk through a
+/// shallow bank, with stalactites on its walls and a halocline across it.
+pub const MEADOW: usize = 14;
+pub const SPONGE_REEF: usize = 15;
+pub const BLUE_HOLE: usize = 16;
 
 /// Height of the cave's vault above its floor, and the ice's thickness.
 pub const CAVE_ROOF: f32 = 1.6;
@@ -61,7 +67,9 @@ pub const SIGHT: [f32; BIOMES] = [
     // shallows, forest, wrecks, atlantis, cave, abyss, arctic,
     10.0, 8.0, 7.5, 13.0, 8.0, 7.0, 13.0, //
     // trench, coral, sargasso, vents, brine, bloom, city
-    13.0, 12.0, 10.0, 6.0, 6.5, 5.5, 11.0,
+    13.0, 12.0, 10.0, 6.0, 6.5, 5.5, 11.0, //
+    // meadow, glass sponges, blue hole
+    11.0, 8.5, 16.0,
 ];
 /// How sharply the haze thickens: the fog is `1 - exp(-SIGHT_K d / sight)`,
 /// scaled to reach exactly one at `sight` (`fog_of` in `scene.wesl`).
@@ -142,6 +150,12 @@ pub const FLOOR_ALBEDO: [[f32; 3]; BIOMES] = [
     [0.20, 0.20, 0.24],
     // The drowned city: grey-green silt over its paving.
     [0.25, 0.27, 0.23],
+    // The meadow: pale sand, green with the grass's litter.
+    [0.55, 0.52, 0.38],
+    // The glass sponges: grey silt and the spicules of dead sponges.
+    [0.30, 0.31, 0.31],
+    // The blue hole's bank: white carbonate sand.
+    [0.72, 0.68, 0.56],
 ];
 
 /// The living reef's colours, as a reef flat seen from above is a mosaic of
@@ -623,7 +637,81 @@ fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f
             ) - 1.0;
         shape += city * (-0.06 * h + 0.10 * step + 0.015 * detail);
     }
+    let meadow = weight(MEADOW);
+    if meadow > 0.0 {
+        // A level shelf of sand, the grass's beds standing a little proud
+        // where its roots hold the sand, cut by shallow tidal channels that
+        // wind across the voyage.
+        let beds = smooth(0.40, 0.70, 0.5 + 0.5 * detail);
+        let channel = 1.0
+            - smooth(
+                0.0,
+                0.35,
+                (TAU * (z * 0.11 + 0.15 * (x * 0.4).sin())).sin().abs(),
+            );
+        // Toward the mangroves, off to port, the shelf shoals.
+        let shore = 1.1 * smooth(3.0, 8.0, across);
+        shape += meadow * (0.03 * h + 0.08 * beds - 0.14 * channel + shore);
+    }
+    let sponges = weight(SPONGE_REEF);
+    if sponges > 0.0 {
+        // The sponges' own reef: broad, rounded mounds of silt bound by the
+        // skeletons of dead sponges, the living ones on their crests.
+        let mound = sponge_mound(x, z);
+        shape += sponges * (0.05 * h + 0.45 * mound + 0.04 * detail);
+    }
+    let hole = weight(BLUE_HOLE);
+    if hole > 0.0 {
+        shape -= hole * blue_hole_drop(x, z);
+    }
     shape
+}
+
+/// The glass-sponge reef's mounds at (x, z): 0 on the silt between, 1 on a
+/// mound's crest.
+pub fn sponge_mound(x: f32, z: f32) -> f32 {
+    let n = 0.6 * vnoise(x * 0.32 + 11.0, z * 0.38, 80) + 0.4 * vnoise(x * 0.9, z * 1.1 + 5.0, 82);
+    smooth(0.38, 0.70, n)
+}
+
+/// The blue hole sinks through the middle of its leg, centred on the
+/// corridor and lying along it: an ellipse so many units along the voyage
+/// and across it, its floor [`HOLE_DEPTH`] under the bank. Its wall is a
+/// model (`Model::HoleWall`), a unit round in the ellipse's frame; the
+/// seabed only gives it a floor, falling away just behind the wall, so the
+/// model's ledges and recesses never meet the heightmap's slope.
+pub const HOLE_ALONG: f32 = 4.2;
+pub const HOLE_ACROSS: f32 = 3.3;
+pub const HOLE_DEPTH: f32 = 6.5;
+/// How far under the bank the wall's model ends; its lip, turned out over
+/// the bank, covers the seabed's own short drop.
+pub const HOLE_RIM: f32 = 0.3;
+
+/// The blue hole of the leg (x, z) lies in: its centre, the yaw that lays a
+/// model along it ([`place`]), and how far out (x, z) is as a share of the
+/// rim, 1 on the ellipse. A leg is the hole's or not by the caller.
+pub fn hole_at(x: f32, z: f32) -> ([f32; 2], f32, f32) {
+    let leg = crate::voyage::LEG as f32;
+    let cx = ((x / leg).floor() + 0.5) * leg;
+    let c = [cx, corridor(cx)];
+    let s = corridor_slope(cx);
+    let n = (1.0 + s * s).sqrt();
+    let (dx, dz) = (x - c[0], z - c[1]);
+    let along = (dx + dz * s) / n / HOLE_ALONG;
+    let across = (dz - dx * s) / n / HOLE_ACROSS;
+    (c, yaw_along(1.0, s), along.hypot(across))
+}
+
+/// How far the blue hole drops the seabed at (x, z): nothing on the bank,
+/// then straight down behind the wall's model to the floor, which rises a
+/// little to the cone of fallen rock in its middle.
+fn blue_hole_drop(x: f32, z: f32) -> f32 {
+    let (_, _, d) = hole_at(x, z);
+    if d > 1.3 {
+        return 0.0;
+    }
+    let cone = 0.9 * smooth(0.45, 0.0, d);
+    HOLE_DEPTH * smooth(1.27, 1.19, d) - cone
 }
 
 /// Where the trench's terrace edges lie across the corridor, before they
@@ -874,13 +962,14 @@ fn corridor_point(p: [f32; 3], floor: f32) -> [f32; 3] {
 /// units; here they are compressed, so the drop into the abyss is a steep
 /// shelf rather than a gulf. The gauge undoes this (`helm::depth_reading`).
 pub const SEABED: [f32; BIOMES] = [
-    1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2, 2.2, 3.4, 8.2, 6.3, 10.2, 7.2,
+    1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2, 2.2, 3.4, 8.2, 6.3, 10.2, 7.2, 1.9, 8.6, 2.8,
 ];
 /// How strongly the heightmap's relief shows in each biome: rugged in the
 /// abyss, nearly flat under the paved city of Atlantis, the salt of the
 /// brine flats and the drowned city's streets.
 pub const RELIEF: [f32; BIOMES] = [
-    0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30, 0.45, 0.30, 0.90, 0.06, 0.35, 0.08,
+    0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30, 0.45, 0.30, 0.90, 0.06, 0.35, 0.08, 0.15, 0.30,
+    0.08,
 ];
 
 /// The seabed of one visit: its heightmap and the biome sequence's seed.
@@ -931,12 +1020,13 @@ impl Seabed {
             &b,
             [
                 0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05, 0.06, 0.05, 0.08, 0.02, 0.04, 0.02,
+                0.03, 0.04, 0.04,
             ],
         );
         let ridges = Self::by_biome(
             &b,
             [
-                1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0, 1.2,
+                1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0, 1.2, 1.4, 2.2, 1.6,
             ],
         );
         let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2);
@@ -955,7 +1045,8 @@ impl Seabed {
             * Self::by_biome(
                 &b,
                 [
-                    1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.15, 1.0, 0.3,
+                    1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.15, 1.0, 0.3, 1.0,
+                    1.0, 0.6,
                 ],
             );
         // The lava cave's massif, rising either side of its tunnel.
@@ -2317,7 +2408,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body, the jellyfish's swimming and the
     // four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 15] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 18] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
@@ -2333,6 +2424,9 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (drifters, None),
         (city, None),
         (gallery, marble),
+        (meadow, None),
+        (sponge_reef, None),
+        (blue_hole, None),
     ];
     let steps: [(Placer, Option<[f32; 4]>); 14] = [
         (planes, None),
@@ -2351,9 +2445,25 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 15] = [
-        "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "atlantis", "temple", "cave",
-        "polar", "kelp", "forest", "drifters", "city", "gallery",
+    const STATIC_NAMES: [&str; 18] = [
+        "rocks",
+        "gardens",
+        "reef",
+        "wrecks",
+        "trench",
+        "ruins",
+        "atlantis",
+        "temple",
+        "cave",
+        "polar",
+        "kelp",
+        "forest",
+        "drifters",
+        "city",
+        "gallery",
+        "meadow",
+        "sponge_reef",
+        "blue_hole",
     ];
     #[cfg(test)]
     const STEP_NAMES: [&str; 14] = [
@@ -2547,13 +2657,14 @@ fn planes(w: &World, f: &mut Frame) {
 /// Sargasso's silt, the bloom's ooze, the brine's crust) few, as sediment
 /// buries what falls there; the reef, built of coral, almost none.
 const STONES: [f32; BIOMES] = [
-    0.45, 0.40, 0.30, 0.40, 0.15, 0.55, 0.40, 0.50, 0.045, 0.15, 0.50, 0.22, 0.12, 0.30,
+    0.45, 0.40, 0.30, 0.40, 0.15, 0.55, 0.40, 0.50, 0.045, 0.15, 0.50, 0.22, 0.12, 0.30, 0.10,
+    0.20, 0.35,
 ];
 /// Per biome, the share of its boulders that are bedrock outcropping rather
 /// than loose stones: none where the bottom is deep sediment or, in Atlantis,
 /// paving.
 const OUTCROPS: [f32; BIOMES] = [
-    0.30, 0.30, 0.10, 0.0, 0.50, 0.60, 0.20, 0.70, 0.20, 0.0, 0.60, 0.0, 0.0, 0.0,
+    0.30, 0.30, 0.10, 0.0, 0.50, 0.60, 0.20, 0.70, 0.20, 0.0, 0.60, 0.0, 0.0, 0.0, 0.10, 0.20, 0.60,
 ];
 
 fn rocks(w: &World, f: &mut Frame) {
@@ -2605,6 +2716,7 @@ fn rocks(w: &World, f: &mut Frame) {
             &b,
             [
                 0.32, 0.24, 0.22, 0.30, 0.12, 0.14, 0.26, 0.27, 0.34, 0.30, 0.16, 0.55, 0.23, 0.24,
+                0.30, 0.26, 0.50,
             ],
         );
         let model =
@@ -8388,6 +8500,9 @@ pub mod element {
     pub const LIGHTHOUSE: u32 = 14;
     pub const TEMPLE: u32 = 15;
     pub const GALLERY: u32 = 16;
+    // The blue hole (V9, `world::blue_hole`).
+    pub const STALACTITES: u32 = 17;
+    pub const HALOCLINE: u32 = 18;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -8416,6 +8531,18 @@ pub const ELEMENTS: &[(u32, &str)] = &[
     (
         element::TEMPLE,
         "Atlantis: the Doric temple the Nautilus passes through",
+    ),
+    (
+        element::GALLERY,
+        "the drowned city's galleria and its rooms",
+    ),
+    (
+        element::STALACTITES,
+        "the blue hole: stalactites under its ledges",
+    ),
+    (
+        element::HALOCLINE,
+        "the blue hole: the halocline across its shaft",
     ),
 ];
 
@@ -8762,7 +8889,7 @@ const SPECIES: [Species; 9] = [
         band: (0.6, 1.4),
         back: [0.22, 0.26, 0.28],
         gate: [
-            1.0, 0.8, 1.0, 1.0, 0.0, 0.0, 0.5, 0.8, 0.8, 0.5, 0.1, 0.3, 0.4, 0.6,
+            1.0, 0.8, 1.0, 1.0, 0.0, 0.0, 0.5, 0.8, 0.8, 0.5, 0.1, 0.3, 0.4, 0.6, 0.8, 0.2, 1.0,
         ],
         salt: 200,
         part: 0,
@@ -8775,7 +8902,7 @@ const SPECIES: [Species; 9] = [
         band: (0.3, 0.9),
         back: [0.30, 0.36, 0.38],
         gate: [
-            1.0, 1.0, 0.8, 0.6, 0.15, 0.0, 0.8, 0.7, 1.0, 0.7, 0.2, 0.4, 0.9, 1.0,
+            1.0, 1.0, 0.8, 0.6, 0.15, 0.0, 0.8, 0.7, 1.0, 0.7, 0.2, 0.4, 0.9, 1.0, 1.0, 0.3, 0.9,
         ],
         salt: 210,
         part: 0,
@@ -8788,7 +8915,7 @@ const SPECIES: [Species; 9] = [
         band: (0.10, 0.35),
         back: [0.48, 0.40, 0.20],
         gate: [
-            1.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.4, 0.0, 0.1, 0.0, 0.7,
+            1.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.4, 0.0, 0.1, 0.0, 0.7, 0.8, 0.0, 0.5,
         ],
         salt: 220,
         part: 0,
@@ -8801,7 +8928,7 @@ const SPECIES: [Species; 9] = [
         band: (0.06, 0.25),
         back: [0.32, 0.42, 0.46],
         gate: [
-            1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.6, 0.4, 1.0, 0.6, 0.2, 0.5, 0.3, 0.4,
+            1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.6, 0.4, 1.0, 0.6, 0.2, 0.5, 0.3, 0.4, 1.0, 0.0, 0.6,
         ],
         salt: 230,
         part: 0,
@@ -8814,7 +8941,7 @@ const SPECIES: [Species; 9] = [
         band: (0.4, 1.0),
         back: [0.52, 0.42, 0.16],
         gate: [
-            0.6, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0, 0.1, 0.8, 1.0, 0.0, 0.2, 0.3, 0.2,
+            0.6, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0, 0.1, 0.8, 1.0, 0.0, 0.2, 0.3, 0.2, 0.3, 0.0, 0.4,
         ],
         salt: 240,
         part: 0,
@@ -8830,7 +8957,7 @@ const SPECIES: [Species; 9] = [
         band: (0.12, 0.40),
         back: [0.10, 0.30, 0.62],
         gate: [
-            0.7, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.7, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6,
         ],
         salt: 250,
         part: super::part::LIFE,
@@ -8843,7 +8970,7 @@ const SPECIES: [Species; 9] = [
         band: (0.06, 0.22),
         back: [0.80, 0.34, 0.30],
         gate: [
-            0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4,
         ],
         salt: 260,
         part: super::part::LIFE,
@@ -8856,7 +8983,7 @@ const SPECIES: [Species; 9] = [
         band: (0.10, 0.45),
         back: [0.95, 0.42, 0.06],
         gate: [
-            0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ],
         salt: 270,
         part: super::part::LIFE,
@@ -8869,7 +8996,7 @@ const SPECIES: [Species; 9] = [
         band: (0.04, 0.16),
         back: [0.85, 0.72, 0.66],
         gate: [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.3, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.3, 0.0, 0.0, 0.0, 0.4, 0.0,
         ],
         salt: 280,
         part: super::part::LIFE,
@@ -9160,8 +9287,9 @@ fn great_swimmers(w: &World, f: &mut Frame) {
 }
 
 /// Manta rays flying slowly through the shallows, over the wrecks, among the
-/// ruins of Atlantis and over the reef, banking as they go; and green turtles
-/// rowing low over the shallows, through the forest and along the reef.
+/// ruins of Atlantis, over the reef and the blue hole, banking as they go;
+/// and green turtles rowing low over the shallows, through the forest, along
+/// the reef and over the meadow, where they graze.
 fn gliders(w: &World, f: &mut Frame) {
     for (k, x) in procession(w, 0.06, 5.5, 340) {
         let z = lane(x, 1.8 + 2.2 * hash(k, 1, 340), side(k, 340));
@@ -9169,7 +9297,8 @@ fn gliders(w: &World, f: &mut Frame) {
             .share(x, z, SHALLOWS)
             .max(w.share(x, z, WRECKS))
             .max(w.share(x, z, ATLANTIS))
-            .max(w.share(x, z, CORAL));
+            .max(w.share(x, z, CORAL))
+            .max(w.share(x, z, BLUE_HOLE));
         if share < 0.4 || hash(k, 2, 340) < 0.35 {
             continue;
         }
@@ -9201,7 +9330,9 @@ fn gliders(w: &World, f: &mut Frame) {
         let share = w
             .share(x, z, SHALLOWS)
             .max(w.share(x, z, FOREST))
-            .max(w.share(x, z, CORAL));
+            .max(w.share(x, z, CORAL))
+            .max(w.share(x, z, MEADOW))
+            .max(w.share(x, z, BLUE_HOLE));
         if share < 0.4 || hash(k, 2, 350) < 0.4 {
             continue;
         }
@@ -9283,13 +9414,31 @@ struct Creature {
 }
 
 /// Every sea's own animals beyond the shoals and the great swimmers (V5).
-const LIFE: [Creature; 10] = [
+const LIFE: [Creature; 11] = [
+    // Rockfish hanging still over the glass sponges, orange in the lamp.
+    Creature {
+        model: Model::Fish,
+        motion: Motion::Cruise,
+        seas: [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.0,
+        ],
+        speed: 0.008,
+        spacing: 0.7,
+        lane: (0.7, 2.6),
+        group: (1, 3),
+        spread: 0.35,
+        size: (0.06, 0.09),
+        height: (0.06, 0.30),
+        colour: [0.72, 0.32, 0.18],
+        glow: 0.0,
+        salt: 600,
+    },
     // Morays looking out of the wrecks' and reef's holes.
     Creature {
         model: Model::Eel,
         motion: Motion::Lurk,
         seas: [
-            0.25, 0.0, 0.9, 0.45, 0.0, 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.15,
+            0.25, 0.0, 0.9, 0.45, 0.0, 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.15, 0.0, 0.0, 0.3,
         ],
         speed: 0.0,
         spacing: 0.9,
@@ -9307,7 +9456,7 @@ const LIFE: [Creature; 10] = [
         model: Model::Gulper,
         motion: Motion::Cruise,
         seas: [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.3, 0.0,
         ],
         speed: -0.015,
         spacing: 1.6,
@@ -9325,7 +9474,7 @@ const LIFE: [Creature; 10] = [
         model: Model::Ray,
         motion: Motion::Rest,
         seas: [
-            0.8, 0.0, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.6, 0.2, 0.0, 0.0, 0.0, 0.0,
+            0.8, 0.0, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.6, 0.2, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.3,
         ],
         speed: 0.0,
         spacing: 1.3,
@@ -9343,7 +9492,7 @@ const LIFE: [Creature; 10] = [
         model: Model::Ray,
         motion: Motion::Glide,
         seas: [
-            0.5, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.5, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6, 0.0, 0.3,
         ],
         speed: 0.035,
         spacing: 2.4,
@@ -9361,7 +9510,7 @@ const LIFE: [Creature; 10] = [
         model: Model::Crab,
         motion: Motion::Walk,
         seas: [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.5, 0.0, 0.0, 1.0, 0.8, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.5, 0.0, 0.0, 1.0, 0.8, 0.0, 0.0, 0.3, 0.7, 0.0,
         ],
         speed: 0.0,
         spacing: 0.7,
@@ -9379,7 +9528,7 @@ const LIFE: [Creature; 10] = [
         model: Model::Lobster,
         motion: Motion::Walk,
         seas: [
-            0.1, 0.2, 0.8, 0.6, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.3,
+            0.1, 0.2, 0.8, 0.6, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.6, 0.2,
         ],
         speed: 0.0,
         spacing: 0.9,
@@ -9397,7 +9546,7 @@ const LIFE: [Creature; 10] = [
         model: Model::Seal,
         motion: Motion::Play,
         seas: [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ],
         speed: 0.10,
         spacing: 2.4,
@@ -9415,7 +9564,7 @@ const LIFE: [Creature; 10] = [
         model: Model::SeaLion,
         motion: Motion::Play,
         seas: [
-            0.3, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.3, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ],
         speed: 0.16,
         spacing: 3.8,
@@ -9433,7 +9582,7 @@ const LIFE: [Creature; 10] = [
         model: Model::Shark,
         motion: Motion::Cruise,
         seas: [
-            0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.8,
         ],
         speed: -0.06,
         spacing: 3.0,
@@ -9451,7 +9600,7 @@ const LIFE: [Creature; 10] = [
         model: Model::Bell,
         motion: Motion::Chain,
         seas: [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.4, 0.0,
         ],
         speed: 0.01,
         spacing: 3.0,
@@ -10989,7 +11138,9 @@ fn shafts(w: &World, f: &mut Frame) {
             + 0.45 * b.weight(TRENCH)
             + 0.45 * b.weight(CORAL)
             + 0.85 * b.weight(SARGASSO)
-            + 0.35 * b.weight(BRINE)) as f32;
+            + 0.35 * b.weight(BRINE)
+            + b.weight(MEADOW)
+            + 0.9 * b.weight(BLUE_HOLE)) as f32;
         if h > bright.min(1.0) * 0.55 {
             continue;
         }
@@ -11196,6 +11347,279 @@ fn particles(w: &World, f: &mut Frame) {
                     1.0 + speed * 20.0,
                 );
             }
+        }
+    }
+}
+
+/// The seagrass meadow (V9): beds of grass over a shoaling shelf, cushion
+/// stars and conchs in the bare sand between, and to port the mangroves'
+/// prop roots standing down out of the surface along the shore.
+fn meadow(w: &World, f: &mut Frame) {
+    for &(ix, iz, x, z) in &cells(w, 0.42, 0.5, 6.5, 1400) {
+        let share = w.share(x, z, MEADOW);
+        if share < 0.05 {
+            continue;
+        }
+        // The beds, as the seabed's tint marks them (`terrain::shade`).
+        let bed = smooth(0.30, 0.55, vnoise(x * 0.5, z * 0.5, 10));
+        let here = share * (0.15 + 0.85 * bed);
+        let needs = hash(ix, iz, 1401) * 0.8 + 0.1;
+        if here < needs {
+            // The bare sand between the beds.
+            if share > 0.5 && hash(ix, iz, 1402) < 0.06 {
+                let y = w.ground(x, z);
+                if !w.visible([x, y, z], 0.1) {
+                    continue;
+                }
+                f.fade = fade(share, 0.5);
+                let yaw = hash(ix, iz, 1403) * TAU;
+                if hash(ix, iz, 1404) < 0.6 {
+                    let s = 0.035 + 0.02 * hash(ix, iz, 1405);
+                    f.put(
+                        Model::Star,
+                        place([x, y + 0.004, z], yaw, 0.0, 0.0, [s, s * 1.6, s]),
+                        [0.82, 0.36, 0.14],
+                    )
+                    .grounded();
+                } else {
+                    let s = 0.04;
+                    f.put(
+                        Model::Shell,
+                        place([x, y + 0.006, z], yaw, 0.3, 0.0, [s, s * 1.3, s]),
+                        [0.86, 0.68, 0.56],
+                    )
+                    .grounded();
+                }
+            }
+            continue;
+        }
+        let y = w.ground(x, z);
+        let tall = 0.09 + 0.07 * hash(ix, iz, 1406);
+        if !w.visible([x, y + tall * 0.5, z], 0.32) {
+            continue;
+        }
+        f.fade = fade(here, needs);
+        let shade = 0.85 + 0.3 * hash(ix, iz, 1407);
+        f.put(
+            Model::Seagrass,
+            place(
+                [x, y - 0.01, z],
+                hash(ix, iz, 1408) * TAU,
+                0.0,
+                0.0,
+                [0.30, tall, 0.30],
+            ),
+            [shade, shade * (0.95 + 0.1 * hash(ix, iz, 1409)), shade],
+        )
+        .moving(anim::SWAY, hash(ix, iz, 1410) * TAU, 0.10, 0.55)
+        .grounded();
+    }
+    // The mangroves, thickening toward the shore to port. Each stand's
+    // trunk is at the surface and its roots reach the floor, however deep.
+    for &(ix, iz, x, z) in &cells(w, 1.0, 0.8, 11.0, 1420) {
+        let share = w.share(x, z, MEADOW);
+        let across = z - corridor(x);
+        let here = share * smooth(1.8, 4.5, across);
+        let needs = hash(ix, iz, 1421) * 0.8 + 0.15;
+        if here < needs {
+            continue;
+        }
+        let y = w.ground(x, z);
+        let deep = w.surface() - y;
+        if deep < 0.3 {
+            continue;
+        }
+        let spread = 0.45 + 0.35 * hash(ix, iz, 1422);
+        if !w.visible([x, y + deep * 0.5, z], deep.max(spread)) {
+            continue;
+        }
+        f.fade = fade(here, needs);
+        f.put(
+            Model::Mangrove,
+            place(
+                [x, y, z],
+                hash(ix, iz, 1423) * TAU,
+                0.0,
+                0.0,
+                [spread, deep, spread],
+            ),
+            [1.0, 1.0, 1.0],
+        )
+        .textured(Surface::Wood, 2.0);
+    }
+}
+
+/// The glass-sponge reef (V9): the living sponges on the mounds' crests,
+/// in clumps of fused vases, the dead ones grey and broken on their flanks,
+/// and the rubble of their skeletons between.
+fn sponge_reef(w: &World, f: &mut Frame) {
+    for &(ix, iz, x, z) in &cells(w, 0.30, 0.5, 8.0, 1440) {
+        let share = w.share(x, z, SPONGE_REEF);
+        if share < 0.05 {
+            continue;
+        }
+        let mound = sponge_mound(x, z);
+        let here = share * (0.20 + 0.80 * mound);
+        let needs = hash(ix, iz, 1441) * 0.75 + 0.05;
+        if here < needs || (z - corridor(x)).abs() < 0.3 {
+            continue;
+        }
+        let y = w.ground(x, z);
+        if !w.visible([x, y + 0.15, z], 0.4) {
+            continue;
+        }
+        f.fade = fade(here, needs);
+        let dead = hash(ix, iz, 1442) < 0.25 + 0.4 * (1.0 - mound);
+        let clump = if dead {
+            1
+        } else {
+            1 + (hash(ix, iz, 1443) * 3.0) as i32
+        };
+        for k in 0..clump {
+            let r = |n: u32| hash(ix * 4 + k, iz, 1444 + n);
+            let a = r(0) * TAU;
+            let off = if k == 0 { 0.0 } else { 0.06 + 0.05 * r(1) };
+            let (px, pz) = (x + a.cos() * off, z + a.sin() * off);
+            let h = if dead {
+                0.08 + 0.12 * r(2)
+            } else {
+                0.20 + 0.30 * r(2)
+            };
+            let lean = if dead {
+                0.5 + 0.7 * r(3)
+            } else {
+                0.30 * (r(3) - 0.5)
+            };
+            let girth = 0.38 + 0.30 * r(7);
+            let tone = if dead {
+                [0.50, 0.49, 0.45]
+            } else {
+                let warm = r(4);
+                [0.92, 0.92 + 0.04 * warm, 0.88 - 0.06 * warm]
+            };
+            f.put(
+                Model::GlassSponge,
+                place(
+                    [px, w.ground(px, pz) - 0.01, pz],
+                    r(5) * TAU,
+                    lean,
+                    0.1 * (r(6) - 0.5),
+                    [h * girth, h, h * girth],
+                ),
+                tone,
+            )
+            .glowing(if dead { 0.0 } else { 0.22 })
+            .grounded();
+        }
+        // Skeletons broken into the silt round a living clump.
+        if !dead && hash(ix, iz, 1450) < 0.5 {
+            let a = hash(ix, iz, 1451) * TAU;
+            let s = 0.025 + 0.02 * hash(ix, iz, 1452);
+            let (px, pz) = (x + a.cos() * 0.14, z + a.sin() * 0.14);
+            f.put(
+                Model::Rock1,
+                place(
+                    [px, w.ground(px, pz), pz],
+                    a,
+                    0.0,
+                    0.0,
+                    [s * 1.6, s * 0.6, s],
+                ),
+                [0.70, 0.70, 0.66],
+            )
+            .grounded();
+        }
+    }
+}
+
+/// The blue hole of the leg at `x` or either side of it, if one is near:
+/// its centre, its yaw, and the bank's height round its rim.
+fn blue_hole_near(w: &World, x: f32) -> Vec<([f32; 2], f32, f32)> {
+    let leg = crate::voyage::LEG as f32;
+    let k = (x / leg).floor() as i64;
+    let order = &w.seabed.order;
+    (k - 1..=k + 1)
+        .filter(|&k| order[k.rem_euclid(BIOMES as i64) as usize] == BLUE_HOLE)
+        .map(|k| {
+            let cx = (k as f32 + 0.5) * leg;
+            let (c, yaw, _) = hole_at(cx, corridor(cx));
+            // The bank, all round just outside the seabed's own drop.
+            let bank = (0..8)
+                .map(|i| {
+                    let a = i as f32 / 8.0 * TAU;
+                    let (sy, cy) = yaw.sin_cos();
+                    let (u, v) = (a.cos() * HOLE_ALONG * 1.4, a.sin() * HOLE_ACROSS * 1.4);
+                    w.ground(c[0] + cy * u + sy * v, c[1] - sy * u + cy * v)
+                })
+                .sum::<f32>()
+                / 8.0;
+            (c, yaw, bank)
+        })
+        .collect()
+}
+
+/// The blue hole (V9): its wall, the stalactites hanging under its two
+/// ledges, and the halocline, where the fresh water over the salt shimmers
+/// across the shaft like a second surface.
+fn blue_hole(w: &World, f: &mut Frame) {
+    for (c, yaw, bank) in blue_hole_near(w, w.camera()) {
+        let floor = bank - HOLE_DEPTH;
+        let deep = HOLE_DEPTH - HOLE_RIM;
+        let rows = place(
+            [c[0], floor, c[1]],
+            yaw,
+            0.0,
+            0.0,
+            [HOLE_ALONG, deep, HOLE_ACROSS],
+        );
+        let at = |p: [f32; 3]| -> [f32; 3] {
+            [0, 1, 2]
+                .map(|i| rows[i][0] * p[0] + rows[i][1] * p[1] + rows[i][2] * p[2] + rows[i][3])
+        };
+        let middle = [c[0], floor + deep * 0.5, c[1]];
+        if !w.visible(middle, HOLE_ALONG * 1.3) {
+            continue;
+        }
+        f.fade = 1.0;
+        f.put(Model::HoleWall, rows, [1.0, 1.0, 1.0]);
+        // Stalactites, from when the hole was a dry cave: under each ledge's
+        // overhang, in the recess behind its lip.
+        for (l, &ledge) in mesh::HOLE_LEDGES.iter().enumerate() {
+            let n = 90;
+            for i in 0..n {
+                let h = |k: u32| hash(i, l as i32, 1460 + k);
+                if h(0) < 0.35 {
+                    continue;
+                }
+                let a = (i as f32 + h(1)) / n as f32 * TAU;
+                let wander = 0.015 * (a * 3.0 + ledge * 20.0).sin();
+                let y = ledge + wander - 0.03;
+                let r = mesh::hole_wall_radius(a, y) - 0.012;
+                let top = at([a.cos() * r, y, a.sin() * r]);
+                let long = 0.10 + 0.35 * h(2) * h(2);
+                if !w.visible([top[0], top[1] - long * 0.5, top[2]], long) {
+                    continue;
+                }
+                let thick = 0.025 + 0.03 * h(3);
+                f.put(
+                    Model::Cone,
+                    place(top, h(4) * TAU, PI, 0.0, [thick, long, thick]),
+                    [0.70, 0.66, 0.58],
+                )
+                .element(element::STALACTITES);
+            }
+        }
+        // The halocline, a little under the first ledge, and the faint
+        // stain of the sulphide cloud a little under that.
+        for (y, tone) in [(0.34, [0.16, 0.30, 0.34]), (0.27, [0.10, 0.07, 0.04])] {
+            let p = at([0.0, y, 0.0]);
+            f.glass(
+                Model::Plane,
+                place(p, yaw, 0.0, 0.0, [HOLE_ALONG * 1.2, 1.0, HOLE_ACROSS * 1.2]),
+                tone,
+            )
+            .glowing(0.05)
+            .element(element::HALOCLINE);
         }
     }
 }
@@ -11709,8 +12133,9 @@ mod tests {
         // off the track, so a meeting that used to sit on the glass can move
         // out of view, and these are the ones that still cross it. Both are
         // early legs, so the drowned city later in the circuit does not move
-        // them.
-        let scenes = [("diver helmets", 630.0), ("shallows encounter", 840.0)];
+        // them; the meadow, added before the forest, moved the walking party
+        // a leg on.
+        let scenes = [("diver helmets", 1040.0), ("shallows encounter", 840.0)];
         for (name, start) in scenes {
             let seed = 0.0f32;
             let seabed = Seabed::new(0, seed);

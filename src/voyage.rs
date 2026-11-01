@@ -20,24 +20,28 @@ pub const SPEED: f64 = 0.055;
 /// through; the blend is kept near thirty seconds.
 pub const LEG: f64 = 16.5;
 const BLEND: f64 = 0.10;
-pub const BIOMES: usize = 14;
+pub const BIOMES: usize = 17;
 /// The order the legs come in, by biome: shallows, the coral garden, the
-/// kelp forest, the sargasso, the trench, the wrecks, the vents, Atlantis,
-/// the drowned city, the brine flats, the lava cave, the bloom, the abyss,
-/// polar ice, and round again. A biome's number is its place in every
+/// seagrass meadow, the kelp forest, the blue hole, the sargasso, the trench,
+/// the wrecks, the vents, Atlantis, the drowned city, the brine flats, the
+/// lava cave, the bloom, the glass-sponge reef, the abyss, polar ice, and
+/// round again. A biome's number is its place in every
 /// per-biome table, which the original eight keep and the newer seas take at
 /// the end of, so adding them never moved a landmark or the reference
 /// screenshots. The voyage still takes the trench between the sargasso and
 /// the wrecks, where the seabed first breaks away below a still sunlit rim,
 /// and the cave after Atlantis, where the massif rises; the drowned city, the
 /// last sea added, follows Atlantis, so the ruins of the oldest city give way
-/// to the towers of the newest.
-pub const ORDER: [usize; BIOMES] = [0, 8, 1, 9, 7, 2, 10, 3, 13, 11, 4, 12, 5, 6];
+/// to the towers of the newest. Of the three seas added last, the meadow
+/// keeps to the sunlit shelf between the reef and the kelp, the blue hole
+/// opens in the bank after the forest, and the glass sponges stand in the
+/// cold before the abyss.
+pub const ORDER: [usize; BIOMES] = [0, 8, 14, 1, 16, 9, 7, 2, 10, 3, 13, 11, 4, 12, 15, 5, 6];
 
 /// The visit seed as the shader and the seabed see it: `visit` folded into
 /// 0..1. Seed 0 is the canonical circuit, so the reference sheet and every
 /// place named for a biome keep their meaning; every other visit shuffles the
-/// fourteen legs, so a new visit does not enter the biomes in the same order.
+/// seventeen legs, so a new visit does not enter the biomes in the same order.
 pub fn seed_of(visit: u64) -> f32 {
     (visit % 1_000_003) as f32 / 1_000_003.0
 }
@@ -80,9 +84,11 @@ const PASSAGE: f64 = 5.15 * (LEG / 5.0);
 /// (its rim: the trench falls away beside the boat, not under it), then the
 /// newer seas: coral, sargasso, vents, brine flats, bloom and the drowned
 /// city, whose streets lie deep enough that its towers rise into the gloom
-/// without ever breaking the surface.
+/// without ever breaking the surface; then the seagrass meadow, shallow as
+/// the shallows, the glass sponges, deep and cold, and the blue hole's bank
+/// (the hole itself is the seabed's, which the helm follows down).
 const SEABED: [f64; BIOMES] = [
-    1.0, 3.2, 6.0, 9.0, 13.0, 40.0, 3.0, 4.5, 1.8, 2.8, 9.0, 6.0, 12.0, 8.0,
+    1.0, 3.2, 6.0, 9.0, 13.0, 40.0, 3.0, 4.5, 1.8, 2.8, 9.0, 6.0, 12.0, 8.0, 1.4, 11.0, 2.5,
 ];
 /// The band the Nautilus cruises in above the seabed, per biome.
 const CRUISE: [(f64, f64); BIOMES] = [
@@ -110,13 +116,22 @@ const CRUISE: [(f64, f64); BIOMES] = [
     // The drowned city: down its avenue at the height of the lower floors,
     // so the window looks along lit facades and up at the spires.
     (0.45, 1.30),
+    // The meadow: low over the grass, among the mangroves' roots.
+    (0.20, 0.50),
+    // The glass sponges: low over the mounds, so their lattices stand
+    // against the dark.
+    (0.30, 0.90),
+    // The blue hole: low over the bank, then down the shaft along its wall.
+    (0.30, 0.80),
 ];
 /// The highest the Nautilus may rise above the seabed: a fathom under the
 /// surface in the shallows, under the cave's vault, and clear of the ice. The
 /// coral garden keeps a little under the surface too; the other new seas are
-/// open water, the drowned city's avenue among them.
+/// open water, the drowned city's avenue among them; the meadow keeps under
+/// the mangroves' arches and the blue hole's bank under the surface.
 const CEILING: [f64; BIOMES] = [
-    0.70, 99.0, 99.0, 99.0, 0.62, 99.0, 2.45, 99.0, 0.90, 99.0, 99.0, 99.0, 99.0, 99.0,
+    0.70, 99.0, 99.0, 99.0, 0.62, 99.0, 2.45, 99.0, 0.90, 99.0, 99.0, 99.0, 99.0, 99.0, 0.75, 99.0,
+    1.5,
 ];
 /// Closest the Nautilus comes to the seabed.
 const CLEARANCE: f64 = 0.15;
@@ -280,7 +295,7 @@ impl Biome {
         Self::in_order(x, &order_for(seed))
     }
 
-    /// As [`Biome::at`], with the fourteen-leg circuit already shuffled.
+    /// As [`Biome::at`], with the seventeen-leg circuit already shuffled.
     pub fn in_order(x: f64, order: &[usize; BIOMES]) -> Self {
         let u = x / LEG;
         let k = u.floor();
@@ -359,7 +374,7 @@ mod tests {
             let mut seen = order;
             seen.sort_unstable();
             assert_eq!(seen, std::array::from_fn::<usize, BIOMES, _>(|i| i));
-            // Every leg is one of the fourteen, and the legs either side of a
+            // Every leg is one of the seventeen, and the legs either side of a
             // border differ.
             for leg in 0..2 * BIOMES {
                 let a = Biome::in_order((leg as f64 + 0.45) * LEG, &order).a;
@@ -400,7 +415,7 @@ mod tests {
         voyage.travel(1, 30.0);
         voyage.travel(1, 30.5);
         let at = voyage.advance(30.5 + PASSAGE + 0.1, 0.0);
-        assert_eq!(Biome::at(at.x, 0.0).a, 1, "two legs on is the forest");
+        assert_eq!(Biome::at(at.x, 0.0).a, 14, "two legs on is the meadow");
         voyage.travel(-1, 40.0);
         let at = voyage.advance(40.0 + PASSAGE + 0.1, 0.0);
         assert_eq!(Biome::at(at.x, 0.0).a, 8, "one back is the coral garden");

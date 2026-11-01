@@ -1,6 +1,6 @@
 //! The Nautilus' voyage as a real 3D scene.
 //!
-//! Thirteen biomes in the order each visit's seed shuffles them, with the swipes
+//! Seventeen biomes in the order each visit's seed shuffles them, with the swipes
 //! and the dive profile of [`crate::voyage`], rasterised: a seabed built in
 //! tiles as it comes into view ([`terrain`]), procedurally generated models placed and
 //! animated each frame by [`world`], a depth buffer and one sample. A
@@ -183,6 +183,11 @@ fn sky_cube_texels() -> Vec<u8> {
         // The drowned city is too deep for a sky; its cube is the water's
         // own teal-green, in case a border ever samples it.
         [0.010, 0.045, 0.040],
+        // The meadow under a bright tropical sky, the glass sponges far too
+        // deep for one, and over the blue hole the same clear sky as the reef.
+        [0.08, 0.36, 0.62],
+        [0.006, 0.014, 0.022],
+        [0.06, 0.40, 0.70],
     ];
     const HORIZON: [[f32; 3]; crate::voyage::BIOMES] = [
         [0.46, 0.80, 0.92],
@@ -199,9 +204,13 @@ fn sky_cube_texels() -> Vec<u8> {
         [0.74, 0.82, 0.86],
         [0.06, 0.08, 0.17],
         [0.040, 0.120, 0.100],
+        [0.48, 0.82, 0.88],
+        [0.020, 0.040, 0.060],
+        [0.52, 0.86, 0.95],
     ];
     const CLOUDINESS: [f32; crate::voyage::BIOMES] = [
-        0.65, 0.35, 0.80, 0.20, 0.0, 0.0, 0.35, 0.10, 0.55, 0.72, 0.0, 0.60, 0.0, 0.0,
+        0.65, 0.35, 0.80, 0.20, 0.0, 0.0, 0.35, 0.10, 0.55, 0.72, 0.0, 0.60, 0.0, 0.0, 0.45, 0.0,
+        0.30,
     ];
     const CLOUD_TINT: [[f32; 3]; crate::voyage::BIOMES] = [
         [0.98, 0.98, 0.96],
@@ -218,6 +227,9 @@ fn sky_cube_texels() -> Vec<u8> {
         [0.94, 0.94, 0.92],
         [0.0; 3],
         [0.0; 3],
+        [0.98, 0.98, 0.95],
+        [0.0; 3],
+        [1.0, 0.98, 0.94],
     ];
     const SUN_TINT: [[f32; 3]; crate::voyage::BIOMES] = [
         [1.0, 0.96, 0.82],
@@ -234,6 +246,9 @@ fn sky_cube_texels() -> Vec<u8> {
         [1.0, 0.94, 0.82],
         [0.0; 3],
         [0.0; 3],
+        [1.0, 0.95, 0.80],
+        [0.0; 3],
+        [1.0, 0.95, 0.82],
     ];
     let sun = {
         let d = world::SUN;
@@ -371,7 +386,7 @@ struct Globals {
     lights: [[f32; 4]; 8],
     light_colours: [[f32; 4]; 8],
     /// This visit's biome circuit, four legs a vector.
-    order: [[f32; 4]; 4],
+    order: [[f32; 4]; 5],
     /// The biome mix the sky reads at the window: a, b, w, and how much of
     /// the sea there has a sky above it at all.
     sky: [f32; 4],
@@ -899,6 +914,14 @@ mod effect {
     /// `Trireme`, `Aqueduct`, `Stele`, `Mosaic` and `Lighthouse`; its
     /// elements one by one are `world::element`'s.
     pub const ATLANTIS_PLAN: u64 = 1 << 47;
+    /// `Seagrass`: the meadow's grass (V9).
+    pub const SEAGRASS: u64 = 1 << 48;
+    /// `Mangrove`: the meadow's mangrove roots.
+    pub const MANGROVES: u64 = 1 << 49;
+    /// `GlassSponge`: the glass-sponge reef.
+    pub const GLASS_SPONGES: u64 = 1 << 50;
+    /// `HoleWall`: the blue hole's shaft.
+    pub const HOLE_WALL: u64 = 1 << 51;
 
     pub const MODEL_BITS: u64 = ((1 << 31) - 1)
         | CORALS
@@ -913,7 +936,11 @@ mod effect {
         | RAYS
         | CRABS
         | SEALS
-        | ATLANTIS_PLAN;
+        | ATLANTIS_PLAN
+        | SEAGRASS
+        | MANGROVES
+        | GLASS_SPONGES
+        | HOLE_WALL;
     pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
     pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
 
@@ -1055,6 +1082,20 @@ mod effect {
             "Statue, Torso, Head, Amphora, Trireme, Aqueduct, Stele, Mosaic, Lighthouse",
             "Atlantis' statues, colossus, harbour, aqueduct, stelae, mosaics, lighthouse",
         ),
+        ("seagrass", SEAGRASS, "Seagrass", "the meadow's seagrass"),
+        (
+            "mangroves",
+            MANGROVES,
+            "Mangrove",
+            "the meadow's mangrove roots",
+        ),
+        (
+            "glass sponges",
+            GLASS_SPONGES,
+            "GlassSponge",
+            "the glass-sponge reef",
+        ),
+        ("hole wall", HOLE_WALL, "HoleWall", "the blue hole's shaft"),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
         ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
         (
@@ -1156,6 +1197,10 @@ fn model_bit(model: usize) -> u64 {
         | Model::Stele
         | Model::Mosaic
         | Model::Lighthouse => effect::ATLANTIS_PLAN,
+        Model::Seagrass => effect::SEAGRASS,
+        Model::Mangrove => effect::MANGROVES,
+        Model::GlassSponge => effect::GLASS_SPONGES,
+        Model::HoleWall => effect::HOLE_WALL,
     }
 }
 
@@ -3295,6 +3340,9 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         let c = mix3(c, [0.17, 0.26, 0.25], share(world::BRINE) * 0.40);
         let c = mix3(c, [0.035, 0.045, 0.13], share(world::BLOOM) * 0.55);
         let c = mix3(c, [0.030, 0.105, 0.085], share(world::CITY) * 0.60);
+        let c = mix3(c, [0.12, 0.36, 0.28], share(world::MEADOW) * 0.50);
+        let c = mix3(c, [0.020, 0.050, 0.075], share(world::SPONGE_REEF) * 0.60);
+        let c = mix3(c, [0.04, 0.22, 0.48], share(world::BLUE_HOLE) * 0.50);
         let c = mix3(c, [0.05, 0.22, 0.32], arctic * 0.75);
         mix3(c, [0.030, 0.012, 0.010], cave * 0.85)
     };
@@ -3310,12 +3358,34 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     let water = mix3(water, [0.18, 0.31, 0.31], share(world::BRINE) * 0.60);
     let water = mix3(water, [0.030, 0.055, 0.13], share(world::BLOOM) * 0.70);
     let water = mix3(water, [0.070, 0.190, 0.150], share(world::CITY) * 0.75);
+    // The meadow's water is shallow and green with the grass's light, the
+    // glass sponges' cold and grey-blue, and the blue hole's turquoise over
+    // its bank and an ever deeper ultramarine down its shaft.
+    let hole = mix3(
+        [0.10, 0.50, 0.62],
+        [0.02, 0.10, 0.36],
+        soft(0.25, 0.75, depth),
+    );
+    let water = mix3(water, [0.20, 0.47, 0.40], share(world::MEADOW) * 0.70);
+    let water = mix3(
+        water,
+        [0.035, 0.075, 0.105],
+        share(world::SPONGE_REEF) * 0.75,
+    );
+    let water = mix3(water, hole, share(world::BLUE_HOLE) * 0.75);
     let deep = mix3(deep, [0.025, 0.20, 0.38], share(world::CORAL) * 0.65);
     let deep = mix3(deep, [0.14, 0.13, 0.05], share(world::SARGASSO) * 0.60);
     let deep = mix3(deep, [0.005, 0.006, 0.008], share(world::VENTS) * 0.65);
     let deep = mix3(deep, [0.060, 0.130, 0.150], share(world::BRINE) * 0.55);
     let deep = mix3(deep, [0.004, 0.010, 0.040], share(world::BLOOM) * 0.65);
     let deep = mix3(deep, [0.010, 0.040, 0.034], share(world::CITY) * 0.70);
+    let deep = mix3(deep, [0.06, 0.24, 0.20], share(world::MEADOW) * 0.60);
+    let deep = mix3(
+        deep,
+        [0.006, 0.016, 0.028],
+        share(world::SPONGE_REEF) * 0.70,
+    );
+    let deep = mix3(deep, [0.008, 0.035, 0.16], share(world::BLUE_HOLE) * 0.65);
     // Over the trench the water is clear, and daylight reaches its walls;
     // the shallow reef gets a little more of it, the vents almost none.
     let sun = (-depth * 4.3).exp()
@@ -3324,7 +3394,10 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         * (1.0 + 0.30 * share(world::CORAL))
         * (1.0 + 0.50 * share(world::SARGASSO))
         * (1.0 - 0.55 * share(world::VENTS))
-        * (1.0 - 0.60 * share(world::CITY));
+        * (1.0 - 0.60 * share(world::CITY))
+        * (1.0 + 0.40 * share(world::MEADOW))
+        * (1.0 - 0.50 * share(world::SPONGE_REEF))
+        * (1.0 + 0.30 * share(world::BLUE_HOLE));
     let lamp = 0.22 + 0.95 * soft(0.12, 0.70, depth);
     let [right, up, out] = pose.basis;
     let in_boat = |v: [f32; 3]| {
@@ -3379,9 +3452,9 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     let haze = world::SIGHT_K / blend(world::SIGHT);
     // How much this sea has a sky the water can open on to: the shallow seas
     // can through Snell's window, the polar ice through its leads; the cave,
-    // the deep, the bloom and the drowned city cannot.
+    // the deep, the bloom, the drowned city and the glass sponges cannot.
     let sky = blend([
-        1.0, 0.75, 0.60, 0.18, 0.0, 0.0, 0.65, 0.45, 1.0, 1.0, 0.0, 0.85, 0.0, 0.0,
+        1.0, 0.75, 0.60, 0.18, 0.0, 0.0, 0.65, 0.45, 1.0, 1.0, 0.0, 0.85, 0.0, 0.0, 1.0, 0.0, 0.9,
     ]);
 
     // The lights that matter most: nearest what the window looks at, a
@@ -3404,7 +3477,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         score(a).total_cmp(&score(b))
     });
     let v4 = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
-    let mut order = [[0.0; 4]; 4];
+    let mut order = [[0.0; 4]; 5];
     for (i, &id) in w.seabed.order.iter().enumerate() {
         order[i / 4][i % 4] = id as f32;
     }
@@ -3698,7 +3771,7 @@ mod tests {
             .unwrap_or(0);
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom", "city",
+            "coral", "sargasso", "vents", "brine", "bloom", "city", "meadow", "sponges", "hole",
         ];
         let offsets: Vec<f64> = std::env::var("DIVE3D_PREVIEW_OFFSETS")
             .ok()
@@ -4326,7 +4399,7 @@ mod tests {
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom", "city",
+            "coral", "sargasso", "vents", "brine", "bloom", "city", "meadow", "sponges", "hole",
         ];
         let frames = 60;
         let mut total = 0.0;
@@ -4412,7 +4485,7 @@ mod tests {
             .unwrap_or(6usize);
         let names = [
             "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom", "city",
+            "coral", "sargasso", "vents", "brine", "bloom", "city", "meadow", "sponges", "hole",
         ];
         let span = crate::voyage::LEG / crate::voyage::SPEED;
         // `DIVE3D_COUNTERS=name,name` counts those V3D counters a frame

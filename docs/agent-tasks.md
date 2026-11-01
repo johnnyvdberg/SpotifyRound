@@ -86,10 +86,11 @@ run at once**, from different groups. Model tier is a suggestion.
 | V6 | atlantis | At least ten new Atlantis elements | Opus | done, merged into `main` (fourteen elements, rolling seabed; `docs/handoff/v6.md`) |
 | V7 | atlantis | Underwater Greek temple environment | Opus | done, merged into `main` (octastyle temple the boat sails through; `docs/handoff/v7.md`) |
 | V8 | lostcity | Lost city: travel through large corridors with detailed interiors | Opus | done, merged into `main` (the drowned city's galleria; `docs/handoff/v8.md`) |
-| V9 | biomes | Three new biomes unlike the current ones | Opus | todo |
+| V9 | biomes | Three new biomes unlike the current ones | Opus | in progress (`v9-biomes`) |
 | V10 | detail | More detail in every biome with headroom | Sonnet | todo |
-| M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01 |
+| M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01; Poly Haven is next for rocks and props |
 | M2 | models | Quaternius ships as worn wrecks | Opus | todo |
+| M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |
 
 Order: tooling and perf first (they make room and make change visible), then V1 (sets the visible
 range everything else is built for), then V3/V4, V5, V6/V7, V8, V9, V10.
@@ -202,11 +203,31 @@ level later is a bigger triangle count and a rerun. Keep the procedural model
 as the template the import is fitted to (`cast` in `mesh.rs`), and keep its
 animation working (`aux`). Each import gets a skip switch and a measured row.
 
+Second source for scans, from https://github.com/madjin/awesome-cc0: Poly Haven
+(CC0, photo-scanned and textured, open API at `api.polyhaven.com`, no login).
+Useful: `coast_rocks_*`, cliffs and boulders (for the rocks task), ceramic and
+antique vases (amphorae), barrels, `cannon_01`, lanterns, chairs and tables (the
+galleria's rooms). The 1k glTF shares the full-resolution mesh (about 1.3 M
+triangles for a rock), so `tools/decimate` needs a glTF reader that bakes the
+diffuse texture into vertex colours. Kenney (direct CC0 zips) is the fallback.
+Meshy has no credits left.
+
 ### M2. Ships as wrecks
 
 Quaternius's ships pack (https://quaternius.com/packs/ships.html) as wrecks:
 worn down first, with broken masts, holed and listing hulls, growth and silt,
 bedded by `world::bed` rules like the procedural wrecks.
+
+### M3. A drowned fort
+
+The user likes Poly Haven's Modular Fort 01 (https://polyhaven.com/a/modular_fort_01,
+CC0, Rico Cilliers, 28 k triangles, textured stone, plaster and trim; part of the
+"smugglers cove" collection with `cannon_01` and barrels). Build a drowned
+colonial fort from its modules: ramparts, a gate and a corner bastion, half
+buried and fallen, with cannon spilled down the slope. It belongs in the wrecks
+(a fort above the anchorage the wrecks were lost in), or on the blue hole's bank
+(V9). It needs M1's glTF reader with the textures baked to vertex colours, and
+`world::bed` seating like the ruins. Skip switch and measured row as usual.
 
 ## Notes for the user
 
