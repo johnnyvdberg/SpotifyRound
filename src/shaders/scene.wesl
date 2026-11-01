@@ -2286,7 +2286,10 @@ fn vs_sprite(
         let cone = smooth01(0.80, 0.95, dot(normalize(to), g.lamp.xyz));
         lit = 0.25 + 2.5 * cone * g.lamp.w / (1.0 + dot(to, to) * 0.08) + g.sun.w * 0.6;
     }
-    out.colour = tint.rgb * ember * lit * (1.0 - fog_of(d)) * bubble_fade;
+    // A glow is a light: it carries further through the water than shapes
+    // do, as far as `world::lit_cells` places them.
+    let reach = select(1.0, LIGHT_SIGHT, kind == 2u);
+    out.colour = tint.rgb * ember * lit * (1.0 - fog_of(d / reach)) * bubble_fade;
     out.kind = kind;
     return out;
 }
