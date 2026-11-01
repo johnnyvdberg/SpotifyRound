@@ -1322,6 +1322,13 @@ struct City {
     keep: f32,
 };
 
+// The water every polished or glazed part mirrors: one tone, between the deep
+// below and the lit water above. Worked out where it is used rather than held
+// in three registers for the whole of `city_light`.
+fn city_env() -> vec3<f32> {
+    return mix(g.deep.rgb, g.water.rgb * 1.6, 0.55);
+}
+
 // The drowned city's surfaces. `n` is the surface's world normal and `v`
 // the way to the camera, both unit length; `distance` how far off it is.
 fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> City {
@@ -1352,7 +1359,6 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     // the deep below and the lit water above. A gradient keyed to the
     // reflected ray reads no better from the street, and on the Pi its
     // registers slowed every city pixel by a millisecond and more.
-    let env = mix(g.deep.rgb, g.water.rgb * 1.6, 0.55);
     if (kind > 1.4) {
         // Glass panes leaded in an iron lattice, lit warm from within. The
         // lattice is in the world, so a walkway stretched between two towers
@@ -1362,7 +1368,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
         let lead = min(min(q.x, q.y), q.z);
         let pane = mix(smooth01(0.03, 0.08, lead), 0.8, smooth01(10.0, 22.0, distance));
         out.lamps = vec3<f32>(0.95, 0.64, 0.30) * (0.06 + 0.32 * pane);
-        out.sheen += env * (0.12 + 0.9 * fresnel) * pane;
+        out.sheen += city_env() * (0.12 + 0.9 * fresnel) * pane;
         out.keep = 0.55;
         return out;
     }
@@ -1380,7 +1386,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
         let r = reflect(-v, n);
         let band = exp(-60.0 * (r.y - 0.30) * (r.y - 0.30));
         out.sheen += vec3<f32>(1.0, 0.74, 0.40) * brass * (1.0 - foot)
-            * (env * (0.22 + 0.9 * fresnel) + vec3<f32>(0.06, 0.05, 0.04) * band);
+            * (city_env() * (0.22 + 0.9 * fresnel) + vec3<f32>(0.06, 0.05, 0.04) * band);
     }
     if (kind < 0.5) {
         return out;
@@ -1403,7 +1409,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     let pane = smooth01(0.10, 0.18, f.x) * smooth01(0.90, 0.82, f.x)
         * smooth01(0.14, 0.24, f.y) * smooth01(0.86, 0.78, f.y);
     // Mostly lamplight; now and then a cold, greenish strip-lit room.
-    var warm = mix(vec3<f32>(1.0, 0.58, 0.22), vec3<f32>(0.70, 0.90, 0.66), step(0.93, h));
+    var tone = step(0.93, h);
     var bright = 0.45 + 0.75 * fract(h * 7.31);
     // A few windows flicker, each at its own rate, as failing lamps do.
     let fault = fract(h * 13.7);
@@ -1417,7 +1423,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
         let ride = 1.5 + 9.0 * smooth01(-0.8, 0.8, sin(t * 0.21 + shaft * 40.0));
         lit = 1.0 - smooth01(0.30, 0.55, abs(cell.y - 0.5 - ride));
         bright = 1.25;
-        warm = vec3<f32>(0.85, 0.92, 1.0);
+        tone = 2.0;
     }
     // Far off the grid is finer than the pixels: its average, steady.
     let far = smooth01(22.0, 45.0, distance);
@@ -1429,12 +1435,17 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
         room = mix(city_room(f, h, t), vec3<f32>(1.0), plain);
     }
     let glow = mix(lit * pane * bright * room, vec3<f32>(0.22), far) * wall;
+    let warm = select(
+        mix(vec3<f32>(1.0, 0.58, 0.22), vec3<f32>(0.70, 0.90, 0.66), tone),
+        vec3<f32>(0.85, 0.92, 1.0),
+        tone > 1.5,
+    );
     out.lamps = warm * glow;
     // Dark glass where a room is unlit, mirroring the water; a lit pane
     // mirrors it faintly over its own light.
     let glass = pane * wall * (1.0 - far);
     out.keep *= 1.0 - 0.45 * glass * (1.0 - lit);
-    out.sheen += env * (0.10 + 0.8 * fresnel) * glass * (1.0 - 0.7 * lit);
+    out.sheen += city_env() * (0.10 + 0.8 * fresnel) * glass * (1.0 - 0.7 * lit);
     return out;
 }
 

@@ -242,10 +242,10 @@ Dive3d sealed models material8 grounded sway #0 vs_model       VS-bin    91   4 
 Dive3d sealed models material8 grounded any-anim #0 fs_model       FS       147   4     0   25    32        0:0    0    4
 Dive3d sealed models material8 grounded any-anim #0 vs_model       VS       773   2     1  302    57        0:0    1   67
 Dive3d sealed models material8 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
-Dive3d models city part0 #0      fs_model       FS       136   2     0   33    33        0:0    0    1
+Dive3d models city part0 #0      fs_model       FS       180   4     0   35    31        0:0    0   14
 Dive3d models city part0 #0      vs_model       VS       403   2     1  193    46        0:0    1   24
 Dive3d models city part0 #0      vs_model       VS-bin    66   4     0   37    16        0:0    1    1
-Dive3d models city part1 #0      fs_model       FS       505   2     0  140    48        0:0    1   18
+Dive3d models city part1 #0      fs_model       FS       561   2     0  157    44        0:0    0   25
 Dive3d models city part1 #0      vs_model       VS       435   2     1  214    48        0:0    1   28
 Dive3d models city part1 #0      vs_model       VS-bin    66   4     0   37    16        0:0    1    1
 Dive3d models city part2 #0      fs_model       FS       160   4     0   35    32        0:0    0    6
@@ -254,10 +254,10 @@ Dive3d models city part2 #0      vs_model       VS-bin    66   4     0   37    1
 Dive3d models city part3 #0      fs_model       FS       128   4     0   18    32        0:0    0    3
 Dive3d models city part3 #0      vs_model       VS       413   2     1  201    46        0:0    1   25
 Dive3d models city part3 #0      vs_model       VS-bin    66   4     0   37    16        0:0    1    1
-Dive3d sealed models city part0 #0 fs_model       FS       136   2     0   33    33        0:0    0    1
+Dive3d sealed models city part0 #0 fs_model       FS       180   4     0   35    31        0:0    0   14
 Dive3d sealed models city part0 #0 vs_model       VS       403   2     1  193    46        0:0    1   24
 Dive3d sealed models city part0 #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
-Dive3d sealed models city part1 #0 fs_model       FS       505   2     0  140    48        0:0    1   18
+Dive3d sealed models city part1 #0 fs_model       FS       561   2     0  157    44        0:0    0   25
 Dive3d sealed models city part1 #0 vs_model       VS       435   2     1  214    48        0:0    1   28
 Dive3d sealed models city part1 #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
 Dive3d sealed models city part2 #0 fs_model       FS       160   4     0   35    32        0:0    0    6
