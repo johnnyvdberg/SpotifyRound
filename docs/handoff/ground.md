@@ -68,15 +68,67 @@ Branch `ground`, from `main` 9e10613. Pictures are before | after, from `deploy/
 
 ## Switches and costs
 
-- `part::SEDIMENT` (shader switch `NO_SEDIMENT`): the slope-following sand line and silt drifts.
-- `part::DEBRIS`: everything marked `world::DEBRIS` (scour, planks, guns, ballast, chips, rubble,
+- `part::SEDIMENT` (bit 38, `DIVE3D_SKIP=274877906944`; shader switch `NO_SEDIMENT`, 256): the slope-following sand line and silt drifts.
+- `part::DEBRIS` (bit 39, `DIVE3D_SKIP=549755813888`): everything marked `world::DEBRIS` (scour, planks, guns, ballast, chips, rubble,
   scree).
 - Keels are still `effect::ICE_KEELS`.
 - shaderdb: grounded vertex shaders +37 to +46 instructions (still two threads, as before); the
   ice's fragment shader 97 to 154 (four threads); its vertex shader 146 to 188 (four threads). The
   grounded ice pipelines (never used) are no longer built. Baseline updated.
 
-MEASUREMENTS
+## Measurements
+
+On the Pi 5 (OpenGL ES), `hotspots`, four visits, 168 places, kiosk frozen; each table's runs in one
+session. (The bits were 35/36 on the branch; the merge with `water` moved them to 38/39 and the
+shader switch from 128 to 256.)
+
+**The branch, before merging** (2026-11-01, coordinator): `ground` 546da81 against `main` dc04018.
+`ground` was branched from 9e10613, before `water`'s sight cull, so this pair mostly shows the cull;
+against its own base (9e10613, `docs/handoff/water.md`'s base column) the branch is level: median
+7.63 -> 7.58, arctic 8.28 -> 8.19 (the keels' own shader, 8be63da, took back the 8.98 of the run
+before it), abyss 6.91 -> 7.08.
+
+**Merged into `main`** (dfd5809), against `main` before the merge (dc04018), two sessions:
+
+| run | median | worst | over 11 ms |
+|---|---:|---:|---:|
+| `main` dc04018 | 6.88 / 6.89 | 10.29 / 10.27 (coral s0 0.15) | 0 |
+| merged dfd5809 | 6.82 / 6.84 | 10.21 / 10.18 (coral s0 0.15) | 0 |
+| merged, `part::SEDIMENT` off | 6.80 | 10.14 | 0 |
+
+Per sea, median / worst, second session (ms):
+
+| sea | main | merged | merged without sediment |
+|---|---|---|---|
+| abyss | 6.08 / 7.89 | 6.20 / 7.47 | 6.21 / 7.42 |
+| arctic | 7.28 / 9.31 | 7.27 / 9.17 | 7.21 / 9.22 |
+| atlantis | 7.49 / 9.23 | 7.14 / 9.09 | 7.13 / 9.07 |
+| bloom | 5.94 / 7.72 | 5.95 / 7.60 | 5.95 / 7.62 |
+| brine | 6.25 / 8.67 | 6.14 / 8.55 | 6.13 / 8.64 |
+| cave | 6.71 / 9.47 | 6.87 / 9.30 | 6.79 / 9.33 |
+| city | 7.39 / 8.76 | 7.29 / 8.73 | 7.25 / 8.75 |
+| coral | 8.57 / 10.27 | 8.67 / 10.18 | 8.49 / 10.14 |
+| forest | 7.19 / 9.01 | 7.19 / 9.00 | 7.05 / 9.10 |
+| sargasso | 7.59 / 9.58 | 7.40 / 9.31 | 7.40 / 9.35 |
+| shallows | 7.53 / 9.72 | 7.41 / 9.61 | 7.38 / 9.61 |
+| trench | 6.13 / 7.57 | 6.20 / 7.10 | 6.23 / 7.10 |
+| vents | 5.98 / 8.09 | 6.18 / 7.75 | 6.14 / 7.84 |
+| wrecks | 5.71 / 7.74 | 5.76 / 7.33 | 5.78 / 7.33 |
+
+- The arctic is back to `main`'s time; Atlantis (-0.35, its terrace rocks gone) and the sargasso
+  (-0.19) are faster.
+- The abyss is +0.12 at the median and -0.42 at its worst place: visit 500000 is 0.15-0.25 slower,
+  the others level or faster. Setting its stone share back from 0.55 to 0.45 was measured (6.23 ->
+  6.20, within the noise) and not kept.
+- **Sediment** costs 0.04 ms at the median (coral 0.18, forest 0.14, the rest within the noise). The
+  alternating `features` method cannot price it (the switch recompiles the pipelines, so it read
+  "under 0.05 everywhere"); these are `hotspots` pairs.
+- **Debris** is under 0.05 ms in every sea (`bench-pi.sh features`, on the branch).
+- Ice keels: under 0.05 ms in every sea (`features`), from +0.7 ms in the arctic before 8be63da.
+
+Pictures of the merge (`deploy/shots.sh compare`, before | after), most changed first: the arctic's
+keels, the cave's approach and the brine's crust (fewer, bedded stones), the abyss's border with
+the ice, the trench's lip. Every sea was looked at.
 
 ## Left
 

@@ -108,6 +108,14 @@ frame with everything: median 6.94 ms over 13938 paired frames
 | corner mask | pass | under 0.05 ms in every sea | | |
 | dolphins | model | not in view | | |
 
+### The ground group's rows (V3/V4)
+
+| feature | switch | seas (median ms there) | median ms | worst ms |
+|---|---|---|---|---|
+| sediment: sand line on slopes, silt drifts (V4) | `DIVE3D_SKIP` bit 38 (`part::SEDIMENT`), priced by `hotspots` pairs | coral 0.18, forest 0.14, cave 0.08, the rest within the noise | 0.04 | +0.04 at the worst place |
+| debris round wrecks, ruins and outcrops (V4) | `DIVE3D_SKIP` bit 39 (`part::DEBRIS`) | under 0.05 in every sea (`features`, branch `ground`) | | |
+| ice keels, rounded and lit through (V3) | `DIVE3D_SKIP_EFFECTS` (`effect::ICE_KEELS`) | under 0.05 in every sea (`features`, branch `ground`) | | |
+
 ### The water group's rows (V1/V2)
 
 These change a shader switch or the seabed's tiles, which the alternating method above cannot
