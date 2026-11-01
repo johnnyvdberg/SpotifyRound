@@ -14,7 +14,7 @@ cd /work
 echo "== building" >&2
 flock /target/.shaderdb.lock bash -c '
     set -o pipefail
-    tar -C /src --exclude=./target --exclude=./.git -cf - . | tar -C /work -xmf -
+    tar -C /src --exclude=./target --exclude=./.git --exclude=./.claude -cf - . | tar -C /work -xmf -
     cargo test --release --locked --no-run --message-format=json 2>/dev/stderr \
         | grep "\"test\":true" \
         | sed -n "s/.*\"executable\":\"\([^\"]*\)\".*/\1/p" | head -1 > /work/.test-binary

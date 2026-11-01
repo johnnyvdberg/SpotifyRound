@@ -75,6 +75,8 @@ const MASK_VERTICES: u32 = 6 * 64;
 const NEAR: f32 = 0.05;
 const MAX_INSTANCES: usize = 24_576;
 const MAX_SPRITES: usize = 8_192;
+/// How many quads a vent plume's ribbon is drawn in (`vs_plume`).
+const PLUME_SEGMENTS: u32 = 4;
 const MAX_TUNNEL_VERTICES: usize = 16_384;
 const MAX_TUNNEL_INDICES: usize = 98_304;
 /// The sea, at half its brightness (`SEA_SCALE` in `scene.wesl`): ten bits a
@@ -409,6 +411,8 @@ pub(crate) struct Nautilus {
     shafts: wgpu::RenderPipeline,
     /// Searchlight beams of other submarines.
     beams: wgpu::RenderPipeline,
+    /// The vents' plumes, one ribbon each.
+    plumes: wgpu::RenderPipeline,
     /// Far coral, as cut-out cards: one pipeline per entry of [`FORMS`].
     impostors: Vec<wgpu::RenderPipeline>,
     globals: wgpu::Buffer,
@@ -750,6 +754,11 @@ mod part {
     pub const TERRAIN_FACETS: u64 = 1 << 31;
     /// The far coral's cut-out cards.
     pub const IMPOSTORS: u64 = 1 << 32;
+    /// The vents' plumes.
+    pub const PLUMES: u64 = 1 << 33;
+    /// Not a part: the tunnel before the seabed and the models even when the
+    /// boat is along its axis (the order it takes everywhere else).
+    pub const TUNNEL_FIRST: u64 = 1 << 34;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -1112,6 +1121,7 @@ struct Pipelines {
     sprites: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
     beams: wgpu::RenderPipeline,
+    plumes: wgpu::RenderPipeline,
     impostors: Vec<wgpu::RenderPipeline>,
 }
 
@@ -1338,7 +1348,12 @@ fn compile(
                         pipelines.push(Some(pipeline(
                             &model_label(label, material, grounded, anim),
                             "vs_model",
-                            "fs_model",
+                            // The tunnel has a fragment shader of its own.
+                            if material == world::material::VAULT as i32 && fading == 0.0 {
+                                "fs_vault"
+                            } else {
+                                "fs_model"
+                            },
                             &model_buffers,
                             blend,
                             write_depth,
@@ -1552,6 +1567,19 @@ fn compile(
         &[],
         None,
     );
+    let plumes = pipeline(
+        "Dive3d plumes",
+        "vs_plume",
+        "fs_plume",
+        &sprite_buffers,
+        Some(additive),
+        false,
+        nearer,
+        false,
+        true,
+        &[],
+        None,
+    );
     // Opaque and writing depth, like the models: the discard is what
     // shapes it, and it is drawn after them so they hide it first.
     let impostors = FORMS
@@ -1586,6 +1614,7 @@ fn compile(
         sprites,
         shafts,
         beams,
+        plumes,
         impostors,
     }
 }
@@ -1960,6 +1989,7 @@ impl Nautilus {
             sprites,
             shafts,
             beams,
+            plumes,
             impostors,
         } = compile(
             device,
@@ -2002,6 +2032,7 @@ impl Nautilus {
             sprites,
             shafts,
             beams,
+            plumes,
             impostors,
             globals,
             group,
@@ -2075,6 +2106,7 @@ impl Nautilus {
         self.sprites = p.sprites;
         self.shafts = p.shafts;
         self.beams = p.beams;
+        self.plumes = p.plumes;
         self.impostors = p.impostors;
         self.switches = switches;
     }
@@ -2158,6 +2190,19 @@ impl Nautilus {
         });
         #[cfg(test)]
         let terrain_done = clock.elapsed();
+        let tunnel_first = self.skips(part::TUNNEL_FIRST);
+        // Along its axis the tunnel's lower walls lie under the cave's own
+        // floor, so drawn first they are shaded and then covered: the tunnel
+        // goes after the seabed there (1.1-1.5 ms in the cave and at the
+        // brine's end, where the boat looks along it). Off the axis, at a mouth, the
+        // walls are what hides the seabed behind them and go first.
+        let tunnel_late = !tunnel_first
+            && world
+                .seabed
+                .tunnel_at(world.pose.pos[0])
+                .is_some_and(|(c, _, _)| {
+                    (world.pose.pos[1] - c[1]).hypot(world.pose.pos[2] - c[2]) < world::TUNNEL * 0.7
+                });
         let mut uniforms = globals(&world, &self.frame);
         uniforms.ice = [
             self.ice_origin[0],
@@ -2494,6 +2539,20 @@ impl Nautilus {
                 + std::mem::size_of_val(beams)) as u64,
             bytemuck::cast_slice(impostors),
         );
+        // The vents' plumes come last.
+        let plumes = &self.frame.plumes[..self
+            .frame
+            .plumes
+            .len()
+            .min(MAX_SPRITES - sprites.len() - shafts.len() - beams.len() - impostors.len())];
+        gpu.queue.write_buffer(
+            &self.sprite_buffer,
+            (std::mem::size_of_val(sprites)
+                + std::mem::size_of_val(shafts)
+                + std::mem::size_of_val(beams)
+                + std::mem::size_of_val(impostors)) as u64,
+            bytemuck::cast_slice(plumes),
+        );
 
         #[cfg(test)]
         let upload_done = clock.elapsed();
@@ -2624,15 +2683,23 @@ impl Nautilus {
                     let half = this.render as f32 / 2.0;
                     pass.set_viewport(0.0, 0.0, half, half, 0.0, 1.0);
                 }
-                if tunnel_drawn && !this.skips(part::MODELS) && !this.skips(part::TUNNEL) {
-                    pass.set_pipeline(
-                        this.models[pipeline_slot(&all[tunnel_instance as usize])]
-                            .as_ref()
-                            .expect("the tunnel is not the city"),
-                    );
-                    pass.set_vertex_buffer(0, this.tunnel.slice(..));
-                    pass.set_index_buffer(this.tunnel_indices.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..tunnel_count, 0, tunnel_instance..tunnel_instance + 1);
+                let draw_tunnel = |pass: &mut wgpu::RenderPass| {
+                    if tunnel_drawn && !this.skips(part::MODELS) && !this.skips(part::TUNNEL) {
+                        pass.set_pipeline(
+                            this.models[pipeline_slot(&all[tunnel_instance as usize])]
+                                .as_ref()
+                                .expect("the tunnel is not the city"),
+                        );
+                        pass.set_vertex_buffer(0, this.tunnel.slice(..));
+                        pass.set_index_buffer(
+                            this.tunnel_indices.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        pass.draw_indexed(0..tunnel_count, 0, tunnel_instance..tunnel_instance + 1);
+                    }
+                };
+                if !tunnel_late {
+                    draw_tunnel(&mut pass);
                 }
                 let models = |pass: &mut wgpu::RenderPass, wanted: Kind| {
                     pass.set_vertex_buffer(0, this.vertices.slice(..));
@@ -2724,6 +2791,9 @@ impl Nautilus {
                 if !this.skips(part::TERRAIN) && !this.skips(part::TERRAIN_FIRST) {
                     draw_terrain(&mut pass);
                 }
+                if tunnel_late {
+                    draw_tunnel(&mut pass);
+                }
                 if !impostors.is_empty() && !this.skips(part::IMPOSTORS) {
                     // Sorted by form as they were uploaded: a draw a run.
                     let first = (sprites.len() + shafts.len() + beams.len()) as u32;
@@ -2779,6 +2849,13 @@ impl Nautilus {
                     pass.set_pipeline(&this.shafts);
                     pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
                     pass.draw(0..6, first..first + shafts.len() as u32);
+                }
+                if !plumes.is_empty() && !this.skips(part::PLUMES) {
+                    let first =
+                        (sprites.len() + shafts.len() + beams.len() + impostors.len()) as u32;
+                    pass.set_pipeline(&this.plumes);
+                    pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
+                    pass.draw(0..6 * PLUME_SEGMENTS, first..first + plumes.len() as u32);
                 }
                 if !beams.is_empty() && !this.skips(part::SHAFTS) && !this.skips(part::BEAMS) {
                     let first = (sprites.len() + shafts.len()) as u32;
@@ -3798,11 +3875,13 @@ mod tests {
             ("pass: fading props", part::FADING_PROPS),
             ("probe: depth-first draws", part::DEPTH_FIRST_DRAWS),
             ("probe: terrain first", part::TERRAIN_FIRST),
+            ("probe: tunnel first", part::TUNNEL_FIRST),
             ("pass: sprites", part::SPRITES),
             ("pass: point lights", part::LIGHTS),
             ("pass: sun shafts", part::SUN_SHAFTS),
             ("pass: searchlight beams", part::BEAMS),
             ("pass: shafts and beams", part::SHAFTS),
+            ("pass: vent plumes", part::PLUMES),
             ("pass: corner mask", part::MASK),
             ("pass: cave tunnel", part::TUNNEL),
             ("pass: open water", part::BACKGROUND),

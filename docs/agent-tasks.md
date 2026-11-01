@@ -30,9 +30,9 @@ ruled out in §5), `docs/pipeline-optimization.md` (history; check it before re-
    `johnnyvdberg@gmail.com` (check `git config user.email`). The repository is **public**: never
    write the Pi's address or user name into tracked files; write `<user>@<pi>`.
 2. **Build on the Mac; never run cargo on the Pi.** `deploy/build-for-pi.sh --tests` builds in a
-   Docker volume of the checkout's own (named after its directory), so worktrees do not hand each
-   other binaries; still `find src -type f -exec touch {} +` before a build and check the
-   binary's md5 changed.
+   Docker volume shared by every checkout (the Docker VM's disk is small): always
+   `find src -type f -exec touch {} +` before a build and check the binary's md5 changed.
+   `deploy/v3d-shaderdb/shaderdb.sh` serialises its own builds with a lock.
 3. **The kiosk is the user's live display.** Benchmark only through `deploy/bench-pi.sh run`
    (freezes the kiosk for the run, resumes it on every exit, holds `/tmp/nautilus-bench.lock`
    so parallel agents queue). A hand-written Pi script takes the same lock
@@ -70,10 +70,10 @@ run at once**, from different groups. Model tier is a suggestion.
 | I1 | tooling | Screenshot generation that shows changes at a glance | Sonnet | done (`deploy/shots.sh`, `docs/nautilus.md`) |
 | I2 | tooling | Per-feature cost benchmark and `docs/feature-costs.md` | Sonnet | done (`bench-pi.sh features`, `docs/feature-costs.md`) |
 | G1 | tooling | What the GL backend gives us that we build by hand | Sonnet | done: nothing to land (`docs/handoff/g1.md`) |
-| P1 | perf-a | Tunnel's own 4-thread fragment shader (perf-bottlenecks T3) | Sonnet | todo |
-| P2 | perf-a | One column per vent plume (T4) | Sonnet | todo |
-| P3 | perf-a | Cheaper caustic ceiling (T6) | Sonnet | todo |
-| P4 | perf-a | Draw order for early-Z: opaque front to back, re-check §5's draw-order items | Sonnet | todo |
+| P1 | perf-a | Tunnel's own 4-thread fragment shader (perf-bottlenecks T3) | Sonnet | done on `perf-a` (cave 0.15 -1.9 ms; `docs/handoff/perf-a.md`) |
+| P2 | perf-a | One column per vent plume (T4) | Sonnet | done on `perf-a` (vents -1.4 ms median; the look changes slightly, user to review) |
+| P3 | perf-a | Cheaper caustic ceiling (T6) | Sonnet | partly done on `perf-a` (median -0.3 ms, six seas -0.1...-0.5; the rest needs a visible change) |
+| P4 | perf-a | Draw order for early-Z: opaque front to back, re-check §5's draw-order items | Sonnet | done on `perf-a` (tunnel after the seabed along its axis, cave -0.55 ms; seabed-first and nearest-first re-measured, not adopted) |
 | P5 | perf-b | City split by building part (T5) | Sonnet | done on branch `perf-b` (walls still two threads; `docs/handoff/perf-b.md`) |
 | P6 | perf-b | Glass specialised by material and animation (T7) | Sonnet | done on branch `perf-b` |
 | P7 | perf-b | Start-up: parallel mesh library, drop unused pipelines (T8) | Sonnet | done on branch `perf-b` (warm 6.7 to 2.7 s, cold 12.6 to 6.6 s) |
@@ -203,3 +203,6 @@ ends, and record what each addition costs.
 - **P5/P6/P7** change pipelines and the mesh library only; the Pi numbers are in
   `docs/handoff/perf-b.md`. The new pipelines are not new features, so nothing was added to the
   skip lists.
+- perf-a (2026-11-01): review the vent plumes' look (`docs/handoff/img/perf-a-vents.jpg`). The Docker
+  VM's disk filled up twice during the work (reclaim with `docker system prune`), and the Pi's `/tmp`
+  is crowded with other runs' 47 MB test binaries, which `bench-pi.sh` never removes.

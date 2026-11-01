@@ -17,8 +17,6 @@ raw=${2:-$(mktemp -t v3d-shaderdb.XXXXXX)}
 # One build directory for every checkout, so dependencies build once;
 # inner.sh copies the checkout in with fresh times, so it is always rebuilt.
 volume=v3d-shaderdb-target
-# A volume per checkout, so two runs at once never share a binary.
-[[ $(basename "$repo") == SpotifyRound ]] || volume+="-$(basename "$repo")"
 
 docker build -q -t v3d-shaderdb "$here" >/dev/null
 

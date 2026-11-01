@@ -330,7 +330,7 @@ fn water_at(dir: vec3<f32>) -> vec3<f32> {
 }
 
 // The underside of the water surface, seen from below: the bright caustic
-// web the waves focus, a slow swell and the sun's sheen. `dir` is the view
+// web the waves focus and a slow swell. `dir` is the view
 // ray; the surface lies at y = 0, so the pixel is that intersection. This is
 // the ceiling of a shallow sea and it must read as water, not sky; the sky
 // is only what the surface opens on to inside Snell's window.
@@ -348,20 +348,15 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     let swell = sin(at.x * 0.9 + t * 0.30)
         + 0.7 * sin(at.y * 0.8 - t * 0.26)
         + 0.3 * sin((at.x + at.y) * 1.7 + t * 0.50);
-    let chop = sin(at.x * 2.2 - at.y * 1.8 - t * 0.6);
     let base = mix(g.deep.rgb, g.water.rgb, 0.50) * 1.05;
-    let sun = 0.5 + 0.5 * sin(swell * 0.5);
+    // The swell's light, from its sines' sum alone: the sine of that sum
+    // was only ever read near its straight part.
+    let sun = 0.5 + 0.25 * swell;
     var colour = base * (0.975 + 0.05 * web) * (0.82 + 0.20 * sun)
         + vec3<f32>(0.18, 0.32, 0.31) * web * (0.06 + 0.10 * g.sun.w);
-    // A soft glint where a wave face turns toward the sun; close to the
-    // window, not a net across the whole dome.
-    let sheen = pow(max(0.0, 0.5 + 0.5 * chop), 18.0);
-    colour += vec3<f32>(0.86, 0.92, 0.82) * sheen * 0.05
-        * (0.25 + g.sun.w) * smooth01(10.0, 2.0, reach);
-    // Fine wave cells close to the window: the surface's own ripples, which
-    // the caustic web alone is too smooth to show.
-    let fine = 0.5 + 0.5 * sin(at.x * 3.7 + t * 1.3) * sin(at.y * 3.1 - t * 1.1);
-    colour *= 0.96 + 0.04 * fine * smooth01(18.0, 3.0, reach);
+    // (The sheen of the wave faces and the fine ripples that once lay over
+    // it, three sines and a `pow`, moved no pixel by more than 8/255 once the
+    // wash below had been laid over them, and cost a sixth of the shader.)
     // Keep the ceiling a backdrop: wash it toward the open water so the
     // caustics never compete with the scene in front of them, and dissolve
     // the horizon end into the water's own haze.
@@ -987,9 +982,13 @@ struct Lit {
     @location(11) @interpolate(flat) floor: vec3<f32>,
     // `fog_at` the vertex.
     @location(10) fog: vec4<f32>,
-    // The drowned city's: whether the building stands on the seabed, which
-    // darkens its foot (`city_light`).
-    @location(12) @interpolate(flat) grounded: f32,
+    // The tunnel's, worked out once a vertex so its fragment shader holds
+    // almost nothing before its one texture tap (`fs_vault`): the lamp's
+    // reach and cone, how near the glass the rock is, the cracks' glow and
+    // the dull warmth about them. Every other material leaves it zero.
+    @location(13) vault: vec4<f32>,
+    // The tunnel's: the halfway vector of the lamp and the eye, for the shine.
+    @location(14) halfway: vec3<f32>,
 };
 
 // Bend a model where it lives: plants sway, fish sweep their tails sideways
@@ -1232,7 +1231,38 @@ fn vs_model(v: Model, i: Instance) -> Lit {
         let above = f32(v.aux.x);
         let heat = smooth01(0.45, 0.70, vnoise(world.x * 0.9 + world.z * 0.5, world.y * 2.2, 31u))
             * (1.0 - 0.75 * smooth01(0.15, 1.1, above));
-        out.local = vec3<f32>(above, heat, 0.0);
+        // The tap's address and level, and the terms that vary smoothly over
+        // a wall, for `fs_vault`: the tile runs across the section by x + z
+        // and up it by height, at the sharper level the tunnel is seen at.
+        // The fragment shader takes the rest as interpolated unit vectors,
+        // left unnormalised (a triangle spans too small an angle for the
+        // difference to show): the normal turned to the window, the lamp's
+        // direction (in the slot `world` takes elsewhere) and its halfway
+        // vector with the eye's.
+        let eye = g.camera.xyz - world;
+        let distance = length(eye);
+        let to_lamp = g.lamp_origin.xyz - world;
+        let reach2 = dot(to_lamp, to_lamp);
+        let l = to_lamp * inverseSqrt(reach2);
+        let cone = 0.15 + 0.85 * smooth01(0.72, 0.95, -dot(l, g.lamp.xyz));
+        let near = 0.45 + 0.55 * smooth01(0.25, 1.6, distance);
+        let low = 1.0 - smooth01(0.0, 1.3, above);
+        let pulse = 0.7 + 0.3 * sin(g.camera.w * 1.3 + world.x * 2.0 + world.y * 3.0);
+        out.normal = facing;
+        out.world = l;
+        out.halfway = normalize(eye / distance + l);
+        out.local = vec3<f32>(
+            (world.x + world.z) * (i.surface.y * 1.35),
+            world.y * (i.surface.y * 1.35),
+            clamp(log2(distance), 0.0, 8.0),
+        );
+        out.floor_y = low * (0.85 + 0.15 * sin(g.camera.w * 1.9 + world.x));
+        out.vault = vec4<f32>(
+            g.lamp.w * cone / (1.0 + reach2 * 0.12),
+            near,
+            heat * pulse * 1.6,
+            heat * 0.25,
+        );
         // Hot water hangs in the tunnel: the far end of it fades into a dull
         // red glow instead of the cold sea, so the passage ahead reads as
         // deep and lit, and the near rock stands out dark against it.
@@ -1241,11 +1271,11 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // The city's parts mark what they are in the length of the normal they
     // carry (`city_light`), and the windows take a seed from where the
     // instance stands; its texture is the world's, so neither is missed.
-    out.grounded = 0.0;
     if (MATERIAL == CITY_LIGHTS) {
         out.local_normal = v.normal * (1.0 + f32(v.aux.x));
-        out.surface.w = floor(fract(i.m0.w * 0.1731 + i.m2.w * 0.0913) * 4096.0);
-        out.grounded = i.floor.w;
+        // The seed, and 4096 more where the building stands on the seabed,
+        // which darkens its foot (`city_light`).
+        out.surface.w = floor(fract(i.m0.w * 0.1731 + i.m2.w * 0.0913) * 4096.0) + 4096.0 * i.floor.w;
         // How much a part shines like polished brass, from its colour
         // (`mesh::city_part`), per vertex in the slot a grounded model keeps
         // its seabed's height in: a city model is never grounded.
@@ -1335,7 +1365,8 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     var out: City;
     out.lamps = vec3<f32>(0.0);
     out.keep = 1.0;
-    let seed = in.surface.w;
+    let grounded = floor(in.surface.w / 4096.0);
+    let seed = in.surface.w - 4096.0 * grounded;
     let local = in.local;
     let kind = select(length(in.local_normal) - 1.0, f32(CITY_PART), CITY_PART >= 0);
     let facing = clamp(dot(n, v), 0.0, 1.0);
@@ -1376,7 +1407,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     // seabed it stands on, over its plinth and its first floor. Baked
     // ambient occlusion in all but name, from the model's own height, so it
     // costs a smoothstep and no vertices.
-    let foot = (1.0 - smooth01(-0.35, 0.95, local.y)) * in.grounded;
+    let foot = (1.0 - smooth01(-0.35, 0.95, local.y)) * grounded;
     out.keep = 1.0 - 0.55 * foot;
     // Polished brass mirrors the water above and the glow along the
     // horizon, with a bright band where the surface turns it to the light
@@ -1953,6 +1984,48 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FADE_OPAQUE));
 }
 
+// The tunnel's own fragment shader: `vault_hd` with everything that varies
+// smoothly over a wall already worked out at the vertices (`vs_model`), so
+// the one texture tap goes out first, with nothing before it but varyings,
+// and the shader runs at the full four threads. Per pixel only what needs
+// the tap is left: the bumped normal, the two N.L terms, the tone and the
+// shine. Entry point of the opaque vault pipelines only.
+@if(full_hd)
+@fragment
+fn fs_vault(in: Lit) -> @location(0) vec4<f32> {
+    var sample = vec4<f32>(0.6 / TEXTURE_RANGE, 0.5, 0.5, 0.0);
+    if (!PLAIN_TEXTURES) {
+        sample = textureSampleLevel(surfaces, surface_sampler, in.local.xy, VAULT_LAYER, in.local.z);
+    }
+    let n = in.normal;
+    let slope = (sample.gb - 0.5) * VAULT_RELIEF;
+    let rise = vec3<f32>(slope.x, slope.y, slope.x);
+    let bumped = normalize(n - (rise - n * dot(n, rise)));
+    let tone = sample.r * TEXTURE_RANGE;
+    let lamp = in.vault.x * max(dot(bumped, in.world), 0.0);
+    let bounce = in.floor_y * (0.6 - 0.4 * bumped.y);
+    let near = in.vault.y;
+    var colour = in.albedo * tone * (
+        (vec3<f32>(0.30, 0.24, 0.22) + vec3<f32>(1.1, 0.33, 0.09) * bounce) * near
+            + vec3<f32>(1.0, 0.92, 0.78) * (lamp * (0.5 + 1.0 * near))
+    );
+    colour += in.local_normal * tone;
+    // Molten cracks, and the rock about them warmed a dull red.
+    colour += vec3<f32>(1.0, 0.32, 0.05) * (sample.a * in.vault.z)
+        + vec3<f32>(0.30, 0.06, 0.01) * in.vault.w;
+    // Wet rock, glistening where the beam strikes it.
+    let shine = pow(max(dot(bumped, in.halfway), 0.0), 16.0);
+    colour += vec3<f32>(0.85, 0.82, 0.75) * (shine * lamp * 0.15);
+    var shaded = mix(colour, in.fog.rgb, in.fog.a);
+    if (switched(32u)) {
+        let t = in.fog.a;
+        let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
+        shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
+            + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
+    }
+    return vec4<f32>(shaded * SEA_SCALE, 1.0);
+}
+
 @if(full_hd)
 @fragment
 fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
@@ -2167,6 +2240,84 @@ fn fs_shaft(in: Shaft) -> @location(0) vec4<f32> {
     let y = in.corner.y;
     let along = (1.0 - smooth01(0.75, 1.0, y)) * smooth01(-1.0, 0.1, y);
     return vec4<f32>(in.colour * (across * across * along), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Vent plumes
+// ---------------------------------------------------------------------------
+
+// A black smoker's plume used to be eight or twelve additive discs rising
+// and widening one over another: a chimney near the window stacked that many
+// blended layers over a large part of the screen. Here it is one ribbon along
+// the plume's rise, a few segments long so it can wander, whose density is
+// what the discs added up to: a Gaussian across, widening as it rises,
+// fading with its height, and the puffs' rhythm as a ripple running up it
+// (strong where the puffs are small and apart, gone where they merge).
+// `place` is the mouth and, in `w`, the half-width at the top; `tint` the
+// colour and the half-width at the mouth; `run` the rise from the mouth to
+// the top and, in `w`, where the first puff stands, as a fraction of it.
+
+struct Plume {
+    @builtin(position) position: vec4<f32>,
+    // Across the ribbon (-1..1) and along the rise (0 at the mouth, 1 at the top).
+    @location(0) corner: vec2<f32>,
+    @location(1) colour: vec3<f32>,
+    // Half-width at the mouth, how much wider the top is, the number of
+    // puffs and their phase.
+    @location(2) @interpolate(flat) shape: vec4<f32>,
+};
+
+const PLUME_SEGMENTS: u32 = 4u;
+// The distance between puffs the plumes were laid out with.
+const PLUME_SPACING: f32 = 0.08;
+
+@vertex
+fn vs_plume(
+    @builtin(vertex_index) index: u32,
+    @location(0) place: vec4<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) run: vec4<f32>,
+) -> Plume {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let corner = corners[index % 6u];
+    // From a little below the mouth, where the first puff's skirt hangs, to
+    // the top.
+    let along = (f32(index / 6u) + 0.5 + 0.5 * corner.y) / f32(PLUME_SEGMENTS);
+    let rho = -0.08 + 1.08 * along;
+    let top = place.xyz;
+    let length_run = length(run.xyz);
+    let half_width = tint.w + (place.w - tint.w) * max(rho, 0.0);
+    // The plume wanders as it rises, sideways to the window.
+    let side = normalize(cross(run.xyz, g.camera.xyz - top));
+    let wander = 0.07 * rho * sin(rho * 8.0 + top.x * 13.0 + top.z * 7.0);
+    let centre = top + run.xyz * rho + side * wander;
+    let at = centre + side * (corner.x * half_width);
+    var out: Plume;
+    out.position = project(at);
+    out.corner = vec2<f32>(corner.x, rho);
+    // What the discs added up to along the rise: a puff's Gaussian is
+    // 0.886 half-widths long, and one comes every PLUME_SPACING.
+    let puffs = round(length_run / PLUME_SPACING);
+    let thickness = 0.886 * puffs / length_run;
+    out.colour = tint.rgb * thickness * (1.0 - fog_of(length(centre - g.camera.xyz)));
+    out.shape = vec4<f32>(tint.w, place.w - tint.w, puffs, run.w);
+    return out;
+}
+
+@fragment
+fn fs_plume(in: Plume) -> @location(0) vec4<f32> {
+    let rho = in.corner.y;
+    let half_width = in.shape.x + in.shape.y * max(rho, 0.0);
+    // Gaussian across, cut where the ribbon ends so no edge shows.
+    let across = max(exp(-4.0 * in.corner.x * in.corner.x) - 0.018, 0.0);
+    // Puffs are beads while they are small, a smooth column when they merge.
+    let beads = 2.0 * exp(-380.0 * half_width * half_width);
+    let ripple = 1.0 + beads * cos(TAU * in.shape.z * (rho - in.shape.w));
+    let along = (1.0 - max(rho, 0.0)) * smooth01(-0.08, 0.03, rho);
+    return vec4<f32>(in.colour * (half_width * along * across * ripple) * SEA_SCALE, 0.0);
 }
 
 // ---------------------------------------------------------------------------

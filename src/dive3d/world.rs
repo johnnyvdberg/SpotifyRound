@@ -1300,6 +1300,11 @@ pub struct Frame {
     /// Shafts of sunlight: `place` is the top, `tint` the colour, `stretch`
     /// the run down to the foot.
     pub shafts: Vec<Sprite>,
+    /// The vents' plumes, one ribbon each: `place` is the mouth and the
+    /// half-width at the top, `tint` the colour and the half-width at the
+    /// mouth, `stretch` the rise to the top and where the first puff stands
+    /// along it (`vs_plume`).
+    pub plumes: Vec<Sprite>,
     /// Searchlight beams: `place` is the lamp and the beam's radius there,
     /// `tint` the colour and its radius at the far end, `stretch` the run.
     pub beams: Vec<Sprite>,
@@ -1337,6 +1342,7 @@ impl Frame {
             glass: (0..Model::ALL.len()).map(|_| Vec::new()).collect(),
             sprites: Vec::new(),
             shafts: Vec::new(),
+            plumes: Vec::new(),
             beams: Vec::new(),
             impostors: Vec::new(),
             lights: Vec::new(),
@@ -1357,6 +1363,7 @@ impl Frame {
         }
         self.sprites.clear();
         self.shafts.clear();
+        self.plumes.clear();
         self.beams.clear();
         self.impostors.clear();
         self.lights.clear();
@@ -1484,6 +1491,25 @@ impl Frame {
             place: [p[0], p[1], p[2], size],
             tint: [colour[0], colour[1], colour[2], kind],
             stretch: [1.0, 0.0, 0.0, 0.0],
+        });
+    }
+
+    /// A vent's plume: puffs of water rising `rise` from the mouth `p`, a
+    /// puff every 0.08 units of it, the first at `phase` (a fraction of the
+    /// rise) and the plume `mouth` half-wide there and `top` at the top,
+    /// drawn as one ribbon (`vs_plume`).
+    fn plume(
+        &mut self,
+        p: [f32; 3],
+        rise: [f32; 3],
+        (mouth, top): (f32, f32),
+        colour: [f32; 3],
+        phase: f32,
+    ) {
+        self.plumes.push(Sprite {
+            place: [p[0], p[1], p[2], top],
+            tint: [colour[0], colour[1], colour[2], mouth],
+            stretch: [rise[0], rise[1], rise[2], phase],
         });
     }
 
@@ -5934,25 +5960,13 @@ fn vents(w: &World, f: &mut Frame) {
         f.light(top, 0.5, [0.7 * show, 0.28 * show, 0.08 * show]);
         // The plume: a translucent, widening column of mineral-rich water
         // rather than a string of sparks.
-        for k in 0..8 {
-            let rise = (w.t * 0.22 + k as f32 / 8.0).fract();
-            let drift = 0.08 * rise * (rise * 6.0 + hash(ix, iz, 134) * 5.0).sin();
-            let p = add(
-                top,
-                [
-                    drift,
-                    rise * 0.65,
-                    0.05 * rise * (rise * 4.0 + ix as f32).cos(),
-                ],
-            );
-            let fade = (1.0 - rise) * show;
-            f.sprite(
-                p,
-                0.05 + rise * 0.16,
-                [0.30 * fade, 0.38 * fade, 0.40 * fade],
-                GLOW,
-            );
-        }
+        f.plume(
+            top,
+            [0.0, 0.65, 0.0],
+            (0.05, 0.21),
+            [0.30 * show, 0.38 * show, 0.40 * show],
+            (w.t * 0.22).fract(),
+        );
         for k in 0..3 {
             let a = hash(ix, iz, 610 + k) * TAU;
             let r = 0.10 + 0.08 * hash(ix, iz, 614 + k);
@@ -6016,21 +6030,13 @@ fn vents(w: &World, f: &mut Frame) {
         if hash(ix, iz, 606) < 0.5 {
             f.light(top, 0.7, [0.8 * show, 0.34 * show, 0.10 * show]);
         }
-        for k in 0..12 {
-            let rise = (w.t * 0.18 + k as f32 / 12.0 + hash(ix, iz, 607)).fract();
-            let p = [
-                top[0] + rise * 0.45 + 0.07 * (rise * 11.0 + ix as f32).sin(),
-                top[1] + rise * 0.85,
-                top[2] + rise * 0.20,
-            ];
-            let fade = (1.0 - rise) * show;
-            f.sprite(
-                p,
-                0.06 + rise * 0.22,
-                [0.32 * fade, 0.40 * fade, 0.42 * fade],
-                GLOW,
-            );
-        }
+        f.plume(
+            top,
+            [0.45, 0.85, 0.20],
+            (0.06, 0.28),
+            [0.32 * show, 0.40 * show, 0.42 * show],
+            (w.t * 0.18 + hash(ix, iz, 607)).fract(),
+        );
         // Tube worms round the foot: pale stalks with red plumes.
         for k in 0..4 {
             let a = hash(ix, iz, 610 + k) * TAU;

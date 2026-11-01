@@ -26,12 +26,11 @@ image=spotify-round-pi-build
 docker build --platform linux/arm64 -t "$image" deploy/pi-build
 
 # The registry and the build directory live in volumes, so rebuilds are
-# incremental and the host's own target/ is left alone. Each checkout (a
-# worktree is named after its directory) builds in a volume of its own, so
-# two checkouts building at once never hand each other's binaries out.
-checkout=$(basename "$PWD")
-target_volume=spotify-round-pi-target
-[[ $checkout == SpotifyRound ]] || target_volume+="-$checkout"
+# incremental and the host's own target/ is left alone. Checkouts share one
+# build volume (one per checkout filled the Docker VM's disk), so touch the
+# sources before building and check the binary changed; or give a checkout
+# its own volume with SPOTIFY_ROUND_PI_VOLUME=<name>.
+target_volume=${SPOTIFY_ROUND_PI_VOLUME:-spotify-round-pi-target}
 run() {
     docker run --rm --platform linux/arm64 \
         -v "$PWD":/src \
