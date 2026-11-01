@@ -2343,9 +2343,7 @@ impl Nautilus {
                     // The ice's coverage is per pixel; every other fading
                     // instance at zero coverage would discard every fragment,
                     // so it is not drawn at all.
-                    .filter(|(_, i)| {
-                        i.extra[2] > 0.01 || ice_sheet(i)
-                    })
+                    .filter(|(_, i)| i.extra[2] > 0.01 || ice_sheet(i))
                     .map(|(index, i)| Staged {
                         kind: kind_of(model, i),
                         slot: pipeline_slot(i) as u32,
@@ -3403,8 +3401,7 @@ mod tests {
                                 "the city neither animates nor stands on the seabed"
                             );
                         }
-                        let kind =
-                            u8::from(ice_sheet(i));
+                        let kind = u8::from(ice_sheet(i));
                         used.insert((
                             kind,
                             material_slot(i),

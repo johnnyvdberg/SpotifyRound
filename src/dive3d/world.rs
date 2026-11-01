@@ -1841,10 +1841,7 @@ impl Seat {
         // The slope along the model's own x and z once turned.
         let along = self.slope[0] * c - self.slope[1] * s;
         let across = self.slope[0] * s + self.slope[1] * c;
-        (
-            along.atan() * self.lean,
-            -across.atan() * self.lean,
-        )
+        (along.atan() * self.lean, -across.atan() * self.lean)
     }
 
     /// Where its middle goes for a thing `height` tall that rests on its
@@ -2376,9 +2373,10 @@ const STONES: [f32; BIOMES] = [
     0.45, 0.40, 0.30, 0.40, 0.15, 0.55, 0.40, 0.50, 0.045, 0.15, 0.50, 0.22, 0.12, 0.30,
 ];
 /// Per biome, the share of its boulders that are bedrock outcropping rather
-/// than loose stones: none where the bottom is deep sediment.
+/// than loose stones: none where the bottom is deep sediment or, in Atlantis,
+/// paving.
 const OUTCROPS: [f32; BIOMES] = [
-    0.30, 0.30, 0.10, 0.20, 0.50, 0.60, 0.20, 0.70, 0.20, 0.0, 0.60, 0.0, 0.0, 0.0,
+    0.30, 0.30, 0.10, 0.0, 0.50, 0.60, 0.20, 0.70, 0.20, 0.0, 0.60, 0.0, 0.0, 0.0,
 ];
 
 fn rocks(w: &World, f: &mut Frame) {
@@ -2386,7 +2384,7 @@ fn rocks(w: &World, f: &mut Frame) {
     for &(ix, iz, x, z) in &cells(w, 0.55, 0.6, 14.0, 10) {
         // Most of the grid holds nothing anywhere; those cells skip finding
         // their biome.
-        let roll = hash(ix, iz, 12);
+        let roll = 1.0 - hash(ix, iz, 12);
         if roll > most {
             continue;
         }
@@ -2405,7 +2403,11 @@ fn rocks(w: &World, f: &mut Frame) {
         let rule = if outcrop { bed::OUTCROP } else { bed::STONE };
         // An outcrop is a ledge of the bedrock: long, its strata tilted.
         let shape = if outcrop {
-            [size * 1.9, size * (0.7 + 0.3 * hash(ix, iz, 15)), size * 0.9]
+            [
+                size * 1.9,
+                size * (0.7 + 0.3 * hash(ix, iz, 15)),
+                size * 0.9,
+            ]
         } else {
             [size * 1.2, size * (0.55 + 0.35 * hash(ix, iz, 15)), size]
         };
@@ -2725,12 +2727,19 @@ fn gardens(w: &World, f: &mut Frame) {
                     [0.90, 0.58, 0.20]
                 };
                 let s = 0.07 + 0.08 * hash(ix, iz, 45);
+                if seat(w, x, z, s * 0.5, &bed::GROWN).is_none() {
+                    continue;
+                }
                 f.put(Model::Fan, place([x, y, z], yaw, 0.0, 0.0, [s, s, s]), hue)
                     .moving(anim::SWAY, yaw, 0.15, 0.7)
                     .grounded();
             }
         } else if polar > needs {
             if hash(ix, iz, 46) < 0.5 {
+                // Sponges hold to ground they can root in, not a lip.
+                if seat(w, x, z, 0.05, &bed::GROWN).is_none() {
+                    continue;
+                }
                 for k in 0..3 {
                     let a = k as f32 * 2.1 + yaw;
                     let h = 0.06 + 0.07 * hash(ix, iz, 47 + k);
@@ -3766,26 +3775,24 @@ fn wrecks(w: &World, f: &mut Frame) {
 /// off the boat's lane; `None` if there is none. `wrecks` places her there
 /// and `tall_things` keeps the sisters over her there.
 fn wreck_berth(w: &World, x: f32, z: f32, length: f32) -> Option<(f32, f32, Seat)> {
-    [[0.0, 0.0], [0.6, 0.0], [-0.6, 0.0], [0.0, 0.45], [0.0, -0.45]]
-        .into_iter()
-        .map(|[dx, dz]| (x + dx, z + dz))
-        .filter(|&(x, z)| (z - corridor(x)).abs() >= 1.2)
-        .find_map(|(x, z)| seat(w, x, z, length * 0.45, &bed::WRECK).map(|s| (x, z, s)))
+    [
+        [0.0, 0.0],
+        [0.6, 0.0],
+        [-0.6, 0.0],
+        [0.0, 0.45],
+        [0.0, -0.45],
+    ]
+    .into_iter()
+    .map(|[dx, dz]| (x + dx, z + dz))
+    .filter(|&(x, z)| (z - corridor(x)).abs() >= 1.2)
+    .find_map(|(x, z)| seat(w, x, z, length * 0.45, &bed::WRECK).map(|s| (x, z, s)))
 }
 
 /// What lies round a wreck: the scour the current has dug at her bow and
 /// stern, dark with the coarse shell and gravel it leaves, and a field of
 /// what she shed as she broke up (planks, a gun, ballast stones), strewn
 /// mostly down-current of her and settled into the sand.
-fn wreck_debris(
-    w: &World,
-    f: &mut Frame,
-    ix: i32,
-    iz: i32,
-    at: [f32; 3],
-    yaw: f32,
-    length: f32,
-) {
+fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f32, length: f32) {
     let (s, c) = yaw.sin_cos();
     let floor = floor_colour(w.seabed, &w.biome(at[0], at[2]), at[0], at[2]);
     // The scour pits, a lens of darker sediment at each end, drawn just
@@ -3855,8 +3862,16 @@ fn wreck_debris(
             };
             let (dxg, dzg) = (turn.cos() * long, turn.sin() * long);
             let y = st.y + 0.006;
-            let a = [px - dxg, y + st.slope[0] * -dxg + st.slope[1] * -dzg, pz - dzg];
-            let b = [px + dxg, y + st.slope[0] * dxg + st.slope[1] * dzg, pz + dzg];
+            let a = [
+                px - dxg,
+                y + st.slope[0] * -dxg + st.slope[1] * -dzg,
+                pz - dzg,
+            ];
+            let b = [
+                px + dxg,
+                y + st.slope[0] * dxg + st.slope[1] * dzg,
+                pz + dzg,
+            ];
             f.put(Model::Cylinder, between(a, b, 0.011), [0.26, 0.24, 0.17])
                 .material(material::COPPER)
                 .grounded();
@@ -3968,8 +3983,12 @@ fn ruins(w: &World, f: &mut Frame) {
                     [fx + dx, rest + st.slope[0] * dx + st.slope[1] * dz, fz + dz]
                 };
                 let (dx, dz) = (a.sin() * 0.06, -a.cos() * 0.06);
-                f.put(Model::Cylinder, between(lie(-dx, -dz), lie(dx, dz), r * 0.95), marble)
-                    .grounded();
+                f.put(
+                    Model::Cylinder,
+                    between(lie(-dx, -dz), lie(dx, dz), r * 0.95),
+                    marble,
+                )
+                .grounded();
                 for k in 0..2u32 {
                     let b = a + 1.2 + 2.4 * hash(ix, iz, 77 + k);
                     let (cx, cz) = (fx + b.cos() * 0.07, fz + b.sin() * 0.07);
@@ -4118,8 +4137,12 @@ fn ruins(w: &World, f: &mut Frame) {
                     p[2] + dz * sx,
                 ]
             };
-            f.put(Model::Cylinder, between(lie(-1.0), lie(1.0), 0.03 * s), stone)
-                .grounded();
+            f.put(
+                Model::Cylinder,
+                between(lie(-1.0), lie(1.0), 0.03 * s),
+                stone,
+            )
+            .grounded();
         }
         for k in 0..3 {
             let d = (hash(ix, iz * 3 + k, 88) - 0.5) * 0.9;
@@ -6659,7 +6682,7 @@ fn obstacles(w: &World, x0: f32, x1: f32, lane: f32) -> Vec<(f32, f32, f32)> {
         };
     // The stones and outcrops `rocks` places, by the same rules.
     scan(0.55, 10, &|ix, iz, x, z| {
-        let roll = hash(ix, iz, 12);
+        let roll = 1.0 - hash(ix, iz, 12);
         let size = 0.05 + 0.20 * hash(ix, iz, 13).powf(2.0);
         if size <= 0.06 || (size > 0.1 && (z - corridor(x)).abs() < 0.7) {
             return None;
