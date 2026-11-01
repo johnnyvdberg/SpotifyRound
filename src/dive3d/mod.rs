@@ -397,7 +397,9 @@ pub(crate) struct Nautilus {
     /// Marks the corners of the sea outside the round window as covered.
     mask: wgpu::RenderPipeline,
     /// The same, for models fading in or out, which only they may discard.
-    fading: Vec<wgpu::RenderPipeline>,
+    /// Only the ice is drawn this way (`kind_of`), so only its slots are
+    /// compiled; the rest are `None`.
+    fading: Vec<Option<wgpu::RenderPipeline>>,
     glass: wgpu::RenderPipeline,
     sprites: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
@@ -442,7 +444,6 @@ pub(crate) struct Nautilus {
     caustic: wgpu::Texture,
     depth: wgpu::TextureView,
     resolved: wgpu::TextureView,
-    relief: wgpu::Texture,
     /// The static decor's placements, rebuilt when the camera crosses a cell.
     static_cache: StaticCache,
     ice_bake: wgpu::Texture,
@@ -470,10 +471,12 @@ pub(crate) struct Nautilus {
 }
 
 /// The materials models get a pipeline of their own for, as `MATERIAL` in
-/// `scene.wesl`: plain first, then those of [`world::material`]. Anything else
-/// is drawn by the last, -1, which reads the material per instance. Each has a
-/// second pipeline for models that stand on the seabed (`GROUNDED`).
-const MATERIALS: [i32; 8] = [
+/// `scene.wesl`: plain first, then every solid one of [`world::material`] (the
+/// glass ones go through [`GLASS`]). There is no pipeline that reads the
+/// material per instance: an unlisted material is a bug, which
+/// `every_instance_has_a_pipeline` catches. Each has a second pipeline for
+/// models that stand on the seabed (`GROUNDED`).
+const MATERIALS: [i32; 7] = [
     0,
     world::material::LAVA as i32,
     world::material::COPPER as i32,
@@ -481,16 +484,12 @@ const MATERIALS: [i32; 8] = [
     world::material::ICE as i32,
     world::material::GOLD as i32,
     world::material::CITY as i32,
-    -1,
 ];
 
 /// The index into [`MATERIALS`] of the pipeline for an instance.
 fn material_slot(i: &Instance) -> usize {
     let material = i.extra[0].round() as i32;
-    MATERIALS
-        .iter()
-        .position(|&m| m == material)
-        .unwrap_or(MATERIALS.len() - 1)
+    MATERIALS.iter().position(|&m| m == material).unwrap_or(0)
 }
 
 /// The animations models get a pipeline of their own for, as `ANIM` in
@@ -515,7 +514,6 @@ fn anim_slot(i: &Instance) -> usize {
 fn model_label(kind: &str, material: i32, grounded: f64, anim: i32) -> String {
     let material = match material {
         0 => "plain".to_string(),
-        -1 => "any".to_string(),
         m => format!("material{m}"),
     };
     let ground = if grounded > 0.5 { "grounded" } else { "free" };
@@ -1068,7 +1066,7 @@ struct Pipelines {
     models: Vec<wgpu::RenderPipeline>,
     sealed: Vec<wgpu::RenderPipeline>,
     mask: wgpu::RenderPipeline,
-    fading: Vec<wgpu::RenderPipeline>,
+    fading: Vec<Option<wgpu::RenderPipeline>>,
     glass: wgpu::RenderPipeline,
     sprites: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
@@ -1390,7 +1388,11 @@ fn compile(
             for grounded in [0.0, 1.0] {
                 for &anim in &ANIMS {
                     let ice = material == world::material::ICE as i32;
-                    pipelines.push(pipeline(
+                    if !ice {
+                        pipelines.push(None);
+                        continue;
+                    }
+                    pipelines.push(Some(pipeline(
                         &model_label("Dive3d fading models", material, grounded, anim),
                         "vs_model",
                         "fs_model",
@@ -1401,13 +1403,13 @@ fn compile(
                         true,
                         false,
                         &[
-                            ("FADING", if ice { 1.0 } else { 0.0 }),
+                            ("FADING", 1.0),
                             ("MATERIAL", f64::from(material)),
                             ("GROUNDED", grounded),
                             ("ANIM", f64::from(anim)),
                         ],
                         None,
-                    ));
+                    )));
                 }
             }
         }
@@ -1604,16 +1606,6 @@ impl Nautilus {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
@@ -1667,7 +1659,7 @@ impl Nautilus {
                 },
             ],
         });
-        // The seabed's relief, replaced on every visit; and the surfaces, painted once.
+        // The surfaces, painted once.
         let ice_bake = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Dive3d ice bake"),
             size: wgpu::Extent3d {
@@ -1686,20 +1678,6 @@ impl Nautilus {
         let sky_view = sky.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::CubeArray),
             ..Default::default()
-        });
-        let relief = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Dive3d relief"),
-            size: wgpu::Extent3d {
-                width: heightmap::SIZE as u32,
-                height: heightmap::SIZE as u32,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
         });
         let painted = textures::paint_all();
         let layers = textures::Surface::ALL.len() as u32;
@@ -1758,7 +1736,6 @@ impl Nautilus {
             anisotropy_clamp: 1,
             ..Default::default()
         });
-        let relief_view = relief.create_view(&wgpu::TextureViewDescriptor::default());
         let ice_bake_view = ice_bake.create_view(&wgpu::TextureViewDescriptor::default());
         let surfaces_view = surfaces.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -1782,10 +1759,6 @@ impl Nautilus {
                     wgpu::BindGroupEntry {
                         binding: 0,
                         resource: globals.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&relief_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -1966,7 +1939,6 @@ impl Nautilus {
             caustic,
             depth,
             resolved,
-            relief,
             static_cache: StaticCache::default(),
             ice_bake,
             ice_origin: [0.0; 2],
@@ -2040,25 +2012,6 @@ impl Nautilus {
             self.terrain.clear();
             self.frame.forget_tunnel();
             self.visit = Some(visit);
-            gpu.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.relief,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                bytemuck::cast_slice(&self.seabed.map),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(heightmap::SIZE as u32 * 16),
-                    rows_per_image: Some(heightmap::SIZE as u32),
-                },
-                wgpu::Extent3d {
-                    width: heightmap::SIZE as u32,
-                    height: heightmap::SIZE as u32,
-                    depth_or_array_layers: 1,
-                },
-            );
         }
         let voyage = self.voyage.advance(seconds, seed);
         let pose = self.helm.steer(&self.seabed, voyage, seconds);
@@ -2606,7 +2559,9 @@ impl Nautilus {
                             pass.set_pipeline(match wanted {
                                 Kind::Sealed => &this.sealed[d.slot],
                                 Kind::Solid => &this.models[d.slot],
-                                Kind::Fading => &this.fading[d.slot],
+                                Kind::Fading => this.fading[d.slot]
+                                    .as_ref()
+                                    .expect("only the ice fades by pixel"),
                                 Kind::Glass => &this.glass,
                             });
                             bound = Some(d.slot);
@@ -3163,6 +3118,72 @@ mod tests {
 
     fn leg(n: f64) -> f64 {
         crate::voyage::LEG / crate::voyage::SPEED * (n + 0.35)
+    }
+
+    /// Every instance a voyage places has a pipeline made for it: its material
+    /// is one of [`MATERIALS`], and the ones that can fade (only the ice does)
+    /// are the ones `fading` is compiled for. The pipelines no placer reaches
+    /// are not compiled (start-up time), so this is what keeps a new material
+    /// or animation from being drawn with the wrong shader. `DIVE3D_SLOTS=1`
+    /// prints which pipelines the voyage used.
+    #[test]
+    fn every_instance_has_a_pipeline() {
+        use std::collections::BTreeSet;
+        let mut used: BTreeSet<(u8, usize, usize, usize)> = BTreeSet::new();
+        let mut glass = BTreeSet::new();
+        for visit in [0u64, 500_000] {
+            let seed = seed_of(visit);
+            let seabed = Seabed::new(visit, seed);
+            let mut voyage = Voyage::default();
+            let mut helm = Helm::default();
+            let mut frame = Frame::new();
+            let mut cache = StaticCache::default();
+            // Every leg of the circuit, at a few moments each.
+            let step = crate::voyage::LEG / crate::voyage::SPEED / 5.0;
+            for n in 0..(crate::voyage::BIOMES * 5) {
+                let seconds = f64::from(n as u32) * step + 0.5 * step;
+                let at = voyage.advance(seconds, seed);
+                let pose = helm.steer(&seabed, at, seconds);
+                let world = World {
+                    seabed: &seabed,
+                    pose,
+                    t: seconds as f32,
+                    slack: 0.0,
+                };
+                world::build(&world, &mut frame, &mut cache);
+                for (model, list) in frame.solid.iter().enumerate() {
+                    for i in list {
+                        let material = i.extra[0].round() as i32;
+                        assert!(
+                            MATERIALS.contains(&material),
+                            "{:?} has material {material}, which has no pipeline",
+                            mesh::Model::ALL[model]
+                        );
+                        let kind =
+                            u8::from(material == world::material::ICE as i32 && i.extra[2] < 0.999);
+                        used.insert((
+                            kind,
+                            material_slot(i),
+                            usize::from(i.extra[1] > 0.5),
+                            anim_slot(i),
+                        ));
+                    }
+                }
+                for (model, list) in frame.glass.iter().enumerate() {
+                    for i in list {
+                        glass.insert((
+                            mesh::Model::ALL[model] as usize,
+                            i.extra[0].round() as i32,
+                            i.anim[0].round() as i32,
+                        ));
+                    }
+                }
+            }
+        }
+        if std::env::var("DIVE3D_SLOTS").is_ok() {
+            println!("solid (fading?, material slot, grounded, anim slot): {used:?}");
+            println!("glass (model, material, anim): {glass:?}");
+        }
     }
 
     /// A skip mask from the environment: decimal, or hexadecimal after `0x`.

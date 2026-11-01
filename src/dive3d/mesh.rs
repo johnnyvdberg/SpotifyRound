@@ -3973,48 +3973,118 @@ fn optimized(mut mesh: Mesh) -> Mesh {
     mesh
 }
 
+/// One model's levels of detail, built and measured: everything about it that
+/// does not depend on the other models, so models can be built side by side.
+struct Built {
+    levels: Vec<Mesh>,
+    sealed: bool,
+    /// Per level, `(error, stray, edge)` against the full one.
+    measures: Vec<(f32, f32, f32)>,
+}
+
+impl Built {
+    fn of(model: Model) -> Self {
+        let mut levels: Vec<Mesh> = Vec::new();
+        for step in 0..LODS as u32 {
+            COARSER.set(step);
+            let mesh = optimized(model.build());
+            COARSER.set(0);
+            if levels
+                .last()
+                .is_some_and(|l| l.vertices.len() == mesh.vertices.len())
+            {
+                break;
+            }
+            levels.push(mesh);
+        }
+        // Wound either way when built; the sealed ones are turned to face
+        // out, the way back faces are culled. A model is sealed only if
+        // every one of its levels is.
+        let closed: Vec<_> = levels.iter().map(Mesh::closed).collect();
+        for (mesh, closed) in levels.iter_mut().zip(&closed) {
+            if *closed == Some(false) {
+                for t in mesh.indices.as_chunks_mut::<3>().0 {
+                    t.swap(1, 2);
+                }
+            }
+        }
+        let measures = levels
+            .iter()
+            .map(|mesh| {
+                let (error, stray) = levels[0].distance(mesh);
+                (
+                    error.max(mesh.distance(&levels[0]).0),
+                    stray,
+                    mesh.longest_new_edge(&levels[0]),
+                )
+            })
+            .collect();
+        Self {
+            sealed: closed.iter().all(Option::is_some),
+            levels,
+            measures,
+        }
+    }
+}
+
 impl Library {
+    /// The library, its models built on up to three threads (the UI keeps the
+    /// fourth core). Building a model uses only its own thread's state, and
+    /// the buffers are filled in model order, so the result is exactly the
+    /// serial build's (`build_serial`, which a test compares it with).
     pub fn build() -> Self {
+        let threads = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .saturating_sub(1)
+            .clamp(1, 3);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let built: Vec<std::sync::Mutex<Option<Built>>> =
+            Model::ALL.iter().map(|_| Default::default()).collect();
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|| {
+                    // Models are taken as threads come free, so the work is
+                    // shared evenly whatever each costs.
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(&model) = Model::ALL.get(i) else {
+                            break;
+                        };
+                        *built[i].lock().unwrap() = Some(Built::of(model));
+                    }
+                });
+            }
+        });
+        Self::assemble(
+            built
+                .into_iter()
+                .map(|b| b.into_inner().unwrap().expect("every model is built")),
+        )
+    }
+
+    /// The same library, built on one thread: what [`Library::build`] must equal.
+    #[cfg(test)]
+    fn build_serial() -> Self {
+        Self::assemble(Model::ALL.iter().map(|&m| Built::of(m)))
+    }
+
+    fn assemble(models: impl Iterator<Item = Built>) -> Self {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut lods = Vec::new();
         let mut sealed = Vec::new();
-        for model in Model::ALL {
-            let mut levels: Vec<Mesh> = Vec::new();
-            for step in 0..LODS as u32 {
-                COARSER.set(step);
-                let mesh = optimized(model.build());
-                COARSER.set(0);
-                if levels
-                    .last()
-                    .is_some_and(|l| l.vertices.len() == mesh.vertices.len())
-                {
-                    break;
-                }
-                levels.push(mesh);
-            }
-            // Wound either way when built; the sealed ones are turned to face
-            // out, the way back faces are culled. A model is sealed only if
-            // every one of its levels is.
-            let closed: Vec<_> = levels.iter().map(Mesh::closed).collect();
-            for (mesh, closed) in levels.iter_mut().zip(&closed) {
-                if *closed == Some(false) {
-                    for t in mesh.indices.as_chunks_mut::<3>().0 {
-                        t.swap(1, 2);
-                    }
-                }
-            }
-            sealed.push(closed.iter().all(Option::is_some));
+        for built in models {
+            sealed.push(built.sealed);
             let mut list = Vec::new();
-            for mesh in &levels {
+            for (mesh, &(error, stray, edge)) in built.levels.iter().zip(&built.measures) {
                 list.push(Lod {
                     first: indices.len() as u32,
                     count: mesh.indices.len() as u32,
                     base: vertices.len() as i32,
                     vertices: mesh.vertices.len() as u32,
-                    error: levels[0].distance(mesh).0.max(mesh.distance(&levels[0]).0),
-                    stray: levels[0].distance(mesh).1,
-                    edge: mesh.longest_new_edge(&levels[0]),
+                    error,
+                    stray,
+                    edge,
                 });
                 vertices.extend(mesh.vertices.iter().map(Packed::from));
                 indices.extend_from_slice(&mesh.indices);
@@ -4170,6 +4240,21 @@ mod tests {
         println!("sealed: {}", names.join(" "));
         assert!(sealed(Model::Box), "a box is closed");
         assert!(!sealed(Model::Plane), "a plane has two sides");
+    }
+
+    /// The threaded build is the serial one, byte for byte.
+    #[test]
+    fn the_parallel_library_is_the_serial_one() {
+        let (a, b) = (Library::build(), Library::build_serial());
+        assert_eq!(a.indices, b.indices);
+        assert_eq!(a.sealed, b.sealed);
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&a.vertices),
+            bytemuck::cast_slice::<_, u8>(&b.vertices)
+        );
+        let lods =
+            |l: &Library| -> Vec<String> { l.lods.iter().map(|m| format!("{m:?}")).collect() };
+        assert_eq!(lods(&a), lods(&b));
     }
 
     #[test]
