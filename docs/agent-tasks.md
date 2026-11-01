@@ -84,7 +84,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | V4 | ground | Terrain integration and per-biome placement realism | Opus | done, merged into `main` (`world::bed` rules; `docs/handoff/ground.md`) |
 | V5 | life | More wildlife, specific to each biome | Opus | done, merged into `main` (`docs/handoff/v5.md`) |
 | V6 | atlantis | At least ten new Atlantis elements | Opus | done, merged into `main` (fourteen elements, rolling seabed; `docs/handoff/v6.md`) |
-| V7 | atlantis | Underwater Greek temple environment | Opus | todo |
+| V7 | atlantis | Underwater Greek temple environment | Opus | done, merged into `main` (octastyle temple the boat sails through; `docs/handoff/v7.md`) |
 | V8 | lostcity | Lost city: travel through large corridors with detailed interiors | Opus | todo |
 | V9 | biomes | Three new biomes unlike the current ones | Opus | todo |
 | V10 | detail | More detail in every biome with headroom | Sonnet | todo |
