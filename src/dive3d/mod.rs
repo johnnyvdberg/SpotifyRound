@@ -767,6 +767,12 @@ mod part {
     /// Not a part: the tunnel before the seabed and the models even when the
     /// boat is along its axis (the order it takes everywhere else).
     pub const TUNNEL_FIRST: u64 = 1 << 34;
+    /// The seabed's sand line following the slope under a grounded model
+    /// and the silt drifted against its side that faces the current.
+    pub const SEDIMENT: u64 = 1 << 35;
+    /// What lies round wrecks, ruins and outcrops: scour pits, planks,
+    /// guns, ballast, fallen drums and blocks, scree (`world::DEBRIS`).
+    pub const DEBRIS: u64 = 1 << 36;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -1111,6 +1117,8 @@ mod shader_switch {
     pub const UNDERWATER_GRADE: u32 = 32;
     /// The low-poly facet bands in `fs_terrain`.
     pub const TERRAIN_FACETS: u32 = 64;
+    /// No sand line on slopes nor silt drifts in `vs_model`.
+    pub const NO_SEDIMENT: u32 = 128;
 }
 
 /// Every render pipeline the scene draws with, compiled for one set of
@@ -2244,6 +2252,9 @@ impl Nautilus {
         if self.skips(part::TERRAIN_FACETS) {
             switches |= shader_switch::TERRAIN_FACETS;
         }
+        if self.skips(part::SEDIMENT) {
+            switches |= shader_switch::NO_SEDIMENT;
+        }
         // Only a benchmark changes them, and it pays for the compile.
         if switches != self.switches {
             self.recompile(&gpu.device, switches);
@@ -2337,6 +2348,7 @@ impl Nautilus {
         #[cfg(not(test))]
         let hides = 0u64;
         let depth_first = self.skips(part::DEPTH_FIRST_DRAWS);
+        let no_debris = self.skips(part::DEBRIS);
         let order = &mut self.order;
         order.clear();
         for (model, list) in self.frame.solid.iter().enumerate() {
@@ -2344,6 +2356,7 @@ impl Nautilus {
                 list.iter()
                     .enumerate()
                     .filter(|_| !hides_model(hides, model))
+                    .filter(|(_, i)| !(no_debris && i.surface[3] == world::DEBRIS))
                     // The ice's coverage is per pixel; every other fading
                     // instance at zero coverage would discard every fragment,
                     // so it is not drawn at all.
@@ -3878,6 +3891,8 @@ mod tests {
             ("pass: shimmer water", part::SHIMMER_WATER),
             ("underwater grade", part::UNDERWATER_GRADE),
             ("terrain facets", part::TERRAIN_FACETS),
+            ("sediment", part::SEDIMENT),
+            ("debris", part::DEBRIS),
             ("pass: fading ice", part::FADING_ICE),
             ("pass: fading props", part::FADING_PROPS),
             ("probe: depth-first draws", part::DEPTH_FIRST_DRAWS),

@@ -1654,6 +1654,8 @@ trait Tweak {
     /// keeps its texture: glass is never textured. The fourth component,
     /// the instance's longest axis, is kept.
     fn patterned(&mut self, pattern: [f32; 3]) -> &mut Self;
+    /// Marked as debris ([`DEBRIS`]): last, as texturing clears the mark.
+    fn debris(&mut self) -> &mut Self;
 }
 
 impl Tweak for Instance {
@@ -1679,6 +1681,10 @@ impl Tweak for Instance {
     }
     fn patterned(&mut self, pattern: [f32; 3]) -> &mut Self {
         self.surface = [pattern[0], pattern[1], pattern[2], self.surface[3]];
+        self
+    }
+    fn debris(&mut self) -> &mut Self {
+        self.surface[3] = DEBRIS;
         self
     }
 }
@@ -2485,7 +2491,8 @@ fn rocks(w: &World, f: &mut Frame) {
                     ),
                     colour,
                 )
-                .grounded();
+                .grounded()
+                .debris();
             }
         }
     }
@@ -3814,7 +3821,8 @@ fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f
                 [size, 0.006, size * 0.6],
             ),
             [floor[0] * 0.55, floor[1] * 0.55, floor[2] * 0.58],
-        );
+        )
+        .debris();
     }
     // Debris down-current (`CURRENT` in `scene.wesl` comes from +x, -z).
     let drift = [-0.8f32, 0.6];
@@ -3853,7 +3861,8 @@ fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f
                 ),
                 [0.30, 0.22, 0.15],
             )
-            .grounded();
+            .grounded()
+            .debris();
         } else if kind < 0.75 {
             // A bronze gun off its carriage.
             let long = length * 0.07;
@@ -3874,7 +3883,8 @@ fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f
             ];
             f.put(Model::Cylinder, between(a, b, 0.011), [0.26, 0.24, 0.17])
                 .material(material::COPPER)
-                .grounded();
+                .grounded()
+                .debris();
         } else {
             // Ballast stones from her hold.
             let size = 0.025 + 0.025 * h(73);
@@ -3893,7 +3903,8 @@ fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f
                 ),
                 [0.30, 0.29, 0.27],
             )
-            .grounded();
+            .grounded()
+            .debris();
         }
     }
 }
@@ -4008,7 +4019,8 @@ fn ruins(w: &World, f: &mut Frame) {
                         ),
                         marble,
                     )
-                    .grounded();
+                    .grounded()
+                    .debris();
                 }
             }
         } else {
@@ -4142,7 +4154,8 @@ fn ruins(w: &World, f: &mut Frame) {
                 between(lie(-1.0), lie(1.0), 0.03 * s),
                 stone,
             )
-            .grounded();
+            .grounded()
+            .debris();
         }
         for k in 0..3 {
             let d = (hash(ix, iz * 3 + k, 88) - 0.5) * 0.9;
@@ -4165,7 +4178,8 @@ fn ruins(w: &World, f: &mut Frame) {
                 ),
                 stone,
             )
-            .grounded();
+            .grounded()
+            .debris();
         }
     }
     // The volcano, far off across the city: a broad, craggy cone with a
@@ -6559,6 +6573,9 @@ fn vents(w: &World, f: &mut Frame) {
 /// Marks a keel in the ice's material (`Instance::surface`'s last slot): the
 /// ice sheet's shader shades it as ice lit through, not as the sheet.
 pub const ICE_KEEL: f32 = 1.0;
+/// Marks what lies round wrecks, ruins and outcrops in the same slot, so a
+/// benchmark can leave it out (`part::DEBRIS`) though its meshes are shared.
+pub const DEBRIS: f32 = 2.0;
 
 /// Keels of broken ice hanging from the pack.
 fn ice(w: &World, f: &mut Frame) {

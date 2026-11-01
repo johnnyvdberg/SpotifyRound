@@ -1215,7 +1215,7 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // once per instance.
     out.floor_y = i.extra.w;
     out.floor = i.floor.rgb;
-    if (GROUNDED && MATERIAL != 6) {
+    if (GROUNDED && MATERIAL != 6 && !switched(128u)) {
         // The sand line follows the slope under the model (`world::
         // ground_under` packs it), so a stone on a bank is buried to the same
         // depth all round rather than to one level through it; and silt
