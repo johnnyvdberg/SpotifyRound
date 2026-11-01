@@ -1293,7 +1293,12 @@ fn compile(
                         pipelines.push(pipeline(
                             &model_label(label, material, grounded, anim),
                             "vs_model",
-                            "fs_model",
+                            // The tunnel has a fragment shader of its own.
+                            if material == world::material::VAULT as i32 && fading == 0.0 {
+                                "fs_vault"
+                            } else {
+                                "fs_model"
+                            },
                             &model_buffers,
                             blend,
                             write_depth,

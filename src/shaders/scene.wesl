@@ -1201,9 +1201,13 @@ struct Lit {
     @location(11) @interpolate(flat) floor: vec3<f32>,
     // `fog_at` the vertex.
     @location(10) fog: vec4<f32>,
-    // The drowned city's: whether the building stands on the seabed, which
-    // darkens its foot (`city_light`).
-    @location(12) @interpolate(flat) grounded: f32,
+    // The tunnel's, worked out once a vertex so its fragment shader holds
+    // almost nothing before its one texture tap (`fs_vault`): the lamp's
+    // reach and cone, how near the glass the rock is, the cracks' glow and
+    // the dull warmth about them. Every other material leaves it zero.
+    @location(13) vault: vec4<f32>,
+    // The tunnel's: the halfway vector of the lamp and the eye, for the shine.
+    @location(14) halfway: vec3<f32>,
 };
 
 // Bend a model where it lives: plants sway, fish sweep their tails sideways
@@ -1446,7 +1450,38 @@ fn vs_model(v: Model, i: Instance) -> Lit {
         let above = f32(v.aux.x);
         let heat = smooth01(0.45, 0.70, vnoise(world.x * 0.9 + world.z * 0.5, world.y * 2.2, 31u))
             * (1.0 - 0.75 * smooth01(0.15, 1.1, above));
-        out.local = vec3<f32>(above, heat, 0.0);
+        // The tap's address and level, and the terms that vary smoothly over
+        // a wall, for `fs_vault`: the tile runs across the section by x + z
+        // and up it by height, at the sharper level the tunnel is seen at.
+        // The fragment shader takes the rest as interpolated unit vectors,
+        // left unnormalised (a triangle spans too small an angle for the
+        // difference to show): the normal turned to the window, the lamp's
+        // direction (in the slot `world` takes elsewhere) and its halfway
+        // vector with the eye's.
+        let eye = g.camera.xyz - world;
+        let distance = length(eye);
+        let to_lamp = g.lamp_origin.xyz - world;
+        let reach2 = dot(to_lamp, to_lamp);
+        let l = to_lamp * inverseSqrt(reach2);
+        let cone = 0.15 + 0.85 * smooth01(0.72, 0.95, -dot(l, g.lamp.xyz));
+        let near = 0.45 + 0.55 * smooth01(0.25, 1.6, distance);
+        let low = 1.0 - smooth01(0.0, 1.3, above);
+        let pulse = 0.7 + 0.3 * sin(g.camera.w * 1.3 + world.x * 2.0 + world.y * 3.0);
+        out.normal = facing;
+        out.world = l;
+        out.halfway = normalize(eye / distance + l);
+        out.local = vec3<f32>(
+            (world.x + world.z) * (i.surface.y * 1.35),
+            world.y * (i.surface.y * 1.35),
+            clamp(log2(distance), 0.0, 8.0),
+        );
+        out.floor_y = low * (0.85 + 0.15 * sin(g.camera.w * 1.9 + world.x));
+        out.vault = vec4<f32>(
+            g.lamp.w * cone / (1.0 + reach2 * 0.12),
+            near,
+            heat * pulse * 1.6,
+            heat * 0.25,
+        );
         // Hot water hangs in the tunnel: the far end of it fades into a dull
         // red glow instead of the cold sea, so the passage ahead reads as
         // deep and lit, and the near rock stands out dark against it.
@@ -1455,11 +1490,11 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     // The city's parts mark what they are in the length of the normal they
     // carry (`city_light`), and the windows take a seed from where the
     // instance stands; its texture is the world's, so neither is missed.
-    out.grounded = 0.0;
     if (MATERIAL == CITY_LIGHTS) {
         out.local_normal = v.normal * (1.0 + f32(v.aux.x));
-        out.surface.w = floor(fract(i.m0.w * 0.1731 + i.m2.w * 0.0913) * 4096.0);
-        out.grounded = i.floor.w;
+        // The seed, and 4096 more where the building stands on the seabed,
+        // which darkens its foot (`city_light`).
+        out.surface.w = floor(fract(i.m0.w * 0.1731 + i.m2.w * 0.0913) * 4096.0) + 4096.0 * i.floor.w;
         // How much a part shines like polished brass, from its colour
         // (`mesh::city_part`), per vertex in the slot a grounded model keeps
         // its seabed's height in: a city model is never grounded.
@@ -1542,7 +1577,8 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     var out: City;
     out.lamps = vec3<f32>(0.0);
     out.keep = 1.0;
-    let seed = in.surface.w;
+    let grounded = floor(in.surface.w / 4096.0);
+    let seed = in.surface.w - 4096.0 * grounded;
     let local = in.local;
     let kind = length(in.local_normal) - 1.0;
     let facing = clamp(dot(n, v), 0.0, 1.0);
@@ -1585,7 +1621,7 @@ fn city_light(in: Lit, n: vec3<f32>, v: vec3<f32>, distance: f32, t: f32) -> Cit
     // seabed it stands on, over its plinth and its first floor. Baked
     // ambient occlusion in all but name, from the model's own height, so it
     // costs a smoothstep and no vertices.
-    let foot = (1.0 - smooth01(-0.35, 0.95, local.y)) * in.grounded;
+    let foot = (1.0 - smooth01(-0.35, 0.95, local.y)) * grounded;
     out.keep = 1.0 - 0.55 * foot;
     // Polished brass mirrors the water above and the glow along the
     // horizon, with a bright band where the surface turns it to the light
@@ -2152,6 +2188,48 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // The sea texture is opaquely composited by Slint; the fade lives in the
     // colour, never in the alpha.
     return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FADE_OPAQUE));
+}
+
+// The tunnel's own fragment shader: `vault_hd` with everything that varies
+// smoothly over a wall already worked out at the vertices (`vs_model`), so
+// the one texture tap goes out first, with nothing before it but varyings,
+// and the shader runs at the full four threads. Per pixel only what needs
+// the tap is left: the bumped normal, the two N.L terms, the tone and the
+// shine. Entry point of the opaque vault pipelines only.
+@if(full_hd)
+@fragment
+fn fs_vault(in: Lit) -> @location(0) vec4<f32> {
+    var sample = vec4<f32>(0.6 / TEXTURE_RANGE, 0.5, 0.5, 0.0);
+    if (!PLAIN_TEXTURES) {
+        sample = textureSampleLevel(surfaces, surface_sampler, in.local.xy, VAULT_LAYER, in.local.z);
+    }
+    let n = in.normal;
+    let slope = (sample.gb - 0.5) * VAULT_RELIEF;
+    let rise = vec3<f32>(slope.x, slope.y, slope.x);
+    let bumped = normalize(n - (rise - n * dot(n, rise)));
+    let tone = sample.r * TEXTURE_RANGE;
+    let lamp = in.vault.x * max(dot(bumped, in.world), 0.0);
+    let bounce = in.floor_y * (0.6 - 0.4 * bumped.y);
+    let near = in.vault.y;
+    var colour = in.albedo * tone * (
+        (vec3<f32>(0.30, 0.24, 0.22) + vec3<f32>(1.1, 0.33, 0.09) * bounce) * near
+            + vec3<f32>(1.0, 0.92, 0.78) * (lamp * (0.5 + 1.0 * near))
+    );
+    colour += in.local_normal * tone;
+    // Molten cracks, and the rock about them warmed a dull red.
+    colour += vec3<f32>(1.0, 0.32, 0.05) * (sample.a * in.vault.z)
+        + vec3<f32>(0.30, 0.06, 0.01) * in.vault.w;
+    // Wet rock, glistening where the beam strikes it.
+    let shine = pow(max(dot(bumped, in.halfway), 0.0), 16.0);
+    colour += vec3<f32>(0.85, 0.82, 0.75) * (shine * lamp * 0.15);
+    var shaded = mix(colour, in.fog.rgb, in.fog.a);
+    if (switched(32u)) {
+        let t = in.fog.a;
+        let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
+        shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
+            + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
+    }
+    return vec4<f32>(shaded * SEA_SCALE, 1.0);
 }
 
 @if(full_hd)
