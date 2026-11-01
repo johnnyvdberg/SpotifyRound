@@ -152,6 +152,10 @@ override FORM: i32 = -1;
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
 const LEG: f32 = 16.5;
+// Where the bottom current comes from, in xz: silt drifts against the sides
+// of grounded things that face it (`vs_model`). One for every sea, from
+// ahead and off to port of the voyage's way.
+const CURRENT: vec2<f32> = vec2<f32>(0.8, -0.6);
 const BLEND: f32 = 0.10;
 const BIOMES: i32 = 14;
 const SHALLOWS: i32 = 0;
@@ -1254,23 +1258,46 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.surface = i.surface;
     out.fade = i.extra.z;
     out.fog = fog_at(world);
-    // The GPU path: sun, lamp, point lights and caustics at the vertex.
-    var light = vec3<f32>(0.0);
-    if (switched(4u)) {
-        let light_n = normalize(n);
-        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
-        light = g.tint.rgb * (
-            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(light_n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
-            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (light_n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
-        );
+    if (MATERIAL == 6 || MATERIAL == 12) {
+        // The ice: the sheet works its colour out per pixel from its bake
+        // and never reads this; a keel under it (`material::KEEL`) is lit
+        // through, by the daylight the sheet lets in, not on its faces: its
+        // own colour (`mesh::keel`, pale where thin, glacial blue where
+        // thick) at the sheet's brightness. Neither needs the lights.
+        out.albedo *= 0.95 + 0.75 * g.sun.w;
     } else {
-        light = light_at(world, normalize(n));
+        // The GPU path: sun, lamp, point lights and caustics at the vertex.
+        var light = vec3<f32>(0.0);
+        if (switched(4u)) {
+            let light_n = normalize(n);
+            let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
+            light = g.tint.rgb * (
+                vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(light_n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
+                + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (light_n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
+            );
+        } else {
+            light = light_at(world, normalize(n));
+        }
+        out.albedo *= light;
     }
-    out.albedo *= light;
     // `world::build` finds the ground and the sand's colour under the model,
     // once per instance.
     out.floor_y = i.extra.w;
     out.floor = i.floor.rgb;
+    if (GROUNDED && !switched(256u)) {
+        // The sand line follows the slope under the model (`world::
+        // ground_under` packs it), so a stone on a bank is buried to the same
+        // depth all round rather than to one level through it; and silt
+        // drifts up against the side that faces the current, more against a
+        // big thing than a small one. Per vertex, so the pixel pays nothing.
+        let packed = i.floor.w;
+        let qx = floor(packed / 1025.0);
+        let slope = (vec2<f32>(qx, packed - qx * 1025.0) / 256.0) - 2.0;
+        out.floor_y += dot(slope, world.xz - vec2<f32>(i.m0.w, i.m2.w));
+        let tall = length(vec3<f32>(i.m0.y, i.m1.y, i.m2.y));
+        let facing = max(dot(normalize(n).xz, CURRENT), 0.0);
+        out.floor_y += min(0.25 * tall, 0.06) * facing * facing;
+    }
     // Nothing that swims is grounded, so the glass pass reads these two
     // slots as how hard the bell is contracted here (the light of the stroke
     // runs down the arms and threads with it) and as the animal's own tint
@@ -1701,6 +1728,14 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let sparkle = pow(fract(sin(dot(floor(p * 140.0), vec3<f32>(12.9, 78.2, 37.7)) + floor(t * 3.0)) * 43758.5), 20.0);
             colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
         }
+        // A keel under the pack: translucent ice, brightest at its
+        // silhouette where the light crosses the least of it; the sheet's
+        // thinner haze, since the water up by the ice is lit from above.
+        case 12u: {
+            let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
+            colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
+            haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
+        }
         // The pack ice from below: floes glowing with daylight, open leads.
         // Its three noise fields and its arctic coverage come baked into one
         // texture instead of three `vnoise` stacks per pixel.
@@ -1720,7 +1755,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let floes = baked.r;
             let lead = baked.g;
             let bumps = baked.b;
-            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.70 + 0.30 * bumps + 0.40 * floes);
+            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.62 + 0.30 * bumps + 0.55 * floes);
             colour = mix(colour * texture, vec3<f32>(0.82, 0.98, 1.00), lead)
                 * (0.95 + 0.75 * g.sun.w);
         }
@@ -1933,6 +1968,11 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         // lie level along the tunnel and through its passages.
         uv = vec3<f32>(p.x + p.z, 0.0, p.y) * (in.surface.y * 1.35);
     }
+    // A keel under the ice hangs down: its frost runs round it and down it,
+    // as the tunnel's rock does, not streaked down from above.
+    if (MATERIAL == 12) {
+        uv = vec3<f32>(p.x + p.z, 0.0, p.y) * in.surface.y;
+    }
     let layer = i32(in.surface.x + 0.5);
     let distance = length(p - g.camera.xyz);
     // The tunnel is seen close up: its rock is one sample of a 0.5-unit tile,
@@ -2003,6 +2043,14 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let sparkle = pow(fract(sin(dot(floor(p * 140.0), vec3<f32>(12.9, 78.2, 37.7)) + floor(t * 3.0)) * 43758.5), 20.0);
             colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
         }
+        // A keel under the pack: translucent ice, brightest at its
+        // silhouette where the light crosses the least of it; the sheet's
+        // thinner haze, since the water up by the ice is lit from above.
+        case 12u: {
+            let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
+            colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
+            haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
+        }
         // The pack ice from below: floes glowing with daylight, open leads.
         // Its three noise fields and its arctic coverage come baked into one
         // texture instead of three `vnoise` stacks per pixel.
@@ -2022,7 +2070,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let floes = baked.r;
             let lead = baked.g;
             let bumps = baked.b;
-            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.70 + 0.30 * bumps + 0.40 * floes);
+            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.62 + 0.30 * bumps + 0.55 * floes);
             colour = mix(colour * texture, vec3<f32>(0.82, 0.98, 1.00), lead)
                 * (0.95 + 0.75 * g.sun.w);
         }

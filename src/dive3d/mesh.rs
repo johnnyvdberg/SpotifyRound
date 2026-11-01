@@ -3768,32 +3768,101 @@ fn fan() -> Mesh {
     m
 }
 
-fn keel() -> Mesh {
-    // A pressure ridge: slabs of broken ice jammed together, hanging down
-    // from y = 0.
+/// An icosphere bent into any shape: `shape` moves each point of the unit
+/// sphere, `colour` tints it by where it ended up. One subdivision fewer at
+/// each coarser level, so near the window the shape gets its vertices and far
+/// off it costs few; the normals are smoothed across the whole surface.
+fn blob(
+    subdivisions: u32,
+    shape: impl Fn([f32; 3]) -> [f32; 3],
+    colour: impl Fn([f32; 3], [f32; 3]) -> [f32; 3],
+) -> Mesh {
+    let corners = icosphere(subdivisions.saturating_sub(COARSER.get()));
     let mut m = Mesh::default();
-    for i in 0..7u32 {
-        let x = (i as f32 / 6.0) * 2.0 - 1.0;
-        let depth = 0.35 + 0.65 * (1.0 - x * x) * (0.6 + 0.4 * jitter(i, 3));
-        let w = 0.18 + 0.12 * jitter(i, 9);
-        let tilt = (jitter(i, 21) - 0.5) * 0.6;
-        let slab = extrude(
-            &[
-                [-w, 0.0],
-                [w, 0.0],
-                [w * 0.8, -depth],
-                [-w * 0.7, -depth * 0.9],
-            ],
-            0.5 + 0.4 * jitter(i, 4),
-            [0.8 + 0.4 * jitter(i, 13); 3],
+    let mut index = std::collections::HashMap::new();
+    for p in corners {
+        let key = (
+            (p[0] * 1e5) as i32,
+            (p[1] * 1e5) as i32,
+            (p[2] * 1e5) as i32,
         );
-        let (s, c) = tilt.sin_cos();
-        m.append(slab.map(
-            move |p| [p[0] * c - p[1] * s + x, p[0] * s + p[1] * c, p[2]],
-            move |n| [n[0] * c - n[1] * s, n[0] * s + n[1] * c, n[2]],
-        ));
+        let i = *index.entry(key).or_insert_with(|| {
+            let q = shape(p);
+            m.vertex(q, colour(p, q), [0.0, (q[1] + 1.0).clamp(0.0, 1.0)])
+        });
+        m.indices.push(i);
     }
-    m
+    m.smooth()
+}
+
+/// A pressure ridge of the pack, hanging from y = 0 down to about y = -1,
+/// along x from -1 to 1 and z from -1 to 1: broken floes rafted together and
+/// worn smooth by the water, so a row of rounded lobes of different depths
+/// under a flat top that meets the sheet, never the sharp slabs of new ice.
+/// Its colour is the light that comes through it: pale blue-white where it
+/// is thin, by the sheet and at its rounded edges, a deeper glacial blue
+/// down its thick middle, as daylight scattered in ice is.
+fn keel() -> Mesh {
+    // The lobes: (centre along x, across z, how deep, how wide): blocks of
+    // rubble jammed under the ridge, overlapping into one rounded mass that
+    // is deepest along the middle, as a ridge's keel hangs in a broad V.
+    let lobes: Vec<(f32, f32, f32, f32)> = (0..9u32)
+        .map(|i| {
+            let c = -0.9 + 1.8 * (i as f32 + 0.5 * jitter(i, 31)) / 8.5;
+            let across = (jitter(i, 34) - 0.5) * 0.7;
+            let deep = (0.35 + 0.65 * (1.0 - c * c)) * (0.55 + 0.45 * jitter(i, 32));
+            (c, across, deep, 0.22 + 0.20 * jitter(i, 33))
+        })
+        .collect();
+    let depth = move |x: f32, z: f32| {
+        lobes
+            .iter()
+            .map(|&(c, a, deep, w)| {
+                // Flat-bellied with rounded shoulders, a worn block, rather
+                // than a bell that hangs to a point.
+                let r2 = ((x - c) / w).powi(2) + ((z - a) / (w * 2.2)).powi(2);
+                deep * (-r2 * r2).exp()
+            })
+            .fold(0.12f32, f32::max)
+    };
+    // Smooth lumps, so no two lobes are the same and no face is flat.
+    let lumps = |p: [f32; 3]| {
+        (p[0] * 5.3 + 1.7).sin() * (p[2] * 4.1 + 0.3).cos() * 0.5
+            + (p[0] * 2.3 - p[1] * 6.1 + 2.0).sin() * 0.3
+            + (p[2] * 7.7 + p[1] * 3.3).sin() * 0.2
+    };
+    let shape = move |p: [f32; 3]| {
+        let wobble = lumps(p);
+        // A ragged outline where it meets the sheet, not an ellipse.
+        let a = p[2].atan2(p[0]);
+        let outline = 1.0 + 0.10 * (a * 3.0 + 0.7).sin() + 0.06 * (a * 7.0 + 2.1).sin();
+        let x = p[0] * outline * (1.0 + 0.04 * wobble);
+        let z = p[2] * outline * (0.85 + 0.08 * wobble);
+        let y = if p[1] >= 0.0 {
+            // The top lies flat against the sheet's underside.
+            0.03 * p[1]
+        } else {
+            // Hanging down: the sides fall steeply from the sheet and round
+            // over into the keel's belly, lumpy with blocks.
+            let down = (-p[1]).powf(0.6);
+            -down * depth(x, z) * (1.0 + 0.18 * wobble)
+        };
+        [x, y, z]
+    };
+    blob(3, shape, |_, q| {
+        let thick = (-q[1]).clamp(0.0, 1.0);
+        let edge = (q[0] * q[0] + q[2] * q[2]).sqrt().min(1.0);
+        let thin = (1.0 - thick).max(edge * edge * 0.6);
+        // Glacial blue in the thick of it, pale where the light gets through.
+        let deep = [0.48, 0.78, 0.96];
+        let pale = [0.92, 1.0, 1.0];
+        let t = thin.powf(1.5);
+        [
+            deep[0] + (pale[0] - deep[0]) * t,
+            deep[1] + (pale[1] - deep[1]) * t,
+            deep[2] + (pale[2] - deep[2]) * t,
+        ]
+    })
 }
 
 /// A sister of the Nautilus, one unit long with the spur at +0.5: a spindle of

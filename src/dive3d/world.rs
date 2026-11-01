@@ -262,6 +262,10 @@ pub mod material {
     /// The drowned city's brass and iron, its windows, lit glass and neon:
     /// `city_light` in `scene.wesl`, marked part by part (`mesh::city`).
     pub const CITY: f32 = 11.0;
+    /// A keel under the polar pack, lit through rather than on its faces
+    /// (`fs_model`'s case 12), in a pipeline of its own so the sheet's
+    /// shader carries none of it.
+    pub const KEEL: f32 = 12.0;
 }
 
 // Sprite kinds.
@@ -307,8 +311,14 @@ pub fn ice_bake(w: &World, origin: [f32; 2], size: f32, res: u32) -> Vec<u8> {
             let v = (j as f32 + 0.5) / res as f32;
             let x = origin[0] + u * size;
             let z = origin[1] + v * size;
-            let coverage = smooth(0.35, 0.65, w.share(x, z, ARCTIC));
-            let floes = vnoise(x * 0.9, z * 1.3, 14);
+            let share = w.share(x, z, ARCTIC);
+            let coverage = smooth(0.35, 0.65, share);
+            // Away from the ice the shader discards the sheet, so its fields
+            // are only worked out a texel or so past where it begins.
+            if share < 0.3 {
+                continue;
+            }
+            let floes = floe_light(x, z);
             let lead = 1.0
                 - smooth(
                     0.02,
@@ -324,6 +334,41 @@ pub fn ice_bake(w: &World, origin: [f32; 2], size: f32, res: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+/// How much daylight the pack lets through at (x, z), 0 to 1: the pack is
+/// floes of different ages frozen together, each its own thickness under its
+/// own drifts of snow, with rounded edges where the floes were ground
+/// against each other and thin, bright young ice refrozen in the seams
+/// between them. Seen from below a thick, snowy floe is dark and the seams
+/// glow.
+fn floe_light(x: f32, z: f32) -> f32 {
+    const FLOE: f32 = 2.6;
+    let (u, v) = (x / FLOE, z / (FLOE * 0.8));
+    let (iu, iv) = (u.floor() as i32, v.floor() as i32);
+    let (mut best, mut second, mut id) = (9.0f32, 9.0f32, (0, 0));
+    for dj in -1..=1 {
+        for di in -1..=1 {
+            let (ci, cj) = (iu + di, iv + dj);
+            let px = ci as f32 + 0.15 + 0.7 * hash(ci, cj, 148);
+            let py = cj as f32 + 0.15 + 0.7 * hash(ci, cj, 149);
+            let d = (u - px).hypot(v - py);
+            if d < best {
+                second = best;
+                best = d;
+                id = (ci, cj);
+            } else if d < second {
+                second = d;
+            }
+        }
+    }
+    // Distance to the seam, in floe widths, and the floe's own thickness.
+    let seam = (second - best) * 0.5;
+    let thick = 0.35 + 0.65 * hash(id.0, id.1, 150);
+    let rounded = smooth(0.0, 0.22, seam);
+    let snow = vnoise(x * 0.9, z * 1.3, 14);
+    let light = (1.0 - thick * rounded) * (0.75 + 0.25 * snow);
+    light.clamp(0.0, 1.0)
 }
 
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
@@ -1703,6 +1748,8 @@ trait Tweak {
     /// keeps its texture: glass is never textured. The fourth component,
     /// the instance's longest axis, is kept.
     fn patterned(&mut self, pattern: [f32; 3]) -> &mut Self;
+    /// Marked as debris ([`DEBRIS`]): last, as texturing clears the mark.
+    fn debris(&mut self) -> &mut Self;
 }
 
 impl Tweak for Instance {
@@ -1728,6 +1775,10 @@ impl Tweak for Instance {
     }
     fn patterned(&mut self, pattern: [f32; 3]) -> &mut Self {
         self.surface = [pattern[0], pattern[1], pattern[2], self.surface[3]];
+        self
+    }
+    fn debris(&mut self) -> &mut Self {
+        self.surface[3] = DEBRIS;
         self
     }
 }
@@ -1785,6 +1836,150 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         }
         _ => None,
     }
+}
+
+/// How a kind of thing sits on the seabed: the placement rules, as data, that
+/// keep it from floating over a hollow, hanging off a lip or standing plumb
+/// on a slope it would have slid down or settled into. [`seat`] applies them;
+/// the kinds are in [`bed`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bed {
+    /// How much of its height is sunk below the ground at its foot: a stone
+    /// half buried in sand, a wreck settled to its bilge.
+    pub sink: f32,
+    /// How far it leans with the slope under it: 0 stands plumb (a stalk, a
+    /// column, a chimney grows or was built upright), 1 lies along it (a
+    /// stone, a starfish, a hull).
+    pub lean: f32,
+    /// The steepest ground it is found on, as rise over run; on steeper
+    /// ground it would not have settled, so it is left out.
+    pub steepest: f32,
+    /// How far the ground may fall away under its footprint, as a share of
+    /// its radius, before it would hang over a lip or straddle a hollow: it
+    /// is left out there too.
+    pub overhang: f32,
+}
+
+/// The kinds of things on the seabed and how each sits there: one row a
+/// kind, so a placement rule is changed here rather than in its placer.
+pub mod bed {
+    use super::Bed;
+    /// A stone or a boulder: half sunk, lying with the slope; never on a
+    /// lip, never on a slope steeper than about 35 degrees.
+    pub const STONE: Bed = Bed {
+        sink: 0.35,
+        lean: 0.85,
+        steepest: 0.7,
+        overhang: 0.35,
+    };
+    /// Bedrock breaking the surface: deep in the ground, its strata tilted
+    /// with the slope, on banks too (that is where it outcrops).
+    pub const OUTCROP: Bed = Bed {
+        sink: 0.5,
+        lean: 1.0,
+        steepest: 1.4,
+        overhang: 0.8,
+    };
+    /// What lies flat on the bottom: starfish, shells, chests, debris.
+    pub const FLAT: Bed = Bed {
+        sink: 0.15,
+        lean: 1.0,
+        steepest: 0.9,
+        overhang: 0.5,
+    };
+    /// What grows up from the bottom: sponges, fans, stalks. Upright
+    /// whatever the slope, on any ground they can hold to.
+    pub const GROWN: Bed = Bed {
+        sink: 0.05,
+        lean: 0.0,
+        steepest: 1.6,
+        overhang: 1.0,
+    };
+    /// A galleon on the bottom: settled to her bilge along her length,
+    /// never perched across a ridge.
+    pub const WRECK: Bed = Bed {
+        sink: 0.12,
+        lean: 1.0,
+        steepest: 0.35,
+        overhang: 0.18,
+    };
+    /// A fallen column drum: rolled to rest along the slope, a little sunk.
+    pub const DRUM: Bed = Bed {
+        sink: 0.2,
+        lean: 1.0,
+        steepest: 0.6,
+        overhang: 0.4,
+    };
+    /// A built thing, a temple front: plumb on its platform, on ground that
+    /// was level enough to build on.
+    pub const BUILT: Bed = Bed {
+        sink: 0.02,
+        lean: 0.0,
+        steepest: 0.3,
+        overhang: 0.12,
+    };
+}
+
+/// Where a thing of radius `radius` settles at (x, z) by its [`Bed`]: the
+/// ground under its foot, and the slope it leans with, or `None` where it
+/// would not lie (too steep, or hanging over a lip).
+#[derive(Clone, Copy, Debug)]
+pub struct Seat {
+    /// The ground under its middle.
+    pub y: f32,
+    /// The rise of the ground per unit east (x) and south (z).
+    pub slope: [f32; 2],
+    /// How much of its lean it takes.
+    lean: f32,
+}
+
+impl Seat {
+    /// The pitch and roll that lay it with the slope when it is turned to
+    /// `yaw` (the order `place` applies them in).
+    pub fn tilt(&self, yaw: f32) -> (f32, f32) {
+        let (s, c) = yaw.sin_cos();
+        // The slope along the model's own x and z once turned.
+        let along = self.slope[0] * c - self.slope[1] * s;
+        let across = self.slope[0] * s + self.slope[1] * c;
+        (along.atan() * self.lean, -across.atan() * self.lean)
+    }
+
+    /// Where its middle goes for a thing `height` tall that rests on its
+    /// base: the ground, less the share of it that is sunk.
+    pub fn foot(&self, rule: &Bed, height: f32) -> f32 {
+        self.y - rule.sink * height
+    }
+}
+
+pub fn seat(w: &World, x: f32, z: f32, radius: f32, rule: &Bed) -> Option<Seat> {
+    let r = radius.max(0.02);
+    let y = w.ground(x, z);
+    let east = w.ground(x + r, z);
+    let west = w.ground(x - r, z);
+    let south = w.ground(x, z + r);
+    let north = w.ground(x, z - r);
+    let slope = [(east - west) / (2.0 * r), (south - north) / (2.0 * r)];
+    if slope[0].hypot(slope[1]) > rule.steepest {
+        return None;
+    }
+    // A lip or a hollow: the ground under the edge is far from the plane
+    // through the middle that the slope gives.
+    let bend = [
+        east - y - slope[0] * r,
+        west - y + slope[0] * r,
+        south - y - slope[1] * r,
+        north - y + slope[1] * r,
+    ]
+    .into_iter()
+    .fold(0.0f32, |m, d| m.max(d.abs()));
+    if bend > rule.overhang * r {
+        return None;
+    }
+    Some(Seat {
+        y,
+        slope,
+        lean: rule.lean,
+    })
 }
 
 /// How far something has faded in, given its biome's share and the share it
@@ -2043,6 +2238,29 @@ const CACHE_TURN: f32 = 0.04;
 /// One kind of thing to place in the frame.
 type Placer = fn(&World, &mut Frame);
 
+/// The seabed under a grounded instance, for the vertex shader to bed it in
+/// the sand: its height at the instance's foot, the slope there packed into
+/// `floor.w` (`unpack_slope` in `scene.wesl`) so the sand line follows the
+/// ground across a wide model instead of lying level through it, and the
+/// sand's colour.
+fn ground_under(world: &World, instance: &mut Instance) {
+    let r = instance.rows;
+    let (x, z) = (r[0][3], r[2][3]);
+    let y = world.ground(x, z);
+    const D: f32 = 0.1;
+    let gx = (world.ground(x + D, z) - y) / D;
+    let gz = (world.ground(x, z + D) - y) / D;
+    instance.extra[3] = y;
+    let c = floor_colour(world.seabed, &world.seabed.biome(x, z), x, z);
+    instance.floor = [c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, pack_slope(gx, gz)];
+}
+
+/// Two slopes in -2..2 in one float, to 1/256: exact in an f32's mantissa.
+pub fn pack_slope(gx: f32, gz: f32) -> f32 {
+    let q = |g: f32| ((g.clamp(-2.0, 2.0) + 2.0) * 256.0).round();
+    q(gx) * 1025.0 + q(gz)
+}
+
 pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     #[cfg(test)]
     let begun = std::time::Instant::now();
@@ -2156,12 +2374,8 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
             .chain(cache.frame.glass.iter_mut())
         {
             for instance in list.iter_mut() {
-                let r = instance.rows;
                 if instance.extra[1] > 0.5 {
-                    let (x, z) = (r[0][3], r[2][3]);
-                    instance.extra[3] = world.ground(x, z);
-                    let c = floor_colour(world.seabed, &world.seabed.biome(x, z), x, z);
-                    instance.floor = [c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, 0.0];
+                    ground_under(world, instance);
                 }
             }
         }
@@ -2204,16 +2418,20 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // lookups and noise out of every vertex of every model. The sand's colour
     // comes from the same place, so no pixel has to look up which biome it is
     // in to blend the foot in.
+    // The cached scenery at the head of each list found its ground when the
+    // cache was built; only what the moving placers added after it needs it.
     #[cfg(test)]
     let placed = begun.elapsed();
-    for list in frame.solid.iter_mut().chain(frame.glass.iter_mut()) {
-        for instance in list.iter_mut() {
-            let r = instance.rows;
+    let cached = cache.frame.solid.iter().chain(cache.frame.glass.iter());
+    for (list, cached) in frame
+        .solid
+        .iter_mut()
+        .chain(frame.glass.iter_mut())
+        .zip(cached)
+    {
+        for instance in list.iter_mut().skip(cached.len()) {
             if instance.extra[1] > 0.5 {
-                let (x, z) = (r[0][3], r[2][3]);
-                instance.extra[3] = world.ground(x, z);
-                let c = floor_colour(world.seabed, &world.seabed.biome(x, z), x, z);
-                instance.floor = [c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, 0.0];
+                ground_under(world, instance);
             }
         }
     }
@@ -2278,12 +2496,27 @@ fn planes(w: &World, f: &mut Frame) {
     }
 }
 
+/// Per biome, the share of the rock grid's cells that hold a stone: stony
+/// ground (the abyss, the trench, the vents) the most; the soft bottoms (the
+/// Sargasso's silt, the bloom's ooze, the brine's crust) few, as sediment
+/// buries what falls there; the reef, built of coral, almost none.
+const STONES: [f32; BIOMES] = [
+    0.45, 0.40, 0.30, 0.40, 0.15, 0.55, 0.40, 0.50, 0.045, 0.15, 0.50, 0.22, 0.12, 0.30,
+];
+/// Per biome, the share of its boulders that are bedrock outcropping rather
+/// than loose stones: none where the bottom is deep sediment or, in Atlantis,
+/// paving.
+const OUTCROPS: [f32; BIOMES] = [
+    0.30, 0.30, 0.10, 0.0, 0.50, 0.60, 0.20, 0.70, 0.20, 0.0, 0.60, 0.0, 0.0, 0.0,
+];
+
 fn rocks(w: &World, f: &mut Frame) {
+    let most = STONES.iter().copied().fold(0.0, f32::max);
     for &(ix, iz, x, z) in &cells(w, 0.55, 0.6, 14.0, 10) {
-        // Fewer on the cave's floor, which the window sees whole across its
-        // halls: a scatter of pillow lava, not a field of it.
-        let sparse = 0.3 * w.share(x, z, CAVE);
-        if hash(ix, iz, 12) < 0.55 + sparse {
+        // Most of the grid holds nothing anywhere; those cells skip finding
+        // their biome.
+        let roll = 1.0 - hash(ix, iz, 12);
+        if roll > most {
             continue;
         }
         // Big boulders lie farther off; right by the glass only stones.
@@ -2293,19 +2526,34 @@ fn rocks(w: &World, f: &mut Frame) {
         if size > 0.1 && ((z - corridor(x)).abs() < 0.7 || w.share(x, z, CITY) > 0.3) {
             continue;
         }
-        let y = w.ground(x, z);
-        let p = [x, y + size * 0.25, z];
+        let b = w.biome(x, z);
+        if roll > World::by_biome(&b, STONES) {
+            continue;
+        }
+        let outcrop = size > 0.11 && hash(ix, iz, 18) < World::by_biome(&b, OUTCROPS);
+        let rule = if outcrop { bed::OUTCROP } else { bed::STONE };
+        // An outcrop is a ledge of the bedrock: long, its strata tilted.
+        let shape = if outcrop {
+            [
+                size * 1.9,
+                size * (0.7 + 0.3 * hash(ix, iz, 15)),
+                size * 0.9,
+            ]
+        } else {
+            [size * 1.2, size * (0.55 + 0.35 * hash(ix, iz, 15)), size]
+        };
+        let Some(here) = seat(w, x, z, shape[0].max(shape[2]) * 0.8, &rule) else {
+            continue;
+        };
+        // The model runs from about -0.75 (its flattened base) to 1 in y.
+        let height = shape[1] * 1.75;
+        let p = [x, here.foot(&rule, height) + shape[1] * 0.75, z];
         if !w.visible(p, size * 1.5) {
             continue;
         }
-        let b = w.biome(x, z);
-        // The reef is built of coral, not strewn with boulders: most of its
-        // stones are left out, and those left are dead coral rock, pale and
-        // crusted, rather than grey basalt.
+        // The reef is built of coral, not strewn with boulders: those left
+        // are dead coral rock, pale and crusted, rather than grey basalt.
         let reef = b.weight(CORAL) as f32;
-        if hash(ix, iz, 17) < reef * 0.9 {
-            continue;
-        }
         let molten = b.weight(CAVE) as f32;
         let tone = World::by_biome(
             &b,
@@ -2315,31 +2563,62 @@ fn rocks(w: &World, f: &mut Frame) {
         );
         let model =
             [Model::Rock0, Model::Rock1, Model::Rock2][(hash(ix, iz, 14) * 3.0) as usize % 3];
-        let flat = 0.55 + 0.35 * hash(ix, iz, 15);
-        let i = f.put(
-            model,
-            place(
-                p,
-                hash(ix, iz, 16) * TAU,
-                0.0,
-                0.0,
-                [size * 1.2, size * flat, size],
-            ),
-            [
-                tone + 0.30 * reef,
-                tone * 1.02 + 0.20 * reef,
-                tone * 0.98 + 0.12 * reef,
-            ],
-        );
+        let yaw = hash(ix, iz, 16) * TAU;
+        let (pitch, mut roll) = here.tilt(yaw);
+        if outcrop {
+            // Its beds dip one way, so one edge stands proud of the slope.
+            roll += (hash(ix, iz, 19) - 0.5) * 0.7;
+        }
+        let colour = [
+            tone + 0.30 * reef,
+            tone * 1.02 + 0.20 * reef,
+            tone * 0.98 + 0.12 * reef,
+        ];
+        let i = f.put(model, place(p, yaw, pitch, roll, shape), colour);
         i.grounded();
         if reef > 0.5 {
             i.textured(Surface::Coral, 4.0);
         }
         if molten > 0.5 {
             i.textured(Surface::Basalt, 3.0);
-        }
-        if molten > 0.5 {
             i.material(material::LAVA);
+        }
+        // Scree: a few stones broken off it, lying below it down the slope.
+        if outcrop && molten < 0.5 {
+            let fall = here.slope[0].hypot(here.slope[1]);
+            let down = if fall > 0.05 {
+                [-here.slope[0] / fall, -here.slope[1] / fall]
+            } else {
+                let a = hash(ix, iz, 20) * TAU;
+                [a.cos(), a.sin()]
+            };
+            for k in 0..3u32 {
+                let reach = size * (1.3 + 0.9 * hash(ix + k as i32, iz, 21));
+                let side = (hash(ix, iz + k as i32, 22) - 0.5) * size * 1.6;
+                let (sx, sz) = (
+                    x + down[0] * reach - down[1] * side,
+                    z + down[1] * reach + down[0] * side,
+                );
+                let s = size * (0.18 + 0.20 * hash(ix, iz, 23 + k));
+                let Some(st) = seat(w, sx, sz, s, &bed::STONE) else {
+                    continue;
+                };
+                let yaw = hash(ix, iz, 26 + k) * TAU;
+                let (pitch, roll) = st.tilt(yaw);
+                f.put(
+                    [Model::Rock0, Model::Rock1, Model::Rock2][k as usize % 3],
+                    place(
+                        [sx, st.foot(&bed::STONE, s * 1.2) + s * 0.55, sz],
+                        yaw,
+                        pitch,
+                        roll,
+                        [s * 1.2, s * 0.7, s],
+                    ),
+                    colour,
+                )
+                .grounded()
+                .debris();
+            }
         }
     }
 }
@@ -2580,12 +2859,19 @@ fn gardens(w: &World, f: &mut Frame) {
                     [0.90, 0.58, 0.20]
                 };
                 let s = 0.07 + 0.08 * hash(ix, iz, 45);
+                if seat(w, x, z, s * 0.5, &bed::GROWN).is_none() {
+                    continue;
+                }
                 f.put(Model::Fan, place([x, y, z], yaw, 0.0, 0.0, [s, s, s]), hue)
                     .moving(anim::SWAY, yaw, 0.15, 0.7)
                     .grounded();
             }
         } else if polar > needs {
             if hash(ix, iz, 46) < 0.5 {
+                // Sponges hold to ground they can root in, not a lip.
+                if seat(w, x, z, 0.05, &bed::GROWN).is_none() {
+                    continue;
+                }
                 for k in 0..3 {
                     let a = k as f32 * 2.1 + yaw;
                     let h = 0.06 + 0.07 * hash(ix, iz, 47 + k);
@@ -2603,13 +2889,17 @@ fn gardens(w: &World, f: &mut Frame) {
                     .grounded();
                 }
             } else {
+                // A starfish lies along the bottom, whatever its slope.
                 let s = 0.035 + 0.02 * hash(ix, iz, 50);
-                f.put(
-                    Model::Star,
-                    place([x, y + 0.005, z], yaw, 0.0, 0.0, [s, s, s]),
-                    [0.85, 0.30, 0.16],
-                )
-                .grounded();
+                if let Some(st) = seat(w, x, z, s, &bed::FLAT) {
+                    let (pitch, roll) = st.tilt(yaw);
+                    f.put(
+                        Model::Star,
+                        place([x, st.y + 0.005, z], yaw, pitch, roll, [s, s, s]),
+                        [0.85, 0.30, 0.16],
+                    )
+                    .grounded();
+                }
             }
         }
     }
@@ -3399,7 +3689,9 @@ fn trench(w: &World, f: &mut Frame) {
             }
             let top = w.ground(x, edge - out * 0.2);
             let size = 0.25 + 0.3 * hash(ix, k, 522);
-            let p = [x, top - 0.05, edge + out * 0.05];
+            // Bedded in the rim it juts from: thick, most of it back over
+            // the ground and sunk into it, only its lip out over the drop.
+            let p = [x, top - 0.05 - 0.12 * size, edge - out * size * 0.25];
             if !w.visible(p, size * 1.2) {
                 continue;
             }
@@ -3414,7 +3706,7 @@ fn trench(w: &World, f: &mut Frame) {
                     (hash(ix, k, 525) - 0.5) * 0.8,
                     0.0,
                     0.12 * out,
-                    [size * 1.4, size * 0.22, size * 0.8],
+                    [size * 1.4, size * 0.36, size * 0.8],
                 ),
                 [tone, tone * 0.96, tone * 0.9],
             );
@@ -3426,7 +3718,7 @@ fn trench(w: &World, f: &mut Frame) {
                 let a = 0.45 * f.fade;
                 for n in 0..18 {
                     let nf = n as f32;
-                    let q = [x, p[1] - 0.05, p[2] + out * 0.15];
+                    let q = [x, p[1] - 0.05, p[2] + out * size * 0.8];
                     f.mote_sprite(q, 0.03, [0.55 * a, 0.50 * a, 0.40 * a], nf, h, fall);
                 }
             }
@@ -3488,35 +3780,46 @@ fn wrecks(w: &World, f: &mut Frame) {
             continue;
         }
         let length = 2.2 + 1.0 * hash(ix, iz, 62);
-        let y = w.ground(x, z);
+        // Settled along her length on the slope she lies on; never perched
+        // across a ridge with her ends in the air.
+        let Some((x, z, here)) = wreck_berth(w, x, z, length) else {
+            continue;
+        };
+        let y = here.y;
         if !w.visible([x, y + length * 0.25, z], length * 0.7) {
             continue;
         }
         let yaw = (hash(ix, iz, 63) - 0.5) * 1.2;
-        let list = 0.25 * (hash(ix, iz, 64) - 0.3);
+        let (pitch, roll) = here.tilt(yaw);
+        let pitch = pitch + 0.04;
+        let list = 0.25 * (hash(ix, iz, 64) - 0.3) + roll;
         let wood = [0.42, 0.31, 0.21];
-        let p = [x, y + 0.04 * length, z];
+        // Her keel is 0.13 of her length under her waterline: sunk to the
+        // bilge, about half of her below the sand.
+        let p = [x, y + (0.04 - bed::WRECK.sink * 0.18) * length, z];
         f.put(
             Model::Hull,
-            place(p, yaw, 0.04, list, [length, length, length]),
+            place(p, yaw, pitch, list, [length, length, length]),
             wood,
         )
         .grounded();
         // Castles fore and aft, masts and yards, a torn sail.
         let (s, c) = yaw.sin_cos();
+        let rise = pitch.tan();
         let along = |d: f32, up: f32| {
             [
                 p[0] + c * d * length,
-                p[1] + up * length,
+                p[1] + (up + d * rise) * length,
                 p[2] - s * d * length,
             ]
         };
+        wreck_debris(w, f, ix, iz, [x, y, z], yaw, length);
         f.put(
             Model::Box,
             place(
                 along(-0.38, 0.08),
                 yaw,
-                0.0,
+                pitch,
                 list,
                 [0.10 * length, 0.05 * length, 0.10 * length],
             ),
@@ -3527,7 +3830,7 @@ fn wrecks(w: &World, f: &mut Frame) {
             place(
                 along(0.36, 0.07),
                 yaw,
-                0.0,
+                pitch,
                 list,
                 [0.08 * length, 0.03 * length, 0.08 * length],
             ),
@@ -3596,6 +3899,138 @@ fn wrecks(w: &World, f: &mut Frame) {
             [0.20, 0.14, 0.04],
             GLOW,
         );
+    }
+}
+
+/// Where a galleon of `length` whose cell's point is (x, z) came to rest:
+/// the first berth near the point where she can lie by [`bed::WRECK`], kept
+/// off the boat's lane; `None` if there is none. `wrecks` places her there
+/// and `tall_things` keeps the sisters over her there.
+fn wreck_berth(w: &World, x: f32, z: f32, length: f32) -> Option<(f32, f32, Seat)> {
+    [
+        [0.0, 0.0],
+        [0.6, 0.0],
+        [-0.6, 0.0],
+        [0.0, 0.45],
+        [0.0, -0.45],
+    ]
+    .into_iter()
+    .map(|[dx, dz]| (x + dx, z + dz))
+    .filter(|&(x, z)| (z - corridor(x)).abs() >= 1.2)
+    .find_map(|(x, z)| seat(w, x, z, length * 0.45, &bed::WRECK).map(|s| (x, z, s)))
+}
+
+/// What lies round a wreck: the scour the current has dug at her bow and
+/// stern, dark with the coarse shell and gravel it leaves, and a field of
+/// what she shed as she broke up (planks, a gun, ballast stones), strewn
+/// mostly down-current of her and settled into the sand.
+fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f32, length: f32) {
+    let (s, c) = yaw.sin_cos();
+    let floor = floor_colour(w.seabed, &w.biome(at[0], at[2]), at[0], at[2]);
+    // The scour pits, a lens of darker sediment at each end, drawn just
+    // proud of the sand (not grounded: the foot blend would paint it sand).
+    for (k, end) in [0.55f32, -0.55].into_iter().enumerate() {
+        let (px, pz) = (at[0] + c * end * length, at[2] - s * end * length);
+        let size = length * (0.20 + 0.08 * hash(ix, iz + k as i32, 66));
+        let Some(pit) = seat(w, px, pz, size, &bed::FLAT) else {
+            continue;
+        };
+        let (pitch, roll) = pit.tilt(yaw);
+        f.put(
+            Model::Sphere,
+            place(
+                [px, pit.y + 0.004, pz],
+                yaw,
+                pitch,
+                roll,
+                [size, 0.006, size * 0.6],
+            ),
+            [floor[0] * 0.55, floor[1] * 0.55, floor[2] * 0.58],
+        )
+        .debris();
+    }
+    // Debris down-current (`CURRENT` in `scene.wesl` comes from +x, -z).
+    let drift = [-0.8f32, 0.6];
+    for k in 0..9i32 {
+        let h = |salt: u32| hash(ix * 13 + k, iz, salt);
+        let reach = length * (0.25 + 0.55 * h(67));
+        let spread = (h(68) - 0.5) * length * 0.9;
+        let (dx, dz) = (
+            drift[0] * reach - drift[1] * spread,
+            drift[1] * reach + drift[0] * spread,
+        );
+        // Keep clear of the hull itself, which lies along (c, -s).
+        let along = dx * c - dz * s;
+        let beside = dx * s + dz * c;
+        if along.abs() < length * 0.5 && beside.abs() < length * 0.14 {
+            continue;
+        }
+        let (px, pz) = (at[0] + dx, at[2] + dz);
+        let turn = h(69) * TAU;
+        let kind = h(70);
+        if kind < 0.55 {
+            // A sprung plank, half in the sand.
+            let long = length * (0.08 + 0.10 * h(71));
+            let Some(st) = seat(w, px, pz, long, &bed::FLAT) else {
+                continue;
+            };
+            let (pitch, roll) = st.tilt(turn);
+            f.put(
+                Model::Box,
+                place(
+                    [px, st.foot(&bed::FLAT, 0.02) + 0.006, pz],
+                    turn,
+                    pitch + (h(72) - 0.5) * 0.3,
+                    roll,
+                    [long, 0.006, 0.014],
+                ),
+                [0.30, 0.22, 0.15],
+            )
+            .grounded()
+            .debris();
+        } else if kind < 0.75 {
+            // A bronze gun off its carriage.
+            let long = length * 0.07;
+            let Some(st) = seat(w, px, pz, long, &bed::FLAT) else {
+                continue;
+            };
+            let (dxg, dzg) = (turn.cos() * long, turn.sin() * long);
+            let y = st.y + 0.006;
+            let a = [
+                px - dxg,
+                y + st.slope[0] * -dxg + st.slope[1] * -dzg,
+                pz - dzg,
+            ];
+            let b = [
+                px + dxg,
+                y + st.slope[0] * dxg + st.slope[1] * dzg,
+                pz + dzg,
+            ];
+            f.put(Model::Cylinder, between(a, b, 0.011), [0.26, 0.24, 0.17])
+                .material(material::COPPER)
+                .grounded()
+                .debris();
+        } else {
+            // Ballast stones from her hold.
+            let size = 0.025 + 0.025 * h(73);
+            let Some(st) = seat(w, px, pz, size, &bed::STONE) else {
+                continue;
+            };
+            let (pitch, roll) = st.tilt(turn);
+            f.put(
+                Model::Rock1,
+                place(
+                    [px, st.foot(&bed::STONE, size * 1.2) + size * 0.5, pz],
+                    turn,
+                    pitch,
+                    roll,
+                    [size * 1.2, size * 0.7, size],
+                ),
+                [0.30, 0.29, 0.27],
+            )
+            .grounded()
+            .debris();
+        }
     }
 }
 
@@ -3674,16 +4109,45 @@ fn ruins(w: &World, f: &mut Frame) {
                 ),
                 marble,
             );
-            // A fallen drum at its foot.
+            // A fallen drum at its foot, rolled to rest along the slope and
+            // settled into the silt, with chips of its fall beside it.
             let a = hash(ix, iz, 76) * TAU;
-            let foot = [
-                x + a.cos() * 0.12,
-                w.ground(x + a.cos() * 0.12, z + a.sin() * 0.12) + r * 0.9,
-                z + a.sin() * 0.12,
-            ];
-            let end = [foot[0] + a.sin() * 0.12, foot[1], foot[2] - a.cos() * 0.12];
-            f.put(Model::Cylinder, between(foot, end, r * 0.95), marble)
+            let (fx, fz) = (x + a.cos() * 0.12, z + a.sin() * 0.12);
+            if let Some(st) = seat(w, fx, fz, 0.08, &bed::DRUM) {
+                let lie = |dx: f32, dz: f32| {
+                    let rest = st.foot(&bed::DRUM, r * 2.0) + r * 0.95;
+                    [fx + dx, rest + st.slope[0] * dx + st.slope[1] * dz, fz + dz]
+                };
+                let (dx, dz) = (a.sin() * 0.06, -a.cos() * 0.06);
+                f.put(
+                    Model::Cylinder,
+                    between(lie(-dx, -dz), lie(dx, dz), r * 0.95),
+                    marble,
+                )
                 .grounded();
+                for k in 0..2u32 {
+                    let b = a + 1.2 + 2.4 * hash(ix, iz, 77 + k);
+                    let (cx, cz) = (fx + b.cos() * 0.07, fz + b.sin() * 0.07);
+                    let size = 0.012 + 0.012 * hash(ix, iz, 79 + k);
+                    let Some(chip) = seat(w, cx, cz, size, &bed::FLAT) else {
+                        continue;
+                    };
+                    let (pitch, roll) = chip.tilt(b);
+                    f.put(
+                        Model::Box,
+                        place(
+                            [cx, chip.foot(&bed::FLAT, size) + size * 0.5, cz],
+                            b,
+                            pitch,
+                            roll,
+                            [size * 1.4, size * 0.6, size],
+                        ),
+                        marble,
+                    )
+                    .grounded()
+                    .debris();
+                }
+            }
         } else {
             f.put(
                 Model::Shaft,
@@ -3719,7 +4183,11 @@ fn ruins(w: &World, f: &mut Frame) {
             continue;
         }
         let s = 1.4 + 0.4 * hash(ix, iz, 82);
-        let y = w.ground(x, z);
+        // Built on ground level enough to build on, not across a bank.
+        let Some(here) = seat(w, x, z, s * 0.5, &bed::BUILT) else {
+            continue;
+        };
+        let y = here.y - bed::BUILT.sink * s;
         if !w.visible([x, y + s * 0.4, z], s) {
             continue;
         }
@@ -3783,6 +4251,62 @@ fn ruins(w: &World, f: &mut Frame) {
             ),
             stone,
         );
+        // Rubble before the front: the drums of the columns that fell, lying
+        // where they rolled off the platform, and blocks of the entablature,
+        // half sunk in the silt that has gathered against the steps.
+        for k in 0..6 {
+            let gone = hash(ix * 7 + k, iz, 84);
+            if gone >= 0.3 {
+                continue;
+            }
+            let d = -0.40 + k as f32 * 0.16 + (hash(ix, iz * 5 + k, 85) - 0.5) * 0.1;
+            let out = 0.22 + 0.25 * hash(ix, iz * 5 + k, 86);
+            let p = at(d, 0.0, out);
+            let Some(st) = seat(w, p[0], p[2], 0.08 * s, &bed::DRUM) else {
+                continue;
+            };
+            let turn = yaw + (hash(ix, iz * 5 + k, 87) - 0.5) * 1.6;
+            let (dx, dz) = (turn.cos() * 0.05 * s, -turn.sin() * 0.05 * s);
+            let rest = st.foot(&bed::DRUM, 0.06 * s) + 0.03 * s;
+            let lie = |sx: f32| {
+                [
+                    p[0] + dx * sx,
+                    rest + (st.slope[0] * dx + st.slope[1] * dz) * sx,
+                    p[2] + dz * sx,
+                ]
+            };
+            f.put(
+                Model::Cylinder,
+                between(lie(-1.0), lie(1.0), 0.03 * s),
+                stone,
+            )
+            .grounded()
+            .debris();
+        }
+        for k in 0..3 {
+            let d = (hash(ix, iz * 3 + k, 88) - 0.5) * 0.9;
+            let out = 0.18 + 0.3 * hash(ix, iz * 3 + k, 89);
+            let p = at(d, 0.0, out);
+            let size = (0.03 + 0.03 * hash(ix * 3 + k, iz, 88)) * s;
+            let Some(st) = seat(w, p[0], p[2], size, &bed::FLAT) else {
+                continue;
+            };
+            let turn = yaw + hash(ix * 3 + k, iz, 89) * 0.8;
+            let (pitch, roll) = st.tilt(turn);
+            f.put(
+                Model::Box,
+                place(
+                    [p[0], st.foot(&bed::FLAT, size * 1.2) + size * 0.5, p[2]],
+                    turn,
+                    pitch,
+                    roll,
+                    [size * 1.8, size * 0.6, size],
+                ),
+                stone,
+            )
+            .grounded()
+            .debris();
+        }
     }
     // The volcano, far off across the city: a broad, craggy cone with a
     // crater and a drifting ash plume. It is faded into the water so its
@@ -6176,6 +6700,11 @@ fn vents(w: &World, f: &mut Frame) {
     }
 }
 
+/// Marks what lies round wrecks, ruins and outcrops in `Instance::surface`'s
+/// last slot, so a benchmark can leave it out (`part::DEBRIS`) though its
+/// meshes are shared.
+pub const DEBRIS: f32 = 2.0;
+
 /// Keels of broken ice hanging from the pack.
 fn ice(w: &World, f: &mut Frame) {
     let top = w.ice();
@@ -6187,13 +6716,31 @@ fn ice(w: &World, f: &mut Frame) {
             continue;
         }
         f.fade = fade(w.share(x, z, ARCTIC), 0.65);
-        let deep = 0.15 + 0.5 * hash(ix, iz, 142);
-        let wide = 0.5 + 0.6 * hash(ix, iz, 143);
+        // Now and then the keel of a grounded floe or a small berg frozen
+        // into the pack: deeper and broader, and only off the boat's lane,
+        // which keeps clear of the ice by less than a berg hangs. No deeper
+        // than the sisters' ceiling under the ice (`cruise`), which they
+        // keep to wherever they sail.
+        let off = (z - corridor(x)).abs();
+        let berg = hash(ix, iz, 146) < 0.14 && off > 3.0;
+        let (deep, wide) = if berg {
+            (
+                0.65 + 0.25 * hash(ix, iz, 142),
+                1.6 + 0.9 * hash(ix, iz, 143),
+            )
+        } else {
+            (
+                0.15 + 0.5 * hash(ix, iz, 142),
+                0.5 + 0.6 * hash(ix, iz, 143),
+            )
+        };
         if !w.visible([x, top - deep * 0.5, z], wide) {
             continue;
         }
-        let v = 0.42 + 0.1 * hash(ix, iz, 144);
-        // Daylight comes through the ice, so the keels glow rather than shade.
+        let v = 0.80 + 0.12 * hash(ix, iz, 144);
+        // Daylight comes through the ice, so the keels glow rather than shade:
+        // their vertices carry the blue-white of light scattered in the ice
+        // (`mesh::keel`), the instance only how bright this one is.
         f.put(
             Model::Keel,
             place(
@@ -6201,11 +6748,11 @@ fn ice(w: &World, f: &mut Frame) {
                 hash(ix, iz, 145) * TAU,
                 0.0,
                 0.0,
-                [wide, deep, wide * 0.5],
+                [wide, deep, wide * (0.28 + 0.12 * hash(ix, iz, 147))],
             ),
-            [v * 0.6, v * 1.1, v * 1.25],
+            [v * 0.62, v * 0.86, v * 0.95],
         )
-        .glowing(0.9);
+        .material(material::KEEL);
     }
 }
 
@@ -6277,16 +6824,19 @@ fn obstacles(w: &World, x0: f32, x1: f32, lane: f32) -> Vec<(f32, f32, f32)> {
                 }
             }
         };
+    // The stones and outcrops `rocks` places, by the same rules.
     scan(0.55, 10, &|ix, iz, x, z| {
-        if hash(ix, iz, 12) < 0.55 {
+        let roll = 1.0 - hash(ix, iz, 12);
+        let size = 0.05 + 0.20 * hash(ix, iz, 13).powf(2.0);
+        if size <= 0.06 || (size > 0.1 && (z - corridor(x)).abs() < 0.7) {
             return None;
         }
-        let size = 0.05 + 0.20 * hash(ix, iz, 13).powf(2.0);
-        (size > 0.06 && !(size > 0.1 && (z - corridor(x)).abs() < 0.7)).then_some((
-            x,
-            z,
-            size * 1.2,
-        ))
+        let b = w.biome(x, z);
+        if roll > World::by_biome(&b, STONES) {
+            return None;
+        }
+        let outcrop = size > 0.11 && hash(ix, iz, 18) < World::by_biome(&b, OUTCROPS);
+        Some((x, z, size * if outcrop { 1.9 } else { 1.2 }))
     });
     scan(0.75, 30, &|ix, iz, x, z| {
         let grows = w.share(x, z, FOREST) >= hash(ix, iz, 31) * 0.7 + 0.2;
@@ -7675,9 +8225,12 @@ fn tall_things(w: &World, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(f32, f32, 
             return;
         }
         let length = 2.2 + 1.0 * hash(ix, iz, 62);
+        let Some((x, z, here)) = wreck_berth(w, x, z, length) else {
+            return;
+        };
         let yaw = (hash(ix, iz, 63) - 0.5) * 1.2;
         let (s, c) = yaw.sin_cos();
-        let y = w.ground(x, z);
+        let y = here.y;
         let broken = hash(ix, iz, 65) < 0.5;
         for (d, top, r) in [
             (-0.35, 0.25, 0.2),

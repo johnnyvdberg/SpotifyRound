@@ -488,7 +488,7 @@ pub(crate) struct Nautilus {
 /// material per instance: an unlisted material is a bug, which
 /// `every_instance_has_a_pipeline` catches. Each has a second pipeline for
 /// models that stand on the seabed (`GROUNDED`).
-const MATERIALS: [i32; 7] = [
+const MATERIALS: [i32; 8] = [
     0,
     world::material::LAVA as i32,
     world::material::COPPER as i32,
@@ -496,7 +496,14 @@ const MATERIALS: [i32; 7] = [
     world::material::ICE as i32,
     world::material::GOLD as i32,
     world::material::CITY as i32,
+    world::material::KEEL as i32,
 ];
+
+/// Whether an instance is the polar ice sheet, whose coverage is worked out
+/// per pixel and so is always drawn blended with its discard.
+fn ice_sheet(i: &Instance) -> bool {
+    i.extra[0].round() as i32 == world::material::ICE as i32
+}
 
 /// The index into [`MATERIALS`] of the pipeline for an instance.
 fn material_slot(i: &Instance) -> usize {
@@ -773,6 +780,12 @@ mod part {
     /// The water surface's mirror, moving wave facets and Snell's window in
     /// the ceiling of the shallow seas.
     pub const SURFACE_FACETS: u64 = 1 << 37;
+    /// The seabed's sand line following the slope under a grounded model
+    /// and the silt drifted against its side that faces the current.
+    pub const SEDIMENT: u64 = 1 << 38;
+    /// What lies round wrecks, ruins and outcrops: scour pits, planks,
+    /// guns, ballast, fallen drums and blocks, scree (`world::DEBRIS`).
+    pub const DEBRIS: u64 = 1 << 39;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -1119,6 +1132,8 @@ mod shader_switch {
     pub const TERRAIN_FACETS: u32 = 64;
     /// The water's ceiling without its mirror, wave facets and Snell's window.
     pub const OLD_CEILING: u32 = 128;
+    /// No sand line on slopes nor silt drifts in `vs_model`.
+    pub const NO_SEDIMENT: u32 = 256;
 }
 
 /// Every render pipeline the scene draws with, compiled for one set of
@@ -1357,7 +1372,13 @@ fn compile(
             for &material in &MATERIALS {
                 for grounded in [0.0, 1.0] {
                     for &anim in &ANIMS {
-                        if material == world::material::CITY as i32 {
+                        // The city has its own set; the ice and its keels
+                        // hang from the pack and never stand on the seabed.
+                        if material == world::material::CITY as i32
+                            || ((material == world::material::ICE as i32
+                                || material == world::material::KEEL as i32)
+                                && grounded > 0.5)
+                        {
                             pipelines.push(None);
                             continue;
                         }
@@ -1499,7 +1520,7 @@ fn compile(
             for grounded in [0.0, 1.0] {
                 for &anim in &ANIMS {
                     let ice = material == world::material::ICE as i32;
-                    if !ice {
+                    if !ice || grounded > 0.5 {
                         pipelines.push(None);
                         continue;
                     }
@@ -2256,6 +2277,9 @@ impl Nautilus {
         if self.skips(part::SURFACE_FACETS) {
             switches |= shader_switch::OLD_CEILING;
         }
+        if self.skips(part::SEDIMENT) {
+            switches |= shader_switch::NO_SEDIMENT;
+        }
         // Only a benchmark changes them, and it pays for the compile.
         if switches != self.switches {
             self.recompile(&gpu.device, switches);
@@ -2272,7 +2296,7 @@ impl Nautilus {
         // shaded. The translucent ones keep the order they were placed in:
         // they add up, and in ten bits a channel even the order of adding
         // can show.
-        let fades = |i: &Instance| i.extra[2] < 0.999 || i.extra[0] == world::material::ICE;
+        let fades = |i: &Instance| i.extra[2] < 0.999 || ice_sheet(i);
         // A mirrored instance turns its model inside out.
         let mirrored = |i: &Instance| {
             let [a, b, c] = i.rows.map(|r| [r[0], r[1], r[2]]);
@@ -2286,8 +2310,7 @@ impl Nautilus {
             // Every other fading instance is drawn with the solid pipelines
             // and fades its colour into the water, so it keeps its depth and
             // costs no blend.
-            let ice = i.extra[0].round() as i32 == world::material::ICE as i32;
-            if fades(i) && ice {
+            if fades(i) && ice_sheet(i) {
                 Kind::Fading
             } else if closed[model] && !mirrored(i) {
                 Kind::Sealed
@@ -2350,6 +2373,7 @@ impl Nautilus {
         #[cfg(not(test))]
         let hides = 0u64;
         let depth_first = self.skips(part::DEPTH_FIRST_DRAWS);
+        let no_debris = self.skips(part::DEBRIS);
         let order = &mut self.order;
         order.clear();
         for (model, list) in self.frame.solid.iter().enumerate() {
@@ -2357,13 +2381,11 @@ impl Nautilus {
                 list.iter()
                     .enumerate()
                     .filter(|_| !hides_model(hides, model))
+                    .filter(|(_, i)| !(no_debris && i.surface[3] == world::DEBRIS))
                     // The ice's coverage is per pixel; every other fading
                     // instance at zero coverage would discard every fragment,
                     // so it is not drawn at all.
-                    .filter(|(_, i)| {
-                        i.extra[2] > 0.01
-                            || i.extra[0].round() as i32 == world::material::ICE as i32
-                    })
+                    .filter(|(_, i)| i.extra[2] > 0.01 || ice_sheet(i))
                     .map(|(index, i)| Staged {
                         kind: kind_of(model, i),
                         slot: pipeline_slot(i) as u32,
@@ -3424,8 +3446,7 @@ mod tests {
                                 "the city neither animates nor stands on the seabed"
                             );
                         }
-                        let kind =
-                            u8::from(material == world::material::ICE as i32 && i.extra[2] < 0.999);
+                        let kind = u8::from(ice_sheet(i));
                         used.insert((
                             kind,
                             material_slot(i),
@@ -3898,6 +3919,8 @@ mod tests {
             ("pass: shimmer water", part::SHIMMER_WATER),
             ("underwater grade", part::UNDERWATER_GRADE),
             ("terrain facets", part::TERRAIN_FACETS),
+            ("sediment", part::SEDIMENT),
+            ("debris", part::DEBRIS),
             ("pass: fading ice", part::FADING_ICE),
             ("pass: fading props", part::FADING_PROPS),
             ("probe: depth-first draws", part::DEPTH_FIRST_DRAWS),
