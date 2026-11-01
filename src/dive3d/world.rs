@@ -1210,6 +1210,15 @@ impl Seabed {
             let arch = floor + 0.25 * TUNNEL + 0.85 * TUNNEL * 0.91 - 0.25;
             ceiling += (arch.min(ceiling) - ceiling) * cave;
         }
+        // Under the galleria's vault: its crown less the hull's margin.
+        if let Some(start) = gallery_start(&self.order, x) {
+            let inside = (x - start + 0.5).min(start + GALLERY_LONG + 0.5 - x);
+            if inside > 0.0 {
+                let roof = self.ground(x, zc) + GALLERY_SPRING + 0.3;
+                let k = smooth(0.0, 0.5, inside) * smooth(0.3, 0.6, b.weight(CITY) as f32);
+                ceiling += (roof.min(ceiling) - ceiling) * k;
+            }
+        }
         ceiling
     }
 }
@@ -2308,7 +2317,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body, the jellyfish's swimming and the
     // four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 14] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 15] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
@@ -2323,6 +2332,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (forest, algae),
         (drifters, None),
         (city, None),
+        (gallery, marble),
     ];
     let steps: [(Placer, Option<[f32; 4]>); 14] = [
         (planes, None),
@@ -2341,9 +2351,9 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 14] = [
+    const STATIC_NAMES: [&str; 15] = [
         "rocks", "gardens", "reef", "wrecks", "trench", "ruins", "atlantis", "temple", "cave",
-        "polar", "kelp", "forest", "drifters", "city",
+        "polar", "kelp", "forest", "drifters", "city", "gallery",
     ];
     #[cfg(test)]
     const STEP_NAMES: [&str; 14] = [
@@ -5605,6 +5615,470 @@ const NEON: [[f32; 3]; 4] = [
     [0.52, 0.60, 1.00],
 ];
 
+/// The drowned city's galleria (V8): the avenue roofed over for a stretch
+/// by an iron-and-glass barrel vault on arcaded fronts, as the great
+/// shopping galleries were, the Nautilus sailing down it. Through the
+/// arches on the window's side, rooms: cafés, shops, stairs, floors fallen
+/// in, and light let down through the holes above. It starts this far along
+/// the corridor from the city leg's 0.45 point and runs this long.
+const GALLERY_FROM: f32 = -2.2;
+pub const GALLERY_LONG: f32 = 7.0;
+/// Its fronts' distance from the corridor, the height the vault springs
+/// from and how far it rises, and the bay, front to front of an arch.
+/// The rooms reach back past the avenue the city leaves clear, so its
+/// buildings keep farther off along the galleria (`building`).
+const GALLERY_HALF: f32 = 1.95;
+const GALLERY_SPRING: f32 = 1.55;
+const GALLERY_RISE: f32 = 0.75;
+const GALLERY_BAY: f32 = 0.7;
+const ROOM_DEEP: f32 = 0.78;
+
+/// Where the galleria nearest `x` starts along the corridor, if this
+/// visit's voyage has the drowned city.
+pub fn gallery_start(order: &[usize; BIOMES], x: f32) -> Option<f32> {
+    let leg = crate::voyage::LEG as f32;
+    let k0 = (x / leg).floor() as i32;
+    (k0 - 1..=k0 + 1)
+        .filter(|&k| order[k.rem_euclid(BIOMES as i32) as usize] == CITY)
+        .map(|k| (k as f32 + 0.45) * leg + GALLERY_FROM)
+        .min_by(|a, b| {
+            (a + GALLERY_LONG * 0.5 - x)
+                .abs()
+                .total_cmp(&(b + GALLERY_LONG * 0.5 - x).abs())
+        })
+}
+
+/// A point `across` the corridor at `x` (positive to port, square to the
+/// corridor there), at height `y`.
+fn off_corridor(x: f32, across: f32, y: f32) -> [f32; 3] {
+    let slope = corridor_slope(x);
+    let n = (1.0 + slope * slope).sqrt();
+    [x - across * slope / n, y, corridor(x) + across / n]
+}
+
+/// The galleria (`element::GALLERY`): both fronts, bay by bay, pilasters
+/// and arches with a wall and an upper window over them; the rooms behind
+/// the window's front; the vault's ribs and purlins, its glass mostly gone;
+/// a great arch at each end.
+fn gallery(w: &World, f: &mut Frame) {
+    let Some(start) = gallery_start(&w.seabed.order, w.camera()) else {
+        return;
+    };
+    let stone = [0.56, 0.53, 0.48];
+    let dark = [0.30, 0.29, 0.27];
+    let iron = [0.24, 0.25, 0.27];
+    let bays = (GALLERY_LONG / GALLERY_BAY).round() as i32;
+    for i in 0..=bays {
+        let x = start + i as f32 * GALLERY_BAY;
+        let share = w.share(x, corridor(x), CITY);
+        if share < 0.3 {
+            continue;
+        }
+        f.fade = fade(share, 0.3);
+        let floor = w.ground(x, corridor(x));
+        let yaw = yaw_along(1.0, corridor_slope(x));
+        let rib_top = floor + GALLERY_SPRING + GALLERY_RISE;
+        if !w.visible(
+            off_corridor(x, 0.0, floor + 1.0),
+            GALLERY_HALF + ROOM_DEEP + 0.6,
+        ) {
+            continue;
+        }
+        // The vault's rib over this bay's line, a half circle flattened to
+        // its rise, in eight straight lengths.
+        let arc = |k: u32| {
+            let a = PI * k as f32 / 8.0;
+            off_corridor(
+                x,
+                GALLERY_HALF * a.cos(),
+                floor + GALLERY_SPRING + GALLERY_RISE * a.sin(),
+            )
+        };
+        for k in 0..8 {
+            f.put(Model::Cylinder, between(arc(k), arc(k + 1), 0.018), iron)
+                .element(element::GALLERY);
+        }
+        // A lamp on a chain from the crown, every other rib, some still
+        // burning with whatever the city's lights burn on.
+        if i % 2 == 1 {
+            let hang = off_corridor(x, 0.0, rib_top - 0.35);
+            f.put(Model::Cylinder, between(hang, arc(4), 0.006), iron)
+                .element(element::GALLERY);
+            let lit = hash(i, 9, 1700) < 0.7;
+            let lamp = f.put(
+                Model::Sphere,
+                place(hang, 0.0, 0.0, 0.0, [0.045; 3]),
+                [1.0, 0.82, 0.55],
+            );
+            lamp.element(element::GALLERY);
+            if lit {
+                lamp.glowing(0.9);
+                let show = f.fade;
+                f.glow_sprite(
+                    hang,
+                    0.32,
+                    [0.42 * show, 0.30 * show, 0.16 * show],
+                    hash(i, 10, 1700) * TAU,
+                    1.0,
+                    1.0,
+                );
+            }
+        }
+        let end = i == 0 || i == bays;
+        for side in [-1.0f32, 1.0] {
+            let wall = side * GALLERY_HALF;
+            // The pilaster at the bay's line, up to the cornice.
+            let foot = off_corridor(x, wall, floor);
+            let (pier, deep) = if end { (0.12, 0.12) } else { (0.05, 0.06) };
+            f.put(
+                Model::Box,
+                place(
+                    [foot[0], floor + GALLERY_SPRING * 0.5 - 0.1, foot[2]],
+                    yaw,
+                    0.0,
+                    0.0,
+                    [pier, GALLERY_SPRING * 0.5 + 0.1, deep],
+                ),
+                stone,
+            )
+            .grounded()
+            .element(element::GALLERY);
+            if i == bays {
+                continue;
+            }
+            // The bay itself, from this line to the next.
+            let mid = x + GALLERY_BAY * 0.5;
+            let floor = w.ground(mid, corridor(mid));
+            let yaw = yaw_along(1.0, corridor_slope(mid));
+            let face = off_corridor(mid, wall + side * 0.03, floor);
+            let opening = 1.0;
+            // Wall over the arch, cornice, and the dark upper window.
+            let over = GALLERY_SPRING - opening - 0.08;
+            f.put(
+                Model::Box,
+                place(
+                    [face[0], floor + opening + 0.08 + over * 0.5, face[2]],
+                    yaw,
+                    0.0,
+                    0.0,
+                    [GALLERY_BAY * 0.5, over * 0.5, 0.03],
+                ),
+                stone,
+            )
+            .element(element::GALLERY);
+            let window = off_corridor(mid, wall - side * 0.005, floor);
+            f.put(
+                Model::Box,
+                place(
+                    [window[0], floor + opening + 0.08 + over * 0.5, window[2]],
+                    yaw,
+                    0.0,
+                    0.0,
+                    [0.12, over * 0.3, 0.03],
+                ),
+                dark,
+            )
+            .element(element::GALLERY);
+            let cornice = off_corridor(mid, wall - side * 0.02, floor);
+            f.put(
+                Model::Box,
+                place(
+                    [cornice[0], floor + GALLERY_SPRING, cornice[2]],
+                    yaw,
+                    0.0,
+                    0.0,
+                    [GALLERY_BAY * 0.5, 0.025, 0.07],
+                ),
+                stone,
+            )
+            .element(element::GALLERY);
+            // A purlin from this rib to the next at the springing and part
+            // way up, and a pane or two of the glass still in place.
+            for k in [1u32, 3] {
+                let a = PI * k as f32 / 8.0 * if side > 0.0 { 1.0 } else { -1.0 };
+                let at = |x: f32| {
+                    let floor = w.ground(x, corridor(x));
+                    off_corridor(
+                        x,
+                        GALLERY_HALF * a.cos().abs() * side,
+                        floor + GALLERY_SPRING + GALLERY_RISE * a.sin().abs(),
+                    )
+                };
+                f.put(
+                    Model::Cylinder,
+                    between(at(x), at(x + GALLERY_BAY), 0.012),
+                    iron,
+                )
+                .element(element::GALLERY);
+            }
+            if side > 0.0 {
+                room(w, f, mid, floor, i);
+            }
+        }
+        // The great arch at each end, over the way in.
+        if end {
+            let crown = rib_top + 0.25;
+            let piers = [
+                off_corridor(x, -GALLERY_HALF, floor),
+                off_corridor(x, GALLERY_HALF, floor),
+            ];
+            for p in piers {
+                f.put(
+                    Model::Box,
+                    place(
+                        [p[0], (floor + crown) * 0.5 - 0.1, p[2]],
+                        yaw,
+                        0.0,
+                        0.0,
+                        [0.14, (crown - floor) * 0.5 + 0.1, 0.14],
+                    ),
+                    stone,
+                )
+                .grounded()
+                .element(element::GALLERY);
+            }
+            let top = off_corridor(x, 0.0, crown);
+            f.put(
+                Model::Box,
+                place(top, yaw, 0.0, 0.0, [0.10, 0.10, GALLERY_HALF + 0.14]),
+                stone,
+            )
+            .element(element::GALLERY);
+        }
+    }
+}
+
+/// A room off the galleria behind the arch at `x` (its middle), on the
+/// window's side: floor, party walls, back wall and ceiling, and in it by
+/// its hash a café's tables, a shop's counter and shelves, a stair up to a
+/// hole in the ceiling, or the ceiling fallen in.
+fn room(w: &World, f: &mut Frame, x: f32, floor: f32, i: i32) {
+    let stone = [0.50, 0.47, 0.43];
+    let plaster = [0.62, 0.58, 0.50];
+    let wood = [0.38, 0.29, 0.21];
+    let yaw = yaw_along(1.0, corridor_slope(x));
+    let front = GALLERY_HALF + 0.03;
+    let back = front + ROOM_DEEP;
+    let mid = front + ROOM_DEEP * 0.5;
+    let height = 1.08;
+    let half = GALLERY_BAY * 0.5 - 0.05;
+    let at = |u: f32, across: f32, y: f32| {
+        let p = off_corridor(x, across, y);
+        [p[0] + u * yaw.cos(), p[1], p[2] - u * yaw.sin()]
+    };
+    if !w.visible(at(0.0, mid, floor + height * 0.5), 0.8) {
+        return;
+    }
+    let put = |f: &mut Frame, p: [f32; 3], turn: f32, scale: [f32; 3], colour: [f32; 3]| {
+        f.put(Model::Box, place(p, yaw + turn, 0.0, 0.0, scale), colour)
+            .element(element::GALLERY);
+    };
+    // Floor, back wall and the party wall on the far side of the bay.
+    put(
+        f,
+        at(0.0, mid, floor + 0.01),
+        0.0,
+        [half + 0.05, 0.02, ROOM_DEEP * 0.5],
+        stone,
+    );
+    put(
+        f,
+        at(0.0, back, floor + height * 0.5),
+        0.0,
+        [half + 0.05, height * 0.5, 0.03],
+        plaster,
+    );
+    put(
+        f,
+        at(half + 0.04, mid, floor + height * 0.5),
+        PI * 0.5,
+        [ROOM_DEEP * 0.5, height * 0.5, 0.025],
+        plaster,
+    );
+    let h = |k: u32| hash(i, k as i32, 1700);
+    let kind = h(0);
+    // A lamp still alight in most rooms, low on the back wall, so the rooms
+    // read through their arches from the dark gallery.
+    if h(20) < 0.75 {
+        let lamp = at(0.15 * (h(21) - 0.5), back - 0.06, floor + 0.55);
+        f.put(
+            Model::Sphere,
+            place(lamp, 0.0, 0.0, 0.0, [0.03; 3]),
+            [1.0, 0.78, 0.48],
+        )
+        .glowing(0.8)
+        .element(element::GALLERY);
+        let show = f.fade;
+        f.glow_sprite(
+            lamp,
+            0.38,
+            [0.36 * show, 0.24 * show, 0.12 * show],
+            h(22) * TAU,
+            1.0,
+            1.0,
+        );
+    }
+    // The ceiling: whole, holed where the stair goes up, or fallen.
+    if kind < 0.6 {
+        let hole = kind >= 0.35;
+        let deep = if hole {
+            ROOM_DEEP * 0.3
+        } else {
+            ROOM_DEEP * 0.5
+        };
+        put(
+            f,
+            at(0.0, front + deep, floor + height),
+            0.0,
+            [half + 0.05, 0.03, deep],
+            stone,
+        );
+    }
+    if kind < 0.35 {
+        // A café: two round tables, their chairs, one knocked over.
+        for (u, d) in [(-0.12, 0.25), (0.13, 0.52)] {
+            let p = at(u, front + d, floor);
+            f.put(
+                Model::Cylinder,
+                between([p[0], floor, p[2]], [p[0], floor + 0.18, p[2]], 0.012),
+                [0.20, 0.20, 0.22],
+            )
+            .element(element::GALLERY);
+            f.put(
+                Model::Cylinder,
+                between(
+                    [p[0], floor + 0.18, p[2]],
+                    [p[0], floor + 0.195, p[2]],
+                    0.07,
+                ),
+                plaster,
+            )
+            .element(element::GALLERY);
+            for (k, side) in [(1u32, -1.0f32), (2, 1.0)] {
+                let c = at(u + side * 0.1, front + d + 0.02, floor + 0.06);
+                let over = if h(k) < 0.3 { PI * 0.5 } else { 0.0 };
+                f.put(
+                    Model::Box,
+                    place(c, yaw + h(k + 4) * 0.8, over, 0.0, [0.03, 0.06, 0.03]),
+                    wood,
+                )
+                .element(element::GALLERY);
+            }
+        }
+    } else if kind < 0.6 {
+        // A stair up the back wall to the hole in the ceiling.
+        for k in 0..6 {
+            let t = k as f32 / 6.0;
+            put(
+                f,
+                at(
+                    -half + 0.1 + t * 0.45,
+                    back - 0.12,
+                    floor + height * (t + 1.0 / 6.0) * 0.5,
+                ),
+                0.0,
+                [0.05, height * (t + 1.0 / 6.0) * 0.5, 0.1],
+                stone,
+            );
+        }
+    } else if kind < 0.8 {
+        // The ceiling fallen in, one edge on the floor, rubble about it.
+        let p = at(0.0, mid, floor + height * 0.45);
+        f.put(
+            Model::Box,
+            place(p, yaw, 0.0, 0.85, [half, 0.03, ROOM_DEEP * 0.5]),
+            stone,
+        )
+        .grounded()
+        .element(element::GALLERY);
+        for k in 0..4 {
+            let q = at(
+                (h(k + 1) - 0.5) * 0.4,
+                front + 0.1 + h(k + 5) * 0.3,
+                floor + 0.02,
+            );
+            let size = 0.02 + 0.03 * h(k + 9);
+            f.put(
+                Model::Box,
+                place(q, h(k + 13) * TAU, 0.0, 0.3, [size * 1.4, size * 0.6, size]),
+                stone,
+            )
+            .grounded()
+            .element(element::GALLERY);
+        }
+    } else {
+        // A shop: its counter across the room and shelves on the back wall.
+        put(
+            f,
+            at(0.0, front + 0.3, floor + 0.12),
+            0.0,
+            [half * 0.7, 0.12, 0.05],
+            wood,
+        );
+        for k in 0..3 {
+            put(
+                f,
+                at(0.0, back - 0.05, floor + 0.25 + k as f32 * 0.18),
+                0.0,
+                [half * 0.8, 0.01, 0.05],
+                wood,
+            );
+        }
+        put(
+            f,
+            at(0.0, mid, floor + height),
+            0.0,
+            [half + 0.05, 0.03, ROOM_DEEP * 0.5],
+            stone,
+        );
+    }
+}
+
+/// Light let down into the galleria through the vault's open glass and
+/// into the rooms through the holes in their ceilings, each frame.
+fn gallery_light(w: &World, f: &mut Frame) {
+    let Some(start) = gallery_start(&w.seabed.order, w.camera()) else {
+        return;
+    };
+    let sun = norm(SUN);
+    let bays = (GALLERY_LONG / GALLERY_BAY).round() as i32;
+    for i in 0..bays {
+        let x = start + (i as f32 + 0.5) * GALLERY_BAY;
+        let share = w.share(x, corridor(x), CITY);
+        if share < 0.3 || hash(i, 0, 1701) < 0.35 {
+            continue;
+        }
+        let floor = w.ground(x, corridor(x));
+        let across = 0.2 + 1.0 * hash(i, 1, 1701);
+        let foot = off_corridor(x, across, floor);
+        let length = GALLERY_SPRING + GALLERY_RISE + 0.6;
+        let start = [
+            foot[0] + sun[0] * length,
+            floor + sun[1] * length,
+            foot[2] + sun[2] * length,
+        ];
+        let run = [foot[0] - start[0], floor - start[1], foot[2] - start[2]];
+        let middle = add(start, [run[0] * 0.5, run[1] * 0.5, run[2] * 0.5]);
+        if !w.visible(middle, length * 0.5) {
+            continue;
+        }
+        let width = 0.06 + 0.05 * hash(i, 2, 1701);
+        let breathe = 0.4
+            + 0.6
+                * (w.t * (0.19 + 0.1 * hash(i, 3, 1701)) + i as f32 * 1.3)
+                    .sin()
+                    .max(0.0);
+        // The city lies deep, where the sun is all but gone: these carry
+        // their own strength (`tint.w`), dim and cold.
+        let bright = 0.25 * breathe * fade(share, 0.3) / (0.5 + width * 6.0);
+        f.shafts.push(Sprite {
+            place: [start[0], start[1], start[2], width],
+            tint: [0.30 * bright, 0.62 * bright, 0.70 * bright, 1.0],
+            stretch: [run[0], run[1], run[2], 0.0],
+        });
+    }
+}
+
 /// One building of the drowned city.
 struct Building {
     x: f32,
@@ -5743,6 +6217,14 @@ fn building(w: &World, ix: i32, iz: i32, far: bool) -> Option<Building> {
         _ => 0.92,
     } * s;
     if across.abs() < AVENUE + reach {
+        return None;
+    }
+    // Along the galleria the rooms behind its fronts reach farther out.
+    if let Some(start) = gallery_start(&w.seabed.order, x)
+        && x > start - reach - 0.3
+        && x < start + GALLERY_LONG + reach + 0.3
+        && across.abs() < GALLERY_HALF + ROOM_DEEP + 0.2 + reach
+    {
         return None;
     }
     let foot = match model {
@@ -7905,6 +8387,7 @@ pub mod element {
     pub const AMPHORAE: u32 = 13;
     pub const LIGHTHOUSE: u32 = 14;
     pub const TEMPLE: u32 = 15;
+    pub const GALLERY: u32 = 16;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -10492,6 +10975,7 @@ fn compose(parent: &[[f32; 4]; 3], child: &[[f32; 4]; 3]) -> [[f32; 4]; 3] {
 /// waves above gather and scatter the light, and sway with them.
 fn shafts(w: &World, f: &mut Frame) {
     temple_light(w, f);
+    gallery_light(w, f);
     let sun = norm(SUN);
     let far = 7.0;
     let top = w.surface();

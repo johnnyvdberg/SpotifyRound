@@ -44,7 +44,8 @@
 use std::f32::consts::TAU;
 
 use super::world::{
-    ATLANTIS, CAVE, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope, tunnel_stretch,
+    ATLANTIS, CAVE, GALLERY_LONG, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope,
+    gallery_start, tunnel_stretch,
 };
 use crate::voyage::{Position, SPEED};
 
@@ -253,14 +254,21 @@ fn track(x: f32, phase: f32, open: f32) -> (f32, f32) {
 }
 
 /// How open the water is at `x` for the gate's weave and the helmsman's
-/// swing: nothing in the cave's tunnel, easing back over the five units
+/// swing: nothing in the cave's tunnel or the city's galleria, easing back over the five units
 /// either side of it, a lane change the hull can make, rather than following
 /// the biome blend's own short ramp into the tunnel.
 fn open(seabed: &Seabed, x: f32) -> f32 {
-    cave_start(seabed, x).map_or(1.0, |cave| {
+    let cave = cave_start(seabed, x).map_or(1.0, |cave| {
         let out = (cave - x).max(x - (cave + TUNNEL_RUN)).max(0.0);
         smooth(0.0, 5.0, out)
-    })
+    });
+    // The same down the drowned city's galleria, whose fronts stand a
+    // unit and a half either side: on the corridor's line there.
+    let gallery = gallery_start(&seabed.order, x).map_or(1.0, |start| {
+        let out = (start - x).max(x - (start + GALLERY_LONG)).max(0.0);
+        smooth(0.0, 5.0, out)
+    });
+    cave.min(gallery)
 }
 
 /// How far, as a share of [`SWING`], the boat may be swung off its track at
