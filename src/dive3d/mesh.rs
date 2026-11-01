@@ -5328,9 +5328,9 @@ fn glass_sponge() -> Mesh {
         let k = smooth01(0.0, 0.30, y);
         [0.50 + 0.38 * k, 0.48 + 0.40 * k, 0.42 + 0.40 * k]
     };
-    let ribs = fewer(16, 6);
-    let rise = fewer(8, 3);
-    let wide = 0.011;
+    let ribs = fewer(12, 5);
+    let rise = fewer(6, 3);
+    let wide = 0.013;
     // A strip from `a` to `b`, `w` wide, facing out from the axis.
     let strip = |m: &mut Mesh, a: Vec3, b: Vec3, w: f32| {
         let along = (b - a).normalize_or(Vec3::Y);
@@ -5363,8 +5363,8 @@ fn glass_sponge() -> Mesh {
         }
     }
     // The hoops, and the rim's stout ridge.
-    let hoops = fewer(8, 3);
-    let round = fewer(24, 10);
+    let hoops = fewer(6, 3);
+    let round = fewer(16, 8);
     for i in 1..=hoops {
         let y = i as f32 / hoops as f32;
         let w = if i == hoops { wide * 2.2 } else { wide * 0.8 };

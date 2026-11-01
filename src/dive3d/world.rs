@@ -11453,7 +11453,7 @@ fn meadow(w: &World, f: &mut Frame) {
 /// in clumps of fused vases, the dead ones grey and broken on their flanks,
 /// and the rubble of their skeletons between.
 fn sponge_reef(w: &World, f: &mut Frame) {
-    for &(ix, iz, x, z) in &cells(w, 0.30, 0.5, 8.0, 1440) {
+    for &(ix, iz, x, z) in &cells(w, 0.34, 0.5, 7.0, 1440) {
         let share = w.share(x, z, SPONGE_REEF);
         if share < 0.05 {
             continue;
@@ -11473,7 +11473,7 @@ fn sponge_reef(w: &World, f: &mut Frame) {
         let clump = if dead {
             1
         } else {
-            1 + (hash(ix, iz, 1443) * 3.0) as i32
+            1 + (hash(ix, iz, 1443) * 2.0) as i32
         };
         for k in 0..clump {
             let r = |n: u32| hash(ix * 4 + k, iz, 1444 + n);
