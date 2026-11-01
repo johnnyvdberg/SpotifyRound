@@ -97,7 +97,8 @@ flashing where a wave face turns toward the window. The caustic web stays as the
 the whole washed 42 % toward the open water and dissolved into the haze at the sight.
 
 - Switch: `part::SURFACE_FACETS` (bit 37, `DIVE3D_SKIP=137438953472`, shader switch
-  `OLD_CEILING`), a row in `feature_costs::PASSES`.
+  `OLD_CEILING`); priced by `hotspots` pairs, since `bench-pi.sh features` would recompile the
+  pipelines every other frame (a first attempt read it as zero and took 18 minutes).
 - Shader: water #1 264 -> 473 instructions, still **4 threads** (32 temps, at the limit: worked as
   scalars behind `fenced()` so the waves are not hoisted beside the caustic fetch; a first version
   with vec3 intermediates was 2 threads). Water #3 350 -> 538, 2 threads as before.

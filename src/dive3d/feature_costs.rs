@@ -21,6 +21,11 @@ use std::collections::BTreeMap;
 /// The pass-level switches that remove something the viewer sees. Probes and
 /// alternative shader paths (`QUARTER`, `CHEAP_*`, `NO_NOISE`, ...) are not
 /// features and stay in `effect_cost`. A new pass gets its row here.
+///
+/// Not here: switches that change a shader switch (`part::SURFACE_FACETS`)
+/// or rebuild the seabed (`part::COARSE_SEABED`): alternated frame by frame,
+/// each frame would recompile the pipelines or rebuild every tile, so they
+/// are priced by `hotspots` pairs instead (`docs/feature-costs.md`).
 const PASSES: &[(&str, u64)] = &[
     ("whole 3D pass (all of the below and the clear)", part::SEA),
     ("terrain", part::TERRAIN),
@@ -37,10 +42,6 @@ const PASSES: &[(&str, u64)] = &[
     ("corner mask", part::MASK),
     ("cave tunnel", part::TUNNEL),
     ("open-water background", part::BACKGROUND),
-    (
-        "water surface: mirror, wave facets, Snell's window",
-        part::SURFACE_FACETS,
-    ),
 ];
 
 /// Below this a pass is not counted as present in a sea.
