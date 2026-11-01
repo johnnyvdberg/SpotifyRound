@@ -192,6 +192,17 @@ ends, and record what each addition costs.
 
 (Things only the user can do; agents append here.)
 
+- **Deploy (coordinator, 2026-11-01).** The kiosk still runs the first GL build (dba5471). `main`
+  at the wave-1 merge measured on the Pi, 168 places: median 8.30 -> 7.65 ms, worst 10.88 ->
+  10.55 ms, every sea faster; warm start 6.7 -> 2.7 s. Deploying was refused by the coordinator's
+  permission settings, so: `deploy/build-for-pi.sh`, copy `target/pi/spotify-round` over the
+  kiosk's binary (keep the old one, e.g. `spotify-round.before-wave1`) and
+  `sudo systemctl restart cage-kiosk`. Then the P8 check below.
+- **Docker disk.** The Docker VM's disk (59 GB) was full; the coordinator removed only this
+  work's own build volumes. About 14 GB of unused anonymous volumes and 33 GB of unused images
+  remain, some from other projects: review with `docker system df -v` and prune what you don't
+  need, or grow the VM disk in Docker Desktop.
+
 - **P8, pacing from the display (branch `perf-b`).** Not evaluated live. To try it: deploy the
   build, run the kiosk twice for a minute each with `SPOTIFY_ROUND_SCENE=nautilus` and
   `--log spotify_round::visuals=debug` (the second time also `SPOTIFY_ROUND_PACE=display`). The
