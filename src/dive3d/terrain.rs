@@ -19,7 +19,13 @@ const SIDE: usize = QUADS + 1;
 pub const VERTICES: usize = SIDE * SIDE + 4 * SIDE;
 /// The spacing of each level's vertices, finest first. Each level's tiles are
 /// `RATIO` of the next finer level's across.
-const SPACING: [f32; 3] = [0.08, 0.32, 1.28];
+///
+/// The seas' sight (`world::SIGHT`) is at most thirteen units, so the far
+/// level need not reach as far as it once did, and every level is the finer
+/// for it: the finest reaches about four units, the middle about seventeen,
+/// the coarsest thirty. [`COARSE_SPACING`] is the old set, for a benchmark.
+const SPACING: [f32; 3] = [0.06, 0.24, 0.96];
+const COARSE_SPACING: [f32; 3] = [0.08, 0.32, 1.28];
 const RATIO: i32 = 4;
 /// How many tiles the coarsest level reaches either side of the boat's.
 const REACH: i32 = 2;
@@ -377,8 +383,10 @@ pub struct Terrain {
     tiles: HashMap<Key, Tile>,
     free: Vec<u32>,
     /// How many of `SPACING`'s levels to draw. Three is the full near/mid/
-    /// far set; two drops the 0.08 m level, one keeps only the 1.28 m one.
+    /// far set; two drops the finest level, one keeps only the coarsest.
     levels: usize,
+    /// The levels of [`COARSE_SPACING`] instead of [`SPACING`].
+    coarse: bool,
 }
 
 impl Default for Terrain {
@@ -394,13 +402,24 @@ impl Terrain {
             tiles: HashMap::new(),
             free: (0..SLOTS as u32).rev().collect(),
             levels,
+            coarse: false,
         }
     }
 
     /// The spacing of the `level`th drawn level: levels are dropped from the
     /// fine end, so the finest spacing grows and the far extent stays.
     fn spacing(&self, level: usize) -> f32 {
-        SPACING[SPACING.len() - self.levels + level]
+        let spacing = if self.coarse { COARSE_SPACING } else { SPACING };
+        spacing[spacing.len() - self.levels + level]
+    }
+
+    /// Benchmarks only: the seabed's levels as they were before the seas had
+    /// a sight (`part::COARSE_SEABED`), to price the finer ones.
+    pub fn set_coarse(&mut self, coarse: bool) {
+        if coarse != self.coarse {
+            self.coarse = coarse;
+            self.clear();
+        }
     }
 }
 

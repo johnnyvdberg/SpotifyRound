@@ -3709,7 +3709,8 @@ fn ruins(w: &World, f: &mut Frame) {
             );
         }
     }
-    for &(ix, iz, x, z) in &cells(w, 5.0, 6.0, 22.0, 80) {
+    // From four units abeam: the haze hides the farther ones.
+    for &(ix, iz, x, z) in &cells(w, 5.0, 4.0, 22.0, 80) {
         if w.share(x, z, ATLANTIS) < 0.5 || hash(ix, iz, 81) < 0.3 {
             continue;
         }

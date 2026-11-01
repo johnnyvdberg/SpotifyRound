@@ -66,9 +66,13 @@ const MULTISAMPLED: bool = SAMPLES > 1;
 /// its colours and normals stray by less than `LOD_STRAY` too, where the
 /// triangles it changed are under `LOD_EDGE` pixels, so whatever shading it
 /// dropped was finer than a couple of pixels.
-const LOD_ERROR: f32 = 2.0;
+///
+/// Tightened from 2 and 6 pixels when the seas got their sight
+/// (`world::SIGHT`): what the cull beyond it saved buys the nearer models
+/// their finer levels further out (`DIVE3D_LOD=2,6` prices it).
+const LOD_ERROR: f32 = 1.5;
 const LOD_STRAY: f32 = 0.1;
-const LOD_EDGE: f32 = 6.0;
+const LOD_EDGE: f32 = 4.5;
 /// The corner mask's triangles: six vertices to each of `MASK_SEGMENTS` in
 /// `scene.wesl`.
 const MASK_VERTICES: u32 = 6 * 64;
@@ -763,6 +767,9 @@ mod part {
     /// the seas had a sight (`world::SIGHT`), the haze unchanged, to price
     /// what the cull at the sight saves.
     pub const NO_SIGHT_CULL: u64 = 1 << 35;
+    /// The seabed's levels of detail as they were before the sight let them
+    /// be finer (`terrain::COARSE_SPACING`).
+    pub const COARSE_SEABED: u64 = 1 << 36;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -2190,6 +2197,7 @@ impl Nautilus {
         }
         #[cfg(test)]
         let build_done = clock.elapsed();
+        self.terrain.set_coarse(self.skips(part::COARSE_SEABED));
         let ground = &self.ground;
         let tiles = self.terrain.update(&world, |slot, points| {
             let at = slot as usize * terrain::VERTICES * std::mem::size_of::<terrain::Point>();
