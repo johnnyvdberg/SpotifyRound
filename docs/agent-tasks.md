@@ -19,7 +19,7 @@ ruled out in §5), `docs/pipeline-optimization.md` (history; check it before re-
   window exists: the GL kiosk deployed 2026-11-01 00:14 rendered every frame and showed none (a
   black screen with the cursor on it). The display runs Vulkan again; tests, benches and previews
   stay on GL. So `bench-pi.sh` numbers are the GL ones, and the kiosk is 0.9-2.6 ms a frame slower
-  until GL can present (a winit `wl_display` handed to the instance before Slint's window).
+  until D1 lands.
   T1 and T2 of `perf-bottlenecks.md` are done/obsolete for GL only.
 - The offline shader tool (`deploy/v3d-shaderdb`) compiles through **Vulkan** (v3dv). The GL
   driver uses the same V3D compiler backend, so threads/temps/spills carry over, but confirm a
@@ -95,6 +95,8 @@ run at once**, from different groups. Model tier is a suggestion.
 | M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01; Poly Haven is next for rocks and props |
 | M2 | models | Quaternius ships as worn wrecks | Opus | todo |
 | M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |
+| D1 | display | OpenGL ES on the kiosk's display, for its early-Z | Opus | todo (presenting works on branch `display-gl`; the UI renderer is the blocker) |
+| T1 | terrain | Terrain noise from FastNoiseLite | Opus | todo |
 
 Order: tooling and perf first (they make room and make change visible), then V1 (sets the visible
 range everything else is built for), then V3/V4, V5, V6/V7, V8, V9, V10.
@@ -232,6 +234,30 @@ buried and fallen, with cannon spilled down the slope. It belongs in the wrecks
 (a fort above the anchorage the wrecks were lost in), or on the blue hole's bank
 (V9). It needs M1's glTF reader with the textures baked to vertex colours, and
 `world::bed` seating like the ruins. Skip switch and measured row as usual.
+
+### D1. OpenGL ES on the display
+
+The user wants GL's speed on the kiosk, not only in the benchmarks. Two things stand in the way.
+Presenting: wgpu 30's EGL backend shows frames in a Wayland window only from an instance made on
+that window's `wl_display`; branch `display-gl` (0fe8015) vendors `i-slint-backend-winit` 1.18.1
+with `request_graphics_api_for_display` and opens the device there, and that works. Drawing the
+UI: Slint's Skia renderer runs on a wgpu device only on Vulkan, Metal or DX12, so a GL display
+needs femtovg, and femtovg costs more than early-Z saves. Live under cage at full speed on the
+dive: Vulkan + Skia 61 fps (vsync), GL + femtovg 47, Vulkan + femtovg 28-39. Ways on: Skia's own
+GL surface sharing the dive's texture through an EGL image (`opengl_surface.rs` in
+`i-slint-renderer-skia`), or finding what femtovg spends its time on (most likely the 1080 x 1080
+dive image drawn through its one large shader every frame) and drawing that image with a plain
+textured quad. Measure live, not headless: the window's own drawing is the question.
+
+### T1. Terrain noise from FastNoiseLite
+
+The user asks for FastNoiseLite (https://github.com/Auburn/FastNoiseLite, MIT; Rust crate
+`fastnoise-lite`) for better terrain. Use it for the seabed's heightmap and shape noise in
+`world.rs`/`terrain.rs`: OpenSimplex2 with domain warp for the dunes, ridged fractal for the
+ridges and rocky seas, cellular (Voronoi) for cracked mud, brine pools and polygonal terraces.
+The heightmap is built on the CPU, so the GPU cost changes only through the shape; keep each
+sea's character, compare pictures before and after for every sea, and keep the seeds
+deterministic (`places.rs` screenshots must still find their places).
 
 ## Notes for the user
 
