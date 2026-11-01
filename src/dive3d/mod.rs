@@ -73,6 +73,8 @@ const MASK_VERTICES: u32 = 6 * 64;
 const NEAR: f32 = 0.05;
 const MAX_INSTANCES: usize = 24_576;
 const MAX_SPRITES: usize = 8_192;
+/// How many quads a vent plume's ribbon is drawn in (`vs_plume`).
+const PLUME_SEGMENTS: u32 = 4;
 const MAX_TUNNEL_VERTICES: usize = 16_384;
 const MAX_TUNNEL_INDICES: usize = 98_304;
 /// The sea, at half its brightness (`SEA_SCALE` in `scene.wesl`): ten bits a
@@ -401,6 +403,8 @@ pub(crate) struct Nautilus {
     shafts: wgpu::RenderPipeline,
     /// Searchlight beams of other submarines.
     beams: wgpu::RenderPipeline,
+    /// The vents' plumes, one ribbon each.
+    plumes: wgpu::RenderPipeline,
     /// Far coral, as cut-out cards: one pipeline per entry of [`FORMS`].
     impostors: Vec<wgpu::RenderPipeline>,
     globals: wgpu::Buffer,
@@ -710,6 +714,8 @@ mod part {
     pub const TERRAIN_FACETS: u64 = 1 << 31;
     /// The far coral's cut-out cards.
     pub const IMPOSTORS: u64 = 1 << 32;
+    /// The vents' plumes.
+    pub const PLUMES: u64 = 1 << 33;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -1071,6 +1077,7 @@ struct Pipelines {
     sprites: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
     beams: wgpu::RenderPipeline,
+    plumes: wgpu::RenderPipeline,
     impostors: Vec<wgpu::RenderPipeline>,
 }
 
@@ -1468,6 +1475,19 @@ fn compile(
         &[],
         None,
     );
+    let plumes = pipeline(
+        "Dive3d plumes",
+        "vs_plume",
+        "fs_plume",
+        &sprite_buffers,
+        Some(additive),
+        false,
+        nearer,
+        false,
+        true,
+        &[],
+        None,
+    );
     // Opaque and writing depth, like the models: the discard is what
     // shapes it, and it is drawn after them so they hide it first.
     let impostors = FORMS
@@ -1501,6 +1521,7 @@ fn compile(
         sprites,
         shafts,
         beams,
+        plumes,
         impostors,
     }
 }
@@ -1903,6 +1924,7 @@ impl Nautilus {
             sprites,
             shafts,
             beams,
+            plumes,
             impostors,
         } = compile(
             device,
@@ -1944,6 +1966,7 @@ impl Nautilus {
             sprites,
             shafts,
             beams,
+            plumes,
             impostors,
             globals,
             group,
@@ -2017,6 +2040,7 @@ impl Nautilus {
         self.sprites = p.sprites;
         self.shafts = p.shafts;
         self.beams = p.beams;
+        self.plumes = p.plumes;
         self.impostors = p.impostors;
         self.switches = switches;
     }
@@ -2455,6 +2479,20 @@ impl Nautilus {
                 + std::mem::size_of_val(beams)) as u64,
             bytemuck::cast_slice(impostors),
         );
+        // The vents' plumes come last.
+        let plumes = &self.frame.plumes[..self
+            .frame
+            .plumes
+            .len()
+            .min(MAX_SPRITES - sprites.len() - shafts.len() - beams.len() - impostors.len())];
+        gpu.queue.write_buffer(
+            &self.sprite_buffer,
+            (std::mem::size_of_val(sprites)
+                + std::mem::size_of_val(shafts)
+                + std::mem::size_of_val(beams)
+                + std::mem::size_of_val(impostors)) as u64,
+            bytemuck::cast_slice(plumes),
+        );
 
         #[cfg(test)]
         let upload_done = clock.elapsed();
@@ -2692,6 +2730,13 @@ impl Nautilus {
                     pass.set_pipeline(&this.shafts);
                     pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
                     pass.draw(0..6, first..first + shafts.len() as u32);
+                }
+                if !plumes.is_empty() && !this.skips(part::PLUMES) {
+                    let first =
+                        (sprites.len() + shafts.len() + beams.len() + impostors.len()) as u32;
+                    pass.set_pipeline(&this.plumes);
+                    pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
+                    pass.draw(0..6 * PLUME_SEGMENTS, first..first + plumes.len() as u32);
                 }
                 if !beams.is_empty() && !this.skips(part::SHAFTS) && !this.skips(part::BEAMS) {
                     let first = (sprites.len() + shafts.len()) as u32;
@@ -3620,6 +3665,7 @@ mod tests {
             ("pass: sun shafts", part::SUN_SHAFTS),
             ("pass: searchlight beams", part::BEAMS),
             ("pass: shafts and beams", part::SHAFTS),
+            ("pass: vent plumes", part::PLUMES),
             ("pass: corner mask", part::MASK),
             ("pass: cave tunnel", part::TUNNEL),
             ("pass: open water", part::BACKGROUND),

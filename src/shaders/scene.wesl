@@ -2448,6 +2448,84 @@ fn fs_shaft(in: Shaft) -> @location(0) vec4<f32> {
 }
 
 // ---------------------------------------------------------------------------
+// Vent plumes
+// ---------------------------------------------------------------------------
+
+// A black smoker's plume used to be eight or twelve additive discs rising
+// and widening one over another: a chimney near the window stacked that many
+// blended layers over a large part of the screen. Here it is one ribbon along
+// the plume's rise, a few segments long so it can wander, whose density is
+// what the discs added up to: a Gaussian across, widening as it rises,
+// fading with its height, and the puffs' rhythm as a ripple running up it
+// (strong where the puffs are small and apart, gone where they merge).
+// `place` is the mouth and, in `w`, the half-width at the top; `tint` the
+// colour and the half-width at the mouth; `run` the rise from the mouth to
+// the top and, in `w`, where the first puff stands, as a fraction of it.
+
+struct Plume {
+    @builtin(position) position: vec4<f32>,
+    // Across the ribbon (-1..1) and along the rise (0 at the mouth, 1 at the top).
+    @location(0) corner: vec2<f32>,
+    @location(1) colour: vec3<f32>,
+    // Half-width at the mouth, how much wider the top is, the number of
+    // puffs and their phase.
+    @location(2) @interpolate(flat) shape: vec4<f32>,
+};
+
+const PLUME_SEGMENTS: u32 = 4u;
+// The distance between puffs the plumes were laid out with.
+const PLUME_SPACING: f32 = 0.08;
+
+@vertex
+fn vs_plume(
+    @builtin(vertex_index) index: u32,
+    @location(0) place: vec4<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) run: vec4<f32>,
+) -> Plume {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let corner = corners[index % 6u];
+    // From a little below the mouth, where the first puff's skirt hangs, to
+    // the top.
+    let along = (f32(index / 6u) + 0.5 + 0.5 * corner.y) / f32(PLUME_SEGMENTS);
+    let rho = -0.08 + 1.08 * along;
+    let top = place.xyz;
+    let length_run = length(run.xyz);
+    let half_width = tint.w + (place.w - tint.w) * max(rho, 0.0);
+    // The plume wanders as it rises, sideways to the window.
+    let side = normalize(cross(run.xyz, g.camera.xyz - top));
+    let wander = 0.07 * rho * sin(rho * 8.0 + top.x * 13.0 + top.z * 7.0);
+    let centre = top + run.xyz * rho + side * wander;
+    let at = centre + side * (corner.x * half_width);
+    var out: Plume;
+    out.position = project(at);
+    out.corner = vec2<f32>(corner.x, rho);
+    // What the discs added up to along the rise: a puff's Gaussian is
+    // 0.886 half-widths long, and one comes every PLUME_SPACING.
+    let puffs = round(length_run / PLUME_SPACING);
+    let thickness = 0.886 * puffs / length_run;
+    out.colour = tint.rgb * thickness * (1.0 - fog_of(length(centre - g.camera.xyz)));
+    out.shape = vec4<f32>(tint.w, place.w - tint.w, puffs, run.w);
+    return out;
+}
+
+@fragment
+fn fs_plume(in: Plume) -> @location(0) vec4<f32> {
+    let rho = in.corner.y;
+    let half_width = in.shape.x + in.shape.y * max(rho, 0.0);
+    // Gaussian across, cut where the ribbon ends so no edge shows.
+    let across = max(exp(-4.0 * in.corner.x * in.corner.x) - 0.018, 0.0);
+    // Puffs are beads while they are small, a smooth column when they merge.
+    let beads = 2.0 * exp(-380.0 * half_width * half_width);
+    let ripple = 1.0 + beads * cos(TAU * in.shape.z * (rho - in.shape.w));
+    let along = (1.0 - max(rho, 0.0)) * smooth01(-0.08, 0.03, rho);
+    return vec4<f32>(in.colour * (half_width * along * across * ripple) * SEA_SCALE, 0.0);
+}
+
+// ---------------------------------------------------------------------------
 // Searchlight beams
 // ---------------------------------------------------------------------------
 

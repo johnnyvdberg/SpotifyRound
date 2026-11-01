@@ -473,6 +473,9 @@ Dive3d shafts #0                 vs_shaft       VS-bin    97   4     0   45    2
 Dive3d beams #0                  fs_beam        FS        32   4     0    8     9        0:0    0    2
 Dive3d beams #0                  vs_beam        VS       137   4     0   66    20        0:0    2    4
 Dive3d beams #0                  vs_beam        VS-bin   104   4     0   49    19        0:0    1    1
+Dive3d plumes #0                 fs_plume       FS        40   4     0    8    14        0:0    0    2
+Dive3d plumes #0                 vs_plume       VS       162   4     0   81    22        0:0    0    2
+Dive3d plumes #0                 vs_plume       VS-bin   128   4     0   60    22        0:0    1    3
 Dive3d impostors #0              fs_impostor    FS        82   4     0   22    17        0:0    0    1
 Dive3d impostors #0              vs_impostor    VS       498   2     1  222    47        0:0    1   29
 Dive3d impostors #0              vs_impostor    VS-bin   175   4     0   87    20        0:0    1    4
