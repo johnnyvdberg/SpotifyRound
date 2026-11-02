@@ -5,7 +5,9 @@
 //! for assets/models: y up (UP names the source's up axis, 0 x, 1 y, 2 z),
 //! the files' own handedness (the game flips z back), and
 //!   FIT = height: a unit tall, standing on y = 0, centred on its footprint;
-//!   FIT = length: a unit long along x, centred on its bounds.
+//!   FIT = length: a unit long along x, centred on its bounds;
+//!   FIT = metres: the source's own size, standing on y = 0, centred on
+//!   its footprint (a kit's modules, which must keep one scale).
 //! TURN (degrees about y, after the axes are set) points an animal's nose
 //! to +x. An OBJ's material colours come out as the vertices' shade, `v x y
 //! z s`, scaled so the darkest material is 0.75 and the lightest 1.6, the
@@ -72,6 +74,9 @@ fn main() {
             hi[1] - lo[1],
             [(lo[0] + hi[0]) / 2.0, lo[1], (lo[2] + hi[2]) / 2.0],
         ),
+        // As the source measures it (a kit's modules, which must keep one
+        // scale between them), standing on y = 0, centred on its footprint.
+        "metres" => (1.0, [(lo[0] + hi[0]) / 2.0, lo[1], (lo[2] + hi[2]) / 2.0]),
         _ => (
             hi[0] - lo[0],
             [

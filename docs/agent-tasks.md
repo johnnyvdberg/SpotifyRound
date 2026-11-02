@@ -94,7 +94,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | V10 | detail | More detail in every biome with headroom | Sonnet | done, merged: near detail, faceted rocks, kelp, seagrass, glass sponges, coral, the volcano, the abyss's glow and the forest's frond crowns, three mangrove stands (`docs/handoff/v10.md`) |
 | M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | done on branch `m1-gltf`: glTF reader baking textures to colours, LODs for imports, Poly Haven bronzes (Atlantis), chests and barrels (wrecks); Quaternius's Drive still over quota 2026-11-02; rocks left for after T1 (`docs/handoff/m1.md`) |
 | M2 | models | Quaternius ships as worn wrecks | Opus | done on branch `m2-wrecks` with Poly Haven's Dutch ships (Quaternius's Drive over quota): holed, silted, listing, masts snapped; wrecks +0.10 ms median, worst 8.91 (`docs/handoff/m2.md`) |
-| M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |
+| M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | done on branch `m3-fort`: half way through the wrecks, tower, gate, ramparts sunk and toppled, eight cannon down the bank; +0.35 ms median where in view, worst 0.65 (`docs/handoff/m3.md`) |
 | D1 | display | OpenGL ES on the kiosk's display, for its early-Z | Opus | todo (presenting works on branch `display-gl`; the UI renderer is the blocker) |
 | T1 | terrain | Terrain noise from FastNoiseLite | Opus | todo |
 
@@ -295,3 +295,9 @@ deterministic (`places.rs` screenshots must still find their places).
   (`world::SIGHT`, a table in `docs/nautilus.md`), the abyss's far wall and Atlantis' farthest
   temples among it; tune a sea by its one number. The surface from below
   (`water-surface.jpg`) is best judged live, since its facets move.
+- models (M1-M3, 2026-11-02): three branches stacked `m1-gltf` -> `m2-wrecks` -> `m3-fort` (merge
+  `m3-fort` to take all three). Look at the bronzes (`docs/handoff/img/m1-bronzes.jpg`), the
+  Dutch wrecks (`m2-wrecks.jpg`) and the fort (`m3-fort.jpg`). Quaternius's Google Drive still
+  answers "Quota exceeded" for every file, so nothing came from the house source: when it works
+  again, its ships and fish are `models.tsv` rows. `deploy/models.sh` now fetches Poly Haven
+  assets (`polyhaven:ASSET#NODES`).

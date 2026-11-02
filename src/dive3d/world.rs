@@ -1925,6 +1925,7 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::Mantle | Model::Tube => carried(Surface::Skin, 4.0),
         Model::Shaft | Model::Capital | Model::Break | Model::Prism => fixed(Surface::Marble, 3.0),
         Model::Hull => carried(Surface::Wood, 3.0),
+        Model::Cannon => carried(Surface::Copper, 2.0),
         Model::Sail => carried(Surface::Canvas, 1.5),
         Model::Fan | Model::Star | Model::Shell | Model::Sponge => carried(Surface::Coral, 2.5),
         Model::Keel => fixed(Surface::Ice, 1.5),
@@ -2410,11 +2411,12 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     // the shader's: the shell hinge, the tube worms' sway, the crinoid wave,
     // the penguin flap, the narwhal body, the jellyfish's swimming and the
     // four sprite kinds.
-    let static_steps: [(Placer, Option<[f32; 4]>); 20] = [
+    let static_steps: [(Placer, Option<[f32; 4]>); 21] = [
         (rocks, None),
         (gardens, None),
         (reef, None),
         (wrecks, wood),
+        (fort, rock),
         (trench, rock),
         (ruins, marble),
         (atlantis, marble),
@@ -2450,11 +2452,12 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (particles, None),
     ];
     #[cfg(test)]
-    const STATIC_NAMES: [&str; 20] = [
+    const STATIC_NAMES: [&str; 21] = [
         "rocks",
         "gardens",
         "reef",
         "wrecks",
+        "fort",
         "trench",
         "ruins",
         "atlantis",
@@ -3959,6 +3962,9 @@ fn wrecks(w: &World, f: &mut Frame) {
         let Some((x, z, here)) = wreck_berth(w, x, z, length) else {
             continue;
         };
+        if !clear_of_fort(w, x, z, length * 0.6) {
+            continue;
+        }
         let y = here.y;
         if !w.visible([x, y + length * 0.25, z], length * 0.7) {
             continue;
@@ -4101,6 +4107,216 @@ fn wrecks(w: &World, f: &mut Frame) {
             [0.20, 0.14, 0.04],
             GLOW,
         );
+    }
+}
+
+/// The drowned fort (M3): a colonial fort that stood on the headland over
+/// the anchorage the wrecks were lost in, now on the bank beside the lane,
+/// built from Poly Haven's Modular Fort 01 in the kit's own metres. Where
+/// it lies in a wrecks leg, its middle and the yaw of its rampart (which
+/// runs with the lane, its battered face toward it).
+fn fort_site(w: &World) -> Option<([f32; 2], f32)> {
+    let leg = crate::voyage::LEG as f32;
+    let k0 = (w.camera() / leg).floor() as i32;
+    (k0 - 1..=k0 + 1)
+        .filter(|&k| w.seabed.order[k.rem_euclid(BIOMES as i32) as usize] == WRECKS)
+        .map(|k| {
+            let x = (k as f32 + FORT_AT) * leg;
+            // Turned about, so its face (the kit's +z) looks back across
+            // the lane at the window, which looks to +z.
+            (
+                [x, corridor(x) + FORT_ABEAM],
+                yaw_along(1.0, corridor_slope(x)) + PI,
+            )
+        })
+        .min_by(|a, b| {
+            (a.0[0] - w.camera())
+                .abs()
+                .total_cmp(&(b.0[0] - w.camera()).abs())
+        })
+}
+
+/// How far through its leg the fort lies, and how far off the lane its
+/// rampart's middle (on the side the window looks to).
+const FORT_AT: f32 = 0.5;
+const FORT_ABEAM: f32 = 2.6;
+/// World units to the kit's metre: a 40 m ship is about 2.8 units long,
+/// so the 8.5 m rampart stands 0.6 over the sand where it is not buried.
+const FORT_SCALE: f32 = 0.07;
+/// The fort's reach from its middle, which the wrecks keep clear of.
+const FORT_REACH: f32 = 3.4;
+
+/// Whether a thing `radius` round at (x, z) keeps clear of the fort.
+fn clear_of_fort(w: &World, x: f32, z: f32, radius: f32) -> bool {
+    fort_site(w).is_none_or(|(c, _)| (x - c[0]).hypot(z - c[1]) > FORT_REACH + radius)
+}
+
+/// How a module of the fort lies: standing (sunk, leaning a little) or
+/// toppled forward onto the slope.
+#[derive(Clone, Copy)]
+enum Fallen {
+    Standing { sink: f32, lean: f32 },
+    Toppled { tip: f32 },
+}
+
+fn fort(w: &World, f: &mut Frame) {
+    let Some((c, yaw)) = fort_site(w) else {
+        return;
+    };
+    if w.share(c[0], c[1], WRECKS) < 0.5 {
+        return;
+    }
+    let s = FORT_SCALE;
+    let (sy, cy) = yaw.sin_cos();
+    // The fort's own frame, in metres: x along the rampart, z toward the
+    // lane.
+    let at = |lx: f32, lz: f32| {
+        [
+            c[0] + (cy * lx + sy * lz) * s,
+            c[1] + (-sy * lx + cy * lz) * s,
+        ]
+    };
+    let tone = [0.86, 0.9, 0.86];
+    // The rampart, from the corner tower: a wall running back from it, two
+    // lengths of rampart with the gate between, a third toppled forward
+    // down the bank, and its broken end. (model, x, z, turn, height, half
+    // length, how it lies), in metres; the tower stands at x = -28.
+    let modules = [
+        (
+            Model::FortTower,
+            -28.0,
+            0.0,
+            0.0,
+            13.5,
+            7.9,
+            Fallen::Standing {
+                sink: 0.35,
+                lean: 0.03,
+            },
+        ),
+        (
+            Model::FortWall,
+            -28.0,
+            -15.2,
+            -PI * 0.5,
+            8.5,
+            7.3,
+            Fallen::Standing {
+                sink: 0.4,
+                lean: -0.04,
+            },
+        ),
+        (
+            Model::FortWall,
+            -12.8,
+            0.0,
+            0.0,
+            8.5,
+            7.3,
+            Fallen::Standing {
+                sink: 0.3,
+                lean: 0.05,
+            },
+        ),
+        (
+            Model::FortGate,
+            -1.8,
+            -0.7,
+            0.0,
+            8.6,
+            3.7,
+            Fallen::Standing {
+                sink: 0.22,
+                lean: -0.03,
+            },
+        ),
+        (
+            Model::FortWall,
+            9.2,
+            0.0,
+            0.03,
+            8.5,
+            7.3,
+            Fallen::Standing {
+                sink: 0.38,
+                lean: 0.14,
+            },
+        ),
+        (
+            Model::FortWall,
+            23.7,
+            2.5,
+            0.12,
+            8.5,
+            7.3,
+            Fallen::Toppled { tip: 1.38 },
+        ),
+        (
+            Model::FortEnd,
+            33.4,
+            0.4,
+            -0.1,
+            7.8,
+            2.4,
+            Fallen::Standing {
+                sink: 0.5,
+                lean: 0.28,
+            },
+        ),
+    ];
+    for (model, lx, lz, turn, height, half, lies) in modules {
+        let [x, z] = at(lx, lz);
+        let (h, l) = (height * s, half * s);
+        let turned = yaw + turn;
+        let (ts, tc) = turned.sin_cos();
+        // The ground at its middle and both ends: it rests on the lowest,
+        // the rest of its foot buried, tipped half as far as the bank falls
+        // along it.
+        let (gx0, gx1) = (
+            w.ground(x - tc * l, z + ts * l),
+            w.ground(x + tc * l, z - ts * l),
+        );
+        let ground = w.ground(x, z).min(gx0).min(gx1);
+        let pitch = ((gx1 - gx0) / (2.0 * l)).atan() * 0.5;
+        if !w.visible([x, ground + h * 0.5, z], l.max(h)) {
+            continue;
+        }
+        let (y, roll) = match lies {
+            Fallen::Standing { sink, lean } => (ground - sink * h, lean),
+            // Over on its face toward the lane, a little sunk into the bank.
+            Fallen::Toppled { tip } => (ground - 0.12 * h, tip),
+        };
+        f.put(model, place([x, y, z], turned, pitch, roll, [s; 3]), tone)
+            .grounded()
+            .element(element::FORT);
+    }
+    // Its guns, spilled down the bank toward the anchorage when the walls
+    // went: on their carriages, slewed, some turned over, half in the sand.
+    for k in 0..8 {
+        let h = |salt: u32| hash(k, 0, 1700 + salt);
+        let (lx, lz) = (-30.0 + 62.0 * h(1), 5.0 + 14.0 * h(2));
+        let [x, z] = at(lx, lz);
+        if (z - corridor(x)).abs() < 1.25 || !w.visible([x, w.ground(x, z), z], 0.2) {
+            continue;
+        }
+        let Some(st) = seat(w, x, z, 0.08, &bed::FLAT) else {
+            continue;
+        };
+        let turn = yaw + h(3) * TAU;
+        let (pitch, roll) = st.tilt(turn);
+        let over = if h(4) < 0.3 {
+            PI * (0.55 + 0.4 * h(5))
+        } else {
+            0.0
+        };
+        let sink = 0.75 * s * (0.15 + 0.3 * h(6));
+        f.put(
+            Model::Cannon,
+            place([x, st.y - sink, z], turn, pitch, roll + over, [s; 3]),
+            [0.8, 0.82, 0.78],
+        )
+        .grounded()
+        .element(element::FORT);
     }
 }
 
@@ -8620,6 +8836,8 @@ pub mod element {
     pub const WRECK_GOODS: u32 = 21;
     // Imported (M2): Poly Haven's Dutch hulls as the wrecks, their fallen masts.
     pub const WRECK_HULLS: u32 = 22;
+    // Imported (M3): the drowned fort above the wrecks, and its cannon.
+    pub const FORT: u32 = 23;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -8674,6 +8892,7 @@ pub const ELEMENTS: &[(u32, &str)] = &[
         element::WRECK_HULLS,
         "wrecks: the Dutch hulls and their fallen masts",
     ),
+    (element::FORT, "wrecks: the drowned fort and its cannon"),
 ];
 
 /// The element `i` is part of, or 0.
@@ -10746,6 +10965,9 @@ fn tall_things(w: &World, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(f32, f32, 
         let Some((x, z, here)) = wreck_berth(w, x, z, length) else {
             return;
         };
+        if !clear_of_fort(w, x, z, length * 0.6) {
+            return;
+        }
         let yaw = (hash(ix, iz, 63) - 0.5) * 1.2;
         let (s, c) = yaw.sin_cos();
         let y = here.y;
@@ -10773,6 +10995,23 @@ fn tall_things(w: &World, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(f32, f32, 
             ));
         }
     });
+    // The fort's rampart and tower, a little over their full height (the
+    // sinking only lowers them).
+    if let Some((c, yaw)) = fort_site(w)
+        && w.share(c[0], c[1], WRECKS) >= 0.5
+    {
+        let (sy, cy) = yaw.sin_cos();
+        for (lx, top, r) in [
+            (-28.0, 14.0, 9.0),
+            (-12.8, 9.0, 8.0),
+            (2.0, 9.0, 8.0),
+            (17.0, 9.0, 8.0),
+            (32.0, 9.0, 6.0),
+        ] {
+            let (x, z) = (c[0] + cy * lx * FORT_SCALE, c[1] - sy * lx * FORT_SCALE);
+            found.push((x, z, r * FORT_SCALE, w.ground(x, z) + top * FORT_SCALE));
+        }
+    }
     found
 }
 

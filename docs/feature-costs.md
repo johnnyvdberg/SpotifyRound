@@ -209,6 +209,16 @@ nothing new), none over 11; wrecks 6.80 -> 6.94.
 |---|---|---|---|---|
 | the wrecks' Dutch hulls and fallen masts (M2), against no hull | `DIVE3D_SKIP_ELEMENTS` bit 22 | wrecks 1.19 | 1.19 | 2.06 (wrecks 0 @0.15) |
 
+### A drowned fort (M3)
+
+`run m3-before` against `run m3-after`, all 204 places (`docs/handoff/m3.md`): median 7.31 ->
+7.28 ms, worst 10.38 -> 10.38, none over 11; wrecks 7.04 -> 7.12, their worst place 8.62 -> 8.48
+(the fort stands where hulls lay).
+
+| feature | switch | seas (median ms there) | median ms | worst ms |
+|---|---|---|---|---|
+| the drowned fort and its cannon (M3) | `DIVE3D_SKIP_ELEMENTS` bit 23, `DIVE3D_SKIP_EFFECTS` bit 52 | wrecks 0.35 | 0.35 | 0.65 (wrecks 0 @0.15) |
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |

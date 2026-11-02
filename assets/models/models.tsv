@@ -1,4 +1,4 @@
-# file	triangles	up axis (0 x, 1 y, 2 z)	fit (height or length)	turn (degrees about y)	source of the original
+# file	triangles	up axis (0 x, 1 y, 2 z)	fit (height, length or metres)	turn (degrees about y)	source of the original
 sophocles.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/rx913v90j_KAS633_small.stl
 belvedere-torso.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/zs25xf26x_KAS402_small.stl
 bearded-head.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/8k71nn58x_KMS5962_small.stl
@@ -10,3 +10,8 @@ barrel.obj	400	1	height	0	polyhaven:wooden_barrels_01#barrel01
 wreck-fluyt.obj	1200	1	length	-90	polyhaven:dutch_ship_medium#hull
 wreck-galleon.obj	1500	1	length	-90	polyhaven:dutch_ship_large_01#hull
 wreck-pinas.obj	1500	1	length	0	polyhaven:dutch_ship_large_02#hull
+fort-wall.obj	700	1	metres	0	polyhaven:modular_fort_01#wall_thick_straight_01
+fort-tower.obj	1200	1	metres	0	polyhaven:modular_fort_01#tower_round
+fort-gate.obj	600	1	metres	0	polyhaven:modular_fort_01#wall_thin_gate_01
+fort-end.obj	300	1	metres	0	polyhaven:modular_fort_01#wall_thick_end_01
+cannon.obj	900	1	metres	0	polyhaven:cannon_01#-ball

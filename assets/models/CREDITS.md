@@ -35,3 +35,8 @@ kit's nodes.
 | wreck-fluyt.obj | Dutch Ship Medium, its hull (no rigging or sails), by James Ray Cock, Rico Cilliers and Nicolò Zubbini | https://polyhaven.com/a/dutch_ship_medium |
 | wreck-galleon.obj | Dutch Ship Large 01, its hull, by the same | https://polyhaven.com/a/dutch_ship_large_01 |
 | wreck-pinas.obj | Dutch Ship Large 02, its hull, by the same | https://polyhaven.com/a/dutch_ship_large_02 |
+| fort-wall.obj | Modular Fort 01, its `wall_thick_straight_01`, by Rico Cilliers | https://polyhaven.com/a/modular_fort_01 |
+| fort-tower.obj | Modular Fort 01, its `tower_round` | https://polyhaven.com/a/modular_fort_01 |
+| fort-gate.obj | Modular Fort 01, its `wall_thin_gate_01` | https://polyhaven.com/a/modular_fort_01 |
+| fort-end.obj | Modular Fort 01, its `wall_thick_end_01` | https://polyhaven.com/a/modular_fort_01 |
+| cannon.obj | Cannon 01 without its balls, by James Ray Cock (model) and Yann Kervran (rig) | https://polyhaven.com/a/cannon_01 |

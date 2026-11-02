@@ -747,6 +747,16 @@ pub enum Model {
     WreckFluyt,
     WreckGalleon,
     WreckPinas,
+    /// A colonial fort's modules (Poly Haven's Modular Fort 01, M3), in the
+    /// kit's own metres, standing on y = 0, centred: a thick rampart 14.6
+    /// long on x with its battered outer face to +z, a round corner tower,
+    /// a gate in a thinner wall (7.4) and the rampart's end (4.8).
+    FortWall,
+    FortTower,
+    FortGate,
+    FortEnd,
+    /// A naval gun on its carriage, muzzle to +x, in metres (2.3 long).
+    Cannon,
     /// A storage amphora standing on its point, a unit tall.
     Amphora,
     /// A trireme's hull with its bronze ram and some oars, stern -1 to ram +1.
@@ -781,7 +791,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 94] = [
+    pub const ALL: [Model; 99] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -864,6 +874,11 @@ impl Model {
         Model::WreckFluyt,
         Model::WreckGalleon,
         Model::WreckPinas,
+        Model::FortWall,
+        Model::FortTower,
+        Model::FortGate,
+        Model::FortEnd,
+        Model::Cannon,
         Model::Amphora,
         Model::Trireme,
         Model::Aqueduct,
@@ -1195,6 +1210,11 @@ impl Model {
                 WRECK_GALLEON,
                 &[[-0.05, 0.11, -1.0, 0.065], [0.18, 0.12, 1.0, 0.05]],
             ),
+            Model::FortWall => drowned(cast_creased(FORT_WALL, upright(FORT_WALL), 0.6)),
+            Model::FortTower => drowned(cast_creased(FORT_TOWER, upright(FORT_TOWER), 0.6)),
+            Model::FortGate => drowned(cast_creased(FORT_GATE, upright(FORT_GATE), 0.6)),
+            Model::FortEnd => drowned(cast_creased(FORT_END, upright(FORT_END), 0.6)),
+            Model::Cannon => drowned(cast_creased(CANNON, upright(CANNON), 0.6)),
             Model::WreckPinas => wreck(
                 WRECK_PINAS,
                 &[[0.05, 0.11, 1.0, 0.07], [-0.2, 0.12, 1.0, 0.045]],
@@ -4586,6 +4606,11 @@ const BARREL: &str = include_str!("../../assets/models/barrel.obj");
 const WRECK_FLUYT: &str = include_str!("../../assets/models/wreck-fluyt.obj");
 const WRECK_GALLEON: &str = include_str!("../../assets/models/wreck-galleon.obj");
 const WRECK_PINAS: &str = include_str!("../../assets/models/wreck-pinas.obj");
+const FORT_WALL: &str = include_str!("../../assets/models/fort-wall.obj");
+const FORT_TOWER: &str = include_str!("../../assets/models/fort-tower.obj");
+const FORT_GATE: &str = include_str!("../../assets/models/fort-gate.obj");
+const FORT_END: &str = include_str!("../../assets/models/fort-end.obj");
+const CANNON: &str = include_str!("../../assets/models/cannon.obj");
 
 /// What a still import with no procedural model is fitted to: a unit tall
 /// on y = 0, centred on the axis, nothing animated.
@@ -4610,6 +4635,20 @@ fn upright(obj: &str) -> Mesh {
     m
 }
 
+/// An import's colours as the years under water leave them: greyed and
+/// darkened, and silt lying on whatever faces up, patchy.
+fn drowned(mut m: Mesh) -> Mesh {
+    for (i, v) in m.vertices.iter_mut().enumerate() {
+        let c = v.colour;
+        let grey = 0.3 * c[0] + 0.5 * c[1] + 0.2 * c[2];
+        let worn = [0, 1, 2].map(|k| (c[k] * 0.55 + grey * 0.45) * 0.85);
+        let up = smooth(0.45, 0.85, v.normal[1]) * (0.55 + 0.45 * jitter(i as u32, 91));
+        let silt = [0.62, 0.58, 0.50];
+        v.colour = [0, 1, 2].map(|k| worn[k] + (silt[k] - worn[k]) * up);
+    }
+    m
+}
+
 /// A ship's hull from `obj` worn to a wreck: breached where `holes` say
 /// (`[x, y, side, radius]`, the side +1 or -1 in z: a ragged black gap
 /// laid over the planking, the wood round it darkened, since cutting the
@@ -4617,7 +4656,7 @@ fn upright(obj: &str) -> Mesh {
 /// her paint and wood greyed and darkened by the years under water, and
 /// silt lying on whatever faces up, decks and wales.
 fn wreck(obj: &str, holes: &[[f32; 4]]) -> Mesh {
-    let mut m = cast_creased(obj, upright(obj), 0.6);
+    let m = cast_creased(obj, upright(obj), 0.6);
     // A breach's ragged edge, in its radius, at angle `a` (9 jagged
     // points round it, wandering in and out by a third).
     let ragged = |k: usize, a: f32| {
@@ -4640,15 +4679,10 @@ fn wreck(obj: &str, holes: &[[f32; 4]]) -> Mesh {
             })
             .fold(f32::MAX, f32::min)
     };
-    for (i, v) in m.vertices.iter_mut().enumerate() {
-        let c = v.colour;
-        let grey = 0.3 * c[0] + 0.5 * c[1] + 0.2 * c[2];
-        let worn = [0, 1, 2].map(|k| (c[k] * 0.55 + grey * 0.45) * 0.85);
-        // Silt on what faces up, patchy.
-        let up = smooth(0.45, 0.85, v.normal[1]) * (0.55 + 0.45 * jitter(i as u32, 91));
-        let silt = [0.62, 0.58, 0.50];
+    let mut m = drowned(m);
+    for v in &mut m.vertices {
         let burnt = 1.0 - 0.5 * (1.0 - (near(v.pos) - 1.0) / 0.8).clamp(0.0, 1.0);
-        v.colour = [0, 1, 2].map(|k| (worn[k] + (silt[k] - worn[k]) * up) * burnt);
+        v.colour = v.colour.map(|c| c * burnt);
     }
     // The gaps: a fan just proud of the hull's side, following its curve.
     let hull: Vec<[f32; 3]> = m.vertices.iter().map(|v| v.pos).collect();
