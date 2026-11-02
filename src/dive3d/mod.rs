@@ -2218,11 +2218,7 @@ impl Nautilus {
             ice_visit: None,
             voyage: Voyage::default(),
             helm: Helm::default(),
-            seabed: Seabed {
-                map: vec![[0.0; 4]; heightmap::SIZE * heightmap::SIZE],
-                seed: 0.0,
-                order: crate::voyage::ORDER,
-            },
+            seabed: Seabed::blank(),
             visit: None,
             underwater,
             lowpoly,

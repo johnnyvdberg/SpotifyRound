@@ -507,22 +507,49 @@ pub fn reef_mound(field: f32) -> f32 {
     smooth(0.50, 0.82, field)
 }
 
-/// The shape each biome gives its own floor, over the shared heightmap: the
-/// same function as `biome_shape` in `scene.wesl`. `across` is signed distance
-/// from the corridor (positive to port), `h` the heightmap's height and
-/// `detail` its fine grain. Every term but the cave's is periodic over the
+/// How much of a brine pool there is at a point of the forms tile: the
+/// Voronoi cells of the highest values lie sunk a little below the salt
+/// crust, each with a rim of crust left standing round it.
+pub fn brine_pool(form: [f32; 4]) -> f32 {
+    use super::heightmap::Form;
+    smooth(0.35, 0.65, form[Form::CELL]) * smooth(0.04, 0.12, form[Form::EDGE])
+}
+
+/// The shape each biome gives its own floor, over the shared heightmap.
+/// `across` is signed distance from the corridor (positive to port), `h` the
+/// heightmap's height, `detail` its fine grain and `forms` the forms tile
+/// ([`heightmap::Form`]). Every term but the cave's is periodic over the
 /// heightmap's 64 units, so the added shape repeats with it; the cave's
 /// ledges stand back from its halls, as its massif does.
-fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 {
+///
+/// [`heightmap::Form`]: super::heightmap::Form
+fn biome_shape(
+    b: &Biome,
+    x: f32,
+    z: f32,
+    across: f32,
+    h: f32,
+    detail: f32,
+    forms: &[[f32; 4]],
+) -> f32 {
+    use super::heightmap::{Form, sample};
     let weight = |id: usize| b.weight(id) as f32;
+    let form = || sample(forms, x, z);
+    // The dunes at twice their size: long swells of drifted sediment.
+    let swells = || sample(forms, x * 0.5, z * 0.5)[Form::DUNES];
+    // Folded rock from the ridged noise, 0.05 on average like the folds of
+    // the grain it replaced, but with sharp crests and wide valleys.
+    let folds = || {
+        let r = 0.5 + 0.5 * form()[Form::RIDGED];
+        1.6 * r * r - 0.64
+    };
     let mut shape = 0.0;
     let shallows = weight(SHALLOWS);
     if shallows > 0.0 {
-        // Low banks with sand waves breaking over them.
+        // Low banks with fields of sand dunes running over them.
         let banks = smooth(0.45, 0.72, 0.5 + 0.5 * detail);
-        let waves = (TAU * (x * 0.25 + z * 0.125) + 1.4 * detail).sin()
-            + 0.5 * (TAU * (x * 0.125 - z * 0.25) + 0.8 * detail).sin();
-        shape += shallows * (0.10 * h + 0.10 * banks + 0.05 * waves);
+        let dunes = form()[Form::DUNES] - 0.22;
+        shape += shallows * (0.10 * h + 0.10 * banks + 0.20 * dunes);
     }
     let forest = weight(FOREST);
     if forest > 0.0 {
@@ -536,10 +563,9 @@ fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f
     if wrecks > 0.0 {
         // Sediment drifts running along the wreck field, with rock showing
         // through where the drift is thin.
-        let drifts =
-            (TAU * z * 0.125 + 0.8 * detail).sin() + 0.4 * (TAU * (z * 0.375 + x * 0.0625)).sin();
+        let drifts = swells() - 0.22;
         let rocks = smooth(0.60, 0.85, 0.5 + 0.5 * detail);
-        shape += wrecks * (0.25 * h + 0.20 * drifts + 0.40 * rocks);
+        shape += wrecks * (0.25 * h + 0.45 * drifts + 0.40 * rocks);
     }
     let atlantis = weight(ATLANTIS);
     if atlantis > 0.0 {
@@ -564,11 +590,10 @@ fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f
     }
     let abyss = weight(ABYSS);
     if abyss > 0.0 {
-        // Folded rock: sharp ridges from the grain, cut through by canyons
-        // that follow the heightmap's own contours.
-        let fold = 1.0 - 2.0 * detail.abs();
+        // Folded rock: sharp ridges, cut through by canyons that follow the
+        // heightmap's own contours.
         let canyon = 1.0 - smooth(0.0, 0.09, (h - 0.25).abs());
-        shape += abyss * (0.32 * h + 0.65 * (fold * fold - 0.35) - 0.45 * canyon);
+        shape += abyss * (0.32 * h + 0.65 * folds() - 0.45 * canyon);
     }
     let arctic = weight(ARCTIC);
     if arctic > 0.0 {
@@ -596,25 +621,25 @@ fn biome_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f
     if sargasso > 0.0 {
         // A low, rolling plain under the floating weed, drifted into long
         // swells rather than risen into banks.
-        let drift = (TAU * (x * 0.125 + z * 0.0625) + 0.9 * detail).sin();
+        let drift = swells() - 0.22;
         let swell = smooth(0.42, 0.74, 0.5 + 0.5 * detail);
-        shape += sargasso * (0.04 * h + 0.10 * drift + 0.16 * swell);
+        shape += sargasso * (0.04 * h + 0.25 * drift + 0.16 * swell);
     }
     let vents = weight(VENTS);
     if vents > 0.0 {
         // Broken pillow basalt: hard, lumpy mounds round the chimneys, with
-        // the grain's folds standing up as cooled lobes of lava.
-        let fold = 1.0 - 2.0 * detail.abs();
+        // ridged folds standing up as cooled lobes of lava.
         let mound = smooth(0.58, 0.86, 0.5 + 0.5 * detail);
-        shape += vents * (0.28 * h + 0.42 * (fold * fold - 0.35) + 0.30 * mound);
+        shape += vents * (0.28 * h + 0.42 * folds() + 0.30 * mound);
     }
     let brine = weight(BRINE);
     if brine > 0.0 {
-        // Salt terraces, broad and shallow, with the brine pans between them
-        // sunk just below the crust.
-        let terrace = 2.0 * smooth(-0.55, 0.55, (TAU * x * 0.125 + 0.2 * detail).sin()) - 1.0;
-        let pan = smooth(0.62, 0.88, 0.5 + 0.5 * detail);
-        shape += brine * (0.04 * h + 0.055 * terrace - 0.06 * pan + 0.02 * detail);
+        // Polygonal salt terraces, each cell of the Voronoi mosaic a level
+        // of crust of its own a few centimetres above or below the next,
+        // with the brine pools sunk just below them.
+        let form = form();
+        let terrace = form[Form::CELL];
+        shape += brine * (0.04 * h + 0.10 * terrace - 0.08 * brine_pool(form) + 0.02 * detail);
     }
     let bloom = weight(BLOOM);
     if bloom > 0.0 {
@@ -975,6 +1000,10 @@ pub const RELIEF: [f32; BIOMES] = [
 /// The seabed of one visit: its heightmap and the biome sequence's seed.
 pub struct Seabed {
     pub map: Vec<[f32; 4]>,
+    /// The forms some seas shape their floors from ([`heightmap::Form`]).
+    ///
+    /// [`heightmap::Form`]: super::heightmap::Form
+    pub forms: Vec<[f32; 4]>,
     pub seed: f32,
     /// This visit's fourteen-leg circuit, as [`crate::voyage::order_for`].
     pub order: [usize; BIOMES],
@@ -982,11 +1011,31 @@ pub struct Seabed {
 
 impl Seabed {
     pub fn new(visit: u64, seed: f32) -> Self {
+        let (map, forms) = super::heightmap::generate(visit);
         Self {
-            map: super::heightmap::generate(visit),
+            map,
+            forms,
             seed,
             order: crate::voyage::order_for(seed),
         }
+    }
+
+    /// A level, featureless seabed, until the first visit makes one.
+    pub fn blank() -> Self {
+        let texels = super::heightmap::SIZE * super::heightmap::SIZE;
+        Self {
+            map: vec![[0.0; 4]; texels],
+            forms: vec![[0.0; 4]; super::heightmap::FORMS * super::heightmap::FORMS],
+            seed: 0.0,
+            order: crate::voyage::ORDER,
+        }
+    }
+
+    /// The forms at (x, z) ([`heightmap::Form`]).
+    ///
+    /// [`heightmap::Form`]: super::heightmap::Form
+    pub fn form(&self, x: f32, z: f32) -> [f32; 4] {
+        super::heightmap::sample(&self.forms, x, z)
     }
 
     pub fn biome(&self, x: f32, z: f32) -> Biome {
@@ -1066,7 +1115,7 @@ impl Seabed {
         } else {
             0.0
         };
-        let shape = biome_shape(&b, x, z, across, sample[0], sample[3]);
+        let shape = biome_shape(&b, x, z, across, sample[0], sample[3], &self.forms);
         base + relief + shape + rough * (n - 0.45) + far + massif + trench
     }
 
@@ -12671,150 +12720,21 @@ mod tests {
         assert_eq!(pops, 0, "{pops} bubbles jumped, worst {worst:.3}");
     }
 
-    /// The biome profiles are the same function in Rust and in `scene.wesl`.
-    /// This is the shader's `biome_shape`, term for term; the two are held
-    /// together over a grid of every biome pair, and the shape is periodic
-    /// over the heightmap's 64 units so the added relief wraps with it.
+    /// The biome profiles are periodic over the heightmap's 64 units, so the
+    /// added relief wraps with it. (The seabed is built on the CPU; the
+    /// shader's copy of `biome_shape` this test once matched is long gone.)
     #[test]
-    fn the_biome_shapes_match_the_shader_and_wrap() {
-        use std::f32::consts::TAU;
-        fn shader_shape(b: &Biome, x: f32, z: f32, across: f32, h: f32, detail: f32) -> f32 {
-            let presence = |id: usize| b.weight(id) as f32;
-            let mut shape = 0.0;
-            let shallows = presence(SHALLOWS);
-            if shallows > 0.0 {
-                let banks = smooth(0.45, 0.72, 0.5 + 0.5 * detail);
-                let waves = (TAU * (x * 0.25 + z * 0.125) + 1.4 * detail).sin()
-                    + 0.5 * (TAU * (x * 0.125 - z * 0.25) + 0.8 * detail).sin();
-                shape += shallows * (0.10 * h + 0.10 * banks + 0.05 * waves);
-            }
-            let forest = presence(FOREST);
-            if forest > 0.0 {
-                let hummocks = (TAU * (x * 0.5 + z * 0.25) + 1.2 * detail).sin()
-                    + 0.6 * (TAU * (x * 0.25 - z * 0.5) + 0.7 * detail).sin();
-                let mounds = smooth(0.45, 0.75, 0.5 + 0.5 * detail);
-                shape += forest * (-0.05 * h + 0.12 * hummocks + 0.25 * detail + 0.30 * mounds);
-            }
-            let wrecks = presence(WRECKS);
-            if wrecks > 0.0 {
-                let drifts = (TAU * z * 0.125 + 0.8 * detail).sin()
-                    + 0.4 * (TAU * (z * 0.375 + x * 0.0625)).sin();
-                let rocks = smooth(0.60, 0.85, 0.5 + 0.5 * detail);
-                shape += wrecks * (0.25 * h + 0.20 * drifts + 0.40 * rocks);
-            }
-            let atlantis = presence(ATLANTIS);
-            if atlantis > 0.0 {
-                let swell = (TAU * (x * 0.125 + z * 0.0625) + 0.9 * detail).sin()
-                    + 0.6 * (TAU * (x * 0.0625 - z * 0.1875) + 0.5 * detail).sin();
-                let mounds = smooth(0.40, 0.80, 0.5 + 0.5 * detail);
-                shape += atlantis * (0.06 * h + 0.09 * swell + 0.16 * mounds + 0.04 * detail);
-            }
-            let cave = presence(CAVE);
-            if cave > 0.0 {
-                let ledges = 2.0
-                    * smooth(-0.35, 0.35, (TAU * across.abs() / 1.2 + 0.4 * detail).sin())
-                    - 1.0;
-                let k = 1.55 + 1.25 * hall(x);
-                let near = smooth(0.45 * k, 0.9 * k, across.abs());
-                shape += cave * near * (0.25 * ledges + 0.12 * detail);
-            }
-            let abyss = presence(ABYSS);
-            if abyss > 0.0 {
-                let fold = 1.0 - 2.0 * detail.abs();
-                let canyon = 1.0 - smooth(0.0, 0.09, (h - 0.25).abs());
-                shape += abyss * (0.32 * h + 0.65 * (fold * fold - 0.35) - 0.45 * canyon);
-            }
-            let arctic = presence(ARCTIC);
-            if arctic > 0.0 {
-                let scour = 1.0 - smooth(0.0, 0.22, (TAU * z * 0.5 + 0.7 * detail).sin().abs());
-                shape += arctic * (-0.10 * h + 0.06 * detail - 0.12 * scour);
-            }
-            let trench = presence(TRENCH);
-            if trench > 0.0 {
-                shape += trench * (0.05 * h + 0.08 * detail);
-            }
-            let coral = presence(CORAL);
-            if coral > 0.0 {
-                let field = 0.5
-                    + 0.22 * (TAU * (x * 0.25 + z * 0.125) + 1.3 * detail).sin()
-                    + 0.20 * (TAU * (x * 0.125 - z * 0.25) + 0.9 * detail).sin()
-                    + 0.12 * (TAU * (x * 0.375 + z * 0.3125) + 2.1 * detail).sin();
-                let mound = smooth(0.50, 0.82, field);
-                let gutter = 1.0 - smooth(0.12, 0.32, field);
-                shape += coral
-                    * (0.15 * h + 0.42 * mound - 0.10 * gutter
-                        + 0.06 * detail * mound
-                        + 0.03 * detail);
-            }
-            let sargasso = presence(SARGASSO);
-            if sargasso > 0.0 {
-                let drift = (TAU * (x * 0.125 + z * 0.0625) + 0.9 * detail).sin();
-                let swell = smooth(0.42, 0.74, 0.5 + 0.5 * detail);
-                shape += sargasso * (0.04 * h + 0.10 * drift + 0.16 * swell);
-            }
-            let vents = presence(VENTS);
-            if vents > 0.0 {
-                let fold = 1.0 - 2.0 * detail.abs();
-                let mound = smooth(0.58, 0.86, 0.5 + 0.5 * detail);
-                shape += vents * (0.28 * h + 0.42 * (fold * fold - 0.35) + 0.30 * mound);
-            }
-            let brine = presence(BRINE);
-            if brine > 0.0 {
-                let terrace =
-                    2.0 * smooth(-0.55, 0.55, (TAU * x * 0.125 + 0.2 * detail).sin()) - 1.0;
-                let pan = smooth(0.62, 0.88, 0.5 + 0.5 * detail);
-                shape += brine * (0.04 * h + 0.055 * terrace - 0.06 * pan + 0.02 * detail);
-            }
-            let bloom = presence(BLOOM);
-            if bloom > 0.0 {
-                let ooze = (TAU * (x * 0.5 + z * 0.25) + 1.0 * detail).sin()
-                    + 0.6 * (TAU * (x * 0.25 - z * 0.5) + 0.6 * detail).sin();
-                let mounds = smooth(0.40, 0.72, 0.5 + 0.5 * detail);
-                shape += bloom * (-0.05 * h + 0.10 * ooze + 0.22 * mounds);
-            }
-            let city = presence(CITY);
-            if city > 0.0 {
-                let step =
-                    2.0 * smooth(
-                        -0.3,
-                        0.3,
-                        (TAU * (x * 0.0625 + z * 0.125) + 0.3 * detail).sin(),
-                    ) - 1.0;
-                shape += city * (-0.06 * h + 0.10 * step + 0.015 * detail);
-            }
-            shape
-        }
-
-        let ids = [
-            SHALLOWS, FOREST, WRECKS, ATLANTIS, CAVE, ABYSS, ARCTIC, TRENCH, CORAL, SARGASSO,
-            VENTS, BRINE, BLOOM, CITY,
-        ];
-        let weights = [0.0, 0.2, 0.5, 0.8, 1.0];
-        for &a in &ids {
-            for &c in &ids {
-                for w in weights {
-                    let b = Biome { a, b: c, w };
-                    for i in 0..7 {
-                        for j in 0..7 {
-                            let x = -31.7 + i as f32 * 11.3;
-                            let z = -27.1 + j as f32 * 9.7;
-                            let across = -6.0 + i as f32 * 2.0;
-                            let h = -1.4 + j as f32 * 0.45;
-                            let detail = -0.9 + (i + j) as f32 * 0.15;
-                            let want = shader_shape(&b, x, z, across, h, detail);
-                            let got = biome_shape(&b, x, z, across, h, detail);
-                            assert!(
-                                (want - got).abs() < 2e-6,
-                                "{a}/{c} w {w} at ({x}, {z}): {got} != {want}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
+    fn the_biome_shapes_wrap() {
         // Every term of the shape repeats with the heightmap, but the cave's,
-        // which widens with its halls along the leg.
-        for &id in ids.iter().filter(|&&id| id != CAVE) {
+        // which widens with its halls along the leg, the meadow's channels
+        // and the sponges' mounds, which wander on their own, and the swells
+        // of the wrecks and the sargasso, the dunes at twice their size,
+        // which repeat every 128 units.
+        let seabed = Seabed::new(3, 0.0);
+        let ids = [
+            SHALLOWS, FOREST, ATLANTIS, ABYSS, ARCTIC, TRENCH, CORAL, VENTS, BRINE, BLOOM, CITY,
+        ];
+        for &id in &ids {
             let b = Biome {
                 a: id,
                 b: id,
@@ -12825,10 +12745,21 @@ mod tests {
                 let z = i as f32 * -3.1 + 7.0;
                 let h = (x * 0.37).sin();
                 let detail = (z * 0.29).cos();
-                let here = biome_shape(&b, x, z, 0.8, h, detail);
-                let next = biome_shape(&b, x + 64.0, z + 64.0, 0.8, h, detail);
+                let here = biome_shape(&b, x, z, 0.8, h, detail, &seabed.forms);
+                let next = biome_shape(&b, x + 64.0, z + 64.0, 0.8, h, detail, &seabed.forms);
                 assert!((here - next).abs() < 2e-5, "biome {id} seam at {x}, {z}");
             }
+        }
+        for id in [WRECKS, SARGASSO] {
+            let b = Biome {
+                a: id,
+                b: id,
+                w: 0.0,
+            };
+            let (x, z) = (5.3, -2.1);
+            let here = biome_shape(&b, x, z, 0.8, 0.2, 0.1, &seabed.forms);
+            let next = biome_shape(&b, x - 128.0, z + 128.0, 0.8, 0.2, 0.1, &seabed.forms);
+            assert!((here - next).abs() < 2e-5, "biome {id} seam at {x}, {z}");
         }
     }
 }

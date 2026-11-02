@@ -96,7 +96,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | M2 | models | Quaternius ships as worn wrecks | Opus | todo |
 | M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |
 | D1 | display | OpenGL ES on the kiosk's display, for its early-Z | Opus | todo (presenting works on branch `display-gl`; the UI renderer is the blocker) |
-| T1 | terrain | Terrain noise from FastNoiseLite | Opus | todo |
+| T1 | terrain | Terrain noise from FastNoiseLite | Opus | done on branch `t1-terrain`: warped OpenSimplex2 height, dunes (shallows, wrecks, sargasso), ridged rock (abyss, vents), Voronoi brine terraces and pools; Pi median 7.14 -> 7.23 ms, worst 10.48, none over 11; seabed build 96 -> 95 ms (`docs/handoff/t1.md`) |
 
 Order: tooling and perf first (they make room and make change visible), then V1 (sets the visible
 range everything else is built for), then V3/V4, V5, V6/V7, V8, V9, V10.

@@ -95,6 +95,18 @@ const MEADOW: usize = 14;
 const SPONGE_REEF: usize = 15;
 const BLUE_HOLE: usize = 16;
 
+/// The salt crust's cracks in the brine flats: the distance to the nearest
+/// edge of a Voronoi mosaic of cells about a unit across, 0 on an edge.
+static CRACKS: std::sync::LazyLock<fastnoise_lite::FastNoiseLite> =
+    std::sync::LazyLock::new(|| {
+        use fastnoise_lite::{CellularReturnType, FastNoiseLite, NoiseType};
+        let mut n = FastNoiseLite::with_seed(1871);
+        n.set_noise_type(Some(NoiseType::Cellular));
+        n.set_frequency(Some(0.9));
+        n.set_cellular_return_type(Some(CellularReturnType::Distance2Sub));
+        n
+    });
+
 /// `smoothstep` as the shader writes it.
 fn smooth01(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
@@ -253,17 +265,19 @@ fn shade(
     let brine = presence(BRINE);
     if brine > 0.0 {
         // Salt crust: a pale polygonal mosaic, its cracks reading darker and
-        // the pans a shade greener.
-        let frac = |v: f32| v - v.floor();
-        let crack = (frac(x * 2.0 + z * 0.3) - 0.5)
-            .abs()
-            .min((frac(z * 2.0 - x * 0.2) - 0.5).abs());
-        let rim = smooth01(0.44, 0.5, crack);
-        let pan = smooth01(0.64, 0.88, broad);
+        // the pools a shade greener. The cracks are FastNoiseLite's Voronoi
+        // edges, a unit across, worked out here per vertex, since the
+        // heightmap's texels are too coarse for them; the pools are the
+        // ones the floor is sunk into (`world::brine_pool`).
+        let crack = CRACKS.get_noise_2d(x, z) + 1.0;
+        let rim = 1.0 - smooth01(0.0, 0.16, crack);
+        let pan = world::brine_pool(w.seabed.form(x, z));
+        // In the colour, not the fine detail, which fades within a few
+        // units: the mosaic reads across the flats.
         noise += brine * (0.10 * (grain - 0.5) - 0.10 * rim);
-        tint[0] += brine * (0.03 * rim - 0.03 * pan);
-        tint[1] += brine * (0.03 * rim + 0.01 * pan);
-        tint[2] += brine * (0.02 * rim + 0.03 * pan);
+        tint[0] += brine * (-0.16 * rim - 0.06 * pan);
+        tint[1] += brine * (-0.14 * rim + 0.01 * pan);
+        tint[2] += brine * (-0.11 * rim + 0.05 * pan);
     }
     let bloom = presence(BLOOM);
     if bloom > 0.0 {
