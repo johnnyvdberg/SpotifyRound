@@ -347,7 +347,7 @@ What lies on the bottom is bedded into it, by rules kept as data (`world::bed`, 
 | Full-size shots of every place | `DIVE3D_SHOTS_DIR=<dir> cargo test --release dive3d::tests::screenshots -- --ignored`; `DIVE3D_SHOTS=cave` keeps the places whose names contain `cave`, `DIVE3D_SHOTS_SEED=<visit>` shoots another circuit |
 | The hull's motion and clearances | `dive3d::helm::survey::the_hull_moves_like_a_heavy_boat`; `HELM_LOG_DIR=<dir> cargo test --release survey -- --ignored` logs the voyages |
 | No pop-in from the scenery cache | `dive3d::world::tests::the_static_cache_never_lags_the_window` |
-| Biome shapes agree with the shader | `dive3d::world::tests::the_biome_shapes_match_the_shader_and_wrap` |
+| Biome shapes wrap with the heightmap | `dive3d::world::tests::the_biome_shapes_wrap`, `dive3d::heightmap::tests::the_seabed_has_relief_and_wraps` |
 | No bubble on the glass | `bubbles_keep_off_the_glass`, `bubbles_never_pop` |
 | Sister submarines move like hulls | `dive3d::world::tests::submarines` |
 | Frame time per place on the Pi | `hotspots` (below) |

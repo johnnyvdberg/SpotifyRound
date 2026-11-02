@@ -35,6 +35,8 @@ half = "2"
 bytemuck = "1.24"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 directories = "6.0.0"
+# The seabed's heightmap noise (OpenSimplex2, ridged, cellular, domain warp).
+fastnoise-lite = "1.1.1"
 # CPU vector math in the mesh generator.
 glam = "0.34"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "tiff"] }
