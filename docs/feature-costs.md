@@ -171,6 +171,16 @@ before -> after): atlantis 8.39 / 9.85 -> 8.47 / 10.39 (the volcano), abyss 6.35
 The colonies' own switch is `part::ABYSS_GLOW`; the volcano's cone and crater are in the cones'
 and vents' effect groups (`DIVE3D_SKIP_EFFECTS`).
 
+### The forest's frond crowns (V10)
+
+`run trees5` against `run far-on`, the forest's 12 places: median 7.78 -> 8.48 ms, worst 8.83 ->
+9.43 (500000 @0.15), none over 11. The 80-triangle leaf spheres became sprays of 5 fronds (3 far),
+each a closed bent diamond of 8 triangles, so it is pixels, not vertices: +0.6-1.0 ms where the
+trees fill the view, nothing at 0.85 where the boat is above them. Tried first: 6 longer open
+sheets (`trees2`, +0.6-1.2, and the tree loses back-face culling), the same as closed 20-triangle
+shells (`trees3`, +2-3), 6 long diamonds (`trees4`, +0.9-1.5). Part of the trees' effect group
+(`effect::TREES`); there is no separate switch, the old crown is gone.
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |

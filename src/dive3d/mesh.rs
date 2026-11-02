@@ -2500,17 +2500,56 @@ fn tree() -> Mesh {
         // Fewer clumps, each a little larger, so the crown keeps its bulk.
         leaf_clumps.push((p, if far { 0.13 } else { 0.105 }));
     }
-    for (centre, size) in leaf_clumps {
-        let clump = sphere_with(
-            1,
-            |p| 1.0 + 0.16 * (p[0] * 5.0 + p[2] * 4.0).sin(),
-            |_| leaf,
-        )
-        .scaled([size * 1.15, size * 0.68, size]);
-        m.append(clump.map(
-            move |p| [p[0] + centre[0], p[1] + centre[1], p[2] + centre[2]],
-            |n| n,
-        ));
+    // Each clump is a spray of fronds: lance-shaped blades fanning up and
+    // out from the twig's end and drooping at their tips, no two alike in
+    // length, angle or shade.
+    let fronds = if far { 3 } else { 5 };
+    for (n, (centre, size)) in leaf_clumps.into_iter().enumerate() {
+        let mut clump = Mesh::default();
+        for k in 0..fronds {
+            let r = |i: u32| jitter((n * 16 + k) as u32, 2600 + i);
+            let a = k as f32 / fronds as f32 * TAU + 0.8 * r(0);
+            let long = size * (1.5 + 0.7 * r(1));
+            let wide = size * (0.42 + 0.2 * r(2));
+            let up = 0.35 + 0.6 * r(3);
+            let shade = 0.95 + 0.3 * r(4);
+            let tone = [
+                leaf[0] * shade,
+                leaf[1] * shade,
+                leaf[2] * (0.9 + 0.25 * r(5)),
+            ];
+            let (sa, ca) = a.sin_cos();
+            // A bent diamond with a raised midrib above and below: closed,
+            // so the tree stays sealed and its back faces (the trunks'
+            // too) are culled, in eight triangles.
+            let at = |t: f32| {
+                let out = long * t * up.cos();
+                // Rising, then bowing over at the tip.
+                let rise = long * t * up.sin() - 0.35 * long * t * t;
+                Vec3::new(centre[0] + ca * out, centre[1] + rise, centre[2] + sa * out)
+            };
+            let (base, mid, tip) = (at(0.0), at(0.45), at(1.0));
+            let side = Vec3::new(-sa, 0.0, ca) * wide;
+            let rib = side.cross(tip - base).normalize_or(Vec3::Y) * 0.12 * wide;
+            let (left, right, top, under) = (mid - side, mid + side, mid + rib, mid - rib);
+            // The top fan wound one way and the underside the other, so
+            // every edge pairs; flipped whole if the top faces down.
+            let fan = [
+                (base, left, top),
+                (base, top, right),
+                (left, tip, top),
+                (top, tip, right),
+            ];
+            let upward = (left - base).cross(top - base).dot(rib) > 0.0;
+            for (a, b, c) in fan {
+                let (b, c) = if upward { (b, c) } else { (c, b) };
+                clump.facet_tri([a, b, c].map(|v| v.to_array()), [tone; 3], [0.0, 0.0]);
+                let [a, b, c] = [a, b, c].map(|v| if v == top { under } else { v });
+                let dim = tone.map(|v| v * 0.8);
+                clump.facet_tri([a, c, b].map(|v| v.to_array()), [dim; 3], [0.0, 0.0]);
+            }
+        }
+        m.append(clump);
     }
     m.with_aux(|p| [0.0, p[1].clamp(0.0, 1.0)])
 }
