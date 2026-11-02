@@ -1025,7 +1025,7 @@ impl Seabed {
         let texels = super::heightmap::SIZE * super::heightmap::SIZE;
         Self {
             map: vec![[0.0; 4]; texels],
-            forms: vec![[0.0; 4]; texels],
+            forms: vec![[0.0; 4]; super::heightmap::FORMS * super::heightmap::FORMS],
             seed: 0.0,
             order: crate::voyage::ORDER,
         }

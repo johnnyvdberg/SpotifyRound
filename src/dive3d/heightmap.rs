@@ -32,6 +32,9 @@ pub const SIZE: usize = 512;
 /// World units the tile spans before it repeats: twenty minutes of voyage.
 pub const PERIOD: f32 = 64.0;
 const TEXEL: f32 = PERIOD / SIZE as f32;
+/// The forms tile's side: half the heightmap's, a texel every eighth of a
+/// unit being finer than any form needs, and a quarter of the time to make.
+pub const FORMS: usize = SIZE / 2;
 /// How far from its seam, at z = ±`PERIOD`/2, the tile fades into its own far
 /// side: the corridor never strays more than three units from z = 0 and the
 /// seas' sight is at most sixteen, so the fade lies beyond anything drawn.
@@ -108,26 +111,27 @@ fn shift(warp: &FastNoiseLite, x: f32, z: f32) -> (f32, f32, [f32; 3]) {
     (along, wz - z, [wx, wy, wz])
 }
 
-/// Every texel of a tile of `field`, made seamless (see the module's notes),
-/// worked out across the CPU's cores.
-fn bake<const N: usize>(field: impl Fn(f32, f32) -> [f32; N] + Sync) -> Vec<[f32; N]> {
-    let mut out = vec![[0.0; N]; SIZE * SIZE];
+/// Every texel of a tile of `field`, `size` texels square, made seamless
+/// (see the module's notes), worked out across the CPU's cores.
+fn bake<const N: usize>(size: usize, field: impl Fn(f32, f32) -> [f32; N] + Sync) -> Vec<[f32; N]> {
+    let mut out = vec![[0.0; N]; size * size];
+    let texel = PERIOD / size as f32;
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let rows = SIZE.div_ceil(threads);
+    let rows = size.div_ceil(threads);
     std::thread::scope(|scope| {
-        for (k, chunk) in out.chunks_mut(rows * SIZE).enumerate() {
+        for (k, chunk) in out.chunks_mut(rows * size).enumerate() {
             let field = &field;
             scope.spawn(move || {
-                for (n, texel) in chunk.iter_mut().enumerate() {
-                    let (i, j) = (n % SIZE, k * rows + n / SIZE);
-                    let x = i as f32 * TEXEL;
-                    let mut z = j as f32 * TEXEL;
+                for (n, texel_out) in chunk.iter_mut().enumerate() {
+                    let (i, j) = (n % size, k * rows + n / size);
+                    let x = i as f32 * texel;
+                    let mut z = j as f32 * texel;
                     if z >= PERIOD / 2.0 {
                         z -= PERIOD;
                     }
                     let here = field(x, z);
                     let edge = PERIOD / 2.0 - z.abs();
-                    *texel = if edge < BAND {
+                    *texel_out = if edge < BAND {
                         // Half and half at the seam, from both sides of it.
                         let s = 0.5 * smooth(BAND, 0.0, edge);
                         let there = field(x, z - PERIOD * z.signum());
@@ -156,7 +160,7 @@ pub fn generate(seed: u64) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
     let salt = (seed % 1_000_003) as i32 * 16;
     // Warp the domain, so the ground wanders instead of lying in a grid.
     let wander = warp(salt + 1, 1.0 / 20.0, 3, 2.5);
-    let mut rolling = fractal(salt + 2, FractalType::FBm, 4.0 / PERIOD, 6);
+    let mut rolling = fractal(salt + 2, FractalType::FBm, 4.0 / PERIOD, 4);
     // Less of the finer octaves than FastNoiseLite's default half: silt
     // has smoothed the small hummocks away.
     rolling.set_fractal_gain(Some(0.4));
@@ -169,7 +173,7 @@ pub fn generate(seed: u64) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
     // and pitted rock underfoot, coarse enough that every terrain level
     // still samples it rather than aliasing it.
     let grain = fractal(salt + 5, FractalType::FBm, 16.0 / PERIOD, 3);
-    let raw = bake(|x, z| {
+    let raw = bake(SIZE, |x, z| {
         let (_, _, w) = shift(&wander, x, z);
         let roll = rolling.get_noise_3d(w[0], w[1], w[2]);
         let ridge = 0.5 + 0.5 * ridges.get_noise_3d(w[0], w[1], w[2]);
@@ -223,7 +227,7 @@ fn forms(salt: i32) -> Vec<[f32; 4]> {
     let rock = fractal(salt + 10, FractalType::Ridged, 0.16, 4);
     let edges = cellular(salt + 11, 0.3, CellularReturnType::Distance2Sub);
     let cells = cellular(salt + 11, 0.3, CellularReturnType::CellValue);
-    let mut tile = bake(|x, z| {
+    let mut tile = bake(FORMS, |x, z| {
         let (along, across, _) = shift(&blown, x, z);
         // Sixteen crests round the tile along x, so they meet at its seam.
         let phase = (x + along) * 0.25 + (z + across) * 0.125;
@@ -244,16 +248,17 @@ fn forms(salt: i32) -> Vec<[f32; 4]> {
     });
     // Round the cells' risers off over about half a unit, so a terrace's
     // step is a short slope and not a texel's cliff.
-    for _ in 0..2 {
+    let n = FORMS as i32;
+    {
         let before: Vec<f32> = tile.iter().map(|t| t[Form::CELL]).collect();
-        for j in 0..SIZE {
-            for i in 0..SIZE {
+        for j in 0..FORMS {
+            for i in 0..FORMS {
                 let c = |di: i32, dj: i32| {
-                    let x = (i as i32 + di).rem_euclid(SIZE as i32) as usize;
-                    let y = (j as i32 + dj).rem_euclid(SIZE as i32) as usize;
-                    before[y * SIZE + x]
+                    let x = (i as i32 + di).rem_euclid(n) as usize;
+                    let y = (j as i32 + dj).rem_euclid(n) as usize;
+                    before[y * FORMS + x]
                 };
-                tile[j * SIZE + i][Form::CELL] =
+                tile[j * FORMS + i][Form::CELL] =
                     (c(0, 0) * 4.0 + c(1, 0) + c(-1, 0) + c(0, 1) + c(0, -1)) / 8.0;
             }
         }
@@ -262,13 +267,14 @@ fn forms(salt: i32) -> Vec<[f32; 4]> {
 }
 
 /// Height, slopes and grain at world (x, z), bilinear; or the forms, from
-/// the forms tile.
+/// the forms tile (either tile, whatever its size).
 pub fn sample(map: &[[f32; 4]], x: f32, z: f32) -> [f32; 4] {
-    let u = x / PERIOD * SIZE as f32;
-    let v = z / PERIOD * SIZE as f32;
+    let size = map.len().isqrt();
+    let u = x / PERIOD * size as f32;
+    let v = z / PERIOD * size as f32;
     let (fu, fv) = (u.floor(), v.floor());
     let (tu, tv) = (u - fu, v - fv);
-    let n = SIZE as i32;
+    let n = size as i32;
     let at = |i: i32, j: i32| map[(j.rem_euclid(n) * n + i.rem_euclid(n)) as usize];
     let (i, j) = (fu as i32, fv as i32);
     let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
