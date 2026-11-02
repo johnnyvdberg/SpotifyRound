@@ -19,11 +19,12 @@ kms = ["slint/backend-linuxkms"]
 # default); the app refuses to compile without it so no 448 profile can creep
 # back in.
 full-hd = []
-# The renderer Slint draws the window with, on the shared wgpu device. Skia
-# compiles a small shader for each kind of draw; femtovg runs one large shader
-# for all of them, which costs the Pi's GPU several times as much per pixel
-# (`--no-default-features --features femtovg`, to compare).
-default = ["skia", "full-hd"]
+# The renderers Slint draws the window with, on the shared wgpu device: Skia on
+# Vulkan (Skia cannot draw on a GL wgpu device) and femtovg on OpenGL ES, whose
+# driver gives the Pi's V3D early-Z. The device's backend picks between them at
+# start-up (`gpu::install`); femtovg is vendored with its shader specialised per
+# pipeline for the V3D (`vendor/femtovg`).
+default = ["skia", "femtovg", "full-hd"]
 skia = ["slint/renderer-skia"]
 femtovg = ["slint/renderer-femtovg-wgpu"]
 
@@ -60,6 +61,10 @@ slint = { version = "1.18", default-features = false, features = [
     "unstable-wgpu-30",
 ] }
 thiserror = "2.0.21"
+# Slint's winit backend and core, named directly for the patched backend's
+# `request_graphics_api_for_display` (see `[patch.crates-io]` and `gpu::install`).
+i-slint-backend-winit = { version = "=1.18.1", default-features = false }
+i-slint-core = { version = "=1.18.1", default-features = false, features = ["unstable-wgpu-30"] }
 # The same wgpu as `slint::wgpu_30`, named here for its default features: WGSL
 # shaders and the Vulkan, Metal and GL backends, whichever renderer Slint uses.
 wgpu = "30"
@@ -103,3 +108,10 @@ slint = { version = "1.18", default-features = false, features = [
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = "0.2.191"
 
+# Slint's winit backend with one addition: the graphics API can be chosen from
+# the event loop's display connection, so the GL device presents under cage.
+[patch.crates-io]
+i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
+# femtovg 0.27.0 with its fragment shader specialised per pipeline and a
+# tiler's load/store ops (see `Tuning` in `vendor/femtovg/src/renderer/wgpu.rs`).
+femtovg = { path = "vendor/femtovg" }

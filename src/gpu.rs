@@ -1,6 +1,7 @@
 //! One wgpu device for the whole display.
 //!
-//! Slint renders the UI through wgpu (Skia on Vulkan), and the idle globe draws
+//! Slint renders the UI through wgpu (Skia on Vulkan, femtovg on OpenGL ES; see
+//! [`backend_order`]), and the idle globe draws
 //! into a texture on the same device, so a frame never leaves the GPU: no readback
 //! and no re-upload. Slint has to be told about the device before any window
 //! exists, which is why this sits in its own module rather than inside `globe`.
@@ -210,19 +211,18 @@ impl Graphics {
 /// The backends to try, in order. `WGPU_BACKEND` picks one instead (`gl`,
 /// `vulkan`, …), to compare the Pi's two drivers.
 ///
-/// Headless on the Pi (Linux on arm64) OpenGL ES comes first: Mesa's GL driver
+/// On the Pi (Linux on arm64) OpenGL ES comes first headless: Mesa's GL driver
 /// runs the V3D 7.1's early-Z, and its Vulkan driver (v3dv, as of Mesa 26.2)
-/// never does, which made every frame of the dive 0.9-2.6 ms slower. The display
-/// cannot use it: wgpu 30's EGL backend only presents to a Wayland window when
-/// its instance is created on the compositor's `wl_display`, which Slint does not
-/// hand out before the window exists, so under cage a GL device draws every
-/// frame and none reaches the screen. The display runs Vulkan first everywhere;
-/// any other backend is only a convenience for a machine without it.
+/// never does, which made every frame of the dive 0.9-2.6 ms slower. The
+/// display follows [`display_on_gl`]: on GL the window is drawn by femtovg
+/// (Skia draws only on Vulkan, Metal or DX12 wgpu devices), on Vulkan by Skia.
+/// Any other backend is only a convenience for a machine without either.
 fn backend_order(headless: bool) -> Vec<wgpu::Backends> {
     if let Some(chosen) = wgpu::Backends::from_env() {
         return vec![chosen];
     }
-    if headless && cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    let pi = cfg!(all(target_os = "linux", target_arch = "aarch64"));
+    if pi && (headless || display_on_gl()) {
         vec![
             wgpu::Backends::GL,
             wgpu::Backends::VULKAN,
@@ -233,14 +233,81 @@ fn backend_order(headless: bool) -> Vec<wgpu::Backends> {
     }
 }
 
+/// Whether the display opens its device on OpenGL ES first:
+/// `SPOTIFY_ROUND_DISPLAY=gl` or `=vulkan`, and [`DISPLAY_GL_DEFAULT`]
+/// otherwise. GL presents under cage only because the device is made on the
+/// event loop's own `wl_display` (`install`), and its UI is femtovg's.
+fn display_on_gl() -> bool {
+    match std::env::var("SPOTIFY_ROUND_DISPLAY") {
+        Ok(v) if v.eq_ignore_ascii_case("gl") => true,
+        Ok(v) if v.eq_ignore_ascii_case("vulkan") => false,
+        _ => DISPLAY_GL_DEFAULT,
+    }
+}
+
+/// The display's backend when `SPOTIFY_ROUND_DISPLAY` is unset: whichever
+/// measured faster live under cage (`docs/handoff/d1.md`).
+const DISPLAY_GL_DEFAULT: bool = false;
+
 /// Create the device and make Slint use it, on the first backend of
 /// [`backend_order`] that opens.
+///
+/// Under winit the instance is made on the event loop's own display connection
+/// (`request_graphics_api_for_display`, a patch to Slint's winit backend in
+/// `vendor/`): wgpu 30's GL backend presents to a Wayland window only from an
+/// instance created on that window's `wl_display`. Without it a GL device draws
+/// every frame and none reaches the screen.
 pub fn install() -> Result<Graphics> {
+    #[cfg(not(feature = "kms"))]
+    {
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let found = opened.clone();
+        let backend = i_slint_backend_winit::Backend::builder()
+            .request_graphics_api_for_display(move |display| {
+                let (graphics, configuration) = open_display(Some(display))
+                    .map_or_else(|err| (Err(err), None), |(g, c)| (Ok(g), Some(c)));
+                *found.borrow_mut() = Some(graphics);
+                // Slint falls back to its own choice if this one failed; the
+                // error is reported from `install` below.
+                configuration.map_or(
+                    i_slint_core::graphics::RequestedGraphicsAPI::Vulkan,
+                    i_slint_core::graphics::RequestedGraphicsAPI::WGPU30,
+                )
+            })
+            .build()?;
+        slint::platform::set_platform(Box::new(backend))
+            .map_err(|err| anyhow::anyhow!("cannot install the winit backend: {err}"))?;
+        let graphics = opened
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| Err(anyhow::anyhow!("the winit backend opened no display")))?;
+        Ok(graphics)
+    }
+    #[cfg(feature = "kms")]
+    {
+        let (graphics, configuration) = open_display(None)?;
+        // Without a compositor the DRM/KMS backend draws straight to the panel.
+        slint::BackendSelector::new()
+            .require_wgpu_30(configuration)
+            .backend_name("linuxkms".into())
+            .select()?;
+        Ok(graphics)
+    }
+}
+
+/// Open the display's device on the first backend of [`backend_order`] that
+/// works, on `display` when there is one, and the configuration that hands it
+/// to Slint.
+fn open_display<D: wgpu::wgt::WgpuHasDisplayHandle + Clone>(
+    display: Option<D>,
+) -> Result<(Graphics, slint::wgpu_30::WGPUConfiguration)> {
     let mut last = "no GPU adapter available".to_owned();
-    let order = backend_order(false);
-    for backends in order {
+    for backends in backend_order(false) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
+            display: display
+                .clone()
+                .map(|d| Box::new(d) as Box<dyn wgpu::wgt::WgpuHasDisplayHandle>),
             ..wgpu::InstanceDescriptor::new_without_display_handle_from_env()
         });
         let Ok(adapter) =
@@ -253,6 +320,7 @@ pub fn install() -> Result<Graphics> {
             continue;
         };
         let info = adapter.get_info();
+        let on_display = display.is_some();
         let graphics = match open(&adapter, "display", false) {
             Ok(graphics) => graphics,
             Err(err) => {
@@ -260,26 +328,20 @@ pub fn install() -> Result<Graphics> {
                 continue;
             }
         };
-
+        tracing::info!(
+            adapter = %info.name,
+            backend = ?info.backend,
+            on_display,
+            profiling = graphics.profiling(),
+            "graphics"
+        );
         let configuration = slint::wgpu_30::WGPUConfiguration::Manual {
             instance,
             adapter,
             device: graphics.device.clone(),
             queue: graphics.queue.clone(),
         };
-        let selector = slint::BackendSelector::new().require_wgpu_30(configuration);
-        // Without a compositor the DRM/KMS backend draws straight to the panel.
-        #[cfg(feature = "kms")]
-        let selector = selector.backend_name("linuxkms".into());
-        selector.select()?;
-
-        tracing::info!(
-            adapter = %info.name,
-            backend = ?info.backend,
-            profiling = graphics.profiling(),
-            "graphics"
-        );
-        return Ok(graphics);
+        return Ok((graphics, configuration));
     }
     anyhow::bail!(last)
 }
