@@ -91,7 +91,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | V7 | atlantis | Underwater Greek temple environment | Opus | done, merged into `main` (octastyle temple the boat sails through; `docs/handoff/v7.md`) |
 | V8 | lostcity | Lost city: travel through large corridors with detailed interiors | Opus | done, merged into `main` (the drowned city's galleria; `docs/handoff/v8.md`) |
 | V9 | biomes | Three new biomes unlike the current ones | Opus | done, merged into `main` (meadow, glass sponges, blue hole; `docs/handoff/v9.md`) |
-| V10 | detail | More detail in every biome with headroom | Sonnet | done, merged: near detail, faceted rocks, kelp, seagrass, glass sponges, coral, the volcano and the abyss's glow (`docs/handoff/v10.md`) |
+| V10 | detail | More detail in every biome with headroom | Sonnet | done, merged: near detail, faceted rocks, kelp, seagrass, glass sponges, coral, the volcano, the abyss's glow and the forest's frond crowns, three mangrove stands (`docs/handoff/v10.md`) |
 | M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01; Poly Haven is next for rocks and props |
 | M2 | models | Quaternius ships as worn wrecks | Opus | todo |
 | M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |

@@ -11488,16 +11488,23 @@ fn meadow(w: &World, f: &mut Frame) {
             continue;
         }
         f.fade = fade(here, needs);
+        // No two stands alike: splayed wider one way than the other,
+        // leaning a little, the bark paler or redder, so a row of them is
+        // not one tree repeated.
+        let (long, lean) = (0.75 + 0.5 * hash(ix, iz, 1424), hash(ix, iz, 1425) - 0.5);
+        let bark = 0.8 + 0.4 * hash(ix, iz, 1426);
+        let red = 0.12 * hash(ix, iz, 1427);
+        let stand = [Model::Mangrove, Model::Mangrove1, Model::Mangrove2];
         f.put(
-            Model::Mangrove,
+            stand[(hash(ix, iz, 1429) * 3.0) as usize % 3],
             place(
-                [x, y, z],
+                [x, y - 0.03, z],
                 hash(ix, iz, 1423) * TAU,
-                0.0,
-                0.0,
-                [spread, deep, spread],
+                0.08 * lean,
+                0.05 * (hash(ix, iz, 1428) - 0.5),
+                [spread * long, deep, spread / long.sqrt()],
             ),
-            [1.0, 1.0, 1.0],
+            [bark * (1.0 + red), bark, bark * (1.0 - red)],
         )
         .textured(Surface::Wood, 2.0);
     }
