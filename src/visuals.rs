@@ -503,8 +503,16 @@ pub fn spawn(
 /// drawing cannot stall the scene for good.
 const GPU_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// A new world for each visit, or the one `SPOTIFY_ROUND_SEED` names, so live
+/// measurements of two builds can sail the same sea.
 fn world_seed() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
+    if let Some(seed) = std::env::var("SPOTIFY_ROUND_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        return seed;
+    }
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as u64)

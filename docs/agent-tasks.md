@@ -21,6 +21,8 @@ ruled out in §5), `docs/pipeline-optimization.md` (history; check it before re-
   stay on GL. So `bench-pi.sh` numbers are the GL ones, and the kiosk is 0.9-2.6 ms a frame slower
   until D1 lands.
   T1 and T2 of `perf-bottlenecks.md` are done/obsolete for GL only.
+  **D1 (branch `d1-display`)**: the display can now run GL (`SPOTIFY_ROUND_DISPLAY=gl`, femtovg
+  draws the UI). It is faster on the dive and slower on the globe; the default is still Vulkan.
 - The offline shader tool (`deploy/v3d-shaderdb`) compiles through **Vulkan** (v3dv). The GL
   driver uses the same V3D compiler backend, so threads/temps/spills carry over, but confirm a
   borderline shader on the Pi with `V3D_DEBUG=shaderdb MESA_SHADER_CACHE_DISABLE=true
@@ -95,7 +97,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01; Poly Haven is next for rocks and props |
 | M2 | models | Quaternius ships as worn wrecks | Opus | todo |
 | M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |
-| D1 | display | OpenGL ES on the kiosk's display, for its early-Z | Opus | todo (presenting works on branch `display-gl`; the UI renderer is the blocker) |
+| D1 | display | OpenGL ES on the kiosk's display, for its early-Z | Opus | done on branch `d1-display`: femtovg vendored and specialised per pipeline; live GL beats Vulkan + Skia on the dive (61 fps both, 1.0-1.6 ms less GPU a frame) but the globe drops to 53 fps, so the default stays Vulkan; `SPOTIFY_ROUND_DISPLAY=gl` switches (`docs/handoff/d1.md`) |
 | T1 | terrain | Terrain noise from FastNoiseLite | Opus | done on branch `t1-terrain`: warped OpenSimplex2 height, dunes (shallows, wrecks, sargasso), ridged rock (abyss, vents), Voronoi brine terraces and pools; Pi median 7.14 -> 7.23 ms, worst 10.48, none over 11; seabed build 96 -> 95 ms (`docs/handoff/t1.md`) |
 
 Order: tooling and perf first (they make room and make change visible), then V1 (sets the visible
@@ -264,6 +266,12 @@ deterministic (`places.rs` screenshots must still find their places).
 ## Notes for the user
 
 (Things only the user can do; agents append here.)
+
+- **D1, GL on the display (branch `d1-display`).** Live under cage, GL + the specialised femtovg
+  matches Vulkan + Skia's 61 fps on the dive with 1.0-1.6 ms less GPU a frame, but the globe falls
+  to 53 fps (Vulkan 61). The default stays Vulkan. To prefer the dive, add
+  `Environment=SPOTIFY_ROUND_DISPLAY=gl` to the kiosk unit's drop-in and restart; remove it if the
+  screen ever shows only the cursor. Numbers in `docs/handoff/d1.md`.
 
 - **Deploy (coordinator, 2026-11-01).** The kiosk still runs the first GL build (dba5471). `main`
   at the wave-1 merge measured on the Pi, 168 places: median 8.30 -> 7.65 ms, worst 10.88 ->
