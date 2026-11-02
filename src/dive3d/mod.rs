@@ -964,7 +964,7 @@ mod effect {
         (
             "wreck",
             WRECK,
-            "Hull, Sail, Chest, Barrel",
+            "Hull, Sail, Chest, Barrel, WreckFluyt, WreckGalleon, WreckPinas",
             "galleon hulls and sails, their chests and barrels",
         ),
         (
@@ -1153,7 +1153,13 @@ fn model_bit(model: usize) -> u64 {
         Model::Rock1 => effect::ROCK1,
         Model::Rock2 => effect::ROCK2,
         Model::Shaft | Model::Capital | Model::Break | Model::Prism => effect::RUINS,
-        Model::Hull | Model::Sail | Model::Chest | Model::Barrel => effect::WRECK,
+        Model::Hull
+        | Model::Sail
+        | Model::Chest
+        | Model::Barrel
+        | Model::WreckFluyt
+        | Model::WreckGalleon
+        | Model::WreckPinas => effect::WRECK,
         Model::Cylinder => effect::CYLINDERS,
         Model::Box => effect::BOXES,
         Model::Sphere => effect::SPHERES,

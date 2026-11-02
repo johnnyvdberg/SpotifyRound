@@ -200,6 +200,15 @@ nothing new), none over 11; wrecks 6.80 -> 6.94.
 | Atlantis' bronze shark, manta and whale (M1) | `DIVE3D_SKIP_ELEMENTS` bit 20 | atlantis 0.04 | 0.04 | 0.12 |
 | the wrecks' chests and barrels (M1) | `DIVE3D_SKIP_ELEMENTS` bit 21 | wrecks 0.09 | 0.09 | 0.14 (wrecks 0 @0.15) |
 
+### Ships as wrecks (M2)
+
+`run m2-before2` against `run m2-after2`, all 204 places (`docs/handoff/m2.md`): median 7.19 ->
+7.30 ms, worst 10.38 -> 10.39, none over 11; wrecks 6.93 -> 7.03, their worst place 8.52 -> 8.91.
+
+| feature | switch | seas (median ms there) | median ms | worst ms |
+|---|---|---|---|---|
+| the wrecks' Dutch hulls and fallen masts (M2), against no hull | `DIVE3D_SKIP_ELEMENTS` bit 22 | wrecks 1.19 | 1.19 | 2.06 (wrecks 0 @0.15) |
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |

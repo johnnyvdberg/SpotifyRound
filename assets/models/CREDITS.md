@@ -32,3 +32,6 @@ kit's nodes.
 | bronze-whale.obj | Bronze Whale Statue, by Tina | https://polyhaven.com/a/bronze_whale_statue |
 | treasure-chest.obj | Treasure Chest, by Rico Cilliers | https://polyhaven.com/a/treasure_chest |
 | barrel.obj | Wooden Barrels 01 (its first whole barrel), by James Ray Cock | https://polyhaven.com/a/wooden_barrels_01 |
+| wreck-fluyt.obj | Dutch Ship Medium, its hull (no rigging or sails), by James Ray Cock, Rico Cilliers and Nicolò Zubbini | https://polyhaven.com/a/dutch_ship_medium |
+| wreck-galleon.obj | Dutch Ship Large 01, its hull, by the same | https://polyhaven.com/a/dutch_ship_large_01 |
+| wreck-pinas.obj | Dutch Ship Large 02, its hull, by the same | https://polyhaven.com/a/dutch_ship_large_02 |

@@ -93,7 +93,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | V9 | biomes | Three new biomes unlike the current ones | Opus | done, merged into `main` (meadow, glass sponges, blue hole; `docs/handoff/v9.md`) |
 | V10 | detail | More detail in every biome with headroom | Sonnet | done, merged: near detail, faceted rocks, kelp, seagrass, glass sponges, coral, the volcano, the abyss's glow and the forest's frond crowns, three mangrove stands (`docs/handoff/v10.md`) |
 | M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | done on branch `m1-gltf`: glTF reader baking textures to colours, LODs for imports, Poly Haven bronzes (Atlantis), chests and barrels (wrecks); Quaternius's Drive still over quota 2026-11-02; rocks left for after T1 (`docs/handoff/m1.md`) |
-| M2 | models | Quaternius ships as worn wrecks | Opus | todo |
+| M2 | models | Quaternius ships as worn wrecks | Opus | done on branch `m2-wrecks` with Poly Haven's Dutch ships (Quaternius's Drive over quota): holed, silted, listing, masts snapped; wrecks +0.10 ms median, worst 8.91 (`docs/handoff/m2.md`) |
 | M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |
 | D1 | display | OpenGL ES on the kiosk's display, for its early-Z | Opus | todo (presenting works on branch `display-gl`; the UI renderer is the blocker) |
 | T1 | terrain | Terrain noise from FastNoiseLite | Opus | todo |

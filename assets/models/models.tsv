@@ -7,3 +7,6 @@ bronze-ray.obj	2000	1	height	0	polyhaven:bronze_ray_statue
 bronze-whale.obj	3000	1	height	0	polyhaven:bronze_whale_statue
 treasure-chest.obj	2000	1	height	0	polyhaven:treasure_chest
 barrel.obj	400	1	height	0	polyhaven:wooden_barrels_01#barrel01
+wreck-fluyt.obj	1200	1	length	-90	polyhaven:dutch_ship_medium#hull
+wreck-galleon.obj	1500	1	length	-90	polyhaven:dutch_ship_large_01#hull
+wreck-pinas.obj	1500	1	length	0	polyhaven:dutch_ship_large_02#hull

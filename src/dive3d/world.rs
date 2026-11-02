@@ -3966,18 +3966,31 @@ fn wrecks(w: &World, f: &mut Frame) {
         let yaw = (hash(ix, iz, 63) - 0.5) * 1.2;
         let (pitch, roll) = here.tilt(yaw);
         let pitch = pitch + 0.04;
-        let list = 0.25 * (hash(ix, iz, 64) - 0.3) + roll;
-        let wood = [0.42, 0.31, 0.21];
+        // Listing hard over on the side she settled on, as wrecks lie
+        // once the sand under the bilge gives way.
+        let list = 0.45 * (hash(ix, iz, 64) - 0.3) + roll;
         // Her keel is 0.13 of her length under her waterline: sunk to the
         // bilge, about half of her below the sand.
         let p = [x, y + (0.04 - bed::WRECK.sink * 0.18) * length, z];
+        // One of Poly Haven's Dutch ships (M2), holed and silted, with her
+        // castles still on her: a unit long from the bowsprit's tip, keel at
+        // her origin, which goes where the procedural hull's keel lay. The
+        // bowsprit makes her 1.15 of the old hull's length.
+        let hull = [Model::WreckFluyt, Model::WreckGalleon, Model::WreckPinas]
+            [(hash(ix, iz, 76) * 3.0) as usize % 3];
+        let up = place(p, yaw, pitch, list, [1.0; 3]);
+        let keel = 0.13 * length;
+        let origin = [0, 1, 2].map(|r| p[r] - up[r][1] * keel);
         f.put(
-            Model::Hull,
-            place(p, yaw, pitch, list, [length, length, length]),
-            wood,
+            hull,
+            place(origin, yaw, pitch, list, [length * 1.15; 3]),
+            [0.95, 0.92, 0.88],
         )
-        .grounded();
-        // Castles fore and aft, masts and yards, a torn sail.
+        .grounded()
+        .element(element::WRECK_HULLS);
+        // Her masts, the stumps leaning with her list, most snapped off
+        // with the top lying on the sand on the side she leans to; a yard
+        // and a torn sail on a mast still standing.
         let (s, c) = yaw.sin_cos();
         let rise = pitch.tan();
         let along = |d: f32, up: f32| {
@@ -3988,61 +4001,65 @@ fn wrecks(w: &World, f: &mut Frame) {
             ]
         };
         wreck_debris(w, f, ix, iz, [x, y, z], yaw, length);
-        f.put(
-            Model::Box,
-            place(
-                along(-0.38, 0.08),
-                yaw,
-                pitch,
-                list,
-                [0.10 * length, 0.05 * length, 0.10 * length],
-            ),
-            [0.27, 0.20, 0.14],
-        );
-        f.put(
-            Model::Box,
-            place(
-                along(0.36, 0.07),
-                yaw,
-                pitch,
-                list,
-                [0.08 * length, 0.03 * length, 0.08 * length],
-            ),
-            [0.27, 0.20, 0.14],
-        );
-        let broken = hash(ix, iz, 65);
-        for (k, d) in [-0.15f32, 0.15].iter().enumerate() {
-            let h = if k == 1 && broken < 0.5 { 0.25 } else { 0.55 };
+        let across = [s, 0.0, c];
+        let lean = list.sin();
+        for (k, d) in [-0.12f32, 0.14].iter().enumerate() {
+            let snapped = hash(ix + k as i32 * 7, iz, 65) < [0.55, 0.7][k];
+            let h = if snapped {
+                0.12 + 0.12 * hash(ix, iz + k as i32, 77)
+            } else {
+                0.55
+            };
             let foot = along(*d, 0.04);
-            let top = [foot[0] + list * 0.3, foot[1] + h * length, foot[2]];
+            let top = [0, 1, 2].map(|r| {
+                foot[r] + (across[r] * lean + [0.0, 1.0, 0.0][r] * lean.cos()) * h * length
+            });
             f.put(
                 Model::Cylinder,
                 between(foot, top, 0.008 * length),
                 [0.24, 0.20, 0.15],
             );
-            if h > 0.3 {
-                let yard_y = top[1] - 0.05 * length;
-                let half = [s * 0.16 * length, 0.0, c * 0.16 * length];
-                let a = [top[0] - half[0], yard_y, top[2] - half[2]];
-                let b = [top[0] + half[0], yard_y, top[2] + half[2]];
+            if snapped {
+                // The rest of her, fallen across the sand beside the hull.
+                let side = if lean < 0.0 { -1.0 } else { 1.0 };
+                let out = 0.22 * length * side;
+                let (ax, az) = (top[0] + across[0] * out, top[2] + across[2] * out);
+                let run = 0.30 * length * (0.7 + 0.3 * hash(ix, iz, 78));
+                let swing = (hash(ix, iz + k as i32, 79) - 0.5) * 1.2;
+                let (ss, cs) = (yaw + swing).sin_cos();
+                let (bx, bz) = (ax + cs * run, az - ss * run);
+                let a = [ax, w.ground(ax, az) + 0.004, az];
+                let b = [bx, w.ground(bx, bz) + 0.004, bz];
                 f.put(
                     Model::Cylinder,
-                    between(a, b, 0.005 * length),
-                    [0.24, 0.20, 0.15],
-                );
-                f.put(
-                    Model::Sail,
-                    place(
-                        [top[0], yard_y, top[2]],
-                        yaw + PI * 0.5,
-                        0.0,
-                        0.0,
-                        [0.15 * length, 0.22 * length, 0.15 * length],
-                    ),
-                    [0.42, 0.40, 0.32],
+                    between(a, b, 0.007 * length),
+                    [0.22, 0.19, 0.15],
                 )
-                .moving(anim::SWAY, ix as f32, 0.02, 0.4);
+                .grounded()
+                .element(element::WRECK_HULLS);
+                continue;
             }
+            let yard_y = top[1] - 0.05 * length;
+            let half = [s * 0.16 * length, 0.0, c * 0.16 * length];
+            let a = [top[0] - half[0], yard_y, top[2] - half[2]];
+            let b = [top[0] + half[0], yard_y, top[2] + half[2]];
+            f.put(
+                Model::Cylinder,
+                between(a, b, 0.005 * length),
+                [0.24, 0.20, 0.15],
+            );
+            f.put(
+                Model::Sail,
+                place(
+                    [top[0], yard_y, top[2]],
+                    yaw + PI * 0.5,
+                    0.0,
+                    0.0,
+                    [0.15 * length, 0.22 * length, 0.15 * length],
+                ),
+                [0.42, 0.40, 0.32],
+            )
+            .moving(anim::SWAY, ix as f32, 0.02, 0.4);
         }
         // A chest by the bow, a third sunk and tipped with the sand, gold
         // spilling over it (Poly Haven's treasure chest, M1).
@@ -8601,6 +8618,8 @@ pub mod element {
     pub const BRONZES: u32 = 20;
     // Imported (M1): Poly Haven's chests and barrels round the wrecks.
     pub const WRECK_GOODS: u32 = 21;
+    // Imported (M2): Poly Haven's Dutch hulls as the wrecks, their fallen masts.
+    pub const WRECK_HULLS: u32 = 22;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -8651,6 +8670,10 @@ pub const ELEMENTS: &[(u32, &str)] = &[
         "Atlantis: bronze shark, manta and whale on the avenue's plinths",
     ),
     (element::WRECK_GOODS, "wrecks: treasure chests and barrels"),
+    (
+        element::WRECK_HULLS,
+        "wrecks: the Dutch hulls and their fallen masts",
+    ),
 ];
 
 /// The element `i` is part of, or 0.
@@ -10726,13 +10749,21 @@ fn tall_things(w: &World, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(f32, f32, 
         let yaw = (hash(ix, iz, 63) - 0.5) * 1.2;
         let (s, c) = yaw.sin_cos();
         let y = here.y;
-        let broken = hash(ix, iz, 65) < 0.5;
+        // Her masts as `wrecks` snaps them, and the imported hulls' castles
+        // (the stern's the tallest, 0.3 of her length over the sand).
+        let mast = |k: i32| {
+            if hash(ix + k * 7, iz, 65) < [0.55, 0.7][k as usize] {
+                0.3
+            } else {
+                0.62
+            }
+        };
         for (d, top, r) in [
-            (-0.35, 0.25, 0.2),
+            (-0.4, 0.3, 0.2),
             (0.0, 0.2, 0.2),
-            (0.35, 0.2, 0.2),
-            (-0.15, 0.62, 0.17),
-            (0.15, if broken { 0.3 } else { 0.62 }, 0.17),
+            (0.35, 0.22, 0.2),
+            (-0.12, mast(0), 0.17),
+            (0.14, mast(1), 0.17),
         ] {
             found.push((
                 x + c * d * length,
@@ -12117,7 +12148,7 @@ mod tests {
         let landmarks = [
             (SHALLOWS, Model::Kelp),
             (FOREST, Model::Tree),
-            (WRECKS, Model::Hull),
+            (WRECKS, Model::WreckFluyt),
             (ATLANTIS, Model::Shaft),
             // The stalactites: the basalt columns stand low by the walls,
             // outside the round window from up the tunnel.
@@ -12157,6 +12188,11 @@ mod tests {
                 let mut frame = Frame::new();
                 build(&world, &mut frame, &mut StaticCache::default());
                 found += frame.solid[model.index()].len();
+                // The wrecks are any of three hulls.
+                if model == Model::WreckFluyt {
+                    found += frame.solid[Model::WreckGalleon.index()].len()
+                        + frame.solid[Model::WreckPinas.index()].len();
+                }
             }
             assert!(found > 0, "no {model:?} anywhere in leg {leg}");
         }

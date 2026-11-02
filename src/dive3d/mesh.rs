@@ -741,6 +741,12 @@ pub enum Model {
     /// barrel standing on its end.
     Chest,
     Barrel,
+    /// Dutch ships' hulls as wrecks (Poly Haven's, M2): a unit long, bow to
+    /// +x, keel on y = 0, holed, silted and grown over (`wreck`): a fluyt
+    /// and two larger ships with their castles.
+    WreckFluyt,
+    WreckGalleon,
+    WreckPinas,
     /// A storage amphora standing on its point, a unit tall.
     Amphora,
     /// A trireme's hull with its bronze ram and some oars, stern -1 to ram +1.
@@ -775,7 +781,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 91] = [
+    pub const ALL: [Model; 94] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -855,6 +861,9 @@ impl Model {
         Model::BronzeWhale,
         Model::Chest,
         Model::Barrel,
+        Model::WreckFluyt,
+        Model::WreckGalleon,
+        Model::WreckPinas,
         Model::Amphora,
         Model::Trireme,
         Model::Aqueduct,
@@ -1177,6 +1186,19 @@ impl Model {
             Model::BronzeWhale => cast(BRONZE_WHALE, plinth_post()),
             Model::Chest => cast_creased(TREASURE_CHEST, plinth_post(), 0.5),
             Model::Barrel => cast_creased(BARREL, plinth_post(), 0.5),
+            // Each holed in its own places along her sides, (x, y, side, radius).
+            Model::WreckFluyt => wreck(
+                WRECK_FLUYT,
+                &[[0.10, 0.11, 1.0, 0.06], [-0.05, 0.12, -1.0, 0.05]],
+            ),
+            Model::WreckGalleon => wreck(
+                WRECK_GALLEON,
+                &[[-0.05, 0.11, -1.0, 0.065], [0.18, 0.12, 1.0, 0.05]],
+            ),
+            Model::WreckPinas => wreck(
+                WRECK_PINAS,
+                &[[0.05, 0.11, 1.0, 0.07], [-0.2, 0.12, 1.0, 0.045]],
+            ),
             Model::Amphora => amphora(),
             Model::Trireme => trireme(),
             Model::Aqueduct => aqueduct(),
@@ -4561,6 +4583,9 @@ const BRONZE_RAY: &str = include_str!("../../assets/models/bronze-ray.obj");
 const BRONZE_WHALE: &str = include_str!("../../assets/models/bronze-whale.obj");
 const TREASURE_CHEST: &str = include_str!("../../assets/models/treasure-chest.obj");
 const BARREL: &str = include_str!("../../assets/models/barrel.obj");
+const WRECK_FLUYT: &str = include_str!("../../assets/models/wreck-fluyt.obj");
+const WRECK_GALLEON: &str = include_str!("../../assets/models/wreck-galleon.obj");
+const WRECK_PINAS: &str = include_str!("../../assets/models/wreck-pinas.obj");
 
 /// What a still import with no procedural model is fitted to: a unit tall
 /// on y = 0, centred on the axis, nothing animated.
@@ -4568,6 +4593,92 @@ fn plinth_post() -> Mesh {
     let mut m = Mesh::default();
     m.vertex([0.0; 3], [1.0; 3], [0.0; 2]);
     m.vertex([0.0, 1.0, 0.0], [1.0; 3], [0.0; 2]);
+    m
+}
+
+/// What an import is fitted to when it keeps its own size: as long and
+/// tall as the file, lifted to stand on y = 0.
+fn upright(obj: &str) -> Mesh {
+    let (lo, hi) = obj
+        .lines()
+        .filter_map(|l| l.strip_prefix("v "))
+        .filter_map(|l| l.split_whitespace().nth(1)?.parse::<f32>().ok())
+        .fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+    let mut m = Mesh::default();
+    m.vertex([0.0; 3], [1.0; 3], [0.0; 2]);
+    m.vertex([0.0, hi - lo, 0.0], [1.0; 3], [0.0; 2]);
+    m
+}
+
+/// A ship's hull from `obj` worn to a wreck: breached where `holes` say
+/// (`[x, y, side, radius]`, the side +1 or -1 in z: a ragged black gap
+/// laid over the planking, the wood round it darkened, since cutting the
+/// reduced hull's few large faces leaves no outline worth its triangles),
+/// her paint and wood greyed and darkened by the years under water, and
+/// silt lying on whatever faces up, decks and wales.
+fn wreck(obj: &str, holes: &[[f32; 4]]) -> Mesh {
+    let mut m = cast_creased(obj, upright(obj), 0.6);
+    // A breach's ragged edge, in its radius, at angle `a` (9 jagged
+    // points round it, wandering in and out by a third).
+    let ragged = |k: usize, a: f32| {
+        let a = a / TAU * 9.0 + 9.0;
+        let (i, t) = (a.floor() as u32 % 9, a.fract());
+        let at = |i: u32| 0.7 + 0.6 * jitter(i + 16 * k as u32, 93);
+        at(i) + (at((i + 1) % 9) - at(i)) * t
+    };
+    // How far out of the nearest breach a point lies, in its radius.
+    let near = |p: [f32; 3]| {
+        holes
+            .iter()
+            .enumerate()
+            .map(|(k, &[x, y, side, r])| {
+                if p[2] * side <= 0.0 {
+                    return f32::MAX;
+                }
+                let (dx, dy) = (p[0] - x, p[1] - y);
+                (dx * dx + dy * dy).sqrt() / (r * ragged(k, dy.atan2(dx)))
+            })
+            .fold(f32::MAX, f32::min)
+    };
+    for (i, v) in m.vertices.iter_mut().enumerate() {
+        let c = v.colour;
+        let grey = 0.3 * c[0] + 0.5 * c[1] + 0.2 * c[2];
+        let worn = [0, 1, 2].map(|k| (c[k] * 0.55 + grey * 0.45) * 0.85);
+        // Silt on what faces up, patchy.
+        let up = smooth(0.45, 0.85, v.normal[1]) * (0.55 + 0.45 * jitter(i as u32, 91));
+        let silt = [0.62, 0.58, 0.50];
+        let burnt = 1.0 - 0.5 * (1.0 - (near(v.pos) - 1.0) / 0.8).clamp(0.0, 1.0);
+        v.colour = [0, 1, 2].map(|k| (worn[k] + (silt[k] - worn[k]) * up) * burnt);
+    }
+    // The gaps: a fan just proud of the hull's side, following its curve.
+    let hull: Vec<[f32; 3]> = m.vertices.iter().map(|v| v.pos).collect();
+    for (k, &[x, y, side, r]) in holes.iter().enumerate() {
+        let skin = |px: f32, py: f32| {
+            hull.iter()
+                .filter(|p| (p[0] - px).abs() < 0.03 && (p[1] - py).abs() < 0.03)
+                .map(|p| p[2] * side)
+                .fold(0.0f32, f32::max)
+                + 0.004
+        };
+        let normal = [0.0, 0.0, side];
+        let dark = [0.04, 0.045, 0.05];
+        let centre = m.vertex([x, y, side * skin(x, y)], dark, [0.0; 2]);
+        let ring: Vec<u32> = (0..18)
+            .map(|i| {
+                let a = i as f32 / 18.0 * TAU;
+                let e = r * ragged(k, a);
+                // Kept off the bilge's turn, where a flat gap would stand out.
+                let (px, py) = (x + a.cos() * e, (y + a.sin() * e).max(0.07));
+                m.vertex([px, py, side * skin(px, py)], dark, [0.0; 2])
+            })
+            .collect();
+        for v in &mut m.vertices[centre as usize..] {
+            v.normal = normal;
+        }
+        for i in 0..18 {
+            m.tri(centre, ring[i], ring[(i + 1) % 18]);
+        }
+    }
     m
 }
 
