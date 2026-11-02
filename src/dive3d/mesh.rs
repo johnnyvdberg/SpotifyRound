@@ -704,6 +704,10 @@ pub enum Model {
     /// arch out and down to the floor at y = 0, a unit round, their feet
     /// crusted with oysters and sponges.
     Mangrove,
+    /// Two more stands of [`Model::Mangrove`], their roots otherwise
+    /// arched, so a row of stands is not one tree repeated.
+    Mangrove1,
+    Mangrove2,
     /// A glass sponge: a flared vase of pale silica lattice, a unit tall and
     /// about as wide at the rim, its ribs and hoops open so the water shows
     /// through.
@@ -715,7 +719,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 84] = [
+    pub const ALL: [Model; 86] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -798,6 +802,8 @@ impl Model {
         Model::Lighthouse,
         Model::Seagrass,
         Model::Mangrove,
+        Model::Mangrove1,
+        Model::Mangrove2,
         Model::GlassSponge,
         Model::HoleWall,
     ];
@@ -1112,7 +1118,9 @@ impl Model {
             Model::Mosaic => mosaic(),
             Model::Lighthouse => lighthouse(),
             Model::Seagrass => seagrass(),
-            Model::Mangrove => mangrove(),
+            Model::Mangrove => mangrove(0),
+            Model::Mangrove1 => mangrove(1),
+            Model::Mangrove2 => mangrove(2),
             Model::GlassSponge => glass_sponge(),
             Model::HoleWall => hole_wall(),
         }
@@ -5390,7 +5398,7 @@ fn smooth01(a: f32, b: f32, v: f32) -> f32 {
 }
 
 /// A red mangrove's prop roots (`Model::Mangrove`).
-fn mangrove() -> Mesh {
+fn mangrove(stand: u32) -> Mesh {
     let bark = [0.34, 0.28, 0.22];
     let crust = [0.62, 0.55, 0.42];
     let sponge = [0.78, 0.42, 0.18];
@@ -5398,14 +5406,19 @@ fn mangrove() -> Mesh {
     let mut m = Mesh::default();
     // The trunk, out through the surface.
     m.append(rod([0.0, 0.62, 0.0], [0.02, 1.15, -0.01], 0.07, 0.06, bark));
-    let roots = fewer(11, 5);
+    // Each stand its own: more or fewer roots, leaving the trunk higher or
+    // lower, reaching further to one side than the other.
+    let stand_h = |n: u32| jitter(stand + 7, 990 + n);
+    let roots = fewer(9 + 2 * stand as usize, 5);
+    let (lop, lop_at) = (0.45 * stand_h(0), stand_h(1) * TAU);
+    let high = 0.2 + 0.25 * stand_h(2);
     let spans = fewer(7, 4);
     for k in 0..roots {
-        let h = |n: u32| jitter(k as u32, 950 + n);
+        let h = |n: u32| jitter(k as u32 + 16 * stand, 950 + n);
         let a = (k as f32 + 0.4 * h(0)) / roots as f32 * TAU;
         let out = Vec3::new(a.cos(), 0.0, a.sin());
-        let from = Vec3::new(0.0, 0.62 + 0.32 * h(1), 0.0) + out * 0.04;
-        let reach = 0.45 + 0.5 * h(2);
+        let from = Vec3::new(0.0, 0.5 + high + 0.32 * h(1), 0.0) + out * 0.04;
+        let reach = (0.45 + 0.5 * h(2)) * (1.0 + lop * (a - lop_at).cos());
         let to = out * reach + Vec3::new(0.0, -0.03, 0.0);
         // A high arch, out first and then down: a quadratic through a
         // point well out and a little above where it leaves the trunk.

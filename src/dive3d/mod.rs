@@ -1089,7 +1089,7 @@ mod effect {
         (
             "mangroves",
             MANGROVES,
-            "Mangrove",
+            "Mangrove, Mangrove1, Mangrove2",
             "the meadow's mangrove roots",
         ),
         (
@@ -1201,7 +1201,7 @@ fn model_bit(model: usize) -> u64 {
         | Model::Mosaic
         | Model::Lighthouse => effect::ATLANTIS_PLAN,
         Model::Seagrass => effect::SEAGRASS,
-        Model::Mangrove => effect::MANGROVES,
+        Model::Mangrove | Model::Mangrove1 | Model::Mangrove2 => effect::MANGROVES,
         Model::GlassSponge => effect::GLASS_SPONGES,
         Model::HoleWall => effect::HOLE_WALL,
     }
