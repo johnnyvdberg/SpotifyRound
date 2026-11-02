@@ -2,3 +2,8 @@
 sophocles.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/rx913v90j_KAS633_small.stl
 belvedere-torso.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/zs25xf26x_KAS402_small.stl
 bearded-head.obj	3000	2	height	0	https://api.smk.dk/api/v1/download-3d/8k71nn58x_KMS5962_small.stl
+bronze-shark.obj	3000	1	height	0	polyhaven:bronze_shark_statue
+bronze-ray.obj	2000	1	height	0	polyhaven:bronze_ray_statue
+bronze-whale.obj	3000	1	height	0	polyhaven:bronze_whale_statue
+treasure-chest.obj	2000	1	height	0	polyhaven:treasure_chest
+barrel.obj	400	1	height	0	polyhaven:wooden_barrels_01#barrel01

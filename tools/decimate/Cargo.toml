@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 meshopt = "0.4"
+gltf = { version = "1.4", default-features = false, features = ["import", "utils", "names"] }

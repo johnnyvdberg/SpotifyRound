@@ -18,6 +18,7 @@
 //! fetch and post-transform caches.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 use glam::Vec3;
@@ -170,6 +171,50 @@ impl Mesh {
             v.normal = n.normalize_or_zero().to_array();
         }
         self
+    }
+
+    /// Normals smoothed only between faces less than `angle` radians apart:
+    /// each corner takes the faces round its vertex that lie near its own
+    /// face's plane, and a vertex splits where an edge is sharper.
+    fn creased(self, angle: f32) -> Self {
+        let limit = angle.cos();
+        let p = |i: u32| Vec3::from_array(self.vertices[i as usize].pos);
+        let tris = self.indices.as_chunks::<3>().0;
+        // Area-weighted face normals, and the faces round each vertex.
+        let face: Vec<Vec3> = tris
+            .iter()
+            .map(|t| (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0])))
+            .collect();
+        let mut round = vec![vec![]; self.vertices.len()];
+        for (f, t) in tris.iter().enumerate() {
+            for &i in t {
+                round[i as usize].push(f);
+            }
+        }
+        let mut out = Mesh::default();
+        let mut made: HashMap<(u32, [u32; 3]), u32> = HashMap::new();
+        for (f, t) in tris.iter().enumerate() {
+            let own = face[f].normalize_or_zero();
+            for &i in t {
+                let n = round[i as usize]
+                    .iter()
+                    .filter(|&&g| face[g].normalize_or_zero().dot(own) >= limit)
+                    .map(|&g| face[g])
+                    .sum::<Vec3>()
+                    .normalize_or_zero();
+                let key = (i, n.to_array().map(|c| (c * 64.0).round() as i32 as u32));
+                let j = *made.entry(key).or_insert_with(|| {
+                    let v = self.vertices[i as usize];
+                    out.vertices.push(Vertex {
+                        normal: n.to_array(),
+                        ..v
+                    });
+                    out.vertices.len() as u32 - 1
+                });
+                out.indices.push(j);
+            }
+        }
+        out
     }
 
     /// A triangle with its own vertices and a flat normal, for hard edges.
@@ -685,6 +730,17 @@ pub enum Model {
     Torso,
     /// The colossus's head, lying apart, a unit across.
     Head,
+    /// Bronze sea creatures on their bases (Poly Haven's scans, coloured
+    /// from their textures), each a unit tall on y = 0: a shark, a manta
+    /// ray and a breaching whale.
+    BronzeShark,
+    BronzeRay,
+    BronzeWhale,
+    /// A wreck's cargo (Poly Haven's scans, coloured from their textures),
+    /// each a unit tall on y = 0: an iron-bound chest, long along x, and a
+    /// barrel standing on its end.
+    Chest,
+    Barrel,
     /// A storage amphora standing on its point, a unit tall.
     Amphora,
     /// A trireme's hull with its bronze ram and some oars, stern -1 to ram +1.
@@ -719,7 +775,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 86] = [
+    pub const ALL: [Model; 91] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -794,6 +850,11 @@ impl Model {
         Model::Statue,
         Model::Torso,
         Model::Head,
+        Model::BronzeShark,
+        Model::BronzeRay,
+        Model::BronzeWhale,
+        Model::Chest,
+        Model::Barrel,
         Model::Amphora,
         Model::Trireme,
         Model::Aqueduct,
@@ -1111,6 +1172,11 @@ impl Model {
             Model::Statue => cast(SOPHOCLES, statue(true)),
             Model::Torso => cast(BELVEDERE_TORSO, statue(false)),
             Model::Head => cast(BEARDED_HEAD, colossal_head()),
+            Model::BronzeShark => cast(BRONZE_SHARK, plinth_post()),
+            Model::BronzeRay => cast(BRONZE_RAY, plinth_post()),
+            Model::BronzeWhale => cast(BRONZE_WHALE, plinth_post()),
+            Model::Chest => cast_creased(TREASURE_CHEST, plinth_post(), 0.5),
+            Model::Barrel => cast_creased(BARREL, plinth_post(), 0.5),
             Model::Amphora => amphora(),
             Model::Trireme => trireme(),
             Model::Aqueduct => aqueduct(),
@@ -4485,17 +4551,45 @@ fn statue(head: bool) -> Mesh {
 
 /// Imported models (assets/models/CREDITS.md, rebuilt by deploy/models.sh):
 /// scans of the SMK's public-domain casts, reduced offline to 3,000
-/// triangles.
+/// triangles, and Poly Haven's bronzes, their textures baked into the
+/// vertices' colours.
 const SOPHOCLES: &str = include_str!("../../assets/models/sophocles.obj");
 const BELVEDERE_TORSO: &str = include_str!("../../assets/models/belvedere-torso.obj");
 const BEARDED_HEAD: &str = include_str!("../../assets/models/bearded-head.obj");
+const BRONZE_SHARK: &str = include_str!("../../assets/models/bronze-shark.obj");
+const BRONZE_RAY: &str = include_str!("../../assets/models/bronze-ray.obj");
+const BRONZE_WHALE: &str = include_str!("../../assets/models/bronze-whale.obj");
+const TREASURE_CHEST: &str = include_str!("../../assets/models/treasure-chest.obj");
+const BARREL: &str = include_str!("../../assets/models/barrel.obj");
+
+/// What a still import with no procedural model is fitted to: a unit tall
+/// on y = 0, centred on the axis, nothing animated.
+fn plinth_post() -> Mesh {
+    let mut m = Mesh::default();
+    m.vertex([0.0; 3], [1.0; 3], [0.0; 2]);
+    m.vertex([0.0, 1.0, 0.0], [1.0; 3], [0.0; 2]);
+    m
+}
 
 /// The scanned cast `obj` in the place of `like`, the procedural model it
 /// replaces: as tall and centred as it, each vertex taking the `aux` of
-/// `like`'s nearest so the LODs and sway work unchanged, the marble crusted
-/// with the sea's growth from the foot up.
+/// `like`'s nearest so the LODs and sway work unchanged, the marble (or
+/// the file's own colours, `v x y z r g b`) crusted with the sea's growth
+/// from the foot up.
 fn cast(obj: &str, like: Mesh) -> Mesh {
+    cast_with(obj, like, None)
+}
+
+/// [`cast`] for a made thing (a chest, a hull, a wall): its normals bend
+/// only across edges gentler than `crease` radians, so planks, corners and
+/// bands keep their hard edges instead of the smooth shading of a statue.
+fn cast_creased(obj: &str, like: Mesh, crease: f32) -> Mesh {
+    cast_with(obj, like, Some(crease))
+}
+
+fn cast_with(obj: &str, like: Mesh, crease: Option<f32>) -> Mesh {
     let mut pos = vec![];
+    let mut own = vec![];
     let mut faces = vec![];
     for line in obj.lines() {
         let mut words = line.split_whitespace();
@@ -4504,10 +4598,27 @@ fn cast(obj: &str, like: Mesh) -> Mesh {
                 let v: Vec<f32> = words.map(|w| w.parse().unwrap_or(0.0)).collect();
                 // The files keep their source's handedness: z flips back.
                 pos.push(Vec3::new(v[0], v[1], -v[2]));
+                own.push(if v.len() >= 6 {
+                    [v[3], v[4], v[5]]
+                } else {
+                    [1.0; 3]
+                });
             }
             Some("f") => faces.extend(words.map(|w| w.parse::<u32>().unwrap_or(1) - 1)),
             _ => {}
         }
+    }
+    // The coarser levels (`Built::of`) keep a quarter of the triangles a
+    // step, clustered (meshoptimizer's sloppy simplifier keeps the volume
+    // of thin parts, such as a chest's panels, that edge collapses lose), so
+    // a far scan costs what it shows.
+    let step = COARSER.get();
+    if step > 0 {
+        let flat: Vec<[f32; 3]> = pos.iter().map(|p| p.to_array()).collect();
+        let adapter =
+            meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&flat), 12, 0).expect("positions");
+        let want = (faces.len() >> (2 * step)).max(3 * 96);
+        faces = meshopt::simplify_sloppy(&faces, &adapter, want, 1.0, None);
     }
     let bounds = |p: &mut dyn Iterator<Item = Vec3>| {
         p.fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| (lo.min(q), hi.max(q)))
@@ -4517,7 +4628,7 @@ fn cast(obj: &str, like: Mesh) -> Mesh {
     let k = (want_hi[1] - want_lo[1]) / (hi[1] - lo[1]);
     let (centre, want) = ((lo + hi) * 0.5, (want_lo + want_hi) * 0.5);
     let mut out = Mesh::default();
-    for p in pos {
+    for (p, own) in pos.into_iter().zip(own) {
         let p = want + (p - centre) * k;
         let aux = like
             .vertices
@@ -4531,10 +4642,13 @@ fn cast(obj: &str, like: Mesh) -> Mesh {
         let crust =
             (1.0 - y / 0.4).clamp(0.0, 1.0) * (0.6 + 0.4 * (p[0] * 37.0 + y * 29.0).sin().abs());
         let colour = [1.0 - 0.45 * crust, 1.0 - 0.32 * crust, 1.0 - 0.42 * crust];
-        out.vertex(p.to_array(), colour, aux);
+        out.vertex(p.to_array(), [0, 1, 2].map(|c| colour[c] * own[c]), aux);
     }
     out.indices = faces;
-    let mut out = out.smooth();
+    let mut out = match crease {
+        Some(angle) => out.creased(angle),
+        None => out.smooth(),
+    };
     // A vertex the reduction left only on collapsed faces: outward.
     for v in &mut out.vertices {
         if v.normal == [0.0; 3] {

@@ -961,7 +961,12 @@ mod effect {
             "Shaft, Capital, Break, Prism",
             "columns, capitals, broken columns, temple pediments",
         ),
-        ("wreck", WRECK, "Hull, Sail", "galleon hulls and sails"),
+        (
+            "wreck",
+            WRECK,
+            "Hull, Sail, Chest, Barrel",
+            "galleon hulls and sails, their chests and barrels",
+        ),
         (
             "cylinders",
             CYLINDERS,
@@ -1082,7 +1087,7 @@ mod effect {
         (
             "atlantis plan",
             ATLANTIS_PLAN,
-            "Statue, Torso, Head, Amphora, Trireme, Aqueduct, Stele, Mosaic, Lighthouse",
+            "Statue, Torso, Head, BronzeShark, BronzeRay, BronzeWhale, Amphora, Trireme, Aqueduct, Stele, Mosaic, Lighthouse",
             "Atlantis' statues, colossus, harbour, aqueduct, stelae, mosaics, lighthouse",
         ),
         ("seagrass", SEAGRASS, "Seagrass", "the meadow's seagrass"),
@@ -1148,7 +1153,7 @@ fn model_bit(model: usize) -> u64 {
         Model::Rock1 => effect::ROCK1,
         Model::Rock2 => effect::ROCK2,
         Model::Shaft | Model::Capital | Model::Break | Model::Prism => effect::RUINS,
-        Model::Hull | Model::Sail => effect::WRECK,
+        Model::Hull | Model::Sail | Model::Chest | Model::Barrel => effect::WRECK,
         Model::Cylinder => effect::CYLINDERS,
         Model::Box => effect::BOXES,
         Model::Sphere => effect::SPHERES,
@@ -1194,6 +1199,9 @@ fn model_bit(model: usize) -> u64 {
         Model::Statue
         | Model::Torso
         | Model::Head
+        | Model::BronzeShark
+        | Model::BronzeRay
+        | Model::BronzeWhale
         | Model::Amphora
         | Model::Trireme
         | Model::Aqueduct

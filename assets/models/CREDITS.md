@@ -15,3 +15,20 @@ with meshoptimizer, set y up, a unit tall and centred on its footprint.
 `deploy/models.sh` downloads the full-resolution originals again (into
 target/models/) and rebuilds these files from `models.tsv`; raise a
 triangle count there for a higher quality level.
+
+## Poly Haven
+
+CC0 models from Poly Haven (https://polyhaven.com, released into the public
+domain under https://creativecommons.org/publicdomain/zero/1.0/), fetched as
+their 1k glTF through https://api.polyhaven.com. `tools/decimate` reduces
+each and bakes its diffuse (base colour) texture into the vertices' colours,
+`v x y z r g b`; `polyhaven:ASSET#PICK` in `models.tsv` keeps only some of a
+kit's nodes.
+
+| File | Object | Source |
+|---|---|---|
+| bronze-shark.obj | Bronze Shark Statue, by Tina | https://polyhaven.com/a/bronze_shark_statue |
+| bronze-ray.obj | Bronze Ray Statue, by Tina | https://polyhaven.com/a/bronze_ray_statue |
+| bronze-whale.obj | Bronze Whale Statue, by Tina | https://polyhaven.com/a/bronze_whale_statue |
+| treasure-chest.obj | Treasure Chest, by Rico Cilliers | https://polyhaven.com/a/treasure_chest |
+| barrel.obj | Wooden Barrels 01 (its first whole barrel), by James Ray Cock | https://polyhaven.com/a/wooden_barrels_01 |

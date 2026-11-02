@@ -189,6 +189,17 @@ mangrove is three models now (9, 11 and 13 roots, the same 11 on average), each 
 splayed unevenly and tinted; the two extra draws and the crowns are the +0.0-0.6. Switch: the
 mangroves' effect group (`effect::MANGROVES`) covers all three.
 
+### Imported models (M1)
+
+`features` on the Pi, branch `m1-gltf` (`docs/handoff/m1.md`); `run m1-before2` against `run
+m1-after3`, all 204 places: median 7.14 -> 7.27 ms, worst 10.39 -> 10.54 (noise at a place with
+nothing new), none over 11; wrecks 6.80 -> 6.94.
+
+| feature | switch | seas (median ms there) | median ms | worst ms |
+|---|---|---|---|---|
+| Atlantis' bronze shark, manta and whale (M1) | `DIVE3D_SKIP_ELEMENTS` bit 20 | atlantis 0.04 | 0.04 | 0.12 |
+| the wrecks' chests and barrels (M1) | `DIVE3D_SKIP_ELEMENTS` bit 21 | wrecks 0.09 | 0.09 | 0.14 (wrecks 0 @0.15) |
+
 ### The ground group's rows (V3/V4)
 
 | feature | switch | seas (median ms there) | median ms | worst ms |

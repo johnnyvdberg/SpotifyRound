@@ -4044,16 +4044,27 @@ fn wrecks(w: &World, f: &mut Frame) {
                 .moving(anim::SWAY, ix as f32, 0.02, 0.4);
             }
         }
-        // A split chest by the bow, gold spilling over the sand.
+        // A chest by the bow, a third sunk and tipped with the sand, gold
+        // spilling over it (Poly Haven's treasure chest, M1).
         let chest = along(0.55, -0.02);
         let ground = w.ground(chest[0], chest[2]);
         let cp = [chest[0], ground + 0.025, chest[2]];
-        f.put(
-            Model::Box,
-            place(cp, yaw + 0.4, 0.0, 0.0, [0.05, 0.03, 0.035]),
-            [0.26, 0.18, 0.10],
-        )
-        .grounded();
+        if let Some(st) = seat(w, chest[0], chest[2], 0.05, &bed::FLAT) {
+            let (pitch, roll) = st.tilt(yaw + 0.4);
+            f.put(
+                Model::Chest,
+                place(
+                    [chest[0], st.y - 0.02, chest[2]],
+                    yaw + 0.4,
+                    pitch,
+                    roll + 0.15 * (hash(ix, iz, 74) - 0.5),
+                    [0.065; 3],
+                ),
+                [0.9, 0.85, 0.75],
+            )
+            .grounded()
+            .element(element::WRECK_GOODS);
+        }
         f.put(
             Model::Sphere,
             place(
@@ -4142,7 +4153,7 @@ fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f
         let (px, pz) = (at[0] + dx, at[2] + dz);
         let turn = h(69) * TAU;
         let kind = h(70);
-        if kind < 0.55 {
+        if kind < 0.45 {
             // A sprung plank, half in the sand.
             let long = length * (0.08 + 0.10 * h(71));
             let Some(st) = seat(w, px, pz, long, &bed::FLAT) else {
@@ -4162,7 +4173,27 @@ fn wreck_debris(w: &World, f: &mut Frame, ix: i32, iz: i32, at: [f32; 3], yaw: f
             )
             .grounded()
             .debris();
-        } else if kind < 0.75 {
+        } else if kind < 0.6 {
+            // A barrel from her hold (Poly Haven's, M1), on its side and
+            // half in the sand, or stood on end where it landed upright.
+            let size = length * 0.028;
+            let Some(st) = seat(w, px, pz, size, &bed::FLAT) else {
+                continue;
+            };
+            let (pitch, roll) = st.tilt(turn);
+            let (y, pitch) = if h(75) < 0.8 {
+                (st.y + size * 0.15, pitch + PI * 0.5)
+            } else {
+                (st.foot(&bed::FLAT, size), pitch)
+            };
+            f.put(
+                Model::Barrel,
+                place([px, y, pz], turn, pitch, roll, [size; 3]),
+                [0.85, 0.8, 0.72],
+            )
+            .grounded()
+            .element(element::WRECK_GOODS);
+        } else if kind < 0.78 {
             // A bronze gun off its carriage.
             let long = length * 0.07;
             let Some(st) = seat(w, px, pz, long, &bed::FLAT) else {
@@ -5571,6 +5602,25 @@ fn atlantis(w: &World, f: &mut Frame) {
                     )
                     .grounded()
                     .element(element::STATUES);
+                } else if hash(k, 3, 1510) < 0.45 {
+                    // A bronze sea creature, side on to the window: a
+                    // shark, a manta or a breaching whale, green with age
+                    // (the scans' polished brown dulled toward verdigris).
+                    // Fitted by height, the whale is twice as long as it is
+                    // tall, so it stands lower than the statues.
+                    let (model, s) = [
+                        (Model::BronzeShark, 0.28),
+                        (Model::BronzeRay, 0.32),
+                        (Model::BronzeWhale, 0.28),
+                    ][(hash(k, 4, 1510) * 3.0) as usize % 3];
+                    let flip = if hash(k, 5, 1510) < 0.5 { 0.0 } else { PI };
+                    f.put(
+                        model,
+                        place([sx, y + 0.14, sz], yaw + flip, 0.0, 0.0, [s; 3]),
+                        [0.8, 1.12, 0.95],
+                    )
+                    .material(material::COPPER)
+                    .element(element::BRONZES);
                 } else {
                     f.put(
                         Model::Statue,
@@ -8547,6 +8597,10 @@ pub mod element {
     pub const HALOCLINE: u32 = 18;
     // Every sea (V10, `world::near_detail`).
     pub const NEAR_DETAIL: u32 = 19;
+    // Imported (M1): Poly Haven's bronzes on the avenue's plinths.
+    pub const BRONZES: u32 = 20;
+    // Imported (M1): Poly Haven's chests and barrels round the wrecks.
+    pub const WRECK_GOODS: u32 = 21;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -8592,6 +8646,11 @@ pub const ELEMENTS: &[(u32, &str)] = &[
         element::NEAR_DETAIL,
         "pebbles, shells, stars, urchins, sea cucumbers and worm tubes near the window",
     ),
+    (
+        element::BRONZES,
+        "Atlantis: bronze shark, manta and whale on the avenue's plinths",
+    ),
+    (element::WRECK_GOODS, "wrecks: treasure chests and barrels"),
 ];
 
 /// The element `i` is part of, or 0.
