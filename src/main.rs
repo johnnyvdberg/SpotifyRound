@@ -10,6 +10,7 @@ mod browser;
 mod cli;
 mod config;
 mod dive3d;
+mod etc;
 mod format;
 mod globe;
 mod gpu;

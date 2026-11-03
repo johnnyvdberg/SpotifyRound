@@ -538,13 +538,14 @@ the maps and lights it through a model of the atmosphere, in linear light.
   lights underneath.
 
 The maps are 4096 × 2048 (2048 × 1024 for relief and water), which on the 850-pixel disc is still about
-one and a half texels per pixel at the centre. Each is stored in the smallest format that holds it: the
-day map as sRGB, so the GPU linearises it when sampling and builds a gamma-correct mip chain; the city
-lights and the clouds as one channel each; the relief's two slopes together with the water mask. The GPU
-builds every mip chain, with a little extra level of detail bias when sampling, which keeps the city
-lights from sparkling as the map is minified; sampling is anisotropic where the driver offers it. All of
-it comes to about 80 MB of GPU memory, against 420 MB for the 8K maps this replaced, and decodes in a
-quarter of the time; per frame the GPU does less work than before, despite the atmosphere. `SIZE`,
+one and a half texels per pixel at the centre. `build.rs` builds every mip chain (the day map's in linear
+light, so it stays gamma-correct) and compresses every level to the block formats the Pi's GPU samples
+directly (`src/etc.rs`): the day map as ETC2 with the water mask in its alpha, the city lights and the
+clouds as EAC R11, the relief's two slopes as EAC RG11. A little extra level of detail bias when sampling
+keeps the city lights from sparkling as the map is minified; sampling is 4x anisotropic for the day map,
+the clouds and the lights. All of it comes to 25 MB of GPU memory (80 MB as RGBA8, 420 MB for the 8K maps
+this replaced), nothing is decoded at start-up, and the frame is 0.6 ms faster on the Pi than with the
+uncompressed maps. A GPU without ETC2 gets the same maps decompressed on upload. `SIZE`,
 `FPS`, `REVOLUTION`, `SUN_PERIOD`, `PLANET`, `ATMOSPHERE`, `AIR`, `SCALE_HEIGHT`, `SUNLIGHT`,
 `CLOUD_DRIFT` and `OBLIQUITY` are the knobs.
 
