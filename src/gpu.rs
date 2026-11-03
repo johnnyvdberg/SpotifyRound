@@ -246,8 +246,9 @@ fn display_on_gl() -> bool {
 }
 
 /// The display's backend when `SPOTIFY_ROUND_DISPLAY` is unset: whichever
-/// measured faster live under cage (`docs/handoff/d1.md`).
-const DISPLAY_GL_DEFAULT: bool = false;
+/// measured faster live under cage. GL since the globe caught up
+/// (`docs/handoff/d1.md`, `docs/handoff/d2.md`); `vulkan` still switches back.
+const DISPLAY_GL_DEFAULT: bool = true;
 
 /// Create the device and make Slint use it, on the first backend of
 /// [`backend_order`] that opens.

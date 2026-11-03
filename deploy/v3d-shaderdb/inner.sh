@@ -34,6 +34,11 @@ export DIVE3D_PREVIEW_OFFSETS=0
 mkdir -p "$DIVE3D_PREVIEW_DIR"
 
 echo "== running" >&2
+# The globe first (its own pipelines; the noop shim draws nothing, so the
+# test's assertions fail, but every pipeline has compiled by then), then the
+# dive's previews, whose exit status is the one reported.
+timeout "${SHADERDB_TIMEOUT:-300}" \
+    /work/test-binary 'globe::tests::the_frame_is_round' --ignored --exact --nocapture 2>&1
 timeout "${SHADERDB_TIMEOUT:-300}" \
     /work/test-binary 'dive3d::tests::previews' --ignored --exact --nocapture 2>&1
 echo "== test exit status $?"

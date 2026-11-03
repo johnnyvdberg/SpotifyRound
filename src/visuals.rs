@@ -484,9 +484,15 @@ pub fn spawn(
                 }
                 deadline += budget;
                 // A frame that ran long is not made up for by rushing the next
-                // ones out back to back.
+                // ones out back to back. But one late by less than a frame
+                // keeps its place on the beat, and the next starts at once: on
+                // GL the submit waits whenever the UI thread is presenting
+                // (wgpu holds the context through `eglSwapBuffers`), and with
+                // the beat restarted after each such wait the globe drew 60
+                // frames in a little over a second, one refresh a second
+                // showing a frame twice.
                 let now = Instant::now();
-                if deadline < now {
+                if deadline + budget < now {
                     deadline = now;
                 }
                 pace(deadline);

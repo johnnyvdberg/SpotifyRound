@@ -13,7 +13,8 @@
 # second, and takes a screenshot at the middle of the run.
 set -u
 TAG=$1; BIN=$2; SECS=$3; shift 3
-D=/tmp/d1
+# Logs and screenshots go next to the script.
+D=$(cd "$(dirname "$0")" && pwd)
 mkdir -p $D
 exec 9>/tmp/nautilus-bench.lock
 flock 9
