@@ -2442,6 +2442,62 @@ fn fs_sprite(in: Sprite) -> @location(0) vec4<f32> {
 }
 
 // ---------------------------------------------------------------------------
+// Contact shadows
+// ---------------------------------------------------------------------------
+
+// A soft dark ellipse on the floor under what stands on it
+// (`world::Frame::shadow`), multiplied into what is already drawn there: the
+// floor, which it darkens, and nothing in front of it, which wins the depth
+// test. It lies a little over the floor, by more the wider it is, so a gentle
+// slope does not swallow its rim; the fog takes it with distance.
+
+struct Shadow {
+    @builtin(position) position: vec4<f32>,
+    @location(0) corner: vec2<f32>,
+    @location(1) @interpolate(flat) dark: f32,
+    // The share of each half that is the thing itself, full dark; past it
+    // the shadow softens out to the quad's rim.
+    @location(2) @interpolate(flat) inner: vec2<f32>,
+};
+
+const SHADOW_LIFT: f32 = 0.006;
+
+@vertex
+fn vs_shadow(
+    @builtin(vertex_index) index: u32,
+    @location(0) place: vec4<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) stretch: vec4<f32>,
+) -> Shadow {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let corner = corners[index];
+    let across = vec3<f32>(stretch.x, 0.0, stretch.y);
+    let along = vec3<f32>(-stretch.y, 0.0, stretch.x);
+    let lift = SHADOW_LIFT + 0.002 * max(place.w, stretch.z);
+    let flat = across * (corner.x * place.w) + along * (corner.y * stretch.z);
+    // Tipped to lie along the slope the thing stands on.
+    let rise = dot(tint.yz, flat.xz);
+    let p = place.xyz + flat + vec3<f32>(0.0, lift + rise, 0.0);
+    var out: Shadow;
+    out.position = project(p);
+    out.corner = corner;
+    out.inner = vec2<f32>(tint.w, stretch.w);
+    out.dark = tint.x * (1.0 - fog_of(length(place.xyz - g.camera.xyz)));
+    return out;
+}
+
+@fragment
+fn fs_shadow(in: Shadow) -> @location(0) vec4<f32> {
+    let out = max(abs(in.corner) - in.inner, vec2<f32>(0.0)) / (1.0 - in.inner);
+    let r = 1.0 - smooth01(0.0, 1.0, length(out));
+    let keep = 1.0 - in.dark * r;
+    return vec4<f32>(keep, keep, keep, 1.0);
+}
+
+// ---------------------------------------------------------------------------
 // Shafts of sunlight
 // ---------------------------------------------------------------------------
 

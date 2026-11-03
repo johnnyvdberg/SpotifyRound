@@ -1594,6 +1594,7 @@ struct Mark {
     solid: Vec<usize>,
     glass: Vec<usize>,
     sprites: usize,
+    shadows: usize,
     lights: usize,
 }
 
@@ -1619,6 +1620,11 @@ pub struct Frame {
     /// `tint` the colour and a seed for the shape, `stretch` the half width
     /// and the form.
     pub impostors: Vec<Sprite>,
+    /// Contact shadows, soft dark ellipses on the floor under what stands
+    /// on it ([`Frame::shadow`], `vs_shadow`): `place` is the centre and the
+    /// half width along its x, `tint.x` how dark, `stretch` that x's
+    /// direction in the world's x and z and the half length across it.
+    pub shadows: Vec<Sprite>,
     pub lights: Vec<Light>,
     /// The tunnel through the lava cave's massif, in world space for the
     /// stretch in view. It depends only on the seabed and that stretch, so it
@@ -1652,6 +1658,7 @@ impl Frame {
             plumes: Vec::new(),
             beams: Vec::new(),
             impostors: Vec::new(),
+            shadows: Vec::new(),
             lights: Vec::new(),
             tunnel: Vec::new(),
             tunnel_indices: Vec::new(),
@@ -1673,6 +1680,7 @@ impl Frame {
         self.plumes.clear();
         self.beams.clear();
         self.impostors.clear();
+        self.shadows.clear();
         self.lights.clear();
     }
 
@@ -1719,6 +1727,7 @@ impl Frame {
             solid: self.solid.iter().map(Vec::len).collect(),
             glass: self.glass.iter().map(Vec::len).collect(),
             sprites: self.sprites.len(),
+            shadows: self.shadows.len(),
             lights: self.lights.len(),
         }
     }
@@ -1749,6 +1758,12 @@ impl Frame {
             let p = moved([sprite.place[0], sprite.place[1], sprite.place[2]]);
             sprite.place[..3].copy_from_slice(&p);
             sprite.place[3] *= scale;
+        }
+        for shadow in &mut self.shadows[mark.shadows..] {
+            let p = moved([shadow.place[0], shadow.place[1], shadow.place[2]]);
+            shadow.place[..3].copy_from_slice(&p);
+            shadow.place[3] *= scale;
+            shadow.stretch[2] *= scale;
         }
         for light in &mut self.lights[mark.lights..] {
             light.pos = moved(light.pos);
@@ -1783,6 +1798,16 @@ impl Frame {
             let p = spin([sprite.place[0], sprite.place[1], sprite.place[2]]);
             sprite.place[..3].copy_from_slice(&p);
         }
+        for shadow in &mut self.shadows[mark.shadows..] {
+            let p = spin([shadow.place[0], shadow.place[1], shadow.place[2]]);
+            shadow.place[..3].copy_from_slice(&p);
+            let [x, z] = [shadow.stretch[0], shadow.stretch[1]];
+            shadow.stretch[0] = cy * x + sy * z;
+            shadow.stretch[1] = -sy * x + cy * z;
+            let [x, z] = [shadow.tint[1], shadow.tint[2]];
+            shadow.tint[1] = cy * x + sy * z;
+            shadow.tint[2] = -sy * x + cy * z;
+        }
         for light in &mut self.lights[mark.lights..] {
             light.pos = spin(light.pos);
         }
@@ -1793,6 +1818,33 @@ impl Frame {
         self.fade = 1.0;
         self.skin = skin;
         EDGE.with(|e| e.set(1.0));
+    }
+
+    /// A contact shadow on the floor at `p` (its height there) under
+    /// something `half` its x and z extents, turned by `yaw` as [`place`]
+    /// turns a model: `dark` under it and softening over `soft` beyond it,
+    /// fading with what is being placed. It lies on ground rising `slope`
+    /// per unit x and z, as a [`Seat`] has it.
+    fn shadow(
+        &mut self,
+        p: [f32; 3],
+        half: [f32; 2],
+        soft: f32,
+        yaw: f32,
+        slope: [f32; 2],
+        dark: f32,
+    ) {
+        let dark = dark * self.fade * edge();
+        if dark <= 0.01 {
+            return;
+        }
+        let (s, c) = yaw.sin_cos();
+        let [x, z] = half.map(|h| h + soft);
+        self.shadows.push(Sprite {
+            place: [p[0], p[1], p[2], x],
+            tint: [dark, slope[0], slope[1], half[0] / x],
+            stretch: [c, -s, z, half[1] / z],
+        });
     }
 
     fn sprite(&mut self, p: [f32; 3], size: f32, colour: [f32; 3], kind: f32) {
@@ -2239,6 +2291,25 @@ fn footprint_ground(w: &World, x: f32, z: f32, radius: f32) -> (f32, f32) {
         .map(|k| ((rim[k] + rim[k + 4]) * 0.5 - y).abs())
         .fold(0.0, f32::max);
     (low, bend)
+}
+
+/// The plane through the ground round a rim of radius `radius` about
+/// (x, z): its height over the middle and its rise per unit x and z. A
+/// contact shadow lies on it: what stands there hides the middle, and on a
+/// crest the plane through the middle would float over the ground falling
+/// away round it, and cut a dark band into the thing's foot.
+fn rim_plane(w: &World, x: f32, z: f32, radius: f32) -> (f32, [f32; 2]) {
+    let east = w.ground(x + radius, z);
+    let west = w.ground(x - radius, z);
+    let south = w.ground(x, z + radius);
+    let north = w.ground(x, z - radius);
+    (
+        0.25 * (east + west + south + north),
+        [
+            (east - west) / (2.0 * radius),
+            (south - north) / (2.0 * radius),
+        ],
+    )
 }
 
 /// The lowest ground under a footprint of radius `radius` about (x, z).
@@ -2794,6 +2865,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     frame.shafts.extend_from_slice(&cache.frame.shafts);
     frame.beams.extend_from_slice(&cache.frame.beams);
     frame.impostors.extend_from_slice(&cache.frame.impostors);
+    frame.shadows.extend_from_slice(&cache.frame.shadows);
     frame.lights.extend_from_slice(&cache.frame.lights);
     #[cfg(test)]
     for (i, (step, skin)) in steps.into_iter().enumerate() {
@@ -2981,6 +3053,12 @@ fn rocks(w: &World, f: &mut Frame) {
         let Some(rows) = settle(w, place(p, yaw, pitch, roll, shape), height, 0.3) else {
             continue;
         };
+        let (half, soft) = (
+            [shape[0] * 0.6, shape[2] * 0.6],
+            shape[0].max(shape[2]) * 0.8,
+        );
+        let (y, slope) = rim_plane(w, x, z, half[0].max(half[1]) + 0.5 * soft);
+        f.shadow([x, y, z], half, soft, yaw, slope, 0.45);
         let i = f.put(model, rows, colour);
         i.grounded();
         if reef > 0.5 {

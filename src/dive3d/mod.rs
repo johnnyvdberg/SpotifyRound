@@ -519,6 +519,9 @@ pub(crate) struct Nautilus {
     /// Glass: one pipeline per entry of [`GLASS`].
     glass: Vec<wgpu::RenderPipeline>,
     sprites: wgpu::RenderPipeline,
+    /// The contact shadows, multiplied into the floor under what stands on
+    /// it.
+    shadows: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
     /// Searchlight beams of other submarines.
     beams: wgpu::RenderPipeline,
@@ -973,6 +976,8 @@ mod part {
     /// The abyss's bioluminescent colonies on its walls and ridges (V10,
     /// `world::abyss_glow`).
     pub const ABYSS_GLOW: u64 = 1 << 41;
+    /// The contact shadows under what stands on a floor (`world::Frame::shadow`).
+    pub const SHADOWS: u64 = 1 << 42;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -1466,6 +1471,9 @@ struct Pipelines {
     fading: Vec<Option<wgpu::RenderPipeline>>,
     glass: Vec<wgpu::RenderPipeline>,
     sprites: wgpu::RenderPipeline,
+    /// The contact shadows, multiplied into the floor under what stands on
+    /// it.
+    shadows: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
     beams: wgpu::RenderPipeline,
     plumes: wgpu::RenderPipeline,
@@ -1899,6 +1907,29 @@ fn compile(
         &[],
         None,
     );
+    // Multiplied into what is drawn: the floor darkens under the shadow,
+    // and the alpha the sea is handed over with is left alone.
+    let multiply = wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::Src,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent::OVER,
+    };
+    let shadows = pipeline(
+        "Dive3d shadows",
+        "vs_shadow",
+        "fs_shadow",
+        &sprite_buffers,
+        Some(multiply),
+        false,
+        nearer,
+        false,
+        false,
+        &[],
+        None,
+    );
     let shafts = pipeline(
         "Dive3d shafts",
         "vs_shaft",
@@ -1970,6 +2001,7 @@ fn compile(
         fading,
         glass,
         sprites,
+        shadows,
         shafts,
         beams,
         plumes,
@@ -2333,6 +2365,7 @@ impl Nautilus {
             fading,
             glass,
             sprites,
+            shadows,
             shafts,
             beams,
             plumes,
@@ -2376,6 +2409,7 @@ impl Nautilus {
             fading,
             glass,
             sprites,
+            shadows,
             shafts,
             beams,
             plumes,
@@ -2450,6 +2484,7 @@ impl Nautilus {
         self.fading = p.fading;
         self.glass = p.glass;
         self.sprites = p.sprites;
+        self.shadows = p.shadows;
         self.shafts = p.shafts;
         self.beams = p.beams;
         self.plumes = p.plumes;
@@ -2935,6 +2970,24 @@ impl Nautilus {
                 + std::mem::size_of_val(impostors)) as u64,
             bytemuck::cast_slice(plumes),
         );
+        // The contact shadows after them.
+        let shadows = &self.frame.shadows[..self.frame.shadows.len().min(
+            MAX_SPRITES
+                - sprites.len()
+                - shafts.len()
+                - beams.len()
+                - impostors.len()
+                - plumes.len(),
+        )];
+        gpu.queue.write_buffer(
+            &self.sprite_buffer,
+            (std::mem::size_of_val(sprites)
+                + std::mem::size_of_val(shafts)
+                + std::mem::size_of_val(beams)
+                + std::mem::size_of_val(impostors)
+                + std::mem::size_of_val(plumes)) as u64,
+            bytemuck::cast_slice(shadows),
+        );
 
         #[cfg(test)]
         let upload_done = clock.elapsed();
@@ -3186,6 +3239,18 @@ impl Nautilus {
                 }
                 if tunnel_late {
                     draw_tunnel(&mut pass);
+                }
+                // Contact shadows darken the floor already drawn; the
+                // models in front of them hide them by depth.
+                if !shadows.is_empty() && !this.skips(part::SHADOWS) {
+                    let first = (sprites.len()
+                        + shafts.len()
+                        + beams.len()
+                        + impostors.len()
+                        + plumes.len()) as u32;
+                    pass.set_pipeline(&this.shadows);
+                    pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
+                    pass.draw(0..6, first..first + shadows.len() as u32);
                 }
                 if !impostors.is_empty() && !this.skips(part::IMPOSTORS) {
                     // Sorted by form as they were uploaded: a draw a run.
@@ -4395,6 +4460,7 @@ mod tests {
             ("pass: searchlight beams", part::BEAMS),
             ("pass: shafts and beams", part::SHAFTS),
             ("pass: vent plumes", part::PLUMES),
+            ("pass: contact shadows", part::SHADOWS),
             ("pass: corner mask", part::MASK),
             ("pass: cave tunnel", part::TUNNEL),
             ("pass: open water", part::BACKGROUND),

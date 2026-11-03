@@ -268,3 +268,13 @@ The table above was measured before `perf-b` (city split by part, glass by mater
 7.45 to 7.13 ms, the worst glass places 1.0 to 1.4 ms faster, the city's worst place 10.89 to
 9.75 ms. Nothing new was added to `dive3d::part` or `dive3d::effect`, so no row is new; regenerate
 the table (`bench-pi.sh features`) when the next task needs it.
+
+## Contact shadows (E1, 2026-11-03)
+
+`part::SHADOWS` (the row "contact shadows (E1)" when the table is next regenerated): a soft
+quad multiplied into the floor under rocks, the museum's stands, cases and benches, drawn after
+the seabed. Its shaders keep four threads (fs 31 instructions). From two interleaved 108-place
+`hotspots` runs each on the Pi, against the build before it: median place 7.64 to 7.79 ms, mean
++0.10 ms a place, at most +0.25 ms (arctic, vents, abyss, shallows: the rockiest views). The same
+four places were over 11 ms before and after (trench 0.85, meadow 0.15 and 0.45), 0.03 ms
+apart at worst.

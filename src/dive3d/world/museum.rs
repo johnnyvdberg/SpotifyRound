@@ -1342,6 +1342,7 @@ fn show_stand(w: &World, f: &mut Frame, p: [f32; 3], piece: &Specimen, yaw: f32,
         return;
     }
     let (a, b) = (0.5 * long + 0.07, 0.5 * deep + 0.07);
+    f.shadow(p, [a, b], 0.1, yaw, [0.0; 2], 0.5);
     let mut top = 0.0;
     for (rise, inset, colour) in [
         (0.05, 0.05, STONE),
@@ -1404,6 +1405,12 @@ fn stand(f: &mut Frame, p: [f32; 3], model: Model, size: [f32; 2], mount: Mount,
         }
         block.element(element::MUSEUM);
     };
+    let shade = match mount {
+        Mount::Platform => [0.45, 0.32],
+        Mount::Plinth => [(0.4 * long).clamp(0.09, 0.2); 2],
+        Mount::Case => [(0.5 * long + 0.03).clamp(0.1, 0.2); 2],
+    };
+    f.shadow(p, shade, 0.12, yaw, [0.0; 2], 0.5);
     let foot = match mount {
         Mount::Platform => {
             block(f, 0.02, [0.45, 0.02, 0.32], STONE);
@@ -1557,6 +1564,7 @@ fn mineral_cases(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
             continue;
         }
         let up = |h: f32| [p[0], y + h, p[2]];
+        f.shadow(up(0.0), [side; 2], 0.12, m.yaw(), [0.0; 2], 0.5);
         let pedestal = [side, 0.5 * tall, side];
         f.put(
             Model::Box,
@@ -1707,6 +1715,7 @@ fn masters(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
             [0.26, 0.04, 0.07],
         );
         f.put(Model::Box, base, DARK_WOOD).element(element::MUSEUM);
+        f.shadow(p, [0.26, 0.07], 0.1, m.yaw(), [0.0; 2], 0.45);
     }
 }
 
