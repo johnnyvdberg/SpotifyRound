@@ -54,7 +54,13 @@ pub fn watch_rendering_if_asked(window: &AppWindow) {
 }
 
 /// Say in the log which graphics API draws the frames and count the frames
-/// presented for the frame-rate readout.
+/// presented for the frame-rate readout, with what each cost: the UI thread's
+/// time from the start of a frame to its end, and the GPU's.
+///
+/// The player only draws when something changed, mostly the progress ring
+/// moving half a pixel, so its frame rate follows the track's length rather
+/// than the hardware. The milliseconds say how much of the 16.7 ms budget a
+/// frame really takes.
 ///
 /// With `SPOTIFY_ROUND_FULL_SPEED` set, every frame asks for the next at once,
 /// whether anything changed or not, and the rate is logged each second: how
@@ -64,20 +70,33 @@ fn watch_rendering(window: &AppWindow) {
     let full_speed = std::env::var_os("SPOTIFY_ROUND_FULL_SPEED").is_some();
     let mut frames = 0;
     let mut since = std::time::Instant::now();
+    let mut started = None;
+    let mut busy = std::time::Duration::ZERO;
+    let mut gpu = crate::gpu::GpuLoad::new();
     let result = window
         .window()
         .set_rendering_notifier(move |state, api| match state {
             slint::RenderingState::RenderingSetup => {
                 tracing::info!(renderer = ?api, "graphics context ready");
             }
+            slint::RenderingState::BeforeRendering => {
+                started = Some(std::time::Instant::now());
+            }
             slint::RenderingState::AfterRendering => {
                 frames += 1;
+                if let Some(started) = started.take() {
+                    busy += started.elapsed();
+                }
                 if full_speed && let Some(window) = weak.upgrade() {
                     window.window().request_redraw();
                 }
                 if since.elapsed() >= std::time::Duration::from_secs(1) {
                     let rate = frames;
-                    (frames, since) = (0, std::time::Instant::now());
+                    let ms = busy.as_secs_f32() * 1000.0 / frames.max(1) as f32;
+                    // The V3D's busy time covers every pass of the second: the
+                    // ring, the UI and the compositor's.
+                    let gpu_ms = gpu.per_frame(frames as u32).unwrap_or(-1.0);
+                    (frames, since, busy) = (0, std::time::Instant::now(), Default::default());
                     // Written after the frame, so it is shown with the next one.
                     // Hidden, it is left alone, so it wakes nothing.
                     if let Some(window) = weak.upgrade() {
@@ -108,6 +127,8 @@ fn watch_rendering(window: &AppWindow) {
                         let stats = window.global::<Stats>();
                         if stats.get_shown() {
                             stats.set_display(rate);
+                            stats.set_display_ms(ms);
+                            stats.set_display_gpu_ms(gpu_ms);
                         }
                     }
                 }
@@ -511,22 +532,15 @@ mod preview {
     }
 
     /// One frame of the GPU-drawn progress ring, rendered headlessly.
-    fn ring(progress: f32, scrubbing: bool, accent: crate::artwork::Rgb) -> slint::Image {
-        backdrop(progress, scrubbing, accent, 1.0, 1.0)
+    fn ring(progress: f32, accent: crate::artwork::Rgb) -> slint::Image {
+        backdrop(progress, accent, 1.0, 1.0)
     }
 
     /// The player's backdrop, with the ring showing as much as `ring` and the
     /// glow as strong as `glow`.
-    fn backdrop(
-        progress: f32,
-        scrubbing: bool,
-        accent: crate::artwork::Rgb,
-        ring: f32,
-        glow: f32,
-    ) -> slint::Image {
+    fn backdrop(progress: f32, accent: crate::artwork::Rgb, ring: f32, glow: f32) -> slint::Image {
         let pixels = crate::ring::render_once(&crate::ring::Input {
             progress,
-            scrubbing,
             accent,
             ring,
             glow,
@@ -628,15 +642,18 @@ mod preview {
         window.set_cover(Some(&art));
         window.set_playback(true, true, false, 1);
         window.set_device("Demo speaker", "speaker", true);
-        window.set_ring_frame_image(ring(0.34, false, art.accent()));
+        window.set_ring_frame_image(ring(0.34, art.accent()));
         window.set_current_playlist("spotify:playlist:demo-0");
         save(&window, &soft, "01-now-playing");
 
         // ---- frame-rate readout ----
         let stats = window.global::<Stats>();
         stats.set_shown(true);
-        stats.set_display(60);
+        stats.set_display(33);
+        stats.set_display_ms(1.4);
+        stats.set_display_gpu_ms(6.2);
         save(&window, &soft, "fps");
+        stats.set_display(60);
         stats.set_scene(60);
         stats.set_scene_ms(2.84);
         stats.set_scene_gpu_ms(9.6);
@@ -727,7 +744,7 @@ mod preview {
         let url = "https://accounts.spotify.com/authorize?client_id=example&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8888%2Fcallback&code_challenge=abc&state=xyz";
         window.set_auth_state(0, "");
         window.set_auth_url(url, Some(&crate::artwork::Artwork::qr(url).unwrap()));
-        window.set_ring_frame_image(backdrop(0.0, false, art.accent(), 0.0, 0.6));
+        window.set_ring_frame_image(backdrop(0.0, art.accent(), 0.0, 0.6));
         save(&window, &soft, "04-login");
 
         // ---- nothing playing ----
@@ -736,18 +753,18 @@ mod preview {
         window.set_track_text("Nothing playing", "Open Spotify and start playback", false);
         window.set_cover(None);
         window.set_playback(false, false, false, 0);
-        window.set_ring_frame_image(backdrop(0.0, false, art.accent(), 0.0, 1.0));
+        window.set_ring_frame_image(backdrop(0.0, art.accent(), 0.0, 1.0));
         save(&window, &soft, "05-nothing-playing");
 
         // ---- missing configuration ----
         window.set_config_path("/home/pi/.config/spotify-round/config.toml");
         window.set_auth_state(3, "");
-        window.set_ring_frame_image(backdrop(0.0, false, art.accent(), 0.0, 0.6));
+        window.set_ring_frame_image(backdrop(0.0, art.accent(), 0.0, 0.6));
         save(&window, &soft, "06-setup");
 
         // ---- a playlist that is still starting ----
         window.set_auth_state(2, "");
-        window.set_ring_frame_image(ring(0.0, false, art.accent()));
+        window.set_ring_frame_image(ring(0.0, art.accent()));
         let art = cover(198);
         window.set_cover(Some(&art));
         window.set_track_text("Chill Vibes", "Starting playlist", true);
@@ -757,7 +774,7 @@ mod preview {
         // ---- first track of a playlist: no way back ----
         window.set_track_text("Neon Coast", "Mira Vale · Afterglow", true);
         window.set_skip_state(false, true);
-        window.set_ring_frame_image(ring(0.12, false, art.accent()));
+        window.set_ring_frame_image(ring(0.12, art.accent()));
         save(&window, &soft, "08-no-previous");
 
         // ---- idle visualizer ----

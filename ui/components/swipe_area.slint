@@ -22,8 +22,10 @@ export component SwipeArea inherits TouchArea {
     callback seek(float);
 
     // Ring geometry, matching `src/ring.rs`.
-    private property <float> ring-radius: 531;
-    private property <float> ring-band: 46;
+    // The band reaches past the panel's edge; a press from 485 px out, as
+    // before, still grabs it.
+    private property <float> ring-radius: 544;
+    private property <float> ring-band: 59;
     // Movement below this is a tap rather than a gesture.
     private property <length> tap-slop: 14px;
 

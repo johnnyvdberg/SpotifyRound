@@ -230,14 +230,17 @@ spotify-round --mock --windowed   # demo library, no account needed
 spotify-round --fps        # start with the frame-rate readout showing
 ```
 
-Press **F** on a keyboard to show or hide the frame-rate readout: a pill at the top of the circle,
+Tap the top of the circle, or press **F** on a keyboard, to show or hide the frame-rate readout: a pill at the top of the circle,
 where the round glass still has room for it, with the frames the window presented in the last
-second and, while the visualizer runs, its own frame rate, the milliseconds its thread spent on
-each frame and the GPU milliseconds per frame (`gpu`). On the Pi the GPU figure comes from the
-V3D render engine's cumulative busy counter in
-`/sys/class/drm/card*/device/gpu_stats`, sampled once a second and divided by the frames drawn;
-where the adapter has timestamp queries and `SPOTIFY_ROUND_PROFILE` is set it comes from
-`wgpu-profiler` instead. If neither source exists the readout says `gpu —` rather than inventing a
+second, the milliseconds the UI thread spent drawing each (`ui`) and the GPU milliseconds per frame
+(`gpu`). The player only draws when something changes, mostly the ring moving half a pixel, so its
+frame rate follows the track's length (about 30 fps for a 3½-minute song); the milliseconds show how
+much of the 16.7 ms budget a frame takes. While the visualizer runs it shows the window's frames,
+the visualizer's own frame rate, the milliseconds its thread spent on each frame and the GPU
+milliseconds per frame. On the Pi the GPU figure comes from the V3D render engine's cumulative busy
+counter in `/sys/class/drm/card*/device/gpu_stats`, sampled once a second and divided by the frames
+drawn; for the visualizer, where the adapter has timestamp queries and `SPOTIFY_ROUND_PROFILE` is
+set, it comes from `wgpu-profiler` instead. If neither source exists the readout says `gpu —` rather than inventing a
 number. Above 16 ms the GPU cannot keep
 60 fps. The window only counts frames from the first time the readout is shown, because counting
 costs the Pi a render pass a frame. With `SPOTIFY_ROUND_FULL_SPEED` set, the same one-second line is
@@ -258,6 +261,7 @@ also written to `/tmp/spotify-round-fps` — window fps, screen, idle, scene fps
 | Swipe down | idle visualiser — it picks Earth or the Nautilus at random (a tap returns to the player) |
 | Swipe left / right on the Nautilus | travel on to the next stretch of sea / back to the last |
 | Tap a playlist | start it and return to now playing |
+| Tap the top of the circle | show / hide the frame-rate readout (also over the visualiser) |
 | Tap a queue entry | restart the playlist from that item |
 
 ---
@@ -413,7 +417,7 @@ performs commands; results are marshalled back with `upgrade_in_event_loop`. `sl
 `Send`, so artwork is decoded to a `SharedPixelBuffer` on a worker thread and turned into an image on
 the UI thread. A timer on the UI thread ticks once per frame at the panel's refresh rate (16⅔ ms for
 60 Hz, not the 16 ms that would make it 62.5 Hz) and advances the progress clock between polls. The
-rim is not a Slint path: `ring.rs` draws the track, the played sector and the head dot with one
+rim is not a Slint path: `ring.rs` draws the track and the played sector with one
 fragment shader into one of three textures, and Slint only composites the latest one. That removes
 per-frame SVG parsing and stroke tessellation, and a paused track repeats the same input so the rim
 is not redrawn at all.

@@ -1,40 +1,54 @@
-// A frame-rate readout, toggled with the F key or `show_fps` in the config.
+// A frame-rate readout, toggled with the F key, `show_fps` in the config, or
+// a tap on its place at the top of the circle: on the pill to hide it, on the
+// empty spot to show it again.
 //
 // It sits at the top of the circle, where the round glass still has room for
 // it inside the progress ring, and above everything else so it also shows over
-// the visualizer.
+// the visualizer and takes the tap before the screens do.
 
-import { Theme } from "../theme.slint";
+import { Pointer, Theme } from "../theme.slint";
 import { Idle, Stats } from "../state.slint";
 
-export component FpsCounter inherits Rectangle {
-    width: max(140px, label.preferred-width + 48px);
+export component FpsCounter inherits TouchArea {
+    width: Stats.shown ? pill.width : 140px;
     height: 44px;
     x: (1080px - self.width) / 2;
     y: 72px;
-    border-radius: 22px;
-    background: #000000b0;
-    border-width: 1px;
-    border-color: Theme.hairline;
-    visible: Stats.shown;
+    mouse-cursor: Pointer.plain;
+    clicked => {
+        Stats.shown = !Stats.shown;
+    }
 
     // A negative GPU time means this adapter has no timestamp queries and no
     // V3D busy counters: say so rather than showing the display's frame period.
     private property <string> gpu-text: Stats.scene-gpu-ms >= 0
         ? "\{round(Stats.scene-gpu-ms * 10) / 10} ms"
         : "—";
+    private property <string> display-gpu-text: Stats.display-gpu-ms >= 0
+        ? "\{round(Stats.display-gpu-ms * 10) / 10} ms"
+        : "—";
 
-    label := Text {
-        width: parent.width;
-        height: parent.height;
-        // The scene's own rate only means something while it is drawing.
-        text: Idle.active
-            ? "\{Stats.display} fps · scene \{Stats.scene} · \{round(Stats.scene-ms * 10) / 10} ms · gpu \{root.gpu-text}"
-            : "\{Stats.display} fps";
-        color: Theme.ink;
-        font-family: Theme.font;
-        font-size: 18px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    pill := Rectangle {
+        width: max(140px, label.preferred-width + 48px);
+        height: 44px;
+        border-radius: 22px;
+        background: #000000b0;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        visible: Stats.shown;
+
+        label := Text {
+            width: parent.width;
+            height: parent.height;
+            // The scene's own rate only means something while it is drawing.
+            text: Idle.active
+                ? "\{Stats.display} fps · scene \{Stats.scene} · \{round(Stats.scene-ms * 10) / 10} ms · gpu \{root.gpu-text}"
+                : "\{Stats.display} fps · ui \{round(Stats.display-ms * 10) / 10} ms · gpu \{root.display-gpu-text}";
+            color: Theme.ink;
+            font-family: Theme.font;
+            font-size: 18px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
     }
 }

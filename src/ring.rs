@@ -4,7 +4,7 @@
 //! Slint's `Path` re-parses and re-tessellates its commands whenever they change,
 //! and a stroke of this size is re-tessellated even when it does not. Both cost
 //! tens of milliseconds per frame in a debug build. A single fragment shader
-//! draws the track, the played sector and the head dot into a texture on the
+//! draws the track and the played sector into a texture on the
 //! shared wgpu device instead; Slint only composites that texture, so a frame is
 //! one uniform write and one full-screen draw call.
 //!
@@ -28,14 +28,14 @@ pub const SIZE: u32 = 1080;
 /// written.
 pub const SLOTS: usize = 3;
 
-/// Must match the rim geometry in `ui/main.slint` and `swipe_area.slint`.
+/// Must match the rim geometry in `swipe_area.slint`.
 const CENTER: f32 = 540.0;
-// As far out as the head dot allows: the panel's own bezel frames the ring.
-const RADIUS: f32 = 531.0;
-const THICKNESS: f32 = 6.0;
-/// Radius of the head dot, and the larger one shown while scrubbing.
-const HEAD: f32 = 8.0;
-const HEAD_SCRUB: f32 = 13.0;
+/// The band reaches from 528 px, where the old thin ring's inside edge was,
+/// to 560 px, well past the 540 px edge of the round panel: however the glass
+/// and its bezel sit on the pixels, the ring overscans the display and never
+/// shows a dark sliver outside it.
+const RADIUS: f32 = 544.0;
+const THICKNESS: f32 = 32.0;
 
 /// `Theme.ink` (#f5f5f8) as sRGB, and the track's alpha
 /// (`Theme.ink.transparentize(0.9)`).
@@ -49,8 +49,6 @@ const BG: [f32; 4] = [0.0275, 0.0275, 0.0392, 1.0];
 pub struct Input {
     /// 0..1, from the playback clock or from the finger on the rim.
     pub progress: f32,
-    /// A finger is on the rim: the head dot grows.
-    pub scrubbing: bool,
     /// Accent colour, following the artwork.
     pub accent: Rgb,
     /// How much of the ring shows, 0..1: it fades in with the first track and
@@ -82,7 +80,7 @@ impl Input {
 struct Uniforms {
     /// Centre x, centre y, radius, thickness.
     geometry: [f32; 4],
-    /// Progress, head radius, how much of the ring shows, glow strength.
+    /// Progress, unused, how much of the ring shows, glow strength.
     state: [f32; 4],
     track: [f32; 4],
     accent: [f32; 4],
@@ -219,7 +217,7 @@ impl Ring {
             geometry: [CENTER, CENTER, RADIUS, THICKNESS],
             state: [
                 input.progress.clamp(0.0, 1.0),
-                if input.scrubbing { HEAD_SCRUB } else { HEAD },
+                0.0,
                 input.ring.clamp(0.0, 1.0),
                 input.glow.clamp(0.0, 1.0),
             ],
@@ -333,7 +331,7 @@ pub fn render_once(input: &Input) -> Result<Vec<u8>> {
 const SHADER: &str = r#"
 struct Uniforms {
     geometry: vec4<f32>, // centre x, centre y, radius, thickness
-    state: vec4<f32>,    // progress, head radius, ring shown, glow strength
+    state: vec4<f32>,    // progress, unused, ring shown, glow strength
     track: vec4<f32>,
     accent: vec4<f32>,
     ink: vec4<f32>,
@@ -405,17 +403,15 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
     return vec4<f32>(rim.rgb * weight + colour * (1.0 - weight), 1.0);
 }
 
-// The track, the played arc and the head dot, premultiplied.
+// The track and the played arc, premultiplied.
 fn ring(p: vec2<f32>) -> vec4<f32> {
     let centre = params.geometry.xy;
     let radius = params.geometry.z;
     let half = params.geometry.w * 0.5;
     let progress = clamp(params.state.x, 0.0, 1.0);
-    let head_radius = params.state.y;
 
     let d = length(p - centre);
-    // The head dot reaches `head_radius` past the band on both sides.
-    if (abs(d - radius) > max(half, head_radius) + 1.0) {
+    if (abs(d - radius) > half + 1.0) {
         return vec4<f32>(0.0);
     }
 
@@ -430,29 +426,26 @@ fn ring(p: vec2<f32>) -> vec4<f32> {
     let sector = (1.0 - smoothstep(progress - edge, progress + edge, angle))
         * step(0.0005, progress);
 
-    let tip = progress * TAU;
-    let tip_centre = centre + vec2<f32>(sin(tip), -cos(tip)) * radius;
-    let head = (1.0 - smoothstep(head_radius - 0.75, head_radius + 0.75, length(p - tip_centre)))
-        * step(0.004, progress);
-
     let track_alpha = params.track.a * band;
     let arc_alpha = params.accent.a * band * sector;
-    let head_alpha = params.ink.a * head;
 
     let track_colour = params.track.rgb * track_alpha;
     let arc_colour = params.accent.rgb * arc_alpha;
-    let head_colour = params.ink.rgb * head_alpha;
 
-    // Source-over: the arc covers the track, the head covers both. Premultiplied.
-    let under = arc_colour + track_colour * (1.0 - arc_alpha);
-    let alpha = arc_alpha + track_alpha * (1.0 - arc_alpha);
-    return vec4<f32>(head_colour + under * (1.0 - head_alpha), head_alpha + alpha * (1.0 - head_alpha));
+    // Source-over: the arc covers the track. Premultiplied.
+    return vec4<f32>(
+        arc_colour + track_colour * (1.0 - arc_alpha),
+        arc_alpha + track_alpha * (1.0 - arc_alpha),
+    );
 }
 "#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Inside the band, 8 px in from the frame's edge.
+    const BAND: u32 = 8;
 
     fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
         let i = ((y * SIZE + x) * 4) as usize;
@@ -462,7 +455,6 @@ mod tests {
     fn input(progress: f32, ring: f32) -> Input {
         Input {
             progress,
-            scrubbing: false,
             accent: Rgb::new(30, 215, 96),
             ring,
             glow: 1.0,
@@ -471,12 +463,11 @@ mod tests {
 
     #[test]
     #[ignore = "needs a working GPU adapter"]
-    fn draws_the_track_the_arc_and_the_head() {
+    fn draws_the_track_and_the_arc_past_the_edge() {
         let pixels = render_once(&input(0.5, 1.0)).unwrap();
 
         // The played half reaches from the top clockwise to the bottom.
-        // The band's centre line, from the edge of the frame.
-        let band = (CENTER - RADIUS) as u32;
+        let band = BAND;
         let top = pixel(&pixels, 540, band);
         assert!(
             top[1] > 150 && top[1] > top[0],
@@ -489,9 +480,12 @@ mod tests {
             left[0] > beside[0] && left[0] < 30,
             "the track is missing or too strong: {left:?} beside {beside:?}"
         );
-        // The head dot sits at the end of the arc.
-        let head = pixel(&pixels, 540, SIZE - band);
-        assert!(head[0] > 200, "the head dot is missing: {head:?}");
+        // The band runs out over the frame's edge, and there is no head dot:
+        // past the end of the arc the band is the plain track.
+        let edge = pixel(&pixels, 540, 0);
+        assert!(edge[1] > 150, "the arc stops short of the edge: {edge:?}");
+        let past = pixel(&pixels, 520, SIZE - 1 - band);
+        assert!(past[0] < 30, "something is drawn past the arc: {past:?}");
         // Every pixel is opaque: Slint draws nothing under this frame.
         assert!(pixels.chunks(4).all(|pixel| pixel[3] == 255));
     }
@@ -514,7 +508,7 @@ mod tests {
     #[test]
     #[ignore = "needs a working GPU adapter"]
     fn a_hidden_ring_leaves_only_the_backdrop() {
-        let band = (CENTER - RADIUS) as u32;
+        let band = BAND;
         let hidden = render_once(&input(0.4, 0.0)).unwrap();
         let shown = render_once(&input(0.4, 1.0)).unwrap();
         let top = pixel(&hidden, 540, band);

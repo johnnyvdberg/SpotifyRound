@@ -901,7 +901,7 @@ impl Shared {
                 let Some(ui) = this.ui.upgrade() else {
                     return;
                 };
-                this.paint_ring(&ui, ratio, true, 0.0);
+                this.paint_ring(&ui, ratio, 0.0);
             });
         }
         {
@@ -2190,16 +2190,13 @@ impl Shared {
         }
 
         if fade < 1.0 {
-            let (progress, scrubbing) = {
+            let progress = {
                 let model = self.lock();
                 // While the finger is on the rim the preview wins, so the arc
-                // and the head dot follow the drag instead of the clock.
-                (
-                    model.scrub.unwrap_or_else(|| model.clock.progress()),
-                    model.scrub.is_some(),
-                )
+                // follows the drag instead of the clock.
+                model.scrub.unwrap_or_else(|| model.clock.progress())
             };
-            self.paint_ring(&ui, progress, scrubbing, dt);
+            self.paint_ring(&ui, progress, dt);
         }
     }
 
@@ -2211,7 +2208,7 @@ impl Shared {
     /// whether a track is loaded or not. `dt` advances the fades: the ring in
     /// with the first track and out when playback stops, the glow up once
     /// connected.
-    fn paint_ring(&self, ui: &AppWindow, progress: f32, scrubbing: bool, dt: f32) {
+    fn paint_ring(&self, ui: &AppWindow, progress: f32, dt: f32) {
         let accent = self.lock_motion().accent();
         let connected = ui.global::<crate::ui::App>().get_auth() == AUTH_READY;
 
@@ -2231,7 +2228,6 @@ impl Shared {
             } else {
                 previous.map_or(0.0, |previous| previous.progress)
             },
-            scrubbing,
             accent,
             ring: approach(
                 previous.map_or(0.0, |previous| previous.ring),
