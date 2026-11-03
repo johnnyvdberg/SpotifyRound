@@ -6348,7 +6348,10 @@ mod tests {
             for level in levels {
                 let vertices: Vec<Packed> = bytemuck::pod_collect_to_vec(level.vertices);
                 let indices: Vec<u32> = bytemuck::pod_collect_to_vec(level.indices);
-                assert!(!indices.is_empty() && indices.len().is_multiple_of(3), "{model:?}");
+                assert!(
+                    !indices.is_empty() && indices.len().is_multiple_of(3),
+                    "{model:?}"
+                );
                 for &i in &indices {
                     let n = vertices[i as usize].normal;
                     let (x, y, z) = (n[0] as f32, n[1] as f32, n[2] as f32);

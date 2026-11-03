@@ -3964,10 +3964,6 @@ mod tests {
             .ok()
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(0);
-        let names = [
-            "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom", "city", "meadow", "sponges", "hole",
-        ];
         let offsets: Vec<f64> = std::env::var("DIVE3D_PREVIEW_OFFSETS")
             .ok()
             .map(|list| {
@@ -3978,7 +3974,7 @@ mod tests {
             .unwrap_or_else(|| vec![0.0]);
         for n in 0..crate::voyage::BIOMES {
             let name = Biome::at((n as f64 + 0.5) * crate::voyage::LEG, seed_of(seed)).a;
-            let name = names[name];
+            let name = places::biome_name(name);
             for (k, offset) in offsets.iter().enumerate() {
                 let pixels = scene.read_back(&gpu, leg(n as f64) + offset, seed);
                 let path = std::path::Path::new(&dir).join(format!("{n}-{name}-{k}.png"));
@@ -4593,14 +4589,10 @@ mod tests {
         );
         scene.draw(&gpu, 0.0, 0, 0).expect("a frame");
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        let names = [
-            "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom", "city", "meadow", "sponges", "hole",
-        ];
         let frames = 60;
         let mut total = 0.0;
         for n in 0..crate::voyage::BIOMES {
-            let name = names[Biome::at((n as f64 + 0.5) * crate::voyage::LEG, 0.0).a];
+            let name = places::biome_name(Biome::at((n as f64 + 0.5) * crate::voyage::LEG, 0.0).a);
             let (mut cpu, mut drawn) = (0.0, 0.0);
             for i in 0..frames {
                 let seconds = leg(n as f64) + i as f64 * 0.25;
@@ -4636,7 +4628,7 @@ mod tests {
         }
         println!(
             "dive3d frame: mean {:.3} ms",
-            total / names.len() as f64 * 1e3
+            total / crate::voyage::BIOMES as f64 * 1e3
         );
     }
     /// Time specific seeds of every scene at several places inside each leg:
@@ -4679,10 +4671,6 @@ mod tests {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(6usize);
-        let names = [
-            "shallows", "forest", "wrecks", "atlantis", "cave", "abyss", "arctic", "trench",
-            "coral", "sargasso", "vents", "brine", "bloom", "city", "meadow", "sponges", "hole",
-        ];
         let span = crate::voyage::LEG / crate::voyage::SPEED;
         // `DIVE3D_COUNTERS=name,name` counts those V3D counters a frame
         // at every place (the names `v3d_perf_counters` lists).
@@ -4699,7 +4687,11 @@ mod tests {
             // Every leg of this visit's circuit, named by the biome it settles
             // in: the circuit is shuffled per visit, so a leg is not a biome.
             let legs: Vec<&str> = (0..crate::voyage::BIOMES)
-                .map(|n| names[Biome::at((n as f64 + 0.5) * crate::voyage::LEG, seed_of(visit)).a])
+                .map(|n| {
+                    places::biome_name(
+                        Biome::at((n as f64 + 0.5) * crate::voyage::LEG, seed_of(visit)).a,
+                    )
+                })
                 .collect();
             let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
             if let Ok(skip) = std::env::var("DIVE3D_SKIP") {
