@@ -2493,8 +2493,54 @@ fn vs_shadow(
 fn fs_shadow(in: Shadow) -> @location(0) vec4<f32> {
     let out = max(abs(in.corner) - in.inner, vec2<f32>(0.0)) / (1.0 - in.inner);
     let r = 1.0 - smooth01(0.0, 1.0, length(out));
-    let keep = 1.0 - in.dark * r;
+    let keep = 1.0 - in.dark * (r * r);
     return vec4<f32>(keep, keep, keep, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Pools of lamplight
+// ---------------------------------------------------------------------------
+
+// The museum's lamps light the walls and floor round them per pixel without
+// any model's shader paying for it: a quad laid on the wall or the floor
+// scales up what is already drawn under it (`dst * (1 + gain)`), so the
+// light takes the colour of what it falls on.
+
+struct Pool {
+    @builtin(position) position: vec4<f32>,
+    @location(0) corner: vec2<f32>,
+    @location(1) @interpolate(flat) gain: vec3<f32>,
+};
+
+@vertex
+fn vs_pool(
+    @builtin(vertex_index) index: u32,
+    @location(0) place: vec4<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) stretch: vec4<f32>,
+) -> Pool {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let corner = corners[index];
+    let along = vec3<f32>(stretch.x, 0.0, stretch.y);
+    let wall = stretch.w > 0.5;
+    let second = select(vec3<f32>(-stretch.y, 0.0, stretch.x), vec3<f32>(0.0, 1.0, 0.0), wall);
+    let lift = select(SHADOW_LIFT, 0.0, wall);
+    let p = place.xyz + along * (corner.x * place.w) + second * (corner.y * stretch.z)
+        + vec3<f32>(0.0, lift, 0.0);
+    var out: Pool;
+    out.position = project(p);
+    out.corner = corner;
+    out.gain = tint.rgb * (1.0 - fog_of(length(place.xyz - g.camera.xyz)));
+    return out;
+}
+
+@fragment
+fn fs_pool(in: Pool) -> @location(0) vec4<f32> {
+    let r = 1.0 - smooth01(0.0, 1.0, length(in.corner));
+    return vec4<f32>(in.gain * r, 1.0);
 }
 
 // ---------------------------------------------------------------------------

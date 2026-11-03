@@ -25,8 +25,49 @@ pub fn create_window(fullscreen: bool, show_fps: bool) -> Result<AppWindow> {
     // Full screen is the kiosk, and a kiosk is driven by touch: no pointer.
     window.global::<Pointer>().set_hidden(fullscreen);
     window.global::<Stats>().set_shown(show_fps);
+    let weak = window.as_weak();
+    window.global::<Stats>().on_save_place(move || {
+        if let Some(window) = weak.upgrade() {
+            save_place(&window);
+        }
+    });
     watch_rendering_if_asked(&window);
     Ok(window)
+}
+
+/// Append where the dive is (`Stats.place`) to `places.txt` beside the
+/// config file, with the time, so a spot met on a real run can be pointed
+/// out later; the readout says whether it was kept.
+fn save_place(window: &AppWindow) {
+    let stats = window.global::<Stats>();
+    let place = stats.get_place();
+    if place.is_empty() {
+        stats.set_saved("nothing to save".into());
+        return;
+    }
+    let config = window.global::<App>().get_config_path();
+    let file = std::path::Path::new(config.as_str())
+        .parent()
+        .map_or_else(|| "places.txt".into(), |dir| dir.join("places.txt"));
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let line = format!("unix {unix} · {place}\n");
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    match written {
+        Ok(()) => {
+            tracing::info!(file = %file.display(), %place, "place saved");
+            stats.set_saved("saved".into());
+        }
+        Err(err) => {
+            tracing::warn!(%err, file = %file.display(), "saving the place failed");
+            stats.set_saved("not saved".into());
+        }
+    }
 }
 
 thread_local! {
@@ -183,7 +224,7 @@ pub trait WindowExt: Sized {
     fn show_idle_frame(&self, index: usize);
     /// The visualizer's frames in the last second, the mean time its thread
     /// spent on each and the mean time each took on the GPU, in ms.
-    fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32);
+    fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32, place: &str);
     fn tick(&self, frame: &Frame);
     /// Name, icon kind and presence of the Spotify Connect device playback is
     /// running on.
@@ -330,13 +371,15 @@ impl WindowExt for AppWindow {
         idle.set_frames(slint::ModelRc::new(VecModel::from(frames)));
     }
 
-    fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32) {
+    fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32, place: &str) {
         let stats = self.global::<Stats>();
         if stats.get_shown() {
             stats.set_scene(frames);
             stats.set_scene_ms(ms);
             stats.set_scene_gpu_ms(gpu_ms);
         }
+        // Kept while hidden too, so a long press saves where the dive is now.
+        stats.set_place(place.into());
     }
 
     fn show_idle_frame(&self, index: usize) {
@@ -657,6 +700,7 @@ mod preview {
         stats.set_scene(60);
         stats.set_scene_ms(2.84);
         stats.set_scene_gpu_ms(9.6);
+        stats.set_place("seed 4242 · coral · 1834 s · x 5012.3 y -3.1 z -2.4 · 87°".into());
         window.global::<Idle>().set_active(true);
         save(&window, &soft, "fps-idle");
         window.global::<Idle>().set_active(false);

@@ -192,6 +192,13 @@ pub(crate) trait Visual: Send {
     fn set_render_scale(&mut self, _gpu: &Graphics, _scale: f32) -> bool {
         false
     }
+
+    /// Where the scene is, in a line for the frame-rate readout and for
+    /// saving: enough to find the spot again. Scenes without a journey have
+    /// none.
+    fn whereabouts(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Render the selected scene while the visualizer is visible.
@@ -463,8 +470,14 @@ pub fn spawn(
                         "visualizer"
                     );
                     let frames = drawn as i32;
+                    let place = renderers[active]
+                        .as_ref()
+                        .and_then(|r| r.whereabouts())
+                        .unwrap_or_default();
                     if ui
-                        .upgrade_in_event_loop(move |ui| ui.set_scene_stats(frames, ms, gpu_ms))
+                        .upgrade_in_event_loop(move |ui| {
+                            ui.set_scene_stats(frames, ms, gpu_ms, &place);
+                        })
                         .is_err()
                     {
                         return;

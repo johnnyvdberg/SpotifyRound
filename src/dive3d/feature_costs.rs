@@ -37,6 +37,7 @@ const PASSES: &[(&str, u64)] = &[
     ("fading models: per-instance fade", part::FADING_PROPS),
     ("far coral impostors", part::IMPOSTORS),
     ("contact shadows (E1)", part::SHADOWS),
+    ("lamplight pools (E3)", part::POOLS),
     ("sprites", part::SPRITES),
     ("point lights", part::LIGHTS),
     ("sun shafts", part::SUN_SHAFTS),

@@ -1620,11 +1620,15 @@ pub struct Frame {
     /// `tint` the colour and a seed for the shape, `stretch` the half width
     /// and the form.
     pub impostors: Vec<Sprite>,
-    /// Contact shadows, soft dark ellipses on the floor under what stands
+    /// Contact shadows, soft dark rectangles on the floor under what stands
     /// on it ([`Frame::shadow`], `vs_shadow`): `place` is the centre and the
-    /// half width along its x, `tint.x` how dark, `stretch` that x's
-    /// direction in the world's x and z and the half length across it.
+    /// half width along its x, `tint` how dark, the ground's slope and the
+    /// share of that half under the thing itself, `stretch` that x's
+    /// direction in the world's x and z, the half length across it and the
+    /// share of that under the thing.
     pub shadows: Vec<Sprite>,
+    /// Pools of lamplight on walls and floors ([`Frame::pool`], `vs_pool`).
+    pub pools: Vec<Sprite>,
     pub lights: Vec<Light>,
     /// The tunnel through the lava cave's massif, in world space for the
     /// stretch in view. It depends only on the seabed and that stretch, so it
@@ -1659,6 +1663,7 @@ impl Frame {
             beams: Vec::new(),
             impostors: Vec::new(),
             shadows: Vec::new(),
+            pools: Vec::new(),
             lights: Vec::new(),
             tunnel: Vec::new(),
             tunnel_indices: Vec::new(),
@@ -1681,6 +1686,7 @@ impl Frame {
         self.beams.clear();
         self.impostors.clear();
         self.shadows.clear();
+        self.pools.clear();
         self.lights.clear();
     }
 
@@ -1833,10 +1839,10 @@ impl Frame {
         yaw: f32,
         slope: [f32; 2],
         dark: f32,
-    ) {
+    ) -> Option<&mut Sprite> {
         let dark = dark * self.fade * edge();
         if dark <= 0.01 {
-            return;
+            return None;
         }
         let (s, c) = yaw.sin_cos();
         let [x, z] = half.map(|h| h + soft);
@@ -1845,6 +1851,39 @@ impl Frame {
             tint: [dark, slope[0], slope[1], half[0] / x],
             stretch: [c, -s, z, half[1] / z],
         });
+        self.shadows.last_mut()
+    }
+
+    /// A pool of lamplight centred on `p`, `half` across along the level
+    /// direction `along` and `half` again either up a wall (`wall`) or
+    /// across the floor: what lies under it is lit by up to `gain` times its
+    /// own colour, soft to the rim, fading with what is being placed.
+    pub fn pool(
+        &mut self,
+        p: [f32; 3],
+        along: [f32; 2],
+        half: [f32; 2],
+        wall: bool,
+        gain: [f32; 3],
+    ) {
+        let k = self.fade * edge();
+        if k <= 0.01 {
+            return;
+        }
+        self.pools.push(Sprite {
+            place: [p[0], p[1], p[2], half[0]],
+            tint: [gain[0] * k, gain[1] * k, gain[2] * k, 0.0],
+            stretch: [along[0], along[1], half[1], f32::from(u8::from(wall))],
+        });
+    }
+
+    /// A contact shadow with no core: an ellipse of `reach` along its x and
+    /// z, darkest (`dark`) at its middle, for a rounded thing like a stone.
+    fn blot(&mut self, p: [f32; 3], reach: [f32; 2], yaw: f32, slope: [f32; 2], dark: f32) {
+        if let Some(blot) = self.shadow(p, [0.0; 2], 1.0, yaw, slope, dark) {
+            blot.place[3] = reach[0];
+            blot.stretch[2] = reach[1];
+        }
     }
 
     fn sprite(&mut self, p: [f32; 3], size: f32, colour: [f32; 3], kind: f32) {
@@ -2866,6 +2905,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
     frame.beams.extend_from_slice(&cache.frame.beams);
     frame.impostors.extend_from_slice(&cache.frame.impostors);
     frame.shadows.extend_from_slice(&cache.frame.shadows);
+    frame.pools.extend_from_slice(&cache.frame.pools);
     frame.lights.extend_from_slice(&cache.frame.lights);
     #[cfg(test)]
     for (i, (step, skin)) in steps.into_iter().enumerate() {
@@ -3053,12 +3093,11 @@ fn rocks(w: &World, f: &mut Frame) {
         let Some(rows) = settle(w, place(p, yaw, pitch, roll, shape), height, 0.3) else {
             continue;
         };
-        let (half, soft) = (
-            [shape[0] * 0.6, shape[2] * 0.6],
-            shape[0].max(shape[2]) * 0.8,
-        );
-        let (y, slope) = rim_plane(w, x, z, half[0].max(half[1]) + 0.5 * soft);
-        f.shadow([x, y, z], half, soft, yaw, slope, 0.45);
+        // An ellipse with no hard core, reaching well past the stone and
+        // faint at its rim: the sand darkened, not a patch laid on it.
+        let reach = [shape[0] * 1.6, shape[2] * 1.6];
+        let (y, slope) = rim_plane(w, x, z, 0.6 * reach[0].max(reach[1]));
+        f.blot([x, y, z], reach, yaw, slope, 0.3);
         let i = f.put(model, rows, colour);
         i.grounded();
         if reef > 0.5 {

@@ -523,6 +523,9 @@ fn slab(
     }
 }
 
+/// How far the floor darkens out from the foot of a wall.
+const CORNER: f32 = 0.3;
+
 /// A texture and its repeats a unit, or none.
 type Skin = Option<(Surface, f32)>;
 /// Coursed sandstone.
@@ -588,6 +591,17 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
         }
     }
     for (v, out) in [(-STARBOARD, -1.0f32), (hall.port, 1.0)] {
+        // The floor darkens into the corner along the wall's foot, the whole
+        // hall in one strip so no seam shows between bays.
+        let along = m.at(u0 + 0.5 * hall.long, v, y);
+        f.shadow(
+            along,
+            [0.5 * hall.long, 0.0],
+            CORNER,
+            m.yaw(),
+            [0.0; 2],
+            0.5,
+        );
         for i in 0..hall.bays {
             let uc = u0 + (i as f32 + 0.5) * bay;
             let wall = [0.5 * bay, 0.5 * hall.high, thick];
@@ -714,6 +728,10 @@ fn end_wall(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, u: f32) {
     let y = m.floor;
     let thick = 0.08;
     let span = |a: f32, b: f32, h0: f32, h1: f32, f: &mut Frame| {
+        if h0 == 0.0 {
+            let foot = m.at(u, 0.5 * (a + b), y);
+            f.shadow(foot, [0.0, 0.5 * (b - a)], CORNER, m.yaw(), [0.0; 2], 0.5);
+        }
         slab(
             w,
             f,
@@ -1698,25 +1716,108 @@ fn masters(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
         if !w.visible(p, 0.4) {
             continue;
         }
-        let seat = place(
-            [p[0], p[1] + 0.1, p[2]],
-            m.yaw(),
-            0.0,
-            0.0,
-            [0.28, 0.025, 0.09],
-        );
-        f.put(Model::Box, seat, [0.35, 0.10, 0.12])
-            .element(element::MUSEUM);
-        let base = place(
-            [p[0], p[1] + 0.04, p[2]],
-            m.yaw(),
-            0.0,
-            0.0,
-            [0.26, 0.04, 0.07],
-        );
-        f.put(Model::Box, base, DARK_WOOD).element(element::MUSEUM);
-        f.shadow(p, [0.26, 0.07], 0.1, m.yaw(), [0.0; 2], 0.45);
+        bench(f, p, m.yaw());
     }
+}
+
+/// A gallery bench at `p` on the floor, its length along `yaw`'s x: a
+/// buttoned velvet cushion with rolled edges on a dark wooden rail, four
+/// turned legs shod in brass and a stretcher between them.
+fn bench(f: &mut Frame, p: [f32; 3], yaw: f32) {
+    let (s, c) = yaw.sin_cos();
+    // A point `a` along the bench, `b` across it and `h` up.
+    let at = |a: f32, b: f32, h: f32| [p[0] + c * a + s * b, p[1] + h, p[2] - s * a + c * b];
+    let velvet = [0.38, 0.08, 0.10];
+    let (long, deep) = (0.28, 0.09);
+    // The rail the cushion sits on.
+    f.put(
+        Model::Box,
+        place(at(0.0, 0.0, 0.085), yaw, 0.0, 0.0, [long, 0.012, deep]),
+        DARK_WOOD,
+    )
+    .textured(Surface::Wood, 4.0)
+    .element(element::MUSEUM);
+    // The cushion, its long edges rolled.
+    let (top, roll) = (0.124, 0.02);
+    f.put(
+        Model::Box,
+        place(
+            at(0.0, 0.0, top - roll),
+            yaw,
+            0.0,
+            0.0,
+            [long - 0.01, roll, deep - roll],
+        ),
+        velvet,
+    )
+    .textured(Surface::Damask, 6.0)
+    .element(element::MUSEUM);
+    for side in [-1.0, 1.0] {
+        let b = side * (deep - roll);
+        f.put(
+            Model::Capsule,
+            between(
+                at(-long + 0.01, b, top - roll),
+                at(long - 0.01, b, top - roll),
+                roll,
+            ),
+            mix3(velvet, [0.0; 3], 0.25),
+        )
+        .textured(Surface::Damask, 6.0)
+        .element(element::MUSEUM);
+    }
+    // Buttons where the tufting is drawn in.
+    for i in 0..4 {
+        for j in [-0.4f32, 0.4] {
+            let a = (i as f32 - 1.5) * 0.13;
+            let button = at(a + 0.03 * j.signum(), j * deep, top + 0.001);
+            f.put(
+                Model::Sphere,
+                place(button, 0.0, 0.0, 0.0, [0.006; 3]),
+                [0.10, 0.02, 0.03],
+            )
+            .element(element::MUSEUM);
+        }
+    }
+    // The legs, a little in from the corners, on brass feet.
+    for (a, b) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+        let (a, b) = (a * (long - 0.035), b * (deep - 0.025));
+        f.put(
+            Model::Cylinder,
+            between(at(a, b, 0.012), at(a, b, 0.08), 0.011),
+            DARK_WOOD,
+        )
+        .textured(Surface::Wood, 4.0)
+        .element(element::MUSEUM);
+        f.put(
+            Model::Cylinder,
+            between(at(a, b, 0.0), at(a, b, 0.012), 0.009),
+            BRASS,
+        )
+        .material(material::COPPER)
+        .element(element::MUSEUM);
+    }
+    let low = 0.03;
+    f.put(
+        Model::Cylinder,
+        between(
+            at(-long + 0.035, 0.0, low),
+            at(long - 0.035, 0.0, low),
+            0.006,
+        ),
+        DARK_WOOD,
+    )
+    .element(element::MUSEUM);
+    for a in [-1.0, 1.0] {
+        let a = a * (long - 0.035);
+        f.put(
+            Model::Cylinder,
+            between(at(a, -deep + 0.025, low), at(a, deep - 0.025, low), 0.006),
+            DARK_WOOD,
+        )
+        .element(element::MUSEUM);
+    }
+    f.shadow(p, [long - 0.02, deep - 0.01], 0.1, yaw, [0.0; 2], 0.45);
 }
 
 /// What in the museum moves with the clock: daylight down through the
@@ -1753,14 +1854,32 @@ pub fn museum_lights(w: &World, f: &mut Frame) {
                     continue;
                 }
                 let p = m.at(u, v, y + hall.high - 0.25);
-                if !w.visible(p, 0.6) {
-                    continue;
-                }
                 let lit = if hall.kind == HallKind::Minerals {
                     0.5
                 } else {
                     1.0
                 };
+                // Its light on the floor below it and on the nearer wall,
+                // per pixel: a pool round its foot, and a wash down the wall
+                // over the paintings, fainter on the far side of the lane.
+                let warm = [1.0 * lit, 0.75 * lit, 0.42 * lit];
+                let floor = m.at(u, v, y);
+                if w.visible(floor, 0.6) {
+                    f.pool(floor, m.axis, [0.55, 0.55], false, warm.map(|c| c * 0.8));
+                }
+                let (wall, near) = if v > 1.0 {
+                    (hall.port - 0.06, 1.0)
+                } else {
+                    (-STARBOARD + 0.06, 0.5)
+                };
+                let wash = m.at(u, wall, p[1] - 0.35);
+                if w.visible(wash, 0.8) {
+                    let gain = warm.map(|c| c * near);
+                    f.pool(wash, m.axis, [0.6, 0.65], true, gain);
+                }
+                if !w.visible(p, 0.6) {
+                    continue;
+                }
                 f.put(
                     Model::Sphere,
                     place(p, 0.0, 0.0, 0.0, [0.05; 3]),

@@ -130,6 +130,13 @@ export global Stats {
     // from timer queries where the adapter has them; negative when no source
     // exists, and the readout shows `—`.
     in-out property <float> scene-gpu-ms: -1;
+    // Where the dive is (`Visual::whereabouts`): its visit seed, sea,
+    // clock, position and heading; empty for scenes without a journey.
+    in-out property <string> place: "";
+    // A long press on the readout appends `place` to `places.txt` beside
+    // the config; `saved` says how that went, for a moment.
+    callback save-place();
+    in-out property <string> saved: "";
 }
 
 export global App {

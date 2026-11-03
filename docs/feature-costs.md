@@ -278,3 +278,13 @@ the seabed. Its shaders keep four threads (fs 31 instructions). From two interle
 +0.10 ms a place, at most +0.25 ms (arctic, vents, abyss, shallows: the rockiest views). The same
 four places were over 11 ms before and after (trench 0.85, meadow 0.15 and 0.45), 0.03 ms
 apart at worst.
+
+## Corner strips and lamplight pools (E2, E3, 2026-11-03)
+
+`part::POOLS` (the row "lamplight pools (E3)"): the museum's lamps light the floor under them and
+the nearer wall, a quad each scaling up what is under it, drawn twice; fs 22 instructions, four
+threads. E2's strips along the walls' feet are contact shadows (`part::SHADOWS`). Measured with
+the softer stone shadows, the new benches and the place readout, two interleaved 108-place
+`hotspots` runs each against the build before E1: median place 7.65 to 7.76 ms, mean +0.08 ms,
+at most +0.36 ms (museum 0.15 of visit 0, 5.96 to 6.32 ms). The same four places over 11 ms as
+before (trench 0.85, meadow 0.15 and 0.45), 0.04 ms apart at worst.

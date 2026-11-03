@@ -1,6 +1,7 @@
 // A frame-rate readout, toggled with the F key, `show_fps` in the config, or
 // a tap on its place at the top of the circle: on the pill to hide it, on the
-// empty spot to show it again.
+// empty spot to show it again. Under it, where the dive is; a long press on
+// either spot saves that to `places.txt` (`Stats.save-place`).
 //
 // It sits at the top of the circle, where the round glass still has room for
 // it inside the progress ring, and above everything else so it also shows over
@@ -15,8 +16,33 @@ export component FpsCounter inherits TouchArea {
     x: (1080px - self.width) / 2;
     y: 72px;
     mouse-cursor: Pointer.plain;
+    // Set once a press has been held long enough to save, so letting go
+    // does not toggle the readout too.
+    private property <bool> held: false;
+    pointer-event(event) => {
+        if (event.kind == PointerEventKind.down) {
+            root.held = false;
+        }
+    }
     clicked => {
-        Stats.shown = !Stats.shown;
+        if (!root.held) {
+            Stats.shown = !Stats.shown;
+        }
+    }
+    Timer {
+        interval: 800ms;
+        running: root.pressed && !root.held;
+        triggered => {
+            root.held = true;
+            Stats.save-place();
+        }
+    }
+    Timer {
+        interval: 2s;
+        running: Stats.saved != "";
+        triggered => {
+            Stats.saved = "";
+        }
     }
 
     // A negative GPU time means this adapter has no timestamp queries and no
@@ -47,6 +73,27 @@ export component FpsCounter inherits TouchArea {
             color: Theme.ink;
             font-family: Theme.font;
             font-size: 18px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    Rectangle {
+        y: 50px;
+        x: (root.width - self.width) / 2;
+        width: place.preferred-width + 32px;
+        height: 32px;
+        border-radius: 16px;
+        background: #000000b0;
+        visible: Stats.saved != "" || (Stats.shown && Idle.active && Stats.place != "");
+
+        place := Text {
+            width: parent.width;
+            height: parent.height;
+            text: Stats.saved != "" ? Stats.saved : Stats.place;
+            color: Theme.ink;
+            font-family: Theme.font;
+            font-size: 15px;
             horizontal-alignment: center;
             vertical-alignment: center;
         }

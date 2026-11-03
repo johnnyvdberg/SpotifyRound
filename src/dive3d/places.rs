@@ -48,28 +48,7 @@ fn seeded() -> Option<u64> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-pub fn biome_name(id: usize) -> &'static str {
-    match id {
-        0 => "shallows",
-        1 => "forest",
-        2 => "wrecks",
-        3 => "atlantis",
-        4 => "cave",
-        5 => "abyss",
-        6 => "arctic",
-        7 => "trench",
-        8 => "coral",
-        9 => "sargasso",
-        10 => "vents",
-        11 => "brine",
-        12 => "bloom",
-        13 => "city",
-        14 => "meadow",
-        15 => "sponges",
-        16 => "hole",
-        _ => "museum",
-    }
-}
+pub(crate) use super::biome_name;
 
 /// Which biome a settled leg of `seed`'s circuit is in.
 fn leg_biome(leg: usize, seed: u64) -> usize {

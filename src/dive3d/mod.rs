@@ -484,6 +484,30 @@ struct Globals {
     sky: [f32; 4],
 }
 
+/// A sea's name, as the places, shots and the readout call it.
+pub(crate) fn biome_name(id: usize) -> &'static str {
+    match id {
+        0 => "shallows",
+        1 => "forest",
+        2 => "wrecks",
+        3 => "atlantis",
+        4 => "cave",
+        5 => "abyss",
+        6 => "arctic",
+        7 => "trench",
+        8 => "coral",
+        9 => "sargasso",
+        10 => "vents",
+        11 => "brine",
+        12 => "bloom",
+        13 => "city",
+        14 => "meadow",
+        15 => "sponges",
+        16 => "hole",
+        _ => "museum",
+    }
+}
+
 pub(crate) struct Nautilus {
     /// What the pipelines were compiled from, for a benchmark to compile
     /// them again with other switches ([`compile`]).
@@ -522,6 +546,8 @@ pub(crate) struct Nautilus {
     /// The contact shadows, multiplied into the floor under what stands on
     /// it.
     shadows: wgpu::RenderPipeline,
+    /// Pools of lamplight, scaling up what lies under them.
+    pools: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
     /// Searchlight beams of other submarines.
     beams: wgpu::RenderPipeline,
@@ -584,6 +610,8 @@ pub(crate) struct Nautilus {
     visit: Option<u64>,
     frame: Frame,
     seconds: f64,
+    /// Where the window was last drawn from, for [`Visual::whereabouts`].
+    pose: Option<Pose>,
     /// Whether the underwater grade runs; `SPOTIFY_ROUND_UNDERWATER`.
     underwater: bool,
     /// Whether the seabed gets the low-poly facet bands; `SPOTIFY_ROUND_LOWPOLY`.
@@ -978,6 +1006,9 @@ mod part {
     pub const ABYSS_GLOW: u64 = 1 << 41;
     /// The contact shadows under what stands on a floor (`world::Frame::shadow`).
     pub const SHADOWS: u64 = 1 << 42;
+    /// The pools of lamplight on the museum's walls and floors
+    /// (`world::Frame::pool`).
+    pub const POOLS: u64 = 1 << 43;
 }
 
 /// The individual effects a benchmark can leave out, as bits of
@@ -1474,6 +1505,8 @@ struct Pipelines {
     /// The contact shadows, multiplied into the floor under what stands on
     /// it.
     shadows: wgpu::RenderPipeline,
+    /// Pools of lamplight, scaling up what lies under them.
+    pools: wgpu::RenderPipeline,
     shafts: wgpu::RenderPipeline,
     beams: wgpu::RenderPipeline,
     plumes: wgpu::RenderPipeline,
@@ -1930,6 +1963,29 @@ fn compile(
         &[],
         None,
     );
+    // Light that adds in proportion to what is lit: dst * (1 + src), exact
+    // on the eight-bit target where a multiply by more than one would clamp.
+    let brighten = wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Dst,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent::OVER,
+    };
+    let pools = pipeline(
+        "Dive3d pools",
+        "vs_pool",
+        "fs_pool",
+        &sprite_buffers,
+        Some(brighten),
+        false,
+        nearer,
+        false,
+        false,
+        &[],
+        None,
+    );
     let shafts = pipeline(
         "Dive3d shafts",
         "vs_shaft",
@@ -2002,6 +2058,7 @@ fn compile(
         glass,
         sprites,
         shadows,
+        pools,
         shafts,
         beams,
         plumes,
@@ -2366,6 +2423,7 @@ impl Nautilus {
             glass,
             sprites,
             shadows,
+            pools,
             shafts,
             beams,
             plumes,
@@ -2410,6 +2468,7 @@ impl Nautilus {
             glass,
             sprites,
             shadows,
+            pools,
             shafts,
             beams,
             plumes,
@@ -2453,6 +2512,7 @@ impl Nautilus {
             lowpoly,
             frame: Frame::new(),
             seconds: 0.0,
+            pose: None,
             #[cfg(test)]
             skip: 0,
             #[cfg(test)]
@@ -2485,6 +2545,7 @@ impl Nautilus {
         self.glass = p.glass;
         self.sprites = p.sprites;
         self.shadows = p.shadows;
+        self.pools = p.pools;
         self.shafts = p.shafts;
         self.beams = p.beams;
         self.plumes = p.plumes;
@@ -2518,6 +2579,7 @@ impl Nautilus {
         let voyage = self.voyage.advance(seconds, seed);
         let pose = self.helm.steer(&self.seabed, voyage, seconds);
         self.seconds = seconds;
+        self.pose = Some(pose);
         let t = seconds.rem_euclid(6_000.0) as f32;
         let world = World {
             seabed: &self.seabed,
@@ -2988,6 +3050,26 @@ impl Nautilus {
                 + std::mem::size_of_val(plumes)) as u64,
             bytemuck::cast_slice(shadows),
         );
+        // And the pools of lamplight last.
+        let pools = &self.frame.pools[..self.frame.pools.len().min(
+            MAX_SPRITES
+                - sprites.len()
+                - shafts.len()
+                - beams.len()
+                - impostors.len()
+                - plumes.len()
+                - shadows.len(),
+        )];
+        gpu.queue.write_buffer(
+            &self.sprite_buffer,
+            (std::mem::size_of_val(sprites)
+                + std::mem::size_of_val(shafts)
+                + std::mem::size_of_val(beams)
+                + std::mem::size_of_val(impostors)
+                + std::mem::size_of_val(plumes)
+                + std::mem::size_of_val(shadows)) as u64,
+            bytemuck::cast_slice(pools),
+        );
 
         #[cfg(test)]
         let upload_done = clock.elapsed();
@@ -3252,6 +3334,22 @@ impl Nautilus {
                     pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
                     pass.draw(0..6, first..first + shadows.len() as u32);
                 }
+                // Then the lamps' pools, over the shadows they would light.
+                if !pools.is_empty() && !this.skips(part::POOLS) {
+                    let first = (sprites.len()
+                        + shafts.len()
+                        + beams.len()
+                        + impostors.len()
+                        + plumes.len()
+                        + shadows.len()) as u32;
+                    pass.set_pipeline(&this.pools);
+                    pass.set_vertex_buffer(0, this.sprite_buffer.slice(..));
+                    // Twice: one draw can at most double what it lies on,
+                    // too little on the hall's dark, watery walls.
+                    for _ in 0..2 {
+                        pass.draw(0..6, first..first + pools.len() as u32);
+                    }
+                }
                 if !impostors.is_empty() && !this.skips(part::IMPOSTORS) {
                     // Sorted by form as they were uploaded: a draw a run.
                     let first = (sprites.len() + shafts.len() + beams.len()) as u32;
@@ -3432,6 +3530,20 @@ impl Visual for Nautilus {
 
     fn travel(&mut self, legs: i32) {
         self.voyage.travel(legs, self.seconds);
+    }
+
+    fn whereabouts(&self) -> Option<String> {
+        let visit = self.visit?;
+        let pose = self.pose?;
+        let [x, y, z] = pose.pos;
+        let out = pose.basis[2];
+        let heading = out[0].atan2(out[2]).to_degrees().rem_euclid(360.0);
+        let b = self.seabed.biome(x, z);
+        let sea = biome_name(if b.w > 0.5 { b.b } else { b.a });
+        Some(format!(
+            "seed {visit} · {sea} · {:.0} s · x {x:.1} y {y:.1} z {z:.1} · {heading:.0}°",
+            self.seconds
+        ))
     }
 
     fn set_render_scale(&mut self, gpu: &Graphics, scale: f32) -> bool {
@@ -4461,6 +4573,7 @@ mod tests {
             ("pass: shafts and beams", part::SHAFTS),
             ("pass: vent plumes", part::PLUMES),
             ("pass: contact shadows", part::SHADOWS),
+            ("pass: lamplight pools", part::POOLS),
             ("pass: corner mask", part::MASK),
             ("pass: cave tunnel", part::TUNNEL),
             ("pass: open water", part::BACKGROUND),
