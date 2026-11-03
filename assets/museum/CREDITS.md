@@ -53,3 +53,26 @@ first group, the picture gallery the grand masters.
 | saenredam-interior-of-the-church-of-st-b.jpg | grand masters | Interior of the Church of St Bavo in Haarlem | Pieter Saenredam | https://id.rijksmuseum.nl/200107963 |
 | maes-old-woman-saying-grace-known-as-the.jpg | grand masters | Old Woman Saying Grace, Known as ‘The Prayer without End’ | Nicolaes Maes | https://id.rijksmuseum.nl/20015947 |
 | rembrandt-man-in-oriental-dress.jpg | grand masters | Man in Oriental Dress | Rembrandt van Rijn | https://id.rijksmuseum.nl/200107930 |
+| coorte-four-apricots-on-a-stone-plinth.jpg | natural history | Four Apricots on a Stone Plinth | Adriaen Coorte | https://id.rijksmuseum.nl/200467012 |
+| coorte-a-sprig-of-gooseberries-on-a-stone-plint.jpg | natural history | A Sprig of Gooseberries on a Stone Plinth | Adriaen Coorte | https://id.rijksmuseum.nl/200467013 |
+| coorte-three-peaches-on-a-stone-plinth.jpg | natural history | Three Peaches on a Stone Plinth | Adriaen Coorte | https://id.rijksmuseum.nl/200467014 |
+| d-hondecoeter-a-hunter-s-bag-with-dead-hare.jpg | natural history | A Hunter's Bag, with Dead Hare | Melchior d'Hondecoeter | https://id.rijksmuseum.nl/200108603 |
+| ruysch-still-life-with-flowers-on-a-marble-tabl.jpg | natural history | Still Life with Flowers on a Marble Tabletop | Rachel Ruysch | https://id.rijksmuseum.nl/20027537 |
+| post-brazilian-village.jpg | natural history | Brazilian Village | Frans Post | https://id.rijksmuseum.nl/200107883 |
+| post-sugar-factory-with-tower-house.jpg | natural history | Sugar Factory with Tower House | Frans Post | https://id.rijksmuseum.nl/200107885 |
+| potter-a-spaniel.jpg | natural history | A spaniel | Paulus Potter | https://id.rijksmuseum.nl/20026071 |
+| avercamp-winter-landscape-with-ice-skaters.jpg | grand masters | Winter Landscape with Ice Skaters | Hendrick Avercamp | https://id.rijksmuseum.nl/200108163 |
+| rembrandt-landscape-with-a-stone-bridge.jpg | grand masters | Landscape with a Stone Bridge | Rembrandt van Rijn | https://id.rijksmuseum.nl/200106038 |
+| hals-portrait-of-jan-van-de-poll-1597-1678.jpg | grand masters | Portrait of Jan van de Poll (1597-1678) | Frans Hals | https://id.rijksmuseum.nl/200109344 |
+| steen-woman-at-her-toilet.jpg | grand masters | Woman at her Toilet | Jan Steen | https://id.rijksmuseum.nl/200107999 |
+| ruisdael-winter-landscape.jpg | grand masters | Winter Landscape | Jacob van Ruisdael | https://id.rijksmuseum.nl/20015858 |
+| hooch-a-mother-delousing-her-child-s-hair-know.jpg | grand masters | A Mother Delousing her Child’s Hair, Known as ‘A Mother’s Duty’ | Pieter de Hooch | https://id.rijksmuseum.nl/20028104 |
+| borch-woman-at-a-mirror.jpg | grand masters | Woman at a Mirror | Gerard ter Borch | https://id.rijksmuseum.nl/200108276 |
+| gogh-farming-village-at-twilight.jpg | grand masters | Farming Village at Twilight | Vincent van Gogh | https://id.rijksmuseum.nl/200109305 |
+| gogh-wheatfield.jpg | grand masters | Wheatfield | Vincent van Gogh | https://id.rijksmuseum.nl/200672687 |
+| hobbema-wooded-landscape-with-merrymakers-in-a-c.jpg | grand masters | Wooded Landscape with Merrymakers in a Cart | Meindert Hobbema | https://id.rijksmuseum.nl/200445746 |
+| leyster-two-children-with-a-cat.jpg | grand masters | Two Children with a Cat | Judith Leyster | https://id.rijksmuseum.nl/200851329 |
+| bol-michiel-de-ruyter-as-lieutenant-admiral.jpg | grand masters | Michiel de Ruyter as Lieutenant-Admiral | Ferdinand Bol | https://id.rijksmuseum.nl/200108249 |
+| metsu-the-sick-child.jpg | grand masters | The Sick Child | Gabriël Metsu | https://id.rijksmuseum.nl/200109480 |
+| saenredam-the-old-town-hall-of-amsterdam.jpg | grand masters | The Old Town Hall of Amsterdam | Pieter Saenredam | https://id.rijksmuseum.nl/200107966 |
+| heyden-amsterdam-city-view-with-houses-on-the-h.jpg | grand masters | Amsterdam City View with Houses on the Herengracht and the old Haarlemmersluis | Jan van der Heyden | https://id.rijksmuseum.nl/20015638 |

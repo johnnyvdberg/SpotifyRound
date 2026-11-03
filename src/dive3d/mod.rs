@@ -570,8 +570,9 @@ impl Bindings {
 /// material per instance: an unlisted material is a bug, which
 /// `every_instance_has_a_pipeline` catches. Each has a second pipeline for
 /// models that stand on the seabed (`GROUNDED`).
-const MATERIALS: [i32; 9] = [
+const MATERIALS: [i32; 10] = [
     0,
+    world::material::RELIEF as i32,
     world::material::LAVA as i32,
     world::material::COPPER as i32,
     world::material::VAULT as i32,
@@ -1185,7 +1186,7 @@ mod effect {
         (
             "museum",
             MUSEUM,
-            "Mammoth, GroundSloth, Triceratops, Megalodon, Archaeopteryx, WalrusWhale, PilotWhale, Tortoise, Porcupinefish, Murex, Diplocaulus, StegosaurusSpike, Dinictis, Trilobite, DeerSkull, KingCrab, Allosaurus, Seadragon, WhaleSkeleton, Canvas, MuseumArch, Pyrite, Bismuth, Malachite, Geode, Tourmaline",
+            "Mammoth, GroundSloth, Triceratops, Megalodon, Archaeopteryx, WalrusWhale, PilotWhale, Tortoise, Porcupinefish, Murex, Diplocaulus, StegosaurusSpike, Dinictis, Trilobite, DeerSkull, KingCrab, Allosaurus, Seadragon, SharkJaws, Isthminia, Archaeotherium, Hesperocyon, Diademodon, Meniscotherium, Merycoidodon, Albertocetus, Arktocara, Neopteroplax, ElephantMolar, GloryOfTheSea, HarpShell, Cowfish, SlipperLobster, LonghornBeetle, SmilodonTooth, CockscombOyster, SeaLily, CauliflowerCoral, BlueStarfish, StaghornCoral, SunflowerStar, WhaleSkeleton, Canvas, MuseumArch, Pyrite, Bismuth, Malachite, Geode, Tourmaline",
             "the museum's specimens, paintings, arches and minerals",
         ),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
@@ -3720,8 +3721,16 @@ mod tests {
                 assert_eq!(lods.len(), mesh::LODS);
                 // Each level coarser and further from the full scan.
                 for pair in lods.windows(2) {
-                    assert!(pair[1].count < pair[0].count, "{model:?}");
-                    assert!(pair[1].error > pair[0].error, "{model:?}");
+                    assert!(
+                        pair[1].count < pair[0].count,
+                        "{model:?} {:?}",
+                        lods.iter().map(|l| (l.count, l.error)).collect::<Vec<_>>()
+                    );
+                    assert!(
+                        pair[1].error > pair[0].error,
+                        "{model:?} {:?}",
+                        lods.iter().map(|l| (l.count, l.error)).collect::<Vec<_>>()
+                    );
                 }
             } else {
                 assert_eq!(lods.len(), 1);

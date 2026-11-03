@@ -34,6 +34,29 @@ const DEER_SKULL: &str = include_str!("../../../assets/models/museum-deer-skull.
 const KING_CRAB: &str = include_str!("../../../assets/models/museum-king-crab.obj");
 const ALLOSAURUS: &str = include_str!("../../../assets/models/museum-allosaurus.obj");
 const SEADRAGON: &str = include_str!("../../../assets/models/museum-seadragon.obj");
+const SHARK_JAWS: &str = include_str!("../../../assets/models/museum-shark-jaws.obj");
+const ISTHMINIA: &str = include_str!("../../../assets/models/museum-isthminia.obj");
+const ARCHAEOTHERIUM: &str = include_str!("../../../assets/models/museum-archaeotherium.obj");
+const HESPEROCYON: &str = include_str!("../../../assets/models/museum-hesperocyon.obj");
+const DIADEMODON: &str = include_str!("../../../assets/models/museum-diademodon.obj");
+const MENISCOTHERIUM: &str = include_str!("../../../assets/models/museum-meniscotherium.obj");
+const MERYCOIDODON: &str = include_str!("../../../assets/models/museum-merycoidodon.obj");
+const ALBERTOCETUS: &str = include_str!("../../../assets/models/museum-albertocetus.obj");
+const ARKTOCARA: &str = include_str!("../../../assets/models/museum-arktocara.obj");
+const NEOPTEROPLAX: &str = include_str!("../../../assets/models/museum-neopteroplax.obj");
+const ELEPHANT_MOLAR: &str = include_str!("../../../assets/models/museum-elephant-molar.obj");
+const GLORY_OF_THE_SEA: &str = include_str!("../../../assets/models/museum-glory-of-the-sea.obj");
+const HARP_SHELL: &str = include_str!("../../../assets/models/museum-harp-shell.obj");
+const COWFISH: &str = include_str!("../../../assets/models/museum-cowfish.obj");
+const SLIPPER_LOBSTER: &str = include_str!("../../../assets/models/museum-slipper-lobster.obj");
+const LONGHORN_BEETLE: &str = include_str!("../../../assets/models/museum-longhorn-beetle.obj");
+const SMILODON_TOOTH: &str = include_str!("../../../assets/models/museum-smilodon-tooth.obj");
+const COCKSCOMB_OYSTER: &str = include_str!("../../../assets/models/museum-cockscomb-oyster.obj");
+const SEA_LILY: &str = include_str!("../../../assets/models/museum-sea-lily.obj");
+const CAULIFLOWER_CORAL: &str = include_str!("../../../assets/models/museum-cauliflower-coral.obj");
+const BLUE_STARFISH: &str = include_str!("../../../assets/models/museum-blue-starfish.obj");
+const STAGHORN_CORAL: &str = include_str!("../../../assets/models/museum-staghorn-coral.obj");
+const SUNFLOWER_STAR: &str = include_str!("../../../assets/models/museum-sunflower-star.obj");
 
 /// The file a specimen is cast from.
 pub(super) fn scan(model: Model) -> &'static str {
@@ -55,7 +78,30 @@ pub(super) fn scan(model: Model) -> &'static str {
         Model::DeerSkull => DEER_SKULL,
         Model::KingCrab => KING_CRAB,
         Model::Allosaurus => ALLOSAURUS,
-        _ => SEADRAGON,
+        Model::Seadragon => SEADRAGON,
+        Model::SharkJaws => SHARK_JAWS,
+        Model::Isthminia => ISTHMINIA,
+        Model::Archaeotherium => ARCHAEOTHERIUM,
+        Model::Hesperocyon => HESPEROCYON,
+        Model::Diademodon => DIADEMODON,
+        Model::Meniscotherium => MENISCOTHERIUM,
+        Model::Merycoidodon => MERYCOIDODON,
+        Model::Albertocetus => ALBERTOCETUS,
+        Model::Arktocara => ARKTOCARA,
+        Model::Neopteroplax => NEOPTEROPLAX,
+        Model::ElephantMolar => ELEPHANT_MOLAR,
+        Model::GloryOfTheSea => GLORY_OF_THE_SEA,
+        Model::HarpShell => HARP_SHELL,
+        Model::Cowfish => COWFISH,
+        Model::SlipperLobster => SLIPPER_LOBSTER,
+        Model::LonghornBeetle => LONGHORN_BEETLE,
+        Model::SmilodonTooth => SMILODON_TOOTH,
+        Model::CockscombOyster => COCKSCOMB_OYSTER,
+        Model::SeaLily => SEA_LILY,
+        Model::CauliflowerCoral => CAULIFLOWER_CORAL,
+        Model::BlueStarfish => BLUE_STARFISH,
+        Model::StaghornCoral => STAGHORN_CORAL,
+        _ => SUNFLOWER_STAR,
     }
 }
 

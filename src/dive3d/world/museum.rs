@@ -25,7 +25,7 @@
 //! textures the renderer streams in as the museum comes near and lets go
 //! once it is behind (`Model::is_streamed`).
 
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
 use super::*;
 use crate::dive3d::paintings::{PAINTINGS, Painting};
@@ -387,30 +387,64 @@ enum Mount {
 }
 
 /// A specimen: the model, how long it stands in the hall along its longest
-/// side, how long that side is in the model (each is cast a unit tall), and
-/// its mount.
-type Specimen = (Model, f32, f32, Mount);
+/// side, its footprint in the model along x and z (each is cast a unit
+/// tall), and its mount.
+type Specimen = (Model, f32, [f32; 2], Mount);
 
-const SPECIMENS: [Specimen; 18] = [
-    (Model::Mammoth, 0.85, 1.47, Mount::Platform),
-    (Model::Triceratops, 0.8, 2.10, Mount::Platform),
-    (Model::GroundSloth, 0.45, 2.34, Mount::Plinth),
-    (Model::Megalodon, 0.45, 1.0, Mount::Platform),
-    (Model::PilotWhale, 0.4, 2.05, Mount::Plinth),
-    (Model::WalrusWhale, 0.36, 1.34, Mount::Plinth),
-    (Model::Tortoise, 0.4, 2.24, Mount::Plinth),
-    (Model::StegosaurusSpike, 0.4, 4.39, Mount::Plinth),
-    (Model::DeerSkull, 0.28, 1.87, Mount::Case),
-    (Model::Diplocaulus, 0.26, 1.44, Mount::Case),
-    (Model::Allosaurus, 0.26, 1.48, Mount::Case),
-    (Model::Dinictis, 0.26, 1.55, Mount::Case),
-    (Model::Archaeopteryx, 0.24, 1.21, Mount::Case),
-    (Model::Trilobite, 0.18, 1.24, Mount::Case),
-    (Model::Murex, 0.2, 3.02, Mount::Case),
-    (Model::Porcupinefish, 0.22, 2.91, Mount::Case),
-    (Model::KingCrab, 0.26, 1.86, Mount::Case),
-    (Model::Seadragon, 0.3, 3.44, Mount::Case),
+/// The specimens on the island's stands, each on its own.
+const SHOW_PIECES: [Specimen; 5] = [
+    (Model::Mammoth, 0.85, [1.48, 0.56], Mount::Platform),
+    (Model::Triceratops, 0.8, [2.10, 0.59], Mount::Platform),
+    (Model::Megalodon, 0.38, [0.30, 0.84], Mount::Platform),
+    (Model::SharkJaws, 0.42, [1.31, 0.51], Mount::Platform),
+    (Model::Isthminia, 0.7, [4.64, 1.25], Mount::Platform),
 ];
+
+/// The aisles' specimens: more than the aisles have bays for, so each
+/// visit's museum shows its own selection.
+const SPECIMENS: [Specimen; 36] = [
+    (Model::GroundSloth, 0.45, [0.54, 2.34], Mount::Plinth),
+    (Model::PilotWhale, 0.4, [2.05, 1.27], Mount::Plinth),
+    (Model::WalrusWhale, 0.36, [1.33, 1.09], Mount::Plinth),
+    (Model::Tortoise, 0.4, [2.25, 1.53], Mount::Plinth),
+    (Model::StegosaurusSpike, 0.4, [0.56, 4.40], Mount::Plinth),
+    (Model::Archaeotherium, 0.36, [1.31, 2.14], Mount::Plinth),
+    (Model::Hesperocyon, 0.28, [1.03, 2.59], Mount::Plinth),
+    (Model::Diademodon, 0.32, [2.35, 1.99], Mount::Plinth),
+    (Model::Meniscotherium, 0.28, [1.32, 1.85], Mount::Plinth),
+    (Model::Merycoidodon, 0.3, [1.70, 1.52], Mount::Plinth),
+    (Model::Albertocetus, 0.4, [1.32, 1.83], Mount::Plinth),
+    (Model::Arktocara, 0.36, [1.18, 0.90], Mount::Plinth),
+    (Model::Neopteroplax, 0.36, [1.59, 1.47], Mount::Plinth),
+    (Model::DeerSkull, 0.28, [1.87, 0.73], Mount::Case),
+    (Model::Diplocaulus, 0.26, [0.18, 1.44], Mount::Case),
+    (Model::Allosaurus, 0.26, [0.26, 1.49], Mount::Case),
+    (Model::Dinictis, 0.26, [1.55, 1.39], Mount::Case),
+    (Model::Archaeopteryx, 0.24, [0.07, 1.21], Mount::Case),
+    (Model::Trilobite, 0.18, [0.37, 1.24], Mount::Case),
+    (Model::Murex, 0.2, [1.22, 2.76], Mount::Case),
+    (Model::Porcupinefish, 0.22, [1.36, 2.87], Mount::Case),
+    (Model::KingCrab, 0.26, [1.81, 1.88], Mount::Case),
+    (Model::Seadragon, 0.3, [3.44, 0.27], Mount::Case),
+    (Model::ElephantMolar, 0.3, [1.60, 0.53], Mount::Case),
+    (Model::GloryOfTheSea, 0.09, [0.37, 0.36], Mount::Case),
+    (Model::HarpShell, 0.14, [0.54, 0.51], Mount::Case),
+    (Model::Cowfish, 0.3, [2.53, 0.80], Mount::Case),
+    (Model::SlipperLobster, 0.26, [2.18, 2.01], Mount::Case),
+    (Model::LonghornBeetle, 0.2, [0.90, 1.82], Mount::Case),
+    (Model::SmilodonTooth, 0.25, [0.13, 1.00], Mount::Case),
+    (Model::CockscombOyster, 0.2, [0.87, 1.02], Mount::Case),
+    (Model::SeaLily, 0.12, [0.38, 0.78], Mount::Case),
+    (Model::CauliflowerCoral, 0.24, [1.21, 1.47], Mount::Case),
+    (Model::BlueStarfish, 0.3, [6.70, 6.81], Mount::Case),
+    (Model::StaghornCoral, 0.2, [0.61, 1.21], Mount::Case),
+    (Model::SunflowerStar, 0.2, [0.58, 1.13], Mount::Case),
+];
+
+/// A specimen's scale: its longest side to its size in the hall.
+fn scale_of(&(_, size, [x, z], _): &Specimen) -> f32 {
+    size / x.max(z)
+}
 
 /// A mineral: the model, its colour, whether it is a crystal lit through
 /// (glass), and the colour it fluoresces under the ultraviolet, if it does.
@@ -470,11 +504,40 @@ fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 }
 
 /// A box of `half` extents at `centre`, square to the halls, if it is in
-/// view.
-fn slab(w: &World, f: &mut Frame, m: &Museum, centre: [f32; 3], half: [f32; 3], colour: [f32; 3]) {
+/// view, in `skin`'s texture: [`Skin`]'s `None` leaves it plain.
+fn slab(
+    w: &World,
+    f: &mut Frame,
+    m: &Museum,
+    centre: [f32; 3],
+    half: [f32; 3],
+    colour: [f32; 3],
+    skin: Skin,
+) {
     if w.visible(centre, half[0].max(half[1]).max(half[2]) * 1.8) {
-        f.put(Model::Box, place(centre, m.yaw(), 0.0, 0.0, half), colour)
-            .element(element::MUSEUM);
+        let slab = f.put(Model::Box, place(centre, m.yaw(), 0.0, 0.0, half), colour);
+        if let Some((surface, repeats)) = skin {
+            slab.textured(surface, repeats);
+        }
+        slab.element(element::MUSEUM);
+    }
+}
+
+/// A texture and its repeats a unit, or none.
+type Skin = Option<(Surface, f32)>;
+/// Dressed stone, its courses a hand high.
+const ASHLAR: Skin = Some((Surface::Ashlar, 1.1));
+/// Polished stone, for the trim and the stands.
+const MARBLE: Skin = Some((Surface::Marble, 2.5));
+
+impl Hall {
+    /// The long walls' texture: woven damask behind the paintings in the
+    /// gallery, stone in the others.
+    fn wall_skin(&self) -> Skin {
+        match self.kind {
+            HallKind::Masters => Some((Surface::Damask, 2.0)),
+            _ => ASHLAR,
+        }
     }
 }
 
@@ -520,7 +583,7 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
                 place(c, m.yaw(), 0.0, 0.0, [0.5 * bay, 0.05, half]),
                 [0.62, 0.58, 0.52],
             )
-            .textured(Surface::Marble, 2.0)
+            .textured(Surface::Tiles, 0.8)
             .element(element::MUSEUM);
         }
     }
@@ -535,6 +598,7 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
                 m.at(uc, v + out * thick, y + 0.5 * hall.high),
                 wall,
                 hall.wall,
+                hall.wall_skin(),
             );
             // A frieze along the top and a dark dado along the foot.
             let frieze = [0.5 * bay, 0.06, 1.6 * thick];
@@ -545,6 +609,7 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
                 m.at(uc, v, y + hall.high - 0.06),
                 frieze,
                 hall.trim,
+                MARBLE,
             );
             let dado = mix3(hall.wall, [0.1; 3], 0.5);
             slab(
@@ -554,10 +619,18 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
                 m.at(uc, v, y + 0.08),
                 [0.5 * bay, 0.08, 1.3 * thick],
                 dado,
+                MARBLE,
             );
         }
         for i in 0..=hall.bays {
             let u = u0 + i as f32 * bay;
+            // None behind the picture gallery's centrepiece.
+            if hall.kind == HallKind::Masters && v == hall.port {
+                let (_, half) = centrepiece_span(hall);
+                if (u - (hall.from + 0.5 * hall.long)).abs() < half + 0.08 {
+                    continue;
+                }
+            }
             let pilaster = [0.05, 0.5 * hall.high, 1.8 * thick];
             slab(
                 w,
@@ -566,6 +639,7 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
                 m.at(u, v, y + 0.5 * hall.high),
                 pilaster,
                 hall.trim,
+                MARBLE,
             );
         }
     }
@@ -647,6 +721,7 @@ fn end_wall(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, u: f32) {
             m.at(u, 0.5 * (a + b), y + 0.5 * (h0 + h1)),
             [thick, 0.5 * (h1 - h0), 0.5 * (b - a)],
             hall.wall,
+            hall.wall_skin(),
         );
     };
     span(-STARBOARD, -DOOR, 0.0, hall.high, f);
@@ -708,16 +783,17 @@ fn facade(w: &World, f: &mut Frame, m: &Museum) {
             m.at(-0.05, v, y + 0.5 * tower),
             [0.3, 0.5 * tower, 0.3],
             buff,
+            ASHLAR,
         );
         // Courses of slate between the buff.
         for k in 1..5 {
             let at = m.at(-0.05, v, y + tower * k as f32 / 5.0);
-            slab(w, f, m, at, [0.32, 0.03, 0.32], slate);
+            slab(w, f, m, at, [0.32, 0.03, 0.32], slate, None);
         }
         // Tall narrow windows, dark.
         for k in 0..3 {
             let at = m.at(-0.355, v, y + 0.5 + k as f32 * 0.55);
-            slab(w, f, m, at, [0.01, 0.16, 0.06], [0.05; 3]);
+            slab(w, f, m, at, [0.01, 0.16, 0.06], [0.05; 3], None);
         }
         f.put(
             Model::Cone,
@@ -758,6 +834,7 @@ fn facade(w: &World, f: &mut Frame, m: &Museum) {
             m.at(-deep, first.middle(), y - 0.1 + 0.035 * k as f32),
             [deep, 0.035, first.half() + 0.4],
             STONE,
+            ASHLAR,
         );
     }
 }
@@ -825,6 +902,7 @@ fn natural_history(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
                 m.at(hall.from + 0.5 * hall.long, 0.5 * (v + wall), y + floor),
                 [0.5 * hall.long, 0.04, 0.5 * (wall - v).abs() + 0.05],
                 hall.trim,
+                MARBLE,
             );
             let rail = floor + 0.16;
             let middle = m.at(hall.from + 0.5 * hall.long, v, y + rail);
@@ -845,76 +923,38 @@ fn natural_history(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
         }
     }
 
-    // The island: a round platform of two steps, a brass rail on posts
-    // round its edge.
+    // The island: a floor of darker stone set in the hall's, and on it the
+    // show pieces round the whale, each on a stand of its own and turned
+    // along the ring, so the window passes each side-on as the boat goes
+    // round them.
     let centre = m.at(m.loop_at, m.radius, y);
     let island = m.radius - 0.75;
-    if w.visible([centre[0], y + 1.0, centre[2]], island + 1.5) {
-        for (r, top, colour) in [
-            (island, 0.05, STONE),
-            (island - 0.08, 0.1, [0.66, 0.62, 0.55]),
-        ] {
-            f.put(
-                Model::Cylinder,
-                place(centre, 0.0, 0.0, 0.0, [r, top, r]),
-                colour,
-            )
-            .element(element::MUSEUM);
-        }
-        let posts = 16;
-        let edge = |k: usize, up: f32| {
-            let a = k as f32 / posts as f32 * TAU;
-            let r = island - 0.04;
-            [centre[0] + r * a.cos(), y + up, centre[2] + r * a.sin()]
-        };
-        for k in 0..posts {
-            rod(f, edge(k, 0.05), edge(k, 0.2), 0.006, BRASS);
-            rod(f, edge(k, 0.2), edge(k + 1, 0.2), 0.005, BRASS);
-        }
+    if w.visible([centre[0], y + 0.5, centre[2]], island + 1.0) {
+        f.put(
+            Model::Cylinder,
+            place(centre, 0.0, 0.0, 0.0, [island, 0.01, island]),
+            [0.62, 0.58, 0.52],
+        )
+        .element(element::MUSEUM);
     }
-    let mut specimens = SPECIMENS;
-    h.shuffle(&mut specimens);
-    let (big, rest): (Vec<_>, Vec<_>) = specimens.into_iter().partition(|s| s.3 == Mount::Platform);
-    // In a line down the middle of the island, along the hall, the largest
-    // in the middle: each square to the hall and a hand's breadth clear of
-    // the next, the line centred on the island, the labels at its rim on
-    // the lane's side.
-    let mut big = big;
-    big.sort_by(|a, b| b.1.total_cmp(&a.1));
-    big.swap(0, 1);
-    // How far each reaches along the hall from its middle: its length, or
-    // for the flat tooth, its breadth (it is turned to face across).
-    let reach = |&(model, size, longest, _): &Specimen| {
-        if model == Model::Megalodon {
-            0.5 * 0.84 * size / longest
-        } else {
-            0.5 * size
-        }
-    };
-    let gap = 0.12;
-    let span: f32 = big.iter().map(reach).sum::<f32>() * 2.0 + gap * (big.len() - 1) as f32;
-    let mut along = -0.5 * span;
-    for specimen in &big {
-        let &(model, size, longest, _) = specimen;
-        along += reach(specimen);
-        let p = m.at(m.loop_at + along, m.radius, y + 0.1);
-        along += reach(specimen) + gap;
-        let s = size / longest;
-        // The tooth is scanned point down: it stands turned over, its root
-        // on the platform and its point up, its face across the hall.
-        let rows = if model == Model::Megalodon {
-            place([p[0], p[1] + s, p[2]], m.yaw() + FRAC_PI_2, 0.0, PI, [s; 3])
-        } else {
-            place(p, m.yaw(), 0.0, 0.0, [s; 3])
-        };
-        if !w.visible([p[0], p[1] + 0.5 * s, p[2]], size) {
-            continue;
-        }
-        f.put(model, rows, [1.0; 3]).element(element::MUSEUM);
-        let (u, _) = m.local(p[0], p[2]);
-        let foot = m.at(u, m.radius - island + 0.12, y + 0.1);
-        let out = m.direction(0.0, -1.0);
-        label(f, foot, out[0].atan2(out[1]), 0.8);
+    let mut show = SHOW_PIECES;
+    h.shuffle(&mut show);
+    // Each stand's share of the ring is its length along it and a clear
+    // way to the next; what is left over is shared out evenly between them.
+    let ring = island - 0.38;
+    let gap = 0.3;
+    let total: f32 = show.iter().map(|s| show_length(s) + gap).sum();
+    let spare = (TAU * ring - total).max(0.0) / show.len() as f32;
+    let mut around = h.next() * TAU;
+    for piece in &show {
+        let share = show_length(piece) + gap + spare;
+        let a = around + 0.5 * share / ring;
+        around += share / ring;
+        let (du, dv) = (a.cos(), a.sin());
+        let p = m.at(m.loop_at + ring * du, m.radius + ring * dv, y);
+        let along = m.direction(-dv, du);
+        let out = m.direction(du, dv);
+        show_stand(w, f, p, piece, yaw_along(along[0], along[1]), out);
     }
     // The whale, hung over the island on cables from the vault, diving a
     // little, a little across the hall.
@@ -955,13 +995,18 @@ fn natural_history(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
         }
     }
     h.shuffle(&mut slots);
-    for (&(model, size, longest, mount), &(u, v, starboard)) in rest.iter().zip(&slots) {
+    // The aisles have a bay each for fewer specimens than there are: each
+    // visit shows its own selection.
+    let mut specimens = SPECIMENS;
+    h.shuffle(&mut specimens);
+    for (specimen, &(u, v, starboard)) in specimens.iter().zip(&slots) {
+        let &(model, size, _, mount) = specimen;
         let p = m.at(u, v, y);
         // A model's +z is to port: the starboard aisle's face that way.
         let toward = if starboard { 0.0 } else { PI };
         let yaw = m.yaw() + toward + 0.5 * (h.next() - 0.5);
         if w.visible([p[0], y + 0.5, p[2]], 0.7) {
-            stand(f, p, model, [size, size / longest], mount, yaw);
+            stand(f, p, model, [size, scale_of(specimen)], mount, yaw);
         }
     }
 
@@ -1010,7 +1055,7 @@ fn natural_history(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
     let how = Hang {
         scale: NATURAL_SCALE,
         rows: 1,
-        gap: 0.08,
+        gap: 0.2,
     };
     hang(w, f, m, &walls, &paintings, how);
 }
@@ -1038,7 +1083,10 @@ struct Hang {
 }
 
 /// Hangs `paintings`, in turn, on `walls`, in turn, each row filled from the
-/// left with what fits and centred.
+/// left with what fits and centred. They are spaced by their frames, not
+/// their canvases, `gap` clear between frames and a label's room clear
+/// between rows. The top row hangs on cords from the rail; the rows under it
+/// on hooks behind their frames, so no cord crosses a painting.
 fn hang(w: &World, f: &mut Frame, m: &Museum, walls: &[Wall], paintings: &[usize], how: Hang) {
     let mut next = paintings.iter().copied().peekable();
     for wall in walls {
@@ -1047,8 +1095,9 @@ fn hang(w: &World, f: &mut Frame, m: &Museum, walls: &[Wall], paintings: &[usize
             let mut items = Vec::new();
             let mut used = 0.0;
             while let Some(i) = next.peek().copied() {
-                let (pw, ph) = size_of(&PAINTINGS[i], how.scale, 0.84 * row_high);
-                if used + pw + how.gap > wall.width {
+                let (pw, ph) = framed_size(&PAINTINGS[i], how.scale, row_high - LABEL_ROOM);
+                let outer = pw + 2.0 * frame_band(pw, ph);
+                if used + outer + how.gap > wall.width {
                     if items.is_empty() {
                         // Too wide for the wall: left in store.
                         next.next();
@@ -1056,20 +1105,22 @@ fn hang(w: &World, f: &mut Frame, m: &Museum, walls: &[Wall], paintings: &[usize
                     }
                     break;
                 }
-                used += pw + how.gap;
-                items.push((i, pw, ph));
+                used += outer + how.gap;
+                items.push((i, pw, ph, outer));
                 next.next();
             }
-            let mid = wall.low + row_high * (how.rows - 1 - row) as f32 + 0.5 * row_high;
+            let mid =
+                wall.low + row_high * (how.rows - 1 - row) as f32 + 0.5 * (row_high + LABEL_ROOM);
             let mut along = -0.5 * used + 0.5 * how.gap;
-            for (i, pw, ph) in items {
-                let c = along + 0.5 * pw;
-                along += pw + how.gap;
+            for (i, pw, ph, outer) in items {
+                let c = along + 0.5 * outer;
+                along += outer + how.gap;
                 let (u, v) = (wall.u + wall.along[0] * c, wall.v + wall.along[1] * c);
                 let p = m.at(u, v, m.floor + mid);
-                if w.visible(p, pw.max(ph)) {
+                if w.visible(p, outer.max(ph)) {
                     let face = m.direction(wall.face[0], wall.face[1]);
-                    painting(f, p, face, i, [pw, ph], m.floor + wall.high + 0.1);
+                    let rail = (row == 0).then_some(m.floor + wall.high + 0.1);
+                    painting(w, f, p, face, i, [pw, ph], rail);
                 }
             }
         }
@@ -1077,6 +1128,21 @@ fn hang(w: &World, f: &mut Frame, m: &Museum, walls: &[Wall], paintings: &[usize
             return;
         }
     }
+}
+
+/// The room under a frame for its label, and between it and the row below.
+const LABEL_ROOM: f32 = 0.16;
+
+/// The width of a painting's frame round a canvas `w` by `h`.
+fn frame_band(w: f32, h: f32) -> f32 {
+    0.035 + 0.045 * w.max(h)
+}
+
+/// [`size_of`], with the frame round it no taller than `most`.
+fn framed_size(p: &Painting, scale: f32, most: f32) -> (f32, f32) {
+    let (w, h) = size_of(p, scale, f32::MAX);
+    let k = (most / (h + 2.0 * frame_band(w, h))).min(1.0);
+    (w * k, h * k)
 }
 
 /// How large the halls hang their paintings ([`Hang::scale`]): the natural
@@ -1097,11 +1163,48 @@ fn size_of(p: &Painting, scale: f32, most: f32) -> (f32, f32) {
     (w * k, h * k)
 }
 
+/// How a painting is framed, each painting always the same way.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameStyle {
+    /// Carved and gilt: a raised ridge, a bead at the sight edge, ornaments
+    /// at the corners and a crest over the top.
+    Gilt,
+    /// The Dutch black frame: ebony, rippled in ridges, a gilt fillet at
+    /// the sight edge.
+    Ebony,
+    /// Walnut, with gilt edges inside and out.
+    Walnut,
+}
+
+fn frame_style(layer: usize) -> FrameStyle {
+    let k = (layer as u32).wrapping_mul(0x9e37_79b9) >> 16;
+    let pick = (k % 100) as f32 / 100.0;
+    let (gilt, ebony) = if PAINTINGS[layer].masters {
+        (0.55, 0.35)
+    } else {
+        (0.25, 0.45)
+    };
+    if pick < gilt {
+        FrameStyle::Gilt
+    } else if pick < gilt + ebony {
+        FrameStyle::Ebony
+    } else {
+        FrameStyle::Walnut
+    }
+}
+
 /// A painting of `size` centred at `p`, facing the world direction `face`:
-/// its canvas, the gilt frame round it and a dark liner inside that, the two
-/// cords it hangs by from a hook on the rail at height `rail`, and its
-/// label.
-fn painting(f: &mut Frame, p: [f32; 3], face: [f32; 2], layer: usize, size: [f32; 2], rail: f32) {
+/// its canvas, its frame, the two cords it hangs by from hooks on the rail
+/// at height `rail` if it has them, and its label under it.
+fn painting(
+    w: &World,
+    f: &mut Frame,
+    p: [f32; 3],
+    face: [f32; 2],
+    layer: usize,
+    size: [f32; 2],
+    rail: Option<f32>,
+) {
     // A model's +z turned along `face`; its +x is then along the wall.
     let yaw = face[0].atan2(face[1]);
     let right = [face[1], -face[0]];
@@ -1122,42 +1225,118 @@ fn painting(f: &mut Frame, p: [f32; 3], face: [f32; 2], layer: usize, size: [f32
     .glowing(0.35)
     .patterned([layer as f32, 0.0, 0.0])
     .element(element::MUSEUM);
-    // The frame's four mouldings, overlapping at the corners, and the
-    // liner along the top and foot just inside them.
-    let band = 0.03 + 0.04 * width.max(height);
+    let band = frame_band(width, height);
     let (hw, hh) = (0.5 * width, 0.5 * height);
-    let liner = [0.18, 0.14, 0.10];
-    for (r, up, half, depth, colour) in [
-        (0.0, hh + 0.5 * band, [hw + band, 0.5 * band], 0.02, GILT),
-        (0.0, -hh - 0.5 * band, [hw + band, 0.5 * band], 0.02, GILT),
-        (hw + 0.5 * band, 0.0, [0.5 * band, hh], 0.02, GILT),
-        (-hw - 0.5 * band, 0.0, [0.5 * band, hh], 0.02, GILT),
-        (0.0, hh + 0.01, [hw + 0.01, 0.01], 0.014, liner),
-        (0.0, -hh - 0.01, [hw + 0.01, 0.01], 0.014, liner),
-    ] {
-        let rows = place(at(r, up, depth), yaw, 0.0, 0.0, [half[0], half[1], depth]);
-        let piece = f.put(Model::Box, rows, colour);
-        if colour == GILT {
-            piece.material(material::COPPER);
+    // A ring of moulding round the canvas, from `t0` to `t1` of the band in
+    // from its outer edge, standing `depth` out from the wall.
+    let ring = |f: &mut Frame, t0: f32, t1: f32, depth: f32, colour: [f32; 3], gilt: bool| {
+        let (out_w, out_h) = (hw + band * (1.0 - t0), hh + band * (1.0 - t0));
+        let (in_w, in_h) = (hw + band * (1.0 - t1), hh + band * (1.0 - t1));
+        let (mid_w, mid_h) = (0.5 * (out_w + in_w), 0.5 * (out_h + in_h));
+        let (half_w, half_h) = (0.5 * (out_w - in_w), 0.5 * (out_h - in_h));
+        for (r, up, half) in [
+            (0.0, mid_h, [out_w, half_h]),
+            (0.0, -mid_h, [out_w, half_h]),
+            (mid_w, 0.0, [half_w, in_h]),
+            (-mid_w, 0.0, [half_w, in_h]),
+        ] {
+            let rows = place(
+                at(r, up, 0.5 * depth),
+                yaw,
+                0.0,
+                0.0,
+                [half[0], half[1], 0.5 * depth],
+            );
+            let piece = f.put(Model::Box, rows, colour);
+            if gilt {
+                piece.material(material::COPPER);
+            }
+            piece.element(element::MUSEUM);
         }
-        piece.element(element::MUSEUM);
+    };
+    let liner = [0.16, 0.12, 0.09];
+    let dark_gilt = [0.62, 0.46, 0.20];
+    // Far off, the frame's shape is all that shows: one moulding and its
+    // sight edge.
+    let near = {
+        let e = w.pose.pos;
+        (p[0] - e[0]).hypot(p[2] - e[2]) < 4.5
+    };
+    match frame_style(layer) {
+        FrameStyle::Gilt => {
+            ring(f, 0.0, 1.0, 0.03, dark_gilt, true);
+            if near {
+                ring(f, 0.08, 0.2, 0.045, GILT, true);
+                ring(f, 0.45, 0.62, 0.05, GILT, true);
+                ring(f, 0.82, 0.92, 0.04, GILT, true);
+                // Ornaments at the corners, and a crest over the top.
+                for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                    let c = at(sx * (hw + 0.5 * band), sy * (hh + 0.5 * band), 0.05);
+                    f.put(
+                        Model::Box,
+                        place(c, yaw, FRAC_PI_4, 0.0, [0.3 * band, 0.3 * band, 0.02]),
+                        GILT,
+                    )
+                    .material(material::COPPER)
+                    .element(element::MUSEUM);
+                }
+                let crest = at(0.0, hh + 0.9 * band, 0.05);
+                f.put(
+                    Model::Box,
+                    place(crest, yaw, FRAC_PI_4, 0.0, [0.5 * band, 0.5 * band, 0.022]),
+                    GILT,
+                )
+                .material(material::COPPER)
+                .element(element::MUSEUM);
+            } else {
+                ring(f, 0.82, 0.92, 0.04, GILT, true);
+            }
+        }
+        FrameStyle::Ebony => {
+            let ebony = [0.05, 0.04, 0.035];
+            ring(f, 0.0, 1.0, 0.035, ebony, false);
+            if near {
+                for (t0, t1) in [(0.06, 0.16), (0.3, 0.38), (0.52, 0.6), (0.72, 0.8)] {
+                    ring(f, t0, t1, 0.045, [0.09, 0.075, 0.065], false);
+                }
+            }
+            ring(f, 0.9, 1.0, 0.03, GILT, true);
+        }
+        FrameStyle::Walnut => {
+            let walnut = [0.30, 0.17, 0.09];
+            ring(f, 0.0, 1.0, 0.032, walnut, false);
+            ring(f, 0.0, 0.08, 0.04, dark_gilt, true);
+            if near {
+                ring(f, 0.35, 0.6, 0.042, [0.36, 0.21, 0.11], false);
+            }
+            ring(f, 0.88, 1.0, 0.036, GILT, true);
+        }
     }
-    // The cords, from the top corners of the frame to one hook on the rail.
-    let hook = at(0.0, rail - p[1], 0.006);
-    for side in [-1.0, 1.0] {
-        rod(
-            f,
-            at(side * 0.4 * width, hh + band, 0.02),
-            hook,
-            0.0025,
-            WIRE,
-        );
+    // The liner, just inside the frame.
+    if near {
+        ring(f, 1.0, 1.0 + 0.012 / band, 0.016, liner, false);
     }
-    // The label, a card on the wall by the frame's lower right.
+    // The cords: two, straight up from the frame's top to S-hooks on the
+    // rail, never wider than the frame.
+    if let Some(rail) = rail {
+        for side in [-1.0, 1.0] {
+            let r = side * (hw + 0.4 * band);
+            let top = at(r, hh + band, 0.02);
+            let hook = at(r, rail - p[1], 0.008);
+            rod(f, top, hook, 0.0025, WIRE);
+            f.put(
+                Model::Box,
+                place(hook, yaw, 0.0, 0.0, [0.006, 0.014, 0.006]),
+                BRASS,
+            )
+            .element(element::MUSEUM);
+        }
+    }
+    // The label, a card on the wall under the frame's right-hand corner.
     f.put(
         Model::Box,
         place(
-            at(hw + band + 0.07, -hh + 0.04, 0.005),
+            at(hw + band - 0.05, -hh - band - 0.06, 0.005),
             yaw,
             0.0,
             0.0,
@@ -1168,18 +1347,88 @@ fn painting(f: &mut Frame, p: [f32; 3], face: [f32; 2], layer: usize, size: [f32
     .element(element::MUSEUM);
 }
 
+/// How long a show piece runs along its stand: the tooth stands turned a
+/// quarter round, face out (`show_stand`).
+fn show_length(piece: &Specimen) -> f32 {
+    let &(model, _, [x, z], _) = piece;
+    scale_of(piece) * if model == Model::Megalodon { z } else { x }
+}
+
+/// A show piece on its own stand at `p`: two steps of stone the size of its
+/// footprint and a top of dark wood, with its label at the foot of the
+/// steps on the side `out`, toward the window. `yaw` turns the piece's
+/// length along the stand.
+fn show_stand(w: &World, f: &mut Frame, p: [f32; 3], piece: &Specimen, yaw: f32, out: [f32; 2]) {
+    let &(model, _, [x, z], _) = piece;
+    let k = scale_of(piece);
+    let tooth = model == Model::Megalodon;
+    let long = show_length(piece);
+    let deep = k * if tooth { x } else { z };
+    if !w.visible([p[0], p[1] + 0.5 * k, p[2]], 0.5 * long.max(k) + 0.2) {
+        return;
+    }
+    let (a, b) = (0.5 * long + 0.07, 0.5 * deep + 0.07);
+    let mut top = 0.0;
+    for (rise, inset, colour) in [
+        (0.05, 0.05, STONE),
+        (0.04, 0.0, [0.66, 0.62, 0.55]),
+        (0.02, -0.02, DARK_WOOD),
+    ] {
+        let step = f.put(
+            Model::Box,
+            place(
+                [p[0], p[1] + top + 0.5 * rise, p[2]],
+                yaw,
+                0.0,
+                0.0,
+                [a + inset, 0.5 * rise, b + inset],
+            ),
+            colour,
+        );
+        if colour != DARK_WOOD {
+            step.textured(Surface::Marble, 2.5);
+        }
+        step.element(element::MUSEUM);
+        top += rise;
+    }
+    // The tooth is scanned point down: it stands turned over, its root on
+    // the stand and its point up, its face out to the window.
+    let rows = if tooth {
+        place(
+            [p[0], p[1] + top + k, p[2]],
+            yaw + FRAC_PI_2,
+            0.0,
+            PI,
+            [k; 3],
+        )
+    } else {
+        place([p[0], p[1] + top, p[2]], yaw, 0.0, 0.0, [k; 3])
+    };
+    f.put(model, rows, [1.0; 3]).element(element::MUSEUM);
+    let foot = b + 0.16;
+    label(
+        f,
+        [p[0] + out[0] * foot, p[1], p[2] + out[1] * foot],
+        out[0].atan2(out[1]),
+        0.7,
+    );
+}
+
 /// A specimen at `p` on the floor on its mount, a plinth or a glass case on
 /// a pedestal, turned to `yaw`, with its label at the mount's front: `size`
 /// is its longest side and its height.
 fn stand(f: &mut Frame, p: [f32; 3], model: Model, size: [f32; 2], mount: Mount, yaw: f32) {
     let [long, height] = size;
     let block = |f: &mut Frame, up: f32, half: [f32; 3], colour: [f32; 3]| {
-        f.put(
+        let block = f.put(
             Model::Box,
             place([p[0], p[1] + up, p[2]], yaw, 0.0, 0.0, half),
             colour,
-        )
-        .element(element::MUSEUM);
+        );
+        if colour == STONE {
+            block.textured(Surface::Marble, 2.5);
+        }
+        block.element(element::MUSEUM);
     };
     let foot = match mount {
         Mount::Platform => {
@@ -1363,39 +1612,85 @@ fn mineral_cases(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
     }
 }
 
+/// The picture gallery's centrepiece: the largest of the masters, the same
+/// in every visit's museum.
+fn centrepiece() -> usize {
+    let area = |i: usize| PAINTINGS[i].height * PAINTINGS[i].width;
+    (0..PAINTINGS.len())
+        .filter(|&i| PAINTINGS[i].masters)
+        .max_by(|&a, &b| area(a).total_cmp(&area(b)))
+        .expect("the masters")
+}
+
+/// How large `hall` hangs its centrepiece.
+fn centrepiece_size(hall: &Hall) -> (f32, f32) {
+    size_of(
+        &PAINTINGS[centrepiece()],
+        CENTREPIECE_SCALE,
+        hall.high - 0.6,
+    )
+}
+
+/// The centrepiece, and half its width in its frame along the wall.
+fn centrepiece_span(hall: &Hall) -> (usize, f32) {
+    let (w, h) = centrepiece_size(hall);
+    (centrepiece(), 0.5 * w + frame_band(w, h))
+}
+
 /// The picture gallery: the largest of the masters in the middle of the
 /// port wall, the rest hung salon-fashion three deep either side and on the
 /// end walls, a picture rail along the top, and benches before them.
 fn masters(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
     let mut h = Hasher::new(m.seed, 2700);
+    let (largest, half) = centrepiece_span(hall);
     let mut paintings: Vec<usize> = (0..PAINTINGS.len())
-        .filter(|&i| PAINTINGS[i].masters)
+        .filter(|&i| PAINTINGS[i].masters && i != largest)
         .collect();
     h.shuffle(&mut paintings);
-    let area = |i: usize| PAINTINGS[i].height * PAINTINGS[i].width;
-    let largest = paintings
-        .iter()
-        .copied()
-        .max_by(|&a, &b| area(a).total_cmp(&area(b)))
-        .expect("the masters");
-    paintings.retain(|&i| i != largest);
     let rail = m.floor + hall.high - 0.12;
     let wall_v = hall.port - 0.07;
     let middle = hall.from + 0.5 * hall.long;
-    let (bw, bh) = size_of(&PAINTINGS[largest], CENTREPIECE_SCALE, hall.high - 0.6);
+    let (bw, bh) = centrepiece_size(hall);
     let p = m.at(middle, wall_v, m.floor + 0.35 + 0.5 * bh);
     if w.visible(p, bw) {
-        painting(f, p, m.direction(0.0, -1.0), largest, [bw, bh], rail);
+        painting(
+            w,
+            f,
+            p,
+            m.direction(0.0, -1.0),
+            largest,
+            [bw, bh],
+            Some(rail),
+        );
     }
-    let side = 0.5 * (hall.long - bw - 0.45);
+    // The rest hang bay by bay between the pilasters, clear of the
+    // centrepiece, and on the end walls.
+    let bay = hall.bay();
     let mut walls = Vec::new();
-    for u in [hall.from + 0.5 * side + 0.08, hall.to() - 0.5 * side - 0.08] {
+    for i in 0..hall.bays {
+        // Clear of the pilasters either end, and of the centrepiece: a bay
+        // it reaches into keeps the stretch beside it.
+        let (mut a, mut b) = (
+            hall.from + i as f32 * bay + 0.1,
+            hall.from + (i + 1) as f32 * bay - 0.1,
+        );
+        let (c0, c1) = (middle - half - 0.15, middle + half + 0.15);
+        if b > c0 && a < c1 {
+            if c0 - a >= b - c1 {
+                b = c0;
+            } else {
+                a = c1;
+            }
+        }
+        if b - a < 0.35 {
+            continue;
+        }
         walls.push(Wall {
-            u,
+            u: 0.5 * (a + b),
             v: wall_v,
             along: [1.0, 0.0],
             face: [0.0, -1.0],
-            width: side,
+            width: b - a,
             low: 0.22,
             high: hall.high - 0.25,
         });
@@ -1413,8 +1708,8 @@ fn masters(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
     }
     let how = Hang {
         scale: MASTERS_SCALE,
-        rows: 3,
-        gap: 0.07,
+        rows: 2,
+        gap: 0.16,
     };
     hang(w, f, m, &walls, &paintings, how);
     if w.visible(m.at(middle, wall_v, rail), 0.5 * hall.long) {

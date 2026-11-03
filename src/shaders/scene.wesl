@@ -1447,6 +1447,12 @@ const VAULT: i32 = 5;
 // its `floor` (a city model never stands on the seabed's blend), and the
 // windows' pattern is seeded by where the instance stands.
 const CITY_LIGHTS: i32 = 11;
+// A still surface whose texture holds a height in its alpha
+// (`world::material::RELIEF`, `textures::Surface::relief`).
+const RELIEF: i32 = 14;
+// How deep a tile's relief is, as a share of the tile: its alpha's full
+// range spans this much of the surface's own scale.
+const RELIEF_DEPTH: f32 = 0.035;
 
 // What a city surface adds to its own lit colour, and how much of that it
 // keeps: `lamps` is the light it gives out, laid on after the fog so a far
@@ -1989,6 +1995,17 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     if (MATERIAL == 12) {
         uv = vec3<f32>(p.x + p.z, 0.0, p.y) * in.surface.y;
     }
+    // A wall with relief takes its texture across it and up it, so courses
+    // lie level and joints stand upright instead of streaking down from the
+    // floor's projection. Along it is whichever of x and z the face runs
+    // nearer, which a box's faces take exactly and a column's round take in
+    // four quarters, never stretched. The choice is a select, never a
+    // branch: the bump below takes derivatives.
+    if (MATERIAL == RELIEF) {
+        let along = select(p.x, p.z, abs(n.x) > abs(n.z));
+        let wall = vec3<f32>(along, 0.0, -p.y) * in.surface.y;
+        uv = select(uv, wall, abs(n.y) < 0.7);
+    }
     let layer = i32(in.surface.x + 0.5);
     let distance = length(p - g.camera.xyz);
     // The tunnel is seen close up: its rock is one sample of a 0.5-unit tile,
@@ -2010,6 +2027,19 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     let texture = sample.rgb * TEXTURE_RANGE;
     var albedo = in.albedo * texture;
+    // Relief: the height's slope across the screen, over the world a pixel
+    // spans, is how far the surface there tilts toward the top of the
+    // screen and its left, lit as though from above and behind the eye: a
+    // joint's upper lip shades, its lower one catches, and the sunk parts
+    // are a little darker besides. An emboss, not a normal: the light is per
+    // vertex, and a tangent-free bump's crosses and normalize held enough
+    // live to halve the shader's threads.
+    if (MATERIAL == RELIEF) {
+        let height = sample.a * (RELIEF_DEPTH / max(in.surface.y, 0.05));
+        let foot = max(length(dpdy(p)), 1e-5);
+        let tilt = 1.0 + 1.6 * (dpdy(height) + 0.35 * dpdx(height)) / foot;
+        albedo *= clamp(tilt, 0.5, 1.5) * (0.80 + 0.40 * sample.a);
+    }
     // Bedded in the sand: the foot of anything on the seabed takes its colour.
     if (GROUNDED) {
         let buried = 1.0 - smooth01(in.floor_y + 0.005, in.floor_y + 0.05, p.y);

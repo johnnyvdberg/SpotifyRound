@@ -46,10 +46,19 @@ pub enum Surface {
     /// ([`paint_staghorn`]), so the card takes one lookup instead of tracing
     /// fifteen limbs a pixel.
     Staghorn,
+    /// Dressed stone in courses, each block a little its own shade, with
+    /// sunk mortar joints: the museum's walls and front.
+    Ashlar,
+    /// A woven damask, its pattern of medallions raised from the ground:
+    /// the picture gallery's walls.
+    Damask,
+    /// An encaustic tile floor, light and terracotta squares with inlaid
+    /// diamonds and worn grout: the museum's halls.
+    Tiles,
 }
 
 impl Surface {
-    pub const ALL: [Surface; 19] = [
+    pub const ALL: [Surface; 22] = [
         Surface::Plain,
         Surface::Rock,
         Surface::Wood,
@@ -69,10 +78,31 @@ impl Surface {
         Surface::Vault,
         Surface::Reef,
         Surface::Staghorn,
+        Surface::Ashlar,
+        Surface::Damask,
+        Surface::Tiles,
     ];
 
     pub fn layer(self) -> f32 {
         self as usize as f32
+    }
+
+    /// How much this surface's tone is relief: its darker texels lower, so
+    /// the joints, cracks and pits sink. The relief pipeline
+    /// (`world::material::RELIEF`) lights the height this gives, kept in the
+    /// layer's alpha; surfaces with none keep an opaque alpha and are lit
+    /// flat. Marble is polished, its veins barely sunk. The seabed's rocks
+    /// are left flat: they are everywhere and small, and lighting their
+    /// relief cost half a millisecond where they crowd the window.
+    pub fn relief(self) -> Option<f32> {
+        match self {
+            Surface::Basalt => Some(1.3),
+            Surface::Marble => Some(0.35),
+            Surface::Ashlar => Some(1.6),
+            Surface::Tiles => Some(1.2),
+            Surface::Damask => Some(0.9),
+            _ => None,
+        }
     }
 }
 
@@ -310,6 +340,59 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
                 stain * 0.3,
             )
         }
+        Surface::Ashlar => {
+            // Six courses a tile, three blocks a course, every other course
+            // set over by half a block; tooled faces, each block its shade.
+            let course = v * 6.0;
+            let row = course.floor() as i32;
+            let along = u * 3.0 + if row % 2 == 1 { 0.5 } else { 0.0 };
+            let block = along.floor() as i32;
+            let (fu, fv) = (along.fract(), course.fract());
+            let joint = smooth(0.0, 0.06, fv)
+                * smooth(1.0, 0.94, fv)
+                * smooth(0.0, 0.03, fu)
+                * smooth(1.0, 0.97, fu);
+            let arris = smooth(0.06, 0.16, fv)
+                * smooth(1.0, 0.86, fv)
+                * smooth(0.03, 0.08, fu)
+                * smooth(1.0, 0.95, fu);
+            let shade = 0.88 + 0.18 * hash(block.rem_euclid(3), row.rem_euclid(6), 160);
+            let tooling = 0.90 + 0.14 * fbm(u, v, 32, 3, 161);
+            let weather = smooth(0.55, 0.85, fbm(u, v, 4, 3, 162));
+            let face = shade * tooling * (0.93 + 0.07 * arris) * (1.0 - 0.18 * weather);
+            grey(0.50 + (face - 0.50) * joint)
+        }
+        Surface::Damask => {
+            // Medallions on a lattice, the ground a fine twill between.
+            let tau = std::f32::consts::TAU;
+            let medallion = (tau * u * 2.0).cos() * (tau * v * 3.0).cos();
+            let leaves = (tau * (u * 4.0 + v * 6.0)).cos() * (tau * (u * 4.0 - v * 6.0)).cos();
+            let motif = smooth(0.35, 0.6, 0.65 * medallion.abs() + 0.35 * leaves);
+            let twill = 0.94 + 0.06 * (tau * (u * 64.0 + v * 64.0)).sin();
+            let wear = 0.92 + 0.10 * fbm(u, v, 8, 3, 170);
+            grey((0.82 + 0.30 * motif) * twill * wear)
+        }
+        Surface::Tiles => {
+            // Four tiles a side, light and terracotta by turns, a diamond
+            // inlaid in each; the grout between, and the wear of the halls.
+            let (x, y) = (u * 4.0, v * 4.0);
+            let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+            let (fx, fy) = (x.fract(), y.fract());
+            let grout = smooth(0.0, 0.04, fx)
+                * smooth(1.0, 0.96, fx)
+                * smooth(0.0, 0.04, fy)
+                * smooth(1.0, 0.96, fy);
+            let light = (ix + iy).rem_euclid(2) == 0;
+            let diamond = smooth(0.30, 0.26, (fx - 0.5).abs() + (fy - 0.5).abs());
+            let (ground, inlay) = if light {
+                ([1.12, 1.06, 0.94], [0.62, 0.68, 0.74])
+            } else {
+                ([0.86, 0.52, 0.38], [1.05, 0.95, 0.75])
+            };
+            let wear = 0.88 + 0.16 * fbm(u, v, 16, 3, 180);
+            let tile = mix(ground, inlay, diamond).map(|c| c * wear);
+            mix(grey(0.45), tile, grout)
+        }
         Surface::Ice => {
             // Sea ice from below: melt scallops (shallow dished hollows with
             // bright rims where the ice is thinnest between them), a frost of
@@ -533,15 +616,27 @@ pub fn paint_all() -> Vec<Vec<Vec<u8>>> {
             if surface == Surface::Staghorn {
                 return paint_staghorn();
             }
-            (0..SIZE * SIZE)
+            let texels: Vec<[f32; 3]> = (0..SIZE * SIZE)
                 .map(|i| {
                     let (x, y) = (i % SIZE, i / SIZE);
-                    let c = paint(
+                    paint(
                         surface,
                         (x as f32 + 0.5) / SIZE as f32,
                         (y as f32 + 0.5) / SIZE as f32,
-                    );
-                    [c[0] / RANGE, c[1] / RANGE, c[2] / RANGE, 1.0]
+                    )
+                })
+                .collect();
+            // The height, for a surface with relief: its tone about the
+            // layer's mean, so the relief is even whatever its brightness.
+            let tone = |c: &[f32; 3]| 0.30 * c[0] + 0.55 * c[1] + 0.15 * c[2];
+            let mean = texels.iter().map(tone).sum::<f32>() / texels.len() as f32;
+            texels
+                .iter()
+                .map(|c| {
+                    let height = surface
+                        .relief()
+                        .map_or(1.0, |gain| 0.5 + gain * (tone(c) - mean) / mean);
+                    [c[0] / RANGE, c[1] / RANGE, c[2] / RANGE, height]
                 })
                 .collect()
         })

@@ -822,6 +822,29 @@ pub enum Model {
     KingCrab,
     Allosaurus,
     Seadragon,
+    SharkJaws,
+    Isthminia,
+    Archaeotherium,
+    Hesperocyon,
+    Diademodon,
+    Meniscotherium,
+    Merycoidodon,
+    Albertocetus,
+    Arktocara,
+    Neopteroplax,
+    ElephantMolar,
+    GloryOfTheSea,
+    HarpShell,
+    Cowfish,
+    SlipperLobster,
+    LonghornBeetle,
+    SmilodonTooth,
+    CockscombOyster,
+    SeaLily,
+    CauliflowerCoral,
+    BlueStarfish,
+    StaghornCoral,
+    SunflowerStar,
     /// A great whale's skeleton, a unit long, skull to +x.
     WhaleSkeleton,
     /// A painting's canvas: a unit square facing +z, its image's own
@@ -837,7 +860,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 126] = [
+    pub const ALL: [Model; 149] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -956,6 +979,29 @@ impl Model {
         Model::KingCrab,
         Model::Allosaurus,
         Model::Seadragon,
+        Model::SharkJaws,
+        Model::Isthminia,
+        Model::Archaeotherium,
+        Model::Hesperocyon,
+        Model::Diademodon,
+        Model::Meniscotherium,
+        Model::Merycoidodon,
+        Model::Albertocetus,
+        Model::Arktocara,
+        Model::Neopteroplax,
+        Model::ElephantMolar,
+        Model::GloryOfTheSea,
+        Model::HarpShell,
+        Model::Cowfish,
+        Model::SlipperLobster,
+        Model::LonghornBeetle,
+        Model::SmilodonTooth,
+        Model::CockscombOyster,
+        Model::SeaLily,
+        Model::CauliflowerCoral,
+        Model::BlueStarfish,
+        Model::StaghornCoral,
+        Model::SunflowerStar,
         Model::WhaleSkeleton,
         Model::Canvas,
         Model::MuseumArch,
@@ -5703,8 +5749,18 @@ pub mod baked {
             out.extend(name.as_bytes());
             let levels = if model.is_scan() { super::LODS } else { 1 };
             word(&mut out, levels);
+            let mut finer = 0.0f32;
             for step in 0..levels {
                 let (vertices, indices, error) = super::streamed(model, step as u32);
+                // A coarser level is never nearer the scan than the one
+                // before, whatever the sloppy simplifier measures of a thin
+                // shape: the renderer picks a level by its error.
+                let error = if step > 0 {
+                    error.max(finer.next_up())
+                } else {
+                    error
+                };
+                finer = error;
                 out.extend(error.to_bits().to_le_bytes());
                 word(&mut out, vertices.len());
                 word(&mut out, indices.len());

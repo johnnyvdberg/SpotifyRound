@@ -298,6 +298,10 @@ pub mod material {
     /// A painting's canvas: `fs_canvas` draws layer `surface.x` of the
     /// museum's paintings over it.
     pub const CANVAS: f32 = 13.0;
+    /// A surface with relief, its texture's height (`Surface::relief`) lit
+    /// per pixel so joints, cracks and pits sink: given to every still
+    /// instance textured with one, unless it has a material of its own.
+    pub const RELIEF: f32 = 14.0;
 }
 
 // Sprite kinds.
@@ -1695,7 +1699,8 @@ impl Frame {
     }
 
     fn put(&mut self, model: Model, rows: [[f32; 4]; 3], colour: [f32; 3]) -> &mut Instance {
-        let instance = self.instance(model, rows, colour);
+        let mut instance = self.instance(model, rows, colour);
+        instance.extra[0] = relief(instance.surface);
         let list = &mut self.solid[model.index()];
         list.push(instance);
         list.last_mut().unwrap()
@@ -1962,6 +1967,9 @@ impl Tweak for Instance {
     }
     fn textured(&mut self, surface: Surface, repeats: f32) -> &mut Self {
         self.surface = [surface.layer(), repeats, 0.0, 0.0];
+        if self.extra[0] == 0.0 || self.extra[0] == material::RELIEF {
+            self.extra[0] = relief(self.surface);
+        }
         self
     }
     fn patterned(&mut self, pattern: [f32; 3]) -> &mut Self {
@@ -1982,6 +1990,17 @@ impl Tweak for Instance {
 /// same scale everywhere.
 fn fixed(surface: Surface, repeats: f32) -> Option<[f32; 4]> {
     Some([surface.layer(), repeats, 0.0, 0.0])
+}
+
+/// The material a still texture's relief asks for: [`material::RELIEF`] for
+/// one with a height to light, plain otherwise. Carried textures bend with
+/// their models and are left flat.
+fn relief(surface: [f32; 4]) -> f32 {
+    let has = surface[2] == 0.0
+        && Surface::ALL
+            .get(surface[0] as usize)
+            .is_some_and(|s| s.relief().is_some());
+    if has { material::RELIEF } else { 0.0 }
 }
 
 /// Texture in a model's own space: for things that move and bend.
@@ -11464,35 +11483,37 @@ fn submarines(w: &World, f: &mut Frame) {
         // half a minute after it began, when she is most likely in view.
         let x0 = w.camera() + VOYAGE_SPEED * (start + 30.0 - t);
         let b = w.biome(x0, corridor(x0));
-        let meeting = if b.weight(CAVE) > 0.5 || hash(slot, visit, 501) > 0.85 {
-            None
-        } else {
-            let dark = 0.8 * b.weight(WRECKS) + b.weight(ATLANTIS) + b.weight(ABYSS);
-            let odds = if dark > 0.5 {
-                [
-                    (Meeting::Far, 3.0),
-                    (Meeting::Emerge, 3.0),
-                    (Meeting::Pass, 2.0),
-                    (Meeting::Alongside, 2.0),
-                    (Meeting::Overtake, 1.0),
-                ]
+        // Not in the cave's tunnel, nor among the museum's halls and stands.
+        let meeting =
+            if b.weight(CAVE) > 0.5 || b.weight(MUSEUM) > 0.0 || hash(slot, visit, 501) > 0.85 {
+                None
             } else {
-                [
-                    (Meeting::Pass, 3.0),
-                    (Meeting::Alongside, 3.0),
-                    (Meeting::Overtake, 2.0),
-                    (Meeting::Emerge, 2.0),
-                    (Meeting::Far, 1.0),
-                ]
+                let dark = 0.8 * b.weight(WRECKS) + b.weight(ATLANTIS) + b.weight(ABYSS);
+                let odds = if dark > 0.5 {
+                    [
+                        (Meeting::Far, 3.0),
+                        (Meeting::Emerge, 3.0),
+                        (Meeting::Pass, 2.0),
+                        (Meeting::Alongside, 2.0),
+                        (Meeting::Overtake, 1.0),
+                    ]
+                } else {
+                    [
+                        (Meeting::Pass, 3.0),
+                        (Meeting::Alongside, 3.0),
+                        (Meeting::Overtake, 2.0),
+                        (Meeting::Emerge, 2.0),
+                        (Meeting::Far, 1.0),
+                    ]
+                };
+                let mut roll = hash(slot, visit, 502) * odds.iter().map(|o| o.1).sum::<f32>();
+                odds.iter()
+                    .find(|o| {
+                        roll -= o.1;
+                        roll < 0.0
+                    })
+                    .map(|o| o.0)
             };
-            let mut roll = hash(slot, visit, 502) * odds.iter().map(|o| o.1).sum::<f32>();
-            odds.iter()
-                .find(|o| {
-                    roll -= o.1;
-                    roll < 0.0
-                })
-                .map(|o| o.0)
-        };
         Encounter {
             slot,
             visit,
