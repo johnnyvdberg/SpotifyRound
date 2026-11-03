@@ -23,6 +23,8 @@ ruled out in §5), `docs/pipeline-optimization.md` (history; check it before re-
   T1 and T2 of `perf-bottlenecks.md` are done/obsolete for GL only.
   **D1 (branch `d1-display`)**: the display can now run GL (`SPOTIFY_ROUND_DISPLAY=gl`, femtovg
   draws the UI). It is faster on the dive and slower on the globe; the default is still Vulkan.
+  **D2 (branch `d2-globe`)**: the globe holds 61 fps on GL too, and GL is the display's default
+  (`SPOTIFY_ROUND_DISPLAY=vulkan` switches back).
 - The offline shader tool (`deploy/v3d-shaderdb`) compiles through **Vulkan** (v3dv). The GL
   driver uses the same V3D compiler backend, so threads/temps/spills carry over, but confirm a
   borderline shader on the Pi with `V3D_DEBUG=shaderdb MESA_SHADER_CACHE_DISABLE=true
@@ -99,7 +101,7 @@ run at once**, from different groups. Model tier is a suggestion.
 | M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | done on branch `m3-fort`: half way through the wrecks, tower, gate, ramparts sunk and toppled, eight cannon down the bank; +0.35 ms median where in view, worst 0.65 (`docs/handoff/m3.md`) |
 | D1 | display | OpenGL ES on the kiosk's display, for its early-Z | Opus | done on branch `d1-display`: femtovg vendored and specialised per pipeline; live GL beats Vulkan + Skia on the dive (61 fps both, 1.0-1.6 ms less GPU a frame) but the globe drops to 53 fps, so the default stays Vulkan; `SPOTIFY_ROUND_DISPLAY=gl` switches (`docs/handoff/d1.md`) |
 | T1 | terrain | Terrain noise from FastNoiseLite | Opus | done on branch `t1-terrain`: warped OpenSimplex2 height, dunes (shallows, wrecks, sargasso), ridged rock (abyss, vents), Voronoi brine terraces and pools; Pi median 7.14 -> 7.23 ms, worst 10.48, none over 11; seabed build 96 -> 95 ms (`docs/handoff/t1.md`) |
-| D2 | display | The globe at full speed on GL, so GL can be the display's default | Opus | todo |
+| D2 | display | The globe at full speed on GL, so GL can be the display's default | Opus | done on branch `d2-globe`: the frame cut into four regions (the planet's inside at 4 threads), anisotropy 16x -> 4x (the V3D applies it: a third of the globe's frame), the timer keeps its beat through GL's present waits; live globe GL 54 -> 61 fps, 17.60 -> 14.09 ms, 7 -> 0 long gaps/s (Vulkan 15.05 -> 14.50); GL matches or beats Vulkan on every scene, so `DISPLAY_GL_DEFAULT = true` (`docs/handoff/d2.md`) |
 
 Order: tooling and perf first (they make room and make change visible), then V1 (sets the visible
 range everything else is built for), then V3/V4, V5, V6/V7, V8, V9, V10.
@@ -279,6 +281,15 @@ deterministic (`places.rs` screenshots must still find their places).
 ## Notes for the user
 
 (Things only the user can do; agents append here.)
+
+- **D2, the globe on GL (branch `d2-globe`).** Live on GL the globe went from 54 to 61 fps
+  (17.6 to 14.1 ms GPU, no long gaps), and Vulkan's from 15.05 to 14.50 ms. GL now matches or
+  beats Vulkan on the globe and the dive, so the build makes **GL the display's default**:
+  deploying it switches the kiosk to GL with no unit change (the `SPOTIFY_ROUND_DISPLAY=gl`
+  line from D1 is no longer needed). If the screen ever shows only the cursor, add
+  `Environment=SPOTIFY_ROUND_DISPLAY=vulkan` to a drop-in and restart. Compare the globe's
+  look in `docs/handoff/img/d2-globe.jpg` (4x anisotropy instead of 16x, a little softer at
+  the limb only).
 
 - **D1, GL on the display (branch `d1-display`).** Live under cage, GL + the specialised femtovg
   matches Vulkan + Skia's 61 fps on the dive with 1.0-1.6 ms less GPU a frame, but the globe falls

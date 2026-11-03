@@ -54,6 +54,8 @@ pub(crate) const SLOTS: usize = crate::visuals::SLOTS;
 /// Extra mip levels to skip when sampling the maps. A slightly softer planet,
 /// but it stops the city lights and the relief sparkling as the surface turns.
 const DETAIL_BIAS: f32 = 0.45;
+/// Anisotropic filtering of the day map, the clouds and the city lights.
+const ANISOTROPY: u16 = 4;
 /// Planet radius as a fraction of the frame's half-size, leaving room for the
 /// halo, which reaches the very edge of the panel.
 const PLANET: f32 = 0.93;
@@ -216,7 +218,8 @@ struct Uniforms {
 
 /// Everything needed to draw one frame of the planet.
 pub(crate) struct Globe {
-    pipeline: wgpu::RenderPipeline,
+    /// One pipeline per [`Region`], in its order.
+    pipelines: Vec<wgpu::RenderPipeline>,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// A ring of render targets, so the frame Slint is drawing is never the one
@@ -279,20 +282,27 @@ impl Globe {
             4,
         )?);
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Earth sampler"),
-            // Longitude wraps around; latitude clamps at the poles.
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            // Keeps the grazing view near the limb from aliasing. Drivers without
-            // anisotropy (the Pi's V3D) simply clamp this to 1.
-            anisotropy_clamp: 16,
-            ..Default::default()
-        });
+        let sampler_with = |label, anisotropy_clamp| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(label),
+                // Longitude wraps around; latitude clamps at the poles.
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                anisotropy_clamp,
+                ..Default::default()
+            })
+        };
+        // Anisotropic filtering keeps the grazing view near the limb sharp;
+        // the Pi's V3D does apply it, and at 16x it was a third of the frame
+        // (`docs/handoff/d2.md`). At 4x, with the relief and the cloud shadows
+        // (soft by design) filtered without it, the frame differs from 16x
+        // in under one pixel in a hundred, along the limb, by a few levels.
+        let sampler = sampler_with("Earth sampler", ANISOTROPY);
+        let soft_sampler = sampler_with("Earth soft sampler", 1);
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Globe uniforms"),
@@ -326,6 +336,13 @@ impl Globe {
                 },
                 loaded(6),
                 loaded(7),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                texture(9),
             ],
         });
 
@@ -393,6 +410,14 @@ impl Globe {
                     binding: 7,
                     resource: wgpu::BindingResource::TextureView(&air),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Sampler(&soft_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(&views[2]),
+                },
             ],
         });
 
@@ -405,33 +430,38 @@ impl Globe {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Globe pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    // One triangle covers the whole frame, so nothing blends; the
-                    // shader premultiplies, which is what Slint's RGBA images want.
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipelines = Region::ALL
+            .iter()
+            .map(|region| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(region.label()),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_region"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(region.entry_point()),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            // The regions tile the frame, so nothing blends; the
+                            // frame is opaque, which is what Slint's RGBA images want.
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+            .collect();
 
         draw_geometry(gpu, &shader, &uniforms, &mapping, &air);
 
@@ -461,7 +491,7 @@ impl Globe {
 
         tracing::info!("Earth maps uploaded");
         Ok(Self {
-            pipeline,
+            pipelines,
             uniforms,
             bind_group,
             frames,
@@ -496,9 +526,11 @@ impl Globe {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            for (region, pipeline) in Region::ALL.iter().zip(&self.pipelines) {
+                pass.set_pipeline(pipeline);
+                pass.draw(region.vertices(), 0..1);
+            }
         }
         gpu.submit(encoder.finish());
         Ok(())
@@ -564,6 +596,77 @@ impl Globe {
         }
         buffer.unmap();
         pixels
+    }
+}
+
+/// Quads around each annulus the frame is cut into (see `vs_region`). At 128
+/// the polygon strays at most 0.15 pixels from the planet's circle.
+const SEGMENTS: u32 = 128;
+
+/// The frame's four regions, drawn in this order, each by its own pipeline:
+/// annuli of [`SEGMENTS`] quads around the centre that tile the frame.
+#[derive(Clone, Copy)]
+enum Region {
+    /// Inside the planet, where every pixel is fully covered (`fs_disc`).
+    Disc,
+    /// The planet's anti-aliased edge, two pixels wide: the surface blended
+    /// with the limb, the one shader that still runs at two threads (`fs_main`).
+    Edge,
+    /// The limb's glow and the rest of the atmosphere over space (`fs_halo`).
+    Halo,
+    /// The corners beyond the atmosphere: space only (`fs_space`).
+    Space,
+}
+
+impl Region {
+    const ALL: [Region; 4] = [Region::Disc, Region::Edge, Region::Halo, Region::Space];
+
+    fn label(self) -> &'static str {
+        match self {
+            Region::Disc => "Globe disc pipeline",
+            Region::Edge => "Globe edge pipeline",
+            Region::Halo => "Globe halo pipeline",
+            Region::Space => "Globe space pipeline",
+        }
+    }
+
+    fn entry_point(self) -> &'static str {
+        match self {
+            Region::Disc => "fs_disc",
+            Region::Edge => "fs_main",
+            Region::Halo => "fs_halo",
+            Region::Space => "fs_space",
+        }
+    }
+
+    /// The vertex range `vs_region` turns into this annulus.
+    fn vertices(self) -> std::ops::Range<u32> {
+        let quads = 6 * SEGMENTS;
+        let first = self as u32 * quads;
+        first..first + quads
+    }
+
+    /// Radius of the polygon at the region's outer edge, in half frames.
+    fn outer(self) -> f32 {
+        let half = SIZE as f32 / 2.0;
+        let planet = half * PLANET;
+        // A vertex's radius is the polygon's widest; its edges' middles lie
+        // closer in by this factor.
+        let inscribed = (std::f32::consts::PI / SEGMENTS as f32).cos();
+        match self {
+            // Inside the circle a pixel short of the edge (`shade` blends
+            // the last 0.75 pixels with the limb), so the polygon, which lies
+            // within its vertices, holds fully covered pixels only.
+            Region::Disc => (planet - 1.0) / half,
+            // Outside the circle a pixel past the edge, where the planet
+            // covers nothing (`shade` returns the limb alone from 0.75 on).
+            Region::Edge => (planet + 1.0) / inscribed / half,
+            // Around the atmosphere with a pixel to spare: past it `fs_halo`
+            // paints only space, so the halo may reach beyond it, not short.
+            Region::Halo => (planet * ATMOSPHERE + 1.0) / inscribed / half,
+            // Past the frame's corners (√2 half frames).
+            Region::Space => 2.0 / inscribed,
+        }
     }
 }
 
@@ -1024,6 +1127,10 @@ struct Uniforms {{
 @group(0) @binding(3) var cloud_map: texture_2d<f32>;
 @group(0) @binding(4) var relief_map: texture_2d<f32>;
 @group(0) @binding(5) var map_sampler: sampler;
+@group(0) @binding(8) var soft_sampler: sampler;
+// The cloud map again, for the shadows through `soft_sampler`: GL samples a
+// texture through one sampler only.
+@group(0) @binding(9) var shadow_map: texture_2d<f32>;
 // Per pixel, from `fs_geometry`: map coordinates before the planet turns, and
 // the air's transmittance toward the viewer with the sea's Fresnel term.
 @group(0) @binding(6) var mapping_map: texture_2d<f32>;
@@ -1083,8 +1190,7 @@ struct Varying {{
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> Varying {{
-    // A full-screen triangle; outside the planet and its halo the fragment
-    // shader paints only the space behind it.
+    // A full-screen triangle, for the tables `fs_geometry` fills once.
     var corners = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(3.0, -1.0),
@@ -1093,6 +1199,65 @@ fn vs_main(@builtin(vertex_index) index: u32) -> Varying {{
     var out: Varying;
     out.position = vec4<f32>(corners[index], 0.0, 1.0);
     return out;
+}}
+
+// The frame in four regions, each with a shader of its own (`Region`): the
+// planet's inside, where every pixel is fully covered, a band two pixels wide
+// along its anti-aliased edge, the halo of air beyond it, and space. Each is an
+// annulus of `SEGMENTS` quads between two of `RADII` (in half frames, from
+// the centre); vertex `index` picks the annulus by its range. Shared edges
+// are computed from the same numbers, so the regions meet without gaps or
+// overlap. One shader for the whole frame needed more registers than the
+// V3D gives four threads, for the limb's sake, and so ran the planet at two;
+// only the edge still needs both, and it is a few thousand pixels.
+const SEGMENTS: u32 = {segments}u;
+
+@vertex
+fn vs_region(@builtin(vertex_index) index: u32) -> Varying {{
+    var radii = array<f32, 5>(0.0, {disc}, {edge}, {halo}, {space});
+    var steps = array<u32, 6>(0u, 0u, 1u, 1u, 0u, 1u);
+    var outer = array<u32, 6>(0u, 1u, 0u, 0u, 1u, 1u);
+    let quads = 6u * SEGMENTS;
+    let region = index / quads;
+    let corner = index % 6u;
+    let segment = ((index % quads) / 6u + steps[corner]) % SEGMENTS;
+    let angle = f32(segment) * (TAU / f32(SEGMENTS));
+    let r = radii[region + outer[corner]];
+    var out: Varying;
+    out.position = vec4<f32>(r * cos(angle), r * sin(angle), 0.0, 1.0);
+    return out;
+}}
+
+// The inside of the planet: no limb, no edge, no space.
+@fragment
+fn fs_disc(in: Varying) -> @location(0) vec4<f32> {{
+    let p = vec2<f32>(
+        (in.position.x - params.frame.x) / params.frame.z,
+        (params.frame.y - in.position.y) / params.frame.z,
+    );
+    return encode(surface(in.position.xy, p, length(p)), 1.0);
+}}
+
+// Past the planet's edge: the limb's glow over space, as `fs_main` paints it.
+@fragment
+fn fs_halo(in: Varying) -> @location(0) vec4<f32> {{
+    let p = vec2<f32>(
+        (in.position.x - params.frame.x) / params.frame.z,
+        (params.frame.y - in.position.y) / params.frame.z,
+    );
+    let distance = length(p);
+    let back = space(in.position.xy);
+    if (distance > params.frame.w / params.frame.z) {{
+        return vec4<f32>(back, 1.0);
+    }}
+    let glow = limb(p, distance);
+    return vec4<f32>(glow.rgb * glow.a + back * (1.0 - glow.a), 1.0);
+}}
+
+// Beyond the atmosphere: only the space behind the planet.
+@fragment
+fn fs_space(in: Varying) -> @location(0) vec4<f32> {{
+    return vec4<f32>(space(in.position.xy), 1.0);
 }}
 
 // The air seen edge-on past the limb, `r` planet radii from the centre: a
@@ -1139,9 +1304,10 @@ fn space(position: vec2<f32>) -> vec3<f32> {{
 
 @fragment
 fn fs_main(in: Varying) -> @location(0) vec4<f32> {{
+    // Any pixel of the frame, though it now draws only the planet's edge
+    // (`fs_disc`, `fs_halo` and `fs_space` paint the rest the same way).
     // Laid over space the way Slint composited the frame when it was
     // transparent: Slint takes a wgpu texture for straight alpha.
-    // Most of the frame is the opaque planet, which hides space entirely.
     let globe = shade(in);
     if (globe.a >= 1.0) {{
         return vec4<f32>(globe.rgb, 1.0);
@@ -1197,7 +1363,16 @@ fn shade(in: Varying) -> vec4<f32> {{
     if (coverage <= 0.0) {{
         return limb(p, distance);
     }}
+    let planet = encode(surface(in.position.xy, p, distance), 1.0);
+    if (coverage >= 1.0) {{
+        return planet;
+    }}
+    return mix(limb(p, distance), planet, coverage);
+}}
 
+// The planet's surface at `position` (in pixels; `p` and `distance` in planet
+// radii from the centre), in linear light, seen through the air in front of it.
+fn surface(position: vec2<f32>, p: vec2<f32>, distance: f32) -> vec3<f32> {{
     // The point on the sphere, on screen and then in the planet's own frame.
     let z = sqrt(max(1.0 - distance * distance, 0.0));
     let n_screen = vec3<f32>(p, z);
@@ -1206,7 +1381,7 @@ fn shade(in: Varying) -> vec4<f32> {{
         dot(params.to_planet[1].xyz, n_screen),
         dot(params.to_planet[2].xyz, n_screen),
     );
-    let texel = vec2<i32>(in.position.xy);
+    let texel = vec2<i32>(position);
     let mapped = textureLoad(mapping_map, texel, 0).xy;
     let uv = vec2<f32>(mapped.x + params.spin.x, mapped.y);
     let air = textureLoad(air_map, texel, 0);
@@ -1219,7 +1394,7 @@ fn shade(in: Varying) -> vec4<f32> {{
     let cos_lon = n.z / cos_lat;
     let east = vec3<f32>(cos_lon, 0.0, -sin_lon);
     let north = vec3<f32>(-n.y * sin_lon, cos_lat, -n.y * cos_lon);
-    let relief = textureSampleBias(relief_map, map_sampler, uv, BIAS + 0.4);
+    let relief = textureSampleBias(relief_map, soft_sampler, uv, BIAS + 0.4);
     let bump = relief.rg - vec2<f32>(0.5);
     let water = relief.b;
     let tilted = normalize(n + (east * bump.x + north * bump.y) * RELIEF);
@@ -1239,7 +1414,7 @@ fn shade(in: Varying) -> vec4<f32> {{
     );
     var shadow = 0.0;
     if (mu_sun > -0.05) {{
-        shadow = textureSampleBias(cloud_map, map_sampler, cloud_uv + shift, BIAS + 1.0).r;
+        shadow = textureSampleBias(shadow_map, soft_sampler, cloud_uv + shift, BIAS + 1.0).r;
     }}
 
     // The ground, lit by reddened sunlight and the sky.
@@ -1286,13 +1461,7 @@ fn shade(in: Varying) -> vec4<f32> {{
     // adds its own blue, thickening toward the limb.
     let through = air.rgb;
     let sun_air = sun_high * smoothstep01(-0.10, 0.08, mu_sun);
-    colour = colour * through + sun_air * (vec3<f32>(1.0) - through) * 0.45;
-
-    let planet = encode(colour, 1.0);
-    if (coverage >= 1.0) {{
-        return planet;
-    }}
-    return mix(limb(p, distance), planet, coverage);
+    return colour * through + sun_air * (vec3<f32>(1.0) - through) * 0.45;
 }}
 "#,
         relief = RELIEF,
@@ -1308,6 +1477,11 @@ fn shade(in: Varying) -> vec4<f32> {{
         sun_r = SUNLIGHT,
         sun_g = SUNLIGHT * 0.98,
         sun_b = SUNLIGHT * 0.95,
+        segments = SEGMENTS,
+        disc = Region::Disc.outer(),
+        edge = Region::Edge.outer(),
+        halo = Region::Halo.outer(),
+        space = Region::Space.outer(),
     )
 }
 
