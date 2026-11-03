@@ -132,8 +132,8 @@ fn caustic_texels() -> Vec<u8> {
 }
 
 /// A texture array of `side` texels a side from painted layers and their
-/// mip chains (`levels[mip][layer]`, RGBA8). An empty layer is left as the
-/// GPU clears it.
+/// mip chains (`levels[mip][layer]`, RGBA8, or RG8 for two channels a
+/// texel). An empty layer is left as the GPU clears it.
 fn surface_array(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -142,6 +142,15 @@ fn surface_array(
     painted: &[Vec<Vec<u8>>],
 ) -> wgpu::Texture {
     let layers = painted[0].len() as u32;
+    // Four channels a texel, or two for a normal map's.
+    let texel = painted[0]
+        .iter()
+        .find(|layer| !layer.is_empty())
+        .map_or(4, |layer| layer.len() / (side * side));
+    let format = match texel {
+        2 => wgpu::TextureFormat::Rg8Unorm,
+        _ => wgpu::TextureFormat::Rgba8Unorm,
+    };
     let surfaces = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -152,7 +161,7 @@ fn surface_array(
         mip_level_count: painted.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -176,7 +185,7 @@ fn surface_array(
                 texels,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(size * 4),
+                    bytes_per_row: Some(size * texel as u32),
                     rows_per_image: Some(size),
                 },
                 wgpu::Extent3d {
@@ -596,6 +605,7 @@ struct Bindings {
     globals: wgpu::Buffer,
     surfaces: wgpu::TextureView,
     fine: wgpu::TextureView,
+    normals: wgpu::TextureView,
     sampler: wgpu::Sampler,
     caustic: wgpu::TextureView,
     caustic_sampler: wgpu::Sampler,
@@ -620,6 +630,7 @@ impl Bindings {
                 entry(13, view(&self.sky)),
                 entry(14, view(paintings)),
                 entry(15, view(&self.fine)),
+                entry(16, view(&self.normals)),
             ],
         })
     }
@@ -2139,6 +2150,16 @@ impl Nautilus {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 16,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         // The surfaces, painted once.
@@ -2176,6 +2197,13 @@ impl Nautilus {
             textures::FINE_SIZE,
             &painted.fine,
         );
+        let normals = surface_array(
+            device,
+            &gpu.queue,
+            "Dive3d fine normals",
+            textures::FINE_SIZE,
+            &painted.normals,
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Dive3d surfaces"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -2196,6 +2224,7 @@ impl Nautilus {
         };
         let surfaces_view = surfaces.create_view(&array);
         let fine_view = fine.create_view(&array);
+        let normals_view = normals.create_view(&array);
         let caustic = caustic_texture(device, &gpu.queue);
         let caustic_view = caustic.create_view(&wgpu::TextureViewDescriptor::default());
         let caustic_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2211,6 +2240,7 @@ impl Nautilus {
             globals: globals.clone(),
             surfaces: surfaces_view,
             fine: fine_view,
+            normals: normals_view,
             sampler,
             caustic: caustic_view,
             caustic_sampler,

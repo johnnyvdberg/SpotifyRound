@@ -5,7 +5,7 @@
 //! skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt and
 //! riveted iron plating, the meanders of a brain coral, and the reef's carpet
 //! of living colonies.
-//! Five are photographed instead (dressed stone, an encaustic floor, marble,
+//! Five are photographed instead (coursed sandstone, an encaustic floor, marble,
 //! rock and planking): CC0 ambientCG materials baked into `assets/surfaces`
 //! by `deploy/surfaces.py`, their displacement kept as height for the relief.
 //! They are mostly tone, close to white on average, so a model's own colour
@@ -49,8 +49,8 @@ pub enum Surface {
     /// ([`paint_staghorn`]), so the card takes one lookup instead of tracing
     /// fifteen limbs a pixel.
     Staghorn,
-    /// Dressed stone in courses, each block a little its own shade, with
-    /// sunk mortar joints: the museum's walls and front.
+    /// Coursed sandstone, photographed (`assets/surfaces`): the museum's
+    /// walls and front.
     Ashlar,
     /// A woven damask, its pattern of medallions raised from the ground:
     /// the picture gallery's walls.
@@ -590,18 +590,31 @@ pub struct Painted {
     /// The relief surfaces at [`FINE_SIZE`], at their own layers' indices;
     /// the other layers are left empty (and unwritten on the GPU).
     pub fine: Vec<Vec<Vec<u8>>>,
+    /// The relief surfaces' normals at [`FINE_SIZE`], two channels a texel
+    /// (RG8): the normal's x and y in the tile, 0..1 about one half. Laid
+    /// out as `fine`.
+    pub normals: Vec<Vec<Vec<u8>>>,
 }
 
 /// A layer photographed rather than painted: an ambientCG material baked by
-/// `deploy/surfaces.py` (`assets/surfaces`, CC0), at [`FINE_SIZE`] a side,
-/// its colour already scaled as stored and its height in alpha.
-fn photo(surface: Surface) -> Option<&'static [u8]> {
+/// `deploy/surfaces.py` (`assets/surfaces`, CC0), at [`FINE_SIZE`] a side:
+/// its colour already scaled as stored, the occlusion in it and its height
+/// in alpha; and its normal map's x and y.
+fn photo(surface: Surface) -> Option<(&'static [u8], &'static [u8])> {
+    macro_rules! baked {
+        ($name:literal) => {
+            (
+                include_bytes!(concat!("../../assets/surfaces/", $name, ".png")),
+                include_bytes!(concat!("../../assets/surfaces/", $name, "-normal.png")),
+            )
+        };
+    }
     Some(match surface {
-        Surface::Ashlar => include_bytes!("../../assets/surfaces/ashlar.png"),
-        Surface::Tiles => include_bytes!("../../assets/surfaces/tiles.png"),
-        Surface::Marble => include_bytes!("../../assets/surfaces/marble.png"),
-        Surface::Rock => include_bytes!("../../assets/surfaces/rock.png"),
-        Surface::Wood => include_bytes!("../../assets/surfaces/wood.png"),
+        Surface::Ashlar => baked!("ashlar"),
+        Surface::Tiles => baked!("tiles"),
+        Surface::Marble => baked!("marble"),
+        Surface::Rock => baked!("rock"),
+        Surface::Wood => baked!("wood"),
         _ => return None,
     })
 }
@@ -618,21 +631,59 @@ fn unpack(png: &[u8]) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// How deep a painted layer's relief is, as a share of its tile, for the
+/// normals worked out from its height ([`normals_of`]): the full range of
+/// the height spans this much.
+const DEPTH: f32 = 0.05;
+
+/// A painted relief layer's normals, from the slopes of its height (alpha)
+/// across the tile and down it, wrapping: x toward the tile's right and y
+/// toward its top, as a GL normal map has them, each 0..1 about one half.
+fn normals_of(layer: &[[f32; 4]], size: usize) -> Vec<[f32; 4]> {
+    let h = |x: usize, y: usize| layer[(y % size) * size + x % size][3];
+    (0..size * size)
+        .map(|i| {
+            let (x, y) = (i % size, i / size);
+            let across = (h(x + 1, y) - h(x + size - 1, y)) * 0.5 * size as f32;
+            let down = (h(x, y + 1) - h(x, y + size - 1)) * 0.5 * size as f32;
+            let bent = [-DEPTH * across, DEPTH * down].map(|n| (0.5 + 0.5 * n).clamp(0.0, 1.0));
+            [bent[0], bent[1], 0.0, 0.0]
+        })
+        .collect()
+}
+
+/// A chain of RGBA8 levels cut to their first two channels, for a normal
+/// map's RG8 layers.
+fn two_channels(chain: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    chain
+        .into_iter()
+        .map(|level| level.chunks(4).flat_map(|t| [t[0], t[1]]).collect())
+        .collect()
+}
+
 /// Every layer with its mip chain. A relief surface is painted once, at
 /// [`FINE_SIZE`]: its ordinary layer is the fine one's chain from its first
-/// halving.
+/// halving, and its normals are a chain of their own.
 pub fn paint_all() -> Painted {
     let fine_levels = FINE_SIZE.trailing_zeros() as usize + 1;
     let mut surfaces = vec![Vec::new(); SIZE.trailing_zeros() as usize + 1];
     let mut fine = vec![Vec::new(); fine_levels];
+    let mut normals = vec![Vec::new(); fine_levels];
     for surface in Surface::ALL {
-        let chain = match surface {
+        let (chain, bent) = match surface {
             // The tunnel's and the staghorn's, which are not colours.
-            Surface::Vault => chain(paint_vault(), SIZE),
-            Surface::Staghorn => chain(paint_staghorn(), SIZE),
-            _ if let Some(png) = photo(surface) => chain(unpack(png), FINE_SIZE),
-            _ if surface.relief().is_some() => chain(paint_layer(surface, FINE_SIZE), FINE_SIZE),
-            _ => chain(paint_layer(surface, SIZE), SIZE),
+            Surface::Vault => (chain(paint_vault(), SIZE), None),
+            Surface::Staghorn => (chain(paint_staghorn(), SIZE), None),
+            _ if let Some((png, normal)) = photo(surface) => (
+                chain(unpack(png), FINE_SIZE),
+                Some(chain(unpack(normal), FINE_SIZE)),
+            ),
+            _ if surface.relief().is_some() => {
+                let layer = paint_layer(surface, FINE_SIZE);
+                let bent = chain(normals_of(&layer, FINE_SIZE), FINE_SIZE);
+                (chain(layer, FINE_SIZE), Some(bent))
+            }
+            _ => (chain(paint_layer(surface, SIZE), SIZE), None),
         };
         let skip = chain.len() - surfaces.len();
         for (level, texels) in chain.iter().enumerate() {
@@ -648,8 +699,16 @@ pub fn paint_all() -> Painted {
                 level.push(Vec::new());
             }
         }
+        let bent = bent.map_or_else(|| vec![Vec::new(); fine_levels], two_channels);
+        for (level, texels) in bent.into_iter().enumerate() {
+            normals[level].push(texels);
+        }
     }
-    Painted { surfaces, fine }
+    Painted {
+        surfaces,
+        fine,
+        normals,
+    }
 }
 
 /// A layer of `size` a side and its mip chain, as RGBA8.

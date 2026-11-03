@@ -73,6 +73,9 @@ struct Globals {
 // The relief surfaces again, painted finer (`textures::Painted::fine`), at
 // the same layers: what the relief pipeline reads instead of `surfaces`.
 @group(0) @binding(15) var fine_surfaces: texture_2d_array<f32>;
+// Their normals (`textures::Painted::normals`): x across the tile and y up
+// it, 0..1 about one half.
+@group(0) @binding(16) var fine_normals: texture_2d_array<f32>;
 // Textures store 0..1.6 as 0..1, so they can brighten as well as darken.
 const TEXTURE_RANGE: f32 = 1.6;
 // log2 of the surfaces' size, `textures::SIZE`.
@@ -1453,8 +1456,10 @@ const CITY_LIGHTS: i32 = 11;
 // A still surface whose texture holds a height in its alpha
 // (`world::material::RELIEF`, `textures::Surface::relief`).
 const RELIEF: i32 = 14;
-// How deep a tile's relief is, as a share of the tile: the emboss's
-// strength for the full range of its height.
+// How strongly a relief surface's normals tilt its light.
+const RELIEF_GAIN: f32 = 1.2;
+// How deep a tile's relief is, as a share of the tile, for the seabed's
+// emboss: the strength of its height's full range.
 const RELIEF_DEPTH: f32 = 0.05;
 // The fine layers' side (`textures::FINE_SIZE`): a slope is never taken
 // over less than a texel, or a magnified texel's bilinear ramp embosses
@@ -2026,14 +2031,40 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // and the generic distance bias would blur the grain and the cracks away.
     // Only the vault pipeline takes the sharper level; every model keeps the
     // cheap one.
-    // The relief surfaces are painted at twice the side, so the same bias
-    // takes them twice as sharp.
-    let lod = clamp(log2(distance * select(3.0, 1.0, MATERIAL == VAULT)), 0.0, 8.0);
+    // A relief surface takes the level whose texel is about the pixel it
+    // lands on, from how much of its tile the pixel spans: the generic
+    // bias read a wall at arm's length at a sixth of its resolution. Not on
+    // the seabed: the grounded pipeline has no room for it.
+    var lod = clamp(log2(distance * select(3.0, 1.0, MATERIAL == VAULT)), 0.0, 8.0);
+    if (MATERIAL == RELIEF && !GROUNDED) {
+        lod = clamp(log2(distance * in.surface.y * (PIXEL_SPAN * FINE_SIZE)) + 0.5, 0.0, 9.0);
+    }
     // The tunnel's layer is not a colour (`textures::paint_vault`): its
     // channels are read raw, and only the others' are scaled to a colour.
     var sample = vec4<f32>(0.6 / TEXTURE_RANGE, 0.5, 0.5, 0.0);
+    var bent = vec2<f32>(0.0);
     if (!PLAIN_TEXTURES) {
-        if (MATERIAL == RELIEF) {
+        if (MATERIAL == RELIEF && !GROUNDED) {
+            bent = textureSampleLevel(
+                fine_normals,
+                surface_sampler,
+                uv.xz,
+                layer,
+                lod,
+            ).xy * 2.0 - 1.0;
+            let key = normalize(vec3<f32>(0.0, 1.6, 0.0) - g.out.xyz);
+            let wall = abs(n.y) < 0.7 && !carried;
+            let across = select(key.x, select(key.x, key.z, abs(n.x) > abs(n.z)), wall);
+            let up = select(-key.z, key.y, wall);
+            bent.x = clamp(1.0 + RELIEF_GAIN * (bent.x * across + bent.y * up), 0.6, 1.4);
+            sample = textureSampleLevel(
+                fine_surfaces,
+                surface_sampler,
+                uv.xz,
+                layer,
+                lod,
+            );
+        } else if (MATERIAL == RELIEF) {
             sample = textureSampleLevel(
                 fine_surfaces,
                 surface_sampler,
@@ -2053,20 +2084,32 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     let texture = sample.rgb * TEXTURE_RANGE;
     var albedo = in.albedo * texture;
-    // Relief: the height's slope across the screen, over the stretch of
-    // tile a pixel spans, is how far the surface there tilts toward the top
-    // of the screen and its left, lit as though from above and behind the
-    // eye: a joint's upper lip shades, its lower one catches, and the sunk
-    // parts are a little darker besides. Taken in the tile's own units it
-    // holds for a carried texture as for a fixed one, whatever the model's
-    // scale. An emboss, not a normal: the light is per vertex, and a
-    // tangent-free bump's crosses and normalize held enough live to halve
-    // the shader's threads.
-    if (MATERIAL == RELIEF) {
+    // Relief: the normal map's tilt, lit as though from above and behind
+    // the eye. The tile's across and up are world axes (along a wall, or x
+    // and z on a floor), so the tilt toward the light is the normal's x and
+    // y times the light's parts along them: no tangents to carry, and no
+    // derivatives. The light is per vertex, so the tilt scales it rather
+    // than relighting: a joint's upper lip shades, its lower one catches,
+    // and the sunk parts are a little darker besides.
+    // Relief, lit as though from above and behind the eye. The light is per
+    // vertex, so the tilt scales it rather than relighting: a joint's upper
+    // lip shades and its lower one catches.
+    //
+    // Free of the seabed, from the normal map: the tile's across and up are
+    // world axes (along a wall, or x and z on a floor), so the tilt toward
+    // the light is the normal's x and y times the light's parts along them,
+    // worked out above as soon as the normal is read; no tangents to carry.
+    //
+    // On the seabed, an emboss of the height: its slope across the screen
+    // over the tile a pixel spans. A second texture read there, with the
+    // burial's state live, would halve the grounded pipeline's threads.
+    if (MATERIAL == RELIEF && !GROUNDED) {
+        albedo *= bent.x;
+    }
+    if (MATERIAL == RELIEF && GROUNDED) {
         let foot = max(distance * in.surface.y * PIXEL_SPAN, 1.0 / FINE_SIZE);
         let rise = dpdy(sample.a) + 0.35 * dpdx(sample.a);
-        let tilt = 1.0 + RELIEF_DEPTH * rise / foot;
-        albedo *= clamp(tilt, 0.6, 1.4) * (0.80 + 0.40 * sample.a);
+        albedo *= clamp(1.0 + RELIEF_DEPTH * rise / foot, 0.6, 1.4);
     }
     // Bedded in the sand: the foot of anything on the seabed takes its colour.
     if (GROUNDED) {

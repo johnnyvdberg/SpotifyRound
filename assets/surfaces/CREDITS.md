@@ -8,7 +8,7 @@ alpha. `src/dive3d/textures.rs` reads them as the relief layers of the dive.
 
 | File | Material | Page |
 |---|---|---|
-| ashlar.png | Bricks 008 | https://ambientcg.com/view?id=Bricks008 |
+| ashlar.png | Bricks 084 | https://ambientcg.com/view?id=Bricks084 |
 | tiles.png | Tiles 131 | https://ambientcg.com/view?id=Tiles131 |
 | marble.png | Marble 014 | https://ambientcg.com/view?id=Marble014 |
 | rock.png | Rock 030 | https://ambientcg.com/view?id=Rock030 |

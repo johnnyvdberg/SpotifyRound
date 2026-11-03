@@ -14,8 +14,8 @@
 //!   ultraviolet and back, so the fluorescent ones flare in their own
 //!   colours.
 //! - The picture gallery: the grand masters hung salon-fashion down its
-//!   long wall round the largest, in gilt frames on cords from a picture
-//!   rail, each with its label.
+//!   long wall round the largest, in gilt, ebony and walnut frames under a
+//!   picture rail, each with its label.
 //!
 //! The building is the visit's own ([`Museum::near`]): the halls' order and
 //! proportions, round or pointed arches, galleries or none, the loop's
@@ -525,8 +525,8 @@ fn slab(
 
 /// A texture and its repeats a unit, or none.
 type Skin = Option<(Surface, f32)>;
-/// Dressed stone, its courses a hand high.
-const ASHLAR: Skin = Some((Surface::Ashlar, 0.7));
+/// Coursed sandstone.
+const ASHLAR: Skin = Some((Surface::Ashlar, 0.45));
 /// Polished stone, for the trim and the stands.
 const MARBLE: Skin = Some((Surface::Marble, 2.5));
 
@@ -1086,8 +1086,7 @@ struct Hang {
 /// Hangs `paintings`, in turn, on `walls`, in turn, each row filled from the
 /// left with what fits and centred. They are spaced by their frames, not
 /// their canvases, `gap` clear between frames and a label's room clear
-/// between rows. The top row hangs on cords from the rail; the rows under it
-/// on hooks behind their frames, so no cord crosses a painting.
+/// between rows. Each hangs on hooks behind its frame.
 fn hang(w: &World, f: &mut Frame, m: &Museum, walls: &[Wall], paintings: &[usize], how: Hang) {
     let mut next = paintings.iter().copied().peekable();
     for wall in walls {
@@ -1120,8 +1119,7 @@ fn hang(w: &World, f: &mut Frame, m: &Museum, walls: &[Wall], paintings: &[usize
                 let p = m.at(u, v, m.floor + mid);
                 if w.visible(p, outer.max(ph)) {
                     let face = m.direction(wall.face[0], wall.face[1]);
-                    let rail = (row == 0).then_some(m.floor + wall.high + 0.1);
-                    painting(w, f, p, face, i, [pw, ph], rail);
+                    painting(w, f, p, face, i, [pw, ph]);
                 }
             }
         }
@@ -1195,17 +1193,8 @@ fn frame_style(layer: usize) -> FrameStyle {
 }
 
 /// A painting of `size` centred at `p`, facing the world direction `face`:
-/// its canvas, its frame, the two cords it hangs by from hooks on the rail
-/// at height `rail` if it has them, and its label under it.
-fn painting(
-    w: &World,
-    f: &mut Frame,
-    p: [f32; 3],
-    face: [f32; 2],
-    layer: usize,
-    size: [f32; 2],
-    rail: Option<f32>,
-) {
+/// its canvas, its frame and its label under it.
+fn painting(w: &World, f: &mut Frame, p: [f32; 3], face: [f32; 2], layer: usize, size: [f32; 2]) {
     // A model's +z turned along `face`; its +x is then along the wall.
     let yaw = face[0].atan2(face[1]);
     let right = [face[1], -face[0]];
@@ -1316,22 +1305,6 @@ fn painting(
     // The liner, just inside the frame.
     if near {
         ring(f, 1.0, 1.0 + 0.012 / band, 0.016, liner, false);
-    }
-    // The cords: two, straight up from the frame's top to S-hooks on the
-    // rail, never wider than the frame.
-    if let Some(rail) = rail {
-        for side in [-1.0, 1.0] {
-            let r = side * (hw + 0.4 * band);
-            let top = at(r, hh + band, 0.02);
-            let hook = at(r, rail - p[1], 0.008);
-            rod(f, top, hook, 0.0025, WIRE);
-            f.put(
-                Model::Box,
-                place(hook, yaw, 0.0, 0.0, [0.006, 0.014, 0.006]),
-                BRASS,
-            )
-            .element(element::MUSEUM);
-        }
     }
     // The label, a card on the wall under the frame's right-hand corner.
     f.put(
@@ -1654,15 +1627,7 @@ fn masters(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
     let (bw, bh) = centrepiece_size(hall);
     let p = m.at(middle, wall_v, m.floor + 0.35 + 0.5 * bh);
     if w.visible(p, bw) {
-        painting(
-            w,
-            f,
-            p,
-            m.direction(0.0, -1.0),
-            largest,
-            [bw, bh],
-            Some(rail),
-        );
+        painting(w, f, p, m.direction(0.0, -1.0), largest, [bw, bh]);
     }
     // The rest hang bay by bay between the pilasters, clear of the
     // centrepiece, and on the end walls.
