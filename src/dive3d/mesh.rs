@@ -800,6 +800,10 @@ pub enum Model {
     /// narrowing all the way up to a crater whose rim dips into a hollow
     /// throat. A unit across at the foot and a unit tall.
     Volcano,
+    /// A sea cucumber a unit long along x, warty, tentacles at +x.
+    Cucumber,
+    /// A sea urchin: a squat test bristling with spines, a unit across.
+    Urchin,
     // The drowned museum's (`exhibits`), streamed in as it comes near and
     // dropped once it is left behind: none is in the library the dive
     // starts with ([`Model::is_streamed`]). First the Smithsonian's
@@ -860,7 +864,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 149] = [
+    pub const ALL: [Model; 151] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -961,6 +965,8 @@ impl Model {
         Model::GlassSponge,
         Model::HoleWall,
         Model::Volcano,
+        Model::Cucumber,
+        Model::Urchin,
         Model::Mammoth,
         Model::GroundSloth,
         Model::Triceratops,
@@ -1371,6 +1377,8 @@ impl Model {
             Model::GlassSponge => glass_sponge(),
             Model::HoleWall => hole_wall(),
             Model::Volcano => volcano(),
+            Model::Cucumber => cucumber(),
+            Model::Urchin => urchin(),
             #[cfg(test)]
             Model::WhaleSkeleton => exhibits::whale_skeleton(),
             #[cfg(test)]
@@ -1656,7 +1664,7 @@ fn kelp() -> Mesh {
         let y = i as f32 / segments as f32;
         let [bx, bz] = bend(y);
         let w = 0.006;
-        let shade = [0.62 + 0.2 * y; 3];
+        let shade = [0.42 + 0.2 * y; 3];
         let a = m.vertex([bx - w, y, bz], shade, [0.0, y]);
         let b = m.vertex([bx + w, y, bz], shade, [0.0, y]);
         if let Some((pa, pb)) = previous {
@@ -1670,11 +1678,12 @@ fn kelp() -> Mesh {
         let r = |n: u32| jitter(k as u32, 9100 + n);
         let y0 = 0.06 + 0.92 * (k as f32 + 0.3 * r(0)) / nodes as f32;
         let [bx, bz] = bend(y0);
-        let turn = k as f32 * 2.4 + 0.5 * r(1);
+        // Streamed down-current (the plant's +x), fanning either side.
+        let turn = (r(1) - 0.5) * 2.4 + if k % 2 == 0 { 0.3 } else { -0.3 };
         let (s, c) = turn.sin_cos();
-        let long = (0.07 + 0.10 * y0) * (0.7 + 0.6 * r(2));
-        let wide = 0.016 + 0.012 * r(3);
-        let lean = 0.45 + 0.5 * r(4);
+        let long = (0.12 + 0.14 * y0) * (0.75 + 0.5 * r(2));
+        let wide = 0.010 + 0.006 * r(3);
+        let lean = 0.85 + 0.45 * r(4);
         let mut last: Option<(u32, u32)> = None;
         for j in 0..=steps {
             let t = j as f32 / steps as f32;
@@ -1684,7 +1693,7 @@ fn kelp() -> Mesh {
             let up = long * t * lean.cos() - 0.25 * long * t * t * (1.0 - lean.cos());
             let half = wide * (PI * (0.15 + 0.80 * t)).sin().max(0.0).powf(0.7);
             // The ruffle: the blade's two edges ride up and down out of step.
-            let ruffle = 0.006 * (t * 9.0 + r(5) * 6.0).sin();
+            let ruffle = 0.007 * (t * 13.0 + r(5) * 6.0).sin();
             let centre = [bx + c * out, y0 + up, bz + s * out];
             let across = [-s * half, ruffle, c * half];
             let tone = 0.68 + 0.32 * y0 + 0.12 * t;
@@ -1712,6 +1721,29 @@ fn kelp() -> Mesh {
                 m.quad(pa, pb, b, a);
             }
             last = Some((a, b));
+        }
+        // The gas float the blade grows from, holding it up: a small gold
+        // bead at the stipe, its six corners shared (the kelp is many, and
+        // its vertices are what the binning pays for).
+        let bead = [bx + c * 0.012, y0, bz + s * 0.012];
+        let size = [0.005, 0.008, 0.005];
+        let float = [1.5, 1.3, 0.7];
+        let corners = [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+        ]
+        .map(|d: [f32; 3]| {
+            let q = [0, 1, 2].map(|i| bead[i] + d[i] * size[i]);
+            m.vertex(q, float, [0.0, q[1].min(1.0)])
+        });
+        for q in 0..4 {
+            let (p, n) = (corners[q], corners[(q + 1) % 4]);
+            m.tri(p, n, corners[4]);
+            m.tri(n, p, corners[5]);
         }
     }
     m.smooth()
@@ -4312,25 +4344,180 @@ fn sail() -> Mesh {
 }
 
 fn fan() -> Mesh {
-    // A gorgonian sea fan: a ribbed half-disc, stood on edge.
+    // A gorgonian sea fan (Gorgonia): a short trunk forking again and again
+    // in one plane into a fine net, its branches fused across by twigs where
+    // they grow close, so the fan reads as lace and the water shows through.
+    // Flat ribbons facing z, lit from either side as the fins are. About a
+    // unit tall and a unit to either side.
     let mut m = Mesh::default();
-    let centre = m.vertex([0.0, 0.0, 0.0], [0.8; 3], [0.0, 0.0]);
-    let rim = 18;
-    let mut prev = None;
-    for i in 0..=rim {
-        let a = i as f32 / rim as f32 * PI;
-        let r = 1.0 + 0.12 * (a * 7.0).sin();
-        let rib = if i % 2 == 0 { 1.25 } else { 0.85 };
-        let v = m.vertex([a.cos() * r, a.sin() * r, 0.0], [rib; 3], [0.0, a.sin()]);
-        if let Some(p) = prev {
-            m.tri(centre, p, v);
+    // Five forkings: the net's look for a tenth of the triangles of seven,
+    // the fans being many (each is about 110 triangles).
+    let levels = fewer(5, 3) as u32;
+    let mut ends: Vec<Vec<[f32; 2]>> = vec![Vec::new(); levels as usize + 1];
+    // (from, heading from upright, length, width, level, the branch's own
+    // number for its jitter)
+    let mut grow = vec![([0.0f32, 0.0f32], 0.0f32, 0.2f32, 0.04f32, 0u32, 1u32)];
+    while let Some((a, heading, long, wide, level, id)) = grow.pop() {
+        let b = [a[0] + heading.sin() * long, a[1] + heading.cos() * long];
+        let narrow = (wide * 0.72).max(0.009);
+        let tone = 0.8 + 0.4 * level as f32 / levels as f32;
+        ribbon(&mut m, a, b, [wide, narrow], tone);
+        ends[level as usize].push(b);
+        if level == levels {
+            continue;
         }
-        prev = Some(v);
+        for (side, salt) in [(-1.0f32, 0u32), (1.0, 1)] {
+            let id = id * 2 + salt;
+            // Narrow forks, so the branches run side by side up the fan
+            // and the net is close.
+            let fork = 0.20 + 0.14 * jitter(id, 9300);
+            // Kept to the fan's half-disc, the outer branches turned up.
+            let heading = (heading + side * fork).clamp(-1.45, 1.45);
+            let long = long * (0.80 + 0.12 * jitter(id, 9301));
+            grow.push((b, heading, long, narrow, level + 1, id));
+        }
+    }
+    // The fused twigs: each fork of the outer levels joined to the
+    // nearest on its own level or the one before, when they are close, so
+    // the branches knit into a net.
+    let gap = |p: [f32; 2], q: [f32; 2]| (q[0] - p[0]).hypot(q[1] - p[1]);
+    for level in 3..ends.len() {
+        for (n, &p) in ends[level].iter().enumerate() {
+            let mut near: Vec<[f32; 2]> = ends[level]
+                .iter()
+                .enumerate()
+                .filter(|&(k, _)| k > n)
+                .map(|(_, &q)| q)
+                .chain(ends[level - 1].iter().copied())
+                .filter(|&q| gap(p, q) > 1e-4 && gap(p, q) < 0.16)
+                .collect();
+            near.sort_by(|&q, &r| gap(p, q).total_cmp(&gap(p, r)));
+            for q in near.into_iter().take(1) {
+                ribbon(&mut m, p, q, [0.007; 2], 1.1);
+            }
+        }
     }
     for v in &mut m.vertices {
         v.normal = [0.0, 0.0, -1.0];
     }
     m
+}
+
+/// A flat ribbon in the z = 0 plane from `a` to `b`, `wide` across at each
+/// end, for the branches of a fan. Its sway follows its height.
+fn ribbon(m: &mut Mesh, a: [f32; 2], b: [f32; 2], wide: [f32; 2], tone: f32) {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let length = dx.hypot(dy).max(1e-5);
+    let across = [-dy / length * 0.5, dx / length * 0.5];
+    let mut end = |p: [f32; 2], w: f32| {
+        [-1.0, 1.0].map(|k| {
+            m.vertex(
+                [p[0] + across[0] * w * k, p[1] + across[1] * w * k, 0.0],
+                [tone; 3],
+                [0.0, p[1].clamp(0.0, 1.0)],
+            )
+        })
+    };
+    let [a0, a1] = end(a, wide[0]);
+    let [b0, b1] = end(b, wide[1]);
+    m.quad(a0, a1, b1, b0);
+}
+
+/// A sea cucumber a unit long along x: a plump, soft body, flat beneath
+/// and tapering to either end, its back studded with warty papillae and a
+/// ring of short feeding tentacles round the mouth at +x.
+fn cucumber() -> Mesh {
+    let mut m = blob(
+        2,
+        |p| {
+            let t = p[0];
+            // Fullest a little behind the middle, narrowing to the mouth.
+            let girth = 0.2 * (1.0 - 0.35 * t * t) * (1.0 - 0.12 * t);
+            let y = if p[1] < 0.0 { p[1] * 0.35 } else { p[1] };
+            [t * 0.5, (y + 0.35) * girth * 0.85, p[2] * girth]
+        },
+        |p, _| [0.7 + 0.35 * p[1].max(0.0); 3].map(|c: f32| 1.05 - c * 0.3),
+    );
+    let warts = fewer(20, 6) as u32;
+    for i in 0..warts {
+        let t = (i as f32 + 0.5) / warts as f32 * 2.0 - 1.0;
+        let a = (jitter(i, 9500) - 0.5) * 1.9;
+        let girth = 0.2 * (1.0 - 0.35 * t * t) * (1.0 - 0.12 * t);
+        let base = [t * 0.46, (0.35 + a.cos()) * girth * 0.85, a.sin() * girth];
+        let up = [0.0, a.cos(), a.sin()];
+        let tall = 0.035 + 0.03 * jitter(i, 9501);
+        let tip = [0.0, 1.0, 2.0].map(|k| base[k as usize] + up[k as usize] * tall);
+        let r = 0.022;
+        let corners = [0.0f32, 1.0, 2.0].map(|k| {
+            let b = k * TAU / 3.0;
+            [
+                base[0] + r * b.cos(),
+                base[1] - up[2] * r * b.sin(),
+                base[2] + up[1] * r * b.sin(),
+            ]
+        });
+        let aux = |q: [f32; 3]| [0.0, (q[1] * 3.0).clamp(0.0, 1.0)];
+        let top = m.vertex(tip, [1.1; 3], aux(tip));
+        let foot = corners.map(|c| m.vertex(c, [1.1; 3], aux(c)));
+        for k in 0..3 {
+            m.tri(foot[k], foot[(k + 1) % 3], top);
+        }
+    }
+    // The tentacles: a ring of short pale stubs round the mouth.
+    let mouth = [0.5, 0.06, 0.0];
+    for k in 0..fewer(8, 4) {
+        let b = k as f32 / fewer(8, 4) as f32 * TAU;
+        let root = [mouth[0], mouth[1] + 0.05 * b.cos(), 0.05 * b.sin()];
+        let tip = [mouth[0] + 0.07, mouth[1] + 0.09 * b.cos(), 0.09 * b.sin()];
+        let side = [0.0, -0.012 * b.sin(), 0.012 * b.cos()];
+        m.flat(
+            [
+                [root[0], root[1] - side[1], root[2] - side[2]],
+                [root[0], root[1] + side[1], root[2] + side[2]],
+                tip,
+            ],
+            [1.4; 3],
+            |q| [0.0, (q[1] * 3.0).clamp(0.0, 1.0)],
+        );
+    }
+    m.smooth()
+}
+
+/// A sea urchin about a unit across: a squat dark test bristling with
+/// spines, longest round its waist, none underneath where it sits.
+fn urchin() -> Mesh {
+    let mut m = blob(
+        2,
+        |p| [p[0] * 0.55, p[1] * 0.38, p[2] * 0.55],
+        |_, _| [0.8; 3],
+    );
+    let spines = fewer(44, 14) as u32;
+    for i in 0..spines {
+        // Spread evenly over the upper part of the test (a Fibonacci spiral).
+        let t = (i as f32 + 0.5) / spines as f32;
+        let up = 0.95 - 1.1 * t;
+        let ring = (1.0 - up * up).max(0.0).sqrt();
+        let a = i as f32 * 2.399_963;
+        let dir = Vec3::new(ring * a.cos(), up, ring * a.sin());
+        let base = Vec3::new(dir.x * 0.52, dir.y * 0.36, dir.z * 0.52);
+        let long = 0.45 + 0.25 * ring + 0.1 * jitter(i, 9400);
+        let tip = base + dir.normalize() * long;
+        // A thin three-sided spike round the spine's own axis.
+        let side = dir.cross(Vec3::Y).normalize_or(Vec3::X);
+        let other = dir.cross(side).normalize();
+        let corners = [0.0f32, 1.0, 2.0].map(|k| {
+            let b = k * TAU / 3.0;
+            base + (side * b.cos() + other * b.sin()) * 0.035
+        });
+        // Four shared corners a spine: the urchins are many.
+        let aux = |q: Vec3| [0.0, (q.y + 0.4).clamp(0.0, 1.0)];
+        let top = m.vertex(tip.to_array(), [0.9; 3], aux(tip));
+        let foot = corners.map(|c| m.vertex(c.to_array(), [0.9; 3], aux(c)));
+        for k in 0..3 {
+            m.tri(foot[k], foot[(k + 1) % 3], top);
+        }
+    }
+    m.smooth()
 }
 
 /// An icosphere bent into any shape: `shape` moves each point of the unit

@@ -13,3 +13,6 @@ alpha. `src/dive3d/textures.rs` reads them as the relief layers of the dive.
 | marble.png | Marble 014 | https://ambientcg.com/view?id=Marble014 |
 | rock.png | Rock 030 | https://ambientcg.com/view?id=Rock030 |
 | wood.png | Planks 037 A | https://ambientcg.com/view?id=Planks037A |
+| sand.png | Ground 093 A | https://ambientcg.com/view?id=Ground093A |
+| silt.png | Ground 088 | https://ambientcg.com/view?id=Ground088 |
+| basalt.png | Rock 031 | https://ambientcg.com/view?id=Rock031 |

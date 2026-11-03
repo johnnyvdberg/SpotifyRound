@@ -10,7 +10,11 @@ displacement in alpha as the relief's height and the ambient occlusion
 multiplied into the colour; and beside it `<file>-normal.png`, the normal
 map's x and y, both scaled by the row's `relief`. A `tone` layer keeps only the
 material's brightness, so the model's own colour gives the hue, as the
-painted layers do; a `keep` layer keeps its colours. Either is scaled to a
+painted layers do; a `keep` layer keeps its colours. A `tone:C` layer is
+also lit by its own normals, from up the slope as the water's light falls,
+and its contrast set to C (the brightness's spread over its mean), for the
+seabed, which takes no normal map of its own: a rippled sand's whole look is
+in its relief. Either is scaled to a
 mean of one and stored divided by the texture range (`textures::RANGE`),
 exactly as the GPU takes it. Given FILEs, only those are made again.
 """
@@ -52,6 +56,7 @@ def bake(
     normal: Image.Image,
     keep: bool,
     relief: float,
+    contrast: float | None = None,
 ) -> tuple[Image.Image, Image.Image]:
     """The layer (colour, its occlusion multiplied in, and height) and its
     normals (the tangent-space x and y, GL's green up, scaled by `relief`)."""
@@ -64,6 +69,17 @@ def bake(
     normal = normal.resize((SIZE, SIZE), Image.LANCZOS)
     pixels = list(colour.get_flattened_data())
     tone = [0.30 * r + 0.55 * g + 0.15 * b for r, g, b in pixels]
+    if contrast is not None:
+        # Lit by its normals from up the y of the texture and a little
+        # aside, then the spread stretched or eased to `contrast`.
+        lit = [
+            t * max(0.2, 1.0 + 1.2 * (0.45 * (x / 255 - 0.5) + 0.9 * (y / 255 - 0.5)))
+            for t, (x, y, _) in zip(tone, normal.get_flattened_data())
+        ]
+        middle = sum(lit) / len(lit)
+        spread = (sum((t - middle) ** 2 for t in lit) / len(lit)) ** 0.5 / middle
+        gain = contrast / max(spread, 1e-4)
+        tone = [max(0.0, middle * (1.0 + gain * (t / middle - 1.0))) for t in lit]
     mean = sum(tone) / len(tone)
     # The height stretched over its 2nd to 98th percentiles, its middle at
     # one half, so every layer's relief spans the same range.
@@ -100,11 +116,15 @@ def main() -> None:
         if not line.strip() or line.startswith("#"):
             continue
         file, material, colour, relief, _ = line.split("\t")
+        kind, _, contrast = colour.partition(":")
         if only and file not in only:
             continue
         with tempfile.TemporaryDirectory() as tmp:
             baked, normals = bake(
-                *fetch(material, Path(tmp)), keep=colour == "keep", relief=float(relief)
+                *fetch(material, Path(tmp)),
+                keep=kind == "keep",
+                relief=float(relief),
+                contrast=float(contrast) if contrast else None,
             )
         baked.save(ROOT / file, optimize=True)
         normals.save(ROOT / file.replace(".png", "-normal.png"), optimize=True)

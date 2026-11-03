@@ -1877,12 +1877,23 @@ impl Frame {
         });
     }
 
-    /// A contact shadow with no core: an ellipse of `reach` along its x and
-    /// z, darkest (`dark`) at its middle, for a rounded thing like a stone.
-    fn blot(&mut self, p: [f32; 3], reach: [f32; 2], yaw: f32, slope: [f32; 2], dark: f32) {
+    /// A round contact shadow for a rounded thing like a stone: an ellipse
+    /// of `reach` along its x and z, `dark` over its inner `core` share and
+    /// softening out to the rim, with no corners.
+    fn blot(
+        &mut self,
+        p: [f32; 3],
+        reach: [f32; 2],
+        core: f32,
+        yaw: f32,
+        slope: [f32; 2],
+        dark: f32,
+    ) {
         if let Some(blot) = self.shadow(p, [0.0; 2], 1.0, yaw, slope, dark) {
             blot.place[3] = reach[0];
             blot.stretch[2] = reach[1];
+            blot.tint[3] = core;
+            blot.stretch[3] = -1.0;
         }
     }
 
@@ -2122,6 +2133,7 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::DiverBoot => carried(Surface::Plates, 6.0),
         Model::Manta => carried(Surface::Skin, 3.0),
         Model::Turtle => carried(Surface::Skin, 2.0),
+        Model::Cucumber => carried(Surface::Skin, 3.0),
         Model::Eel | Model::Gulper => carried(Surface::Skin, 4.0),
         Model::Ray => carried(Surface::Skin, 2.0),
         Model::Crab | Model::Lobster => carried(Surface::Coral, 2.0),
@@ -3073,7 +3085,7 @@ fn rocks(w: &World, f: &mut Frame) {
         let tone = World::by_biome(
             &b,
             [
-                0.32, 0.24, 0.22, 0.30, 0.12, 0.14, 0.26, 0.27, 0.34, 0.30, 0.16, 0.55, 0.23, 0.24,
+                0.50, 0.24, 0.22, 0.30, 0.12, 0.14, 0.26, 0.27, 0.34, 0.30, 0.16, 0.55, 0.23, 0.24,
                 0.30, 0.26, 0.50, 0.30,
             ],
         );
@@ -3093,11 +3105,32 @@ fn rocks(w: &World, f: &mut Frame) {
         let Some(rows) = settle(w, place(p, yaw, pitch, roll, shape), height, 0.3) else {
             continue;
         };
-        // An ellipse with no hard core, reaching well past the stone and
-        // faint at its rim: the sand darkened, not a patch laid on it.
-        let reach = [shape[0] * 1.6, shape[2] * 1.6];
-        let (y, slope) = rim_plane(w, x, z, 0.6 * reach[0].max(reach[1]));
-        f.blot([x, y, z], reach, yaw, slope, 0.3);
+        // Dark where the stone meets the sand and fading over about its own
+        // width beyond: an ellipse with no corners.
+        let reach = [shape[0] * 1.9, shape[2] * 1.9];
+        let (y, slope) = rim_plane(w, x, z, 0.5 * reach[0].max(reach[1]));
+        f.blot([x, y, z], reach, 0.45, yaw, slope, 0.5);
+        // In the kelp shallows a boulder's top is grown over with a turf of
+        // short weed, as stones in lit water are.
+        if b.weight(SHALLOWS) > 0.5 && !outcrop && size > 0.08 && hash(ix, iz, 17) < 0.75 {
+            let top = rows[1][3] + shape[1] * 0.8;
+            f.put(
+                Model::Seagrass,
+                place(
+                    [x, top, z],
+                    yaw,
+                    pitch,
+                    roll,
+                    [
+                        shape[0] * 0.55,
+                        0.045 + 0.03 * hash(ix, iz, 11),
+                        shape[2] * 0.55,
+                    ],
+                ),
+                [0.95, 0.85, 0.55],
+            )
+            .moving(anim::SWAY, yaw, 0.10, 0.55);
+        }
         let i = f.put(model, rows, colour);
         i.grounded();
         if reef > 0.5 {
@@ -3405,8 +3438,8 @@ fn gardens(w: &World, f: &mut Frame) {
                 } else {
                     [0.90, 0.58, 0.20]
                 };
-                let s = 0.07 + 0.08 * hash(ix, iz, 45);
-                if seat(w, x, z, s * 0.5, &bed::GROWN).is_none() {
+                let s = 0.12 + 0.12 * hash(ix, iz, 45);
+                if seat(w, x, z, s * 0.3, &bed::GROWN).is_none() {
                     continue;
                 }
                 f.put(Model::Fan, place([x, y, z], yaw, 0.0, 0.0, [s, s, s]), hue)
@@ -12613,7 +12646,9 @@ const STREWN: [(f32, [f32; STREWN_KINDS]); BIOMES] = [
 
 /// The small things on the seabed just under the window, in every sea that
 /// has room for them: they give the near ground a scale and a grain that the
-/// heightmap's texture cannot.
+/// heightmap's texture cannot. None is grounded: the sand line takes a
+/// model's lowest few centimetres into the floor's colour, which is all of a
+/// pebble or a star, and turned them into dark, sand-coloured ovals.
 fn near_detail(w: &World, f: &mut Frame) {
     for &(ix, iz, x, z) in &cells(w, 0.16, 0.35, 3.0, 1500) {
         let b = w.biome(x, z);
@@ -12633,7 +12668,12 @@ fn near_detail(w: &World, f: &mut Frame) {
         if !w.visible([x, y, z], 0.08) {
             continue;
         }
-        f.fade = fade(density, needs);
+        // Whole, not faded by how far under the density the cell's draw
+        // fell: the density is the sea's own and never changes, so a fade
+        // here would leave a share of the strewn things for good at half
+        // coverage, drawn opaque in the water's colour (flat teal blots).
+        // The seas' mix is the dither above; the reach's edge fades itself.
+        f.fade = 1.0;
         let mut pick = hash(ix, iz, 1503);
         let mut kind = 0;
         while kind + 1 < STREWN_KINDS && pick >= odds[kind] {
@@ -12645,22 +12685,47 @@ fn near_detail(w: &World, f: &mut Frame) {
         let deep = matches!(sea, ABYSS | TRENCH | SPONGE_REEF);
         match kind {
             0 => {
-                let s = 0.02 + 0.04 * h(0) * h(0);
-                let model = [Model::Rock0, Model::Rock1, Model::Rock2][(h(1) * 3.0) as usize % 3];
-                let grey = 0.38 + 0.3 * h(2);
-                f.put(
-                    model,
-                    place(
-                        [x, y - s * 0.25, z],
-                        yaw,
-                        0.0,
-                        0.0,
-                        [s, s * (0.5 + 0.3 * h(3)), s * 0.8],
-                    ),
-                    [grey * 1.05, grey, grey * 0.9],
-                )
-                .grounded()
-                .element(element::NEAR_DETAIL);
+                // Pebbles, alone or two or three together: mostly sandstone
+                // and limestone, some white quartz, the odd dark one, worn
+                // round and lying on the sand rather than sunk into it.
+                let stones = 1 + (h(4) * 2.6) as u32;
+                for k in 0..stones {
+                    let g = |n: u32| hash(ix + 7 * k as i32, iz, 1530 + n);
+                    let s = (0.018 + 0.03 * g(0) * g(0)) / (1.0 + 0.4 * k as f32);
+                    let (dx, dz) = if k == 0 {
+                        (0.0, 0.0)
+                    } else {
+                        let a = g(1) * TAU;
+                        (a.cos() * 0.045, a.sin() * 0.045)
+                    };
+                    let (px, pz) = (x + dx, z + dz);
+                    let py = if k == 0 { y } else { w.ground(px, pz) };
+                    let model =
+                        [Model::Rock0, Model::Rock1, Model::Rock2][(g(2) * 3.0) as usize % 3];
+                    let colour = match (g(3) * 10.0) as u32 {
+                        0..=4 => [0.72, 0.64, 0.50],
+                        5..=6 => [0.62, 0.60, 0.56],
+                        7..=8 => [0.86, 0.84, 0.78],
+                        _ => [0.34, 0.33, 0.32],
+                    }
+                    .map(|c| c * (0.9 + 0.2 * g(4)));
+                    f.put(
+                        model,
+                        place(
+                            [px, py - s * 0.1, pz],
+                            yaw + g(5) * TAU,
+                            0.0,
+                            0.0,
+                            [s, s * (0.55 + 0.3 * g(6)), s * 0.8],
+                        ),
+                        colour,
+                    )
+                    // Plain: the photographed rock's dark grain made every
+                    // pebble a dark hole in the sand.
+                    .textured(Surface::Plain, 1.0)
+                    .element(element::NEAR_DETAIL);
+                    f.blot([px, py, pz], [s * 1.8, s * 1.5], 0.5, yaw, [0.0; 2], 0.4);
+                }
             }
             1 => {
                 let s = 0.022 + 0.018 * h(0);
@@ -12670,7 +12735,6 @@ fn near_detail(w: &World, f: &mut Frame) {
                     place([x, y + 0.004, z], yaw, 0.3 * h(1), 0.0, [s, s * 1.3, s]),
                     [tone, tone * 0.8, tone * 0.66],
                 )
-                .grounded()
                 .element(element::NEAR_DETAIL);
             }
             2 => {
@@ -12688,33 +12752,45 @@ fn near_detail(w: &World, f: &mut Frame) {
                     place([x, y + 0.004, z], yaw, 0.0, 0.0, [s, s * 1.6 * thin, s]),
                     colour,
                 )
-                .grounded()
                 .element(element::NEAR_DETAIL);
             }
             3 => {
                 let s = 0.014 + 0.012 * h(0);
-                let dark = 0.10 + 0.06 * h(1);
+                // Purple most of them, as the kelp forests' are, some red,
+                // the odd one black. Nearly black, all of them read from a
+                // little way off as holes in the sand, the spines too fine
+                // to see.
+                let k = 0.8 + 0.4 * h(1);
+                let colour = match (h(2) * 10.0) as u32 {
+                    0..=5 => [0.46, 0.18, 0.52],
+                    6..=8 => [0.62, 0.20, 0.14],
+                    _ => [0.16, 0.12, 0.16],
+                }
+                .map(|c| c * k);
+                f.blot([x, y, z], [s * 1.6; 2], 0.5, yaw, [0.0; 2], 0.45);
                 f.put(
-                    Model::Sphere,
-                    place([x, y + s * 0.4, z], yaw, 0.0, 0.0, [s, s * 0.7, s]),
-                    [dark * 1.2, dark * 0.85, dark * 1.3],
+                    Model::Urchin,
+                    place([x, y + s * 0.25, z], yaw, 0.0, 0.0, [s * 1.8; 3]),
+                    colour,
                 )
-                .grounded()
                 .element(element::NEAR_DETAIL);
             }
             4 => {
-                let s = 0.04 + 0.03 * h(0);
+                // A sea cucumber: deep down the pale pink sort, higher up
+                // brown, chocolate or a mottled sandy orange.
+                let s = 0.06 + 0.05 * h(0);
                 let colour = if deep {
                     [0.78, 0.5, 0.52]
                 } else {
-                    [0.32, 0.24, 0.18]
+                    let c = [[0.36, 0.24, 0.16], [0.22, 0.15, 0.12], [0.62, 0.42, 0.24]];
+                    c[(h(1) * 3.0) as usize % 3]
                 };
+                f.blot([x, y, z], [s * 0.6, s * 0.3], 0.5, yaw, [0.0; 2], 0.4);
                 f.put(
-                    Model::Capsule,
-                    place([x, y + s * 0.25, z], yaw, 0.0, 0.0, [s, s * 0.32, s * 0.4]),
+                    Model::Cucumber,
+                    place([x, y - s * 0.02, z], yaw, 0.0, 0.0, [s; 3]),
                     colour,
                 )
-                .grounded()
                 .element(element::NEAR_DETAIL);
             }
             _ => {
@@ -12729,7 +12805,6 @@ fn near_detail(w: &World, f: &mut Frame) {
                         root[2] + 0.006 * a.sin(),
                     ];
                     f.put(Model::Tube, between(root, tip, 0.004), [0.82, 0.8, 0.74])
-                        .grounded()
                         .element(element::NEAR_DETAIL);
                 }
             }

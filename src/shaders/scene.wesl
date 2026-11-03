@@ -925,7 +925,9 @@ fn vs_terrain(
     out.cave = max(glow.a, 0.0);
     out.layer = i32(baked.w + 0.5);
     out.reef = clamp((baked.w - floor(baked.w + 0.02)) / REEF_SHARE, 0.0, 1.0);
-    out.lod = clamp(log2(length(world - g.camera.xyz) * 2.0), 0.0, 8.0);
+    // One texel to about a pixel straight down; the grazing distance blurs
+    // to the level above, which keeps the ripples from shimmering.
+    out.lod = clamp(log2(length(world - g.camera.xyz) * 1.2), 0.0, 8.0);
     let n = normalize(normal);
     // The tile carries its floor's colour, detail and veins at full strength
     // (`terrain::build`); the distance only says how much of the fine detail
@@ -2491,8 +2493,11 @@ fn vs_shadow(
 
 @fragment
 fn fs_shadow(in: Shadow) -> @location(0) vec4<f32> {
-    let out = max(abs(in.corner) - in.inner, vec2<f32>(0.0)) / (1.0 - in.inner);
-    let r = 1.0 - smooth01(0.0, 1.0, length(out));
+    // A rectangle's core is a box; a round one's (`inner.y` negative, from
+    // `Frame::blot`) an ellipse, so a stone's shadow has no corners.
+    let boxed = length(max(abs(in.corner) - in.inner, vec2<f32>(0.0)) / (1.0 - in.inner));
+    let round = max(length(in.corner) - in.inner.x, 0.0) / (1.0 - in.inner.x);
+    let r = 1.0 - smooth01(0.0, 1.0, select(boxed, round, in.inner.y < 0.0));
     let keep = 1.0 - in.dark * (r * r);
     return vec4<f32>(keep, keep, keep, 1.0);
 }

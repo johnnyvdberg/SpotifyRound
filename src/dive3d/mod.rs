@@ -1396,7 +1396,7 @@ fn model_bit(model: usize) -> u64 {
         Model::Bell | Model::JellyArm | Model::JellyFringe | Model::Comb => effect::JELLYFISH,
         Model::Shell => effect::SHELLS,
         Model::Fan => effect::FANS,
-        Model::Star => effect::STARS,
+        Model::Star | Model::Urchin | Model::Cucumber => effect::STARS,
         Model::Sponge => effect::SPONGES,
         Model::Coral
         | Model::CoralTable

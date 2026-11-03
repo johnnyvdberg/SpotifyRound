@@ -288,3 +288,17 @@ the softer stone shadows, the new benches and the place readout, two interleaved
 `hotspots` runs each against the build before E1: median place 7.65 to 7.76 ms, mean +0.08 ms,
 at most +0.36 ms (museum 0.15 of visit 0, 5.96 to 6.32 ms). The same four places over 11 ms as
 before (trench 0.85, meadow 0.15 and 0.45), 0.04 ms apart at worst.
+
+## Kelp shallows and photographed seabed (2026-11-03)
+
+The shallows' things given their shapes: a gorgonian fan forking five times into a fused net
+(about 110 triangles where the old ribbed half-disc had 18), longer and thinner kelp blades
+each on a gold float, sea urchins, warty sea cucumbers, pebbles in twos and threes, turfs on
+the boulders; the sand, silt and basalt photographed (ambientCG, lit by their own relief) and
+sampled a level sharper. Two interleaved 108-place `hotspots` runs each against 5b3e7de: median
+place 7.75 to 7.93 ms, at most +1.4 ms (shallows 0.15 and 0.45, arctic 0.85 of visit 0); over
+11 ms 4 places before, 8 after (shallows 0.15 and 0.45 at 11.6 and 11.9, arctic 0.85 at 11.0,
+atlantis 0.15 at 11.1 newly). Of the worst places' cost, by leaving each out: kelp 0.6 ms, the
+fans 0.4, the strewn detail up to 0.5 (meadow); the sharper seabed sampling nothing measurable.
+The first cut cost three times as much (a seven-level fan, unshared triangles on the floats,
+spines and warts): every vertex is paid for in the binning, and these are many.

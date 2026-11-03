@@ -48,7 +48,7 @@ Dive3d water, shimmer #0         fs_background_shimmer FS       196   4     0   
 Dive3d water, shimmer #0         vs_background  VS        36   4     0   24     6        0:0    0    1
 Dive3d water, shimmer #0         vs_background  VS-bin    33   4     0   23     7        0:0    0    0
 Dive3d seabed #0                 fs_terrain     FS       109   4     0   21    27        0:0    0    1
-Dive3d seabed #0                 vs_terrain     VS       403   2     1  189    47        0:0    2   24
+Dive3d seabed #0                 vs_terrain     VS       404   2     1  191    47        0:0    2   24
 Dive3d seabed #0                 vs_terrain     VS-bin    54   4     0   26    14        0:0    1    2
 Dive3d models plain free still #0 fs_model       FS        87   4     0    7    28        0:0    0    2
 Dive3d models plain free still #0 vs_model       VS       402   2     1  189    46        0:0    1   23
@@ -365,7 +365,7 @@ Dive3d glass material10 anim11 #0 vs_model       VS-bin   122   4     0   59    
 Dive3d sprites #0                fs_sprite      FS        52   4     0   13    12        0:0    0    1
 Dive3d sprites #0                vs_sprite      VS       393   2     0  176    44        0:0    2   33
 Dive3d sprites #0                vs_sprite      VS-bin   230   4     0  105    25        0:0    0   15
-Dive3d shadows #0                fs_shadow      FS        32   4     0    1     7        0:0    1    2
+Dive3d shadows #0                fs_shadow      FS        34   4     0    1     9        0:0    0    1
 Dive3d shadows #0                vs_shadow      VS       110   4     0   65    20        0:0    0    1
 Dive3d shadows #0                vs_shadow      VS-bin    94   4     0   50    11        0:0    1    1
 Dive3d pools #0                  fs_pool        FS        22   4     0    1     6        0:0    1    3
@@ -395,12 +395,6 @@ Dive3d impostors #3              vs_impostor    VS-bin   175   4     0   87    2
 Dive3d impostors #4              fs_impostor    FS        70   4     0   28    23        0:0    0    1
 Dive3d impostors #4              vs_impostor    VS       499   2     1  222    46        0:0    1   29
 Dive3d impostors #4              vs_impostor    VS-bin   175   4     0   87    20        0:0    1    4
-(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
-(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
-(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
-(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
-(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
-(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
 (mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
 (mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
 (mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0

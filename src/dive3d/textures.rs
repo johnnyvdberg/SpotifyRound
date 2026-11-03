@@ -97,7 +97,7 @@ impl Surface {
     pub fn grain(self) -> f32 {
         match self {
             Surface::Marble => 0.35,
-            Surface::Rock | Surface::Wood => 0.5,
+            Surface::Rock | Surface::Wood | Surface::Basalt => 0.5,
             _ => 1.0,
         }
     }
@@ -615,6 +615,9 @@ fn photo(surface: Surface) -> Option<(&'static [u8], &'static [u8])> {
         Surface::Marble => baked!("marble"),
         Surface::Rock => baked!("rock"),
         Surface::Wood => baked!("wood"),
+        Surface::Sand => baked!("sand"),
+        Surface::Silt => baked!("silt"),
+        Surface::Basalt => baked!("basalt"),
         _ => return None,
     })
 }
