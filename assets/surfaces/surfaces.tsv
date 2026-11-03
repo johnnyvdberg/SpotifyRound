@@ -1,0 +1,9 @@
+# Surface layers taken from ambientCG materials (CC0), baked by deploy/surfaces.py.
+# relief: how much of the material's displacement becomes the layer's height
+# (polished marble next to none, rough rock all of it).
+# file	material	colour	relief	what
+ashlar.png	Bricks008	tone	1.0	the museum's dressed stone walls and front
+tiles.png	Tiles131	keep	0.4	the museum's encaustic tile floors
+marble.png	Marble014	keep	0.12	marble: Atlantis's columns and ruins, the museum's trim and stands
+rock.png	Rock030	tone	0.9	the seabed's rocks
+wood.png	Planks037A	tone	0.7	planking: the wrecks' hulls

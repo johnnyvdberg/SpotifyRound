@@ -5,6 +5,9 @@
 //! skin, copper going green, canvas, coral, kelp, basalt, ice, sand, silt and
 //! riveted iron plating, the meanders of a brain coral, and the reef's carpet
 //! of living colonies.
+//! Five are photographed instead (dressed stone, an encaustic floor, marble,
+//! rock and planking): CC0 ambientCG materials baked into `assets/surfaces`
+//! by `deploy/surfaces.py`, their displacement kept as height for the relief.
 //! They are mostly tone, close to white on average, so a model's own colour
 //! still decides its hue and the texture adds the detail. The shader projects
 //! them along three axes, so no model needs texture coordinates.
@@ -87,17 +90,33 @@ impl Surface {
         self as usize as f32
     }
 
+    /// How many of this surface's tiles a unit of a placer's repeats asks
+    /// for: one for a painted layer; for a photographed one, which spans
+    /// more of its material than a painted tile does, fewer, so the
+    /// repeats chosen for the painted layer keep their scale.
+    pub fn grain(self) -> f32 {
+        match self {
+            Surface::Marble => 0.35,
+            Surface::Rock | Surface::Wood => 0.5,
+            _ => 1.0,
+        }
+    }
+
     /// How much this surface's tone is relief: its darker texels lower, so
     /// the joints, cracks and pits sink. The relief pipeline
     /// (`world::material::RELIEF`) lights the height this gives, kept in the
-    /// layer's alpha; surfaces with none keep an opaque alpha and are lit
-    /// flat. Marble is polished, its veins barely sunk. The seabed's rocks
-    /// are left flat: they are everywhere and small, and lighting their
-    /// relief cost half a millisecond where they crowd the window.
+    /// layer's alpha, and these are the layers painted fine
+    /// ([`FINE_SIZE`]); surfaces with none keep an opaque alpha and are lit
+    /// flat. Marble is polished, its veins barely sunk. What swims is left
+    /// flat: fish and whales are everywhere, and lighting their scales and
+    /// skin cost a millisecond in the reef.
     pub fn relief(self) -> Option<f32> {
         match self {
-            Surface::Basalt => Some(1.3),
+            Surface::Rock | Surface::Basalt => Some(1.3),
+            Surface::Wood => Some(1.0),
             Surface::Marble => Some(0.35),
+            Surface::Coral | Surface::Brain => Some(1.2),
+            Surface::Plates => Some(1.0),
             Surface::Ashlar => Some(1.6),
             Surface::Tiles => Some(1.2),
             Surface::Damask => Some(0.9),
@@ -192,44 +211,6 @@ fn smooth(a: f32, b: f32, v: f32) -> f32 {
 fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
     match surface {
         Surface::Plain => grey(1.0),
-        Surface::Rock => {
-            let grain = fbm(u, v, 8, 5, 1);
-            let crack = smooth(0.0, 0.04, (fbm(u, v, 4, 3, 2) - 0.5).abs());
-            let lichen = smooth(0.62, 0.70, fbm(u, v, 6, 3, 3));
-            let base = grey(0.62 + 0.55 * grain).map(|c| c * (0.80 + 0.20 * crack));
-            mix(base, [0.70, 0.85, 0.55], lichen * 0.35)
-        }
-        Surface::Wood => {
-            // Planks across v, grain along u, dark seams and the odd nail.
-            let plank = (v * 8.0).fract();
-            let row = (v * 8.0).floor() as i32;
-            let seam = smooth(0.0, 0.06, plank) * smooth(1.0, 0.94, plank);
-            let grain = fbm(u * 0.25 + row as f32 * 0.37, v * 4.0, 8, 4, 10 + row as u32);
-            let tone = 0.75 + 0.35 * grain + 0.1 * (hash(row, 0, 11) - 0.5);
-            let nail = smooth(
-                0.02,
-                0.0,
-                ((u * 4.0).fract() - 0.1).hypot(plank - 0.5) - 0.02,
-            );
-            let rot = smooth(0.6, 0.75, fbm(u, v, 4, 3, 12));
-            let c = grey(tone * (0.3 + 0.7 * seam)).map(|c| c * (1.0 - 0.6 * nail));
-            mix(
-                [c[0], c[1] * 0.95, c[2] * 0.85],
-                [0.45, 0.55, 0.35],
-                rot * 0.4,
-            )
-        }
-        Surface::Marble => {
-            let swirl = fbm(u, v, 4, 5, 20);
-            let vein = smooth(
-                0.06,
-                0.0,
-                ((u * 4.0 + swirl * 6.0) * std::f32::consts::PI).sin().abs() * 0.5,
-            );
-            let stain = smooth(0.55, 0.8, fbm(u, v, 3, 4, 21));
-            let c = grey(0.92 + 0.08 * swirl).map(|c| c * (1.0 - 0.35 * vein));
-            mix(c, [0.62, 0.72, 0.55], stain * 0.45)
-        }
         Surface::Scales => {
             // Overlapping scales in rows offset by half a scale.
             let (rows, across) = (16.0, 24.0);
@@ -340,28 +321,6 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
                 stain * 0.3,
             )
         }
-        Surface::Ashlar => {
-            // Six courses a tile, three blocks a course, every other course
-            // set over by half a block; tooled faces, each block its shade.
-            let course = v * 6.0;
-            let row = course.floor() as i32;
-            let along = u * 3.0 + if row % 2 == 1 { 0.5 } else { 0.0 };
-            let block = along.floor() as i32;
-            let (fu, fv) = (along.fract(), course.fract());
-            let joint = smooth(0.0, 0.06, fv)
-                * smooth(1.0, 0.94, fv)
-                * smooth(0.0, 0.03, fu)
-                * smooth(1.0, 0.97, fu);
-            let arris = smooth(0.06, 0.16, fv)
-                * smooth(1.0, 0.86, fv)
-                * smooth(0.03, 0.08, fu)
-                * smooth(1.0, 0.95, fu);
-            let shade = 0.88 + 0.18 * hash(block.rem_euclid(3), row.rem_euclid(6), 160);
-            let tooling = 0.90 + 0.14 * fbm(u, v, 32, 3, 161);
-            let weather = smooth(0.55, 0.85, fbm(u, v, 4, 3, 162));
-            let face = shade * tooling * (0.93 + 0.07 * arris) * (1.0 - 0.18 * weather);
-            grey(0.50 + (face - 0.50) * joint)
-        }
         Surface::Damask => {
             // Medallions on a lattice, the ground a fine twill between.
             let tau = std::f32::consts::TAU;
@@ -371,27 +330,6 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             let twill = 0.94 + 0.06 * (tau * (u * 64.0 + v * 64.0)).sin();
             let wear = 0.92 + 0.10 * fbm(u, v, 8, 3, 170);
             grey((0.82 + 0.30 * motif) * twill * wear)
-        }
-        Surface::Tiles => {
-            // Four tiles a side, light and terracotta by turns, a diamond
-            // inlaid in each; the grout between, and the wear of the halls.
-            let (x, y) = (u * 4.0, v * 4.0);
-            let (ix, iy) = (x.floor() as i32, y.floor() as i32);
-            let (fx, fy) = (x.fract(), y.fract());
-            let grout = smooth(0.0, 0.04, fx)
-                * smooth(1.0, 0.96, fx)
-                * smooth(0.0, 0.04, fy)
-                * smooth(1.0, 0.96, fy);
-            let light = (ix + iy).rem_euclid(2) == 0;
-            let diamond = smooth(0.30, 0.26, (fx - 0.5).abs() + (fy - 0.5).abs());
-            let (ground, inlay) = if light {
-                ([1.12, 1.06, 0.94], [0.62, 0.68, 0.74])
-            } else {
-                ([0.86, 0.52, 0.38], [1.05, 0.95, 0.75])
-            };
-            let wear = 0.88 + 0.16 * fbm(u, v, 16, 3, 180);
-            let tile = mix(ground, inlay, diamond).map(|c| c * wear);
-            mix(grey(0.45), tile, grout)
         }
         Surface::Ice => {
             // Sea ice from below: melt scallops (shallow dished hollows with
@@ -449,7 +387,15 @@ fn paint(surface: Surface, u: f32, v: f32) -> [f32; 3] {
             mix(c, [0.85, 0.45, 0.25], rust * 0.35)
         }
         // Not a colour: painted whole, with its relief, by `paint_vault`.
-        Surface::Vault | Surface::Staghorn => grey(1.0),
+        // Not painted here: the tunnel's and the staghorn's are not colours,
+        // and the photographed layers are read from `assets/surfaces`.
+        Surface::Vault
+        | Surface::Staghorn
+        | Surface::Rock
+        | Surface::Wood
+        | Surface::Marble
+        | Surface::Ashlar
+        | Surface::Tiles => grey(1.0),
         Surface::Reef => paint_reef(u, v),
     }
 }
@@ -603,84 +549,139 @@ fn paint_vault() -> Vec<[f32; 4]> {
     texels
 }
 
-/// Every layer with its mip chain: `levels[mip][layer]` as RGBA8 texels.
-pub fn paint_all() -> Vec<Vec<Vec<u8>>> {
-    // Every layer as stored, 0..1 a channel: colours scaled down by `RANGE`,
-    // and an opaque alpha but for the tunnel's own.
-    let base: Vec<Vec<[f32; 4]>> = Surface::ALL
-        .iter()
-        .map(|&surface| {
-            if surface == Surface::Vault {
-                return paint_vault();
-            }
-            if surface == Surface::Staghorn {
-                return paint_staghorn();
-            }
-            let texels: Vec<[f32; 3]> = (0..SIZE * SIZE)
-                .map(|i| {
-                    let (x, y) = (i % SIZE, i / SIZE);
-                    paint(
-                        surface,
-                        (x as f32 + 0.5) / SIZE as f32,
-                        (y as f32 + 0.5) / SIZE as f32,
-                    )
-                })
-                .collect();
-            // The height, for a surface with relief: its tone about the
-            // layer's mean, so the relief is even whatever its brightness.
-            let tone = |c: &[f32; 3]| 0.30 * c[0] + 0.55 * c[1] + 0.15 * c[2];
-            let mean = texels.iter().map(tone).sum::<f32>() / texels.len() as f32;
-            texels
-                .iter()
-                .map(|c| {
-                    let height = surface
-                        .relief()
-                        .map_or(1.0, |gain| 0.5 + gain * (tone(c) - mean) / mean);
-                    [c[0] / RANGE, c[1] / RANGE, c[2] / RANGE, height]
-                })
-                .collect()
+/// One ordinary layer at `size` a side, 0..1 a channel: its colour scaled
+/// down by `RANGE`, and in alpha its height if it has relief, opaque if not.
+fn paint_layer(surface: Surface, size: usize) -> Vec<[f32; 4]> {
+    let texels: Vec<[f32; 3]> = (0..size * size)
+        .map(|i| {
+            let (x, y) = (i % size, i / size);
+            paint(
+                surface,
+                (x as f32 + 0.5) / size as f32,
+                (y as f32 + 0.5) / size as f32,
+            )
         })
         .collect();
+    // The height, for a surface with relief: its tone about the layer's
+    // mean, so the relief is even whatever its brightness.
+    let tone = |c: &[f32; 3]| 0.30 * c[0] + 0.55 * c[1] + 0.15 * c[2];
+    let mean = texels.iter().map(tone).sum::<f32>() / texels.len() as f32;
+    texels
+        .iter()
+        .map(|c| {
+            let height = surface
+                .relief()
+                .map_or(1.0, |gain| 0.5 + gain * (tone(c) - mean) / mean);
+            [c[0] / RANGE, c[1] / RANGE, c[2] / RANGE, height]
+        })
+        .collect()
+}
+
+/// How many texels a side the relief surfaces are painted at, in an array
+/// of their own ([`Painted::fine`]): what is seen close (stone, wood, coral,
+/// plating) blurred at the ordinary layers' 256, a block of stone a few
+/// smears across.
+pub const FINE_SIZE: usize = 512;
+
+/// The surfaces as painted, each array as `levels[mip][layer]` in RGBA8.
+pub struct Painted {
+    /// Every layer at [`SIZE`].
+    pub surfaces: Vec<Vec<Vec<u8>>>,
+    /// The relief surfaces at [`FINE_SIZE`], at their own layers' indices;
+    /// the other layers are left empty (and unwritten on the GPU).
+    pub fine: Vec<Vec<Vec<u8>>>,
+}
+
+/// A layer photographed rather than painted: an ambientCG material baked by
+/// `deploy/surfaces.py` (`assets/surfaces`, CC0), at [`FINE_SIZE`] a side,
+/// its colour already scaled as stored and its height in alpha.
+fn photo(surface: Surface) -> Option<&'static [u8]> {
+    Some(match surface {
+        Surface::Ashlar => include_bytes!("../../assets/surfaces/ashlar.png"),
+        Surface::Tiles => include_bytes!("../../assets/surfaces/tiles.png"),
+        Surface::Marble => include_bytes!("../../assets/surfaces/marble.png"),
+        Surface::Rock => include_bytes!("../../assets/surfaces/rock.png"),
+        Surface::Wood => include_bytes!("../../assets/surfaces/wood.png"),
+        _ => return None,
+    })
+}
+
+/// A photographed layer's texels, 0..1 a channel.
+fn unpack(png: &[u8]) -> Vec<[f32; 4]> {
+    let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .expect("a baked surface decodes")
+        .to_rgba8();
+    assert_eq!(image.width() as usize, FINE_SIZE, "a baked surface's size");
+    image
+        .pixels()
+        .map(|p| p.0.map(|v| v as f32 / 255.0))
+        .collect()
+}
+
+/// Every layer with its mip chain. A relief surface is painted once, at
+/// [`FINE_SIZE`]: its ordinary layer is the fine one's chain from its first
+/// halving.
+pub fn paint_all() -> Painted {
+    let fine_levels = FINE_SIZE.trailing_zeros() as usize + 1;
+    let mut surfaces = vec![Vec::new(); SIZE.trailing_zeros() as usize + 1];
+    let mut fine = vec![Vec::new(); fine_levels];
+    for surface in Surface::ALL {
+        let chain = match surface {
+            // The tunnel's and the staghorn's, which are not colours.
+            Surface::Vault => chain(paint_vault(), SIZE),
+            Surface::Staghorn => chain(paint_staghorn(), SIZE),
+            _ if let Some(png) = photo(surface) => chain(unpack(png), FINE_SIZE),
+            _ if surface.relief().is_some() => chain(paint_layer(surface, FINE_SIZE), FINE_SIZE),
+            _ => chain(paint_layer(surface, SIZE), SIZE),
+        };
+        let skip = chain.len() - surfaces.len();
+        for (level, texels) in chain.iter().enumerate() {
+            if skip > 0 {
+                fine[level].push(texels.clone());
+            }
+            if level >= skip {
+                surfaces[level - skip].push(texels.clone());
+            }
+        }
+        if skip == 0 {
+            for level in &mut fine {
+                level.push(Vec::new());
+            }
+        }
+    }
+    Painted { surfaces, fine }
+}
+
+/// A layer of `size` a side and its mip chain, as RGBA8.
+fn chain(layer: Vec<[f32; 4]>, mut size: usize) -> Vec<Vec<u8>> {
     let mut levels = Vec::new();
-    let mut current = base;
-    let mut size = SIZE;
+    let mut current = layer;
     loop {
         levels.push(
             current
                 .iter()
-                .map(|layer| {
-                    layer
-                        .iter()
-                        .flat_map(|c| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
-                        .collect()
-                })
+                .flat_map(|c| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
                 .collect(),
         );
         if size == 1 {
-            break;
+            return levels;
         }
         let half = size / 2;
-        current = current
-            .iter()
-            .map(|layer| {
-                (0..half * half)
-                    .map(|i| {
-                        let (x, y) = (i % half * 2, i / half * 2);
-                        let mut sum = [0.0f32; 4];
-                        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                            let c = layer[(y + dy) * size + x + dx];
-                            for k in 0..4 {
-                                sum[k] += c[k] * 0.25;
-                            }
-                        }
-                        sum
-                    })
-                    .collect()
+        current = (0..half * half)
+            .map(|i| {
+                let (x, y) = (i % half * 2, i / half * 2);
+                let mut sum = [0.0f32; 4];
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let c = current[(y + dy) * size + x + dx];
+                    for k in 0..4 {
+                        sum[k] += c[k] * 0.25;
+                    }
+                }
+                sum
             })
             .collect();
         size = half;
     }
-    levels
 }
 
 /// How many staghorn colonies [`Surface::Staghorn`] holds, two by two, each

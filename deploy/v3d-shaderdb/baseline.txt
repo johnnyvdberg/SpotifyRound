@@ -68,6 +68,24 @@ Dive3d models plain grounded sway #0 vs_model       VS-bin    91   4     0   49 
 Dive3d models plain grounded any-anim #0 fs_model       FS       113   4     0   10    32        0:0    0    1
 Dive3d models plain grounded any-anim #0 vs_model       VS       821   2     1  337    58        0:0    2   67
 Dive3d models plain grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d models material14 free still #0 fs_model       FS       107   4     0   17    28        0:0    0    1
+Dive3d models material14 free still #0 vs_model       VS       402   2     1  189    46        0:0    1   23
+Dive3d models material14 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material14 free sway #0 fs_model       FS       107   4     0   17    28        0:0    0    1
+Dive3d models material14 free sway #0 vs_model       VS       423   2     1  201    45        0:0    1   24
+Dive3d models material14 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material14 free any-anim #0 fs_model       FS       107   4     0   17    28        0:0    0    1
+Dive3d models material14 free any-anim #0 vs_model       VS      1010   2     1  387    59        0:0    1   76
+Dive3d models material14 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models material14 grounded still #0 fs_model       FS       137   4     0   20    32        0:0    0    1
+Dive3d models material14 grounded still #0 vs_model       VS       448   2     1  222    47        0:0    1   29
+Dive3d models material14 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d models material14 grounded sway #0 fs_model       FS       137   4     0   20    32        0:0    0    1
+Dive3d models material14 grounded sway #0 vs_model       VS       475   2     1  230    47        0:0    1   27
+Dive3d models material14 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d models material14 grounded any-anim #0 fs_model       FS       137   4     0   20    32        0:0    0    1
+Dive3d models material14 grounded any-anim #0 vs_model       VS       821   2     1  337    58        0:0    2   67
+Dive3d models material14 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
 Dive3d models material1 free still #0 fs_model       FS       187   4     0   29    30        0:0    0    3
 Dive3d models material1 free still #0 vs_model       VS       398   2     1  190    46        0:0    2   24
 Dive3d models material1 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
@@ -158,6 +176,9 @@ Dive3d models material12 free sway #0 vs_model       VS-bin    91   4     0   49
 Dive3d models material12 free any-anim #0 fs_model       FS        81   4     0   16    25        0:0    0    2
 Dive3d models material12 free any-anim #0 vs_model       VS       759   2     0  300    57        0:0    0   54
 Dive3d models material12 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d models material13 free still #0 fs_canvas      FS        33   4     0    4    12        0:0    0    1
+Dive3d models material13 free still #0 vs_model       VS       366   2     1  175    45        0:0    2   22
+Dive3d models material13 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
 Dive3d sealed models plain free still #0 fs_model       FS        87   4     0    7    28        0:0    0    2
 Dive3d sealed models plain free still #0 vs_model       VS       402   2     1  189    46        0:0    1   23
 Dive3d sealed models plain free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
@@ -176,6 +197,24 @@ Dive3d sealed models plain grounded sway #0 vs_model       VS-bin    91   4     
 Dive3d sealed models plain grounded any-anim #0 fs_model       FS       113   4     0   10    32        0:0    0    1
 Dive3d sealed models plain grounded any-anim #0 vs_model       VS       821   2     1  337    58        0:0    2   67
 Dive3d sealed models plain grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
+Dive3d sealed models material14 free still #0 fs_model       FS       107   4     0   17    28        0:0    0    1
+Dive3d sealed models material14 free still #0 vs_model       VS       402   2     1  189    46        0:0    1   23
+Dive3d sealed models material14 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material14 free sway #0 fs_model       FS       107   4     0   17    28        0:0    0    1
+Dive3d sealed models material14 free sway #0 vs_model       VS       423   2     1  201    45        0:0    1   24
+Dive3d sealed models material14 free sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material14 free any-anim #0 fs_model       FS       107   4     0   17    28        0:0    0    1
+Dive3d sealed models material14 free any-anim #0 vs_model       VS      1010   2     1  387    59        0:0    1   76
+Dive3d sealed models material14 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models material14 grounded still #0 fs_model       FS       137   4     0   20    32        0:0    0    1
+Dive3d sealed models material14 grounded still #0 vs_model       VS       448   2     1  222    47        0:0    1   29
+Dive3d sealed models material14 grounded still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
+Dive3d sealed models material14 grounded sway #0 fs_model       FS       137   4     0   20    32        0:0    0    1
+Dive3d sealed models material14 grounded sway #0 vs_model       VS       475   2     1  230    47        0:0    1   27
+Dive3d sealed models material14 grounded sway #0 vs_model       VS-bin    91   4     0   49    20        0:0    1    0
+Dive3d sealed models material14 grounded any-anim #0 fs_model       FS       137   4     0   20    32        0:0    0    1
+Dive3d sealed models material14 grounded any-anim #0 vs_model       VS       821   2     1  337    58        0:0    2   67
+Dive3d sealed models material14 grounded any-anim #0 vs_model       VS-bin   418   4     0  152    31        0:0    1   39
 Dive3d sealed models material1 free still #0 fs_model       FS       187   4     0   29    30        0:0    0    3
 Dive3d sealed models material1 free still #0 vs_model       VS       398   2     1  190    46        0:0    2   24
 Dive3d sealed models material1 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
@@ -266,6 +305,9 @@ Dive3d sealed models material12 free sway #0 vs_model       VS-bin    91   4    
 Dive3d sealed models material12 free any-anim #0 fs_model       FS        81   4     0   16    25        0:0    0    2
 Dive3d sealed models material12 free any-anim #0 vs_model       VS       759   2     0  300    57        0:0    0   54
 Dive3d sealed models material12 free any-anim #0 vs_model       VS-bin   640   2     0  235    47        0:0    1   51
+Dive3d sealed models material13 free still #0 fs_canvas      FS        33   4     0    4    12        0:0    0    1
+Dive3d sealed models material13 free still #0 vs_model       VS       366   2     1  175    45        0:0    2   22
+Dive3d sealed models material13 free still #0 vs_model       VS-bin    66   4     0   37    16        0:0    1    1
 Dive3d models city part0 #0      fs_model       FS       183   4     0   36    31        0:0    0   14
 Dive3d models city part0 #0      vs_model       VS       415   2     1  198    47        0:0    1   24
 Dive3d models city part0 #0      vs_model       VS-bin    66   4     0   37    16        0:0    1    1
@@ -347,3 +389,39 @@ Dive3d impostors #3              vs_impostor    VS-bin   175   4     0   87    2
 Dive3d impostors #4              fs_impostor    FS        70   4     0   28    23        0:0    0    1
 Dive3d impostors #4              vs_impostor    VS       499   2     1  222    46        0:0    1   29
 Dive3d impostors #4              vs_impostor    VS-bin   175   4     0   87    20        0:0    1    4
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0
+(mesa internal)                  meta texel buffer copy fs FS        15   4     0    7     4        0:0    0    0
+(mesa internal)                  meta texel buffer copy vs VS        16   4     0   12     6        0:0    0    1
+(mesa internal)                  meta texel buffer copy vs VS-bin    16   4     0   11     6        0:0    0    0

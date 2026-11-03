@@ -70,6 +70,9 @@ struct Globals {
 // The museum's paintings, one layer each (`dive3d::paintings`), streamed in
 // as the museum comes near; a single grey layer the rest of the voyage.
 @group(0) @binding(14) var paintings: texture_2d_array<f32>;
+// The relief surfaces again, painted finer (`textures::Painted::fine`), at
+// the same layers: what the relief pipeline reads instead of `surfaces`.
+@group(0) @binding(15) var fine_surfaces: texture_2d_array<f32>;
 // Textures store 0..1.6 as 0..1, so they can brighten as well as darken.
 const TEXTURE_RANGE: f32 = 1.6;
 // log2 of the surfaces' size, `textures::SIZE`.
@@ -1450,9 +1453,17 @@ const CITY_LIGHTS: i32 = 11;
 // A still surface whose texture holds a height in its alpha
 // (`world::material::RELIEF`, `textures::Surface::relief`).
 const RELIEF: i32 = 14;
-// How deep a tile's relief is, as a share of the tile: its alpha's full
-// range spans this much of the surface's own scale.
-const RELIEF_DEPTH: f32 = 0.035;
+// How deep a tile's relief is, as a share of the tile: the emboss's
+// strength for the full range of its height.
+const RELIEF_DEPTH: f32 = 0.05;
+// The fine layers' side (`textures::FINE_SIZE`): a slope is never taken
+// over less than a texel, or a magnified texel's bilinear ramp embosses
+// into a staircase.
+const FINE_SIZE: f32 = 512.0;
+// About how much of the world a pixel spans a unit off, across the window:
+// the emboss's footprint, worked out from the distance rather than from
+// another derivative and a square root.
+const PIXEL_SPAN: f32 = 0.0019;
 
 // What a city surface adds to its own lit colour, and how much of that it
 // keeps: `lamps` is the light it gives out, laid on after the fog so a far
@@ -2001,10 +2012,13 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // nearer, which a box's faces take exactly and a column's round take in
     // four quarters, never stretched. The choice is a select, never a
     // branch: the bump below takes derivatives.
+    // A carried texture keeps its model's projection: its own across and
+    // up would hold more than the grounded relief pipeline's four threads
+    // have room for.
     if (MATERIAL == RELIEF) {
         let along = select(p.x, p.z, abs(n.x) > abs(n.z));
         let wall = vec3<f32>(along, 0.0, -p.y) * in.surface.y;
-        uv = select(uv, wall, abs(n.y) < 0.7);
+        uv = select(uv, wall, abs(n.y) < 0.7 && !carried);
     }
     let layer = i32(in.surface.x + 0.5);
     let distance = length(p - g.camera.xyz);
@@ -2012,33 +2026,47 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // and the generic distance bias would blur the grain and the cracks away.
     // Only the vault pipeline takes the sharper level; every model keeps the
     // cheap one.
+    // The relief surfaces are painted at twice the side, so the same bias
+    // takes them twice as sharp.
     let lod = clamp(log2(distance * select(3.0, 1.0, MATERIAL == VAULT)), 0.0, 8.0);
     // The tunnel's layer is not a colour (`textures::paint_vault`): its
     // channels are read raw, and only the others' are scaled to a colour.
     var sample = vec4<f32>(0.6 / TEXTURE_RANGE, 0.5, 0.5, 0.0);
     if (!PLAIN_TEXTURES) {
-        sample = textureSampleLevel(
-            surfaces,
-            surface_sampler,
-            uv.xz,
-            layer,
-            lod,
-        );
+        if (MATERIAL == RELIEF) {
+            sample = textureSampleLevel(
+                fine_surfaces,
+                surface_sampler,
+                uv.xz,
+                layer,
+                lod,
+            );
+        } else {
+            sample = textureSampleLevel(
+                surfaces,
+                surface_sampler,
+                uv.xz,
+                layer,
+                lod,
+            );
+        }
     }
     let texture = sample.rgb * TEXTURE_RANGE;
     var albedo = in.albedo * texture;
-    // Relief: the height's slope across the screen, over the world a pixel
-    // spans, is how far the surface there tilts toward the top of the
-    // screen and its left, lit as though from above and behind the eye: a
-    // joint's upper lip shades, its lower one catches, and the sunk parts
-    // are a little darker besides. An emboss, not a normal: the light is per
-    // vertex, and a tangent-free bump's crosses and normalize held enough
-    // live to halve the shader's threads.
+    // Relief: the height's slope across the screen, over the stretch of
+    // tile a pixel spans, is how far the surface there tilts toward the top
+    // of the screen and its left, lit as though from above and behind the
+    // eye: a joint's upper lip shades, its lower one catches, and the sunk
+    // parts are a little darker besides. Taken in the tile's own units it
+    // holds for a carried texture as for a fixed one, whatever the model's
+    // scale. An emboss, not a normal: the light is per vertex, and a
+    // tangent-free bump's crosses and normalize held enough live to halve
+    // the shader's threads.
     if (MATERIAL == RELIEF) {
-        let height = sample.a * (RELIEF_DEPTH / max(in.surface.y, 0.05));
-        let foot = max(length(dpdy(p)), 1e-5);
-        let tilt = 1.0 + 1.6 * (dpdy(height) + 0.35 * dpdx(height)) / foot;
-        albedo *= clamp(tilt, 0.5, 1.5) * (0.80 + 0.40 * sample.a);
+        let foot = max(distance * in.surface.y * PIXEL_SPAN, 1.0 / FINE_SIZE);
+        let rise = dpdy(sample.a) + 0.35 * dpdx(sample.a);
+        let tilt = 1.0 + RELIEF_DEPTH * rise / foot;
+        albedo *= clamp(tilt, 0.6, 1.4) * (0.80 + 0.40 * sample.a);
     }
     // Bedded in the sand: the foot of anything on the seabed takes its colour.
     if (GROUNDED) {

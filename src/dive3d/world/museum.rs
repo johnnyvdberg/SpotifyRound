@@ -526,7 +526,7 @@ fn slab(
 /// A texture and its repeats a unit, or none.
 type Skin = Option<(Surface, f32)>;
 /// Dressed stone, its courses a hand high.
-const ASHLAR: Skin = Some((Surface::Ashlar, 1.1));
+const ASHLAR: Skin = Some((Surface::Ashlar, 0.7));
 /// Polished stone, for the trim and the stands.
 const MARBLE: Skin = Some((Surface::Marble, 2.5));
 
@@ -581,9 +581,9 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
             f.put(
                 Model::Box,
                 place(c, m.yaw(), 0.0, 0.0, [0.5 * bay, 0.05, half]),
-                [0.62, 0.58, 0.52],
+                [0.80; 3],
             )
-            .textured(Surface::Tiles, 0.8)
+            .textured(Surface::Tiles, 0.7)
             .element(element::MUSEUM);
         }
     }
@@ -933,8 +933,9 @@ fn natural_history(w: &World, f: &mut Frame, m: &Museum, hall: &Hall) {
         f.put(
             Model::Cylinder,
             place(centre, 0.0, 0.0, 0.0, [island, 0.01, island]),
-            [0.62, 0.58, 0.52],
+            [0.70, 0.66, 0.60],
         )
+        .textured(Surface::Marble, 2.5)
         .element(element::MUSEUM);
     }
     let mut show = SHOW_PIECES;

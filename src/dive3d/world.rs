@@ -299,8 +299,8 @@ pub mod material {
     /// museum's paintings over it.
     pub const CANVAS: f32 = 13.0;
     /// A surface with relief, its texture's height (`Surface::relief`) lit
-    /// per pixel so joints, cracks and pits sink: given to every still
-    /// instance textured with one, unless it has a material of its own.
+    /// per pixel so joints, cracks and pits sink: given to every instance
+    /// textured with one, unless it has a material of its own.
     pub const RELIEF: f32 = 14.0;
 }
 
@@ -1966,7 +1966,7 @@ impl Tweak for Instance {
         self
     }
     fn textured(&mut self, surface: Surface, repeats: f32) -> &mut Self {
-        self.surface = [surface.layer(), repeats, 0.0, 0.0];
+        self.surface = [surface.layer(), repeats * surface.grain(), 0.0, 0.0];
         if self.extra[0] == 0.0 || self.extra[0] == material::RELIEF {
             self.extra[0] = relief(self.surface);
         }
@@ -1989,23 +1989,21 @@ impl Tweak for Instance {
 /// Texture in world space: for things that stay put, so the pattern has the
 /// same scale everywhere.
 fn fixed(surface: Surface, repeats: f32) -> Option<[f32; 4]> {
-    Some([surface.layer(), repeats, 0.0, 0.0])
+    Some([surface.layer(), repeats * surface.grain(), 0.0, 0.0])
 }
 
-/// The material a still texture's relief asks for: [`material::RELIEF`] for
-/// one with a height to light, plain otherwise. Carried textures bend with
-/// their models and are left flat.
+/// The material a texture's relief asks for: [`material::RELIEF`] for one
+/// with a height to light, plain otherwise.
 fn relief(surface: [f32; 4]) -> f32 {
-    let has = surface[2] == 0.0
-        && Surface::ALL
-            .get(surface[0] as usize)
-            .is_some_and(|s| s.relief().is_some());
+    let has = Surface::ALL
+        .get(surface[0] as usize)
+        .is_some_and(|s| s.relief().is_some());
     if has { material::RELIEF } else { 0.0 }
 }
 
 /// Texture in a model's own space: for things that move and bend.
 fn carried(surface: Surface, repeats: f32) -> Option<[f32; 4]> {
-    Some([surface.layer(), repeats, 1.0, 0.0])
+    Some([surface.layer(), repeats * surface.grain(), 1.0, 0.0])
 }
 
 /// The texture a model always wears; plain shapes take their context's.

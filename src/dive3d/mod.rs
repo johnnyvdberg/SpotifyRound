@@ -131,6 +131,65 @@ fn caustic_texels() -> Vec<u8> {
     texels
 }
 
+/// A texture array of `side` texels a side from painted layers and their
+/// mip chains (`levels[mip][layer]`, RGBA8). An empty layer is left as the
+/// GPU clears it.
+fn surface_array(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    side: usize,
+    painted: &[Vec<Vec<u8>>],
+) -> wgpu::Texture {
+    let layers = painted[0].len() as u32;
+    let surfaces = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: side as u32,
+            height: side as u32,
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: painted.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, mip) in painted.iter().enumerate() {
+        let size = (side >> level).max(1) as u32;
+        for (layer, texels) in mip.iter().enumerate() {
+            if texels.is_empty() {
+                continue;
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &surfaces,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                texels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * 4),
+                    rows_per_image: Some(size),
+                },
+                wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    surfaces
+}
+
 fn caustic_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
     const SIZE: u32 = 256;
     let texels = caustic_texels();
@@ -536,6 +595,7 @@ struct Bindings {
     layout: wgpu::BindGroupLayout,
     globals: wgpu::Buffer,
     surfaces: wgpu::TextureView,
+    fine: wgpu::TextureView,
     sampler: wgpu::Sampler,
     caustic: wgpu::TextureView,
     caustic_sampler: wgpu::Sampler,
@@ -559,6 +619,7 @@ impl Bindings {
                 entry(12, view(&self.ice_bake)),
                 entry(13, view(&self.sky)),
                 entry(14, view(paintings)),
+                entry(15, view(&self.fine)),
             ],
         })
     }
@@ -680,6 +741,31 @@ fn pipeline_slot(i: &Instance) -> usize {
         "a swimming model stands on the seabed"
     );
     (material_slot(i) * 2 + usize::from(grounded)) * ANIMS.len() + anim_slot(i)
+}
+
+/// How far off a relief surface's emboss is still drawn: beyond it a joint
+/// or a grain is under a pixel, and the plain pipeline draws the same
+/// texture for less.
+const RELIEF_REACH: f32 = 6.0;
+
+/// The pipeline an instance is drawn with this frame, `depth` ahead of the
+/// eye: its own, but a relief surface's plain one once all of it is out of
+/// [`RELIEF_REACH`].
+fn staged_slot(i: &Instance, depth: f32) -> usize {
+    let slot = pipeline_slot(i);
+    if i.extra[0] != world::material::RELIEF {
+        return slot;
+    }
+    let size = (0..3)
+        .map(|c| (0..3).map(|r| i.rows[r][c] * i.rows[r][c]).sum::<f32>())
+        .fold(0.0f32, f32::max)
+        .sqrt();
+    if depth - size > RELIEF_REACH {
+        // The plain material's pipelines come first.
+        slot - material_slot(i) * 2 * ANIMS.len()
+    } else {
+        slot
+    }
 }
 
 /// The impostor forms that have a pipeline of their own, as `FORM` in
@@ -2043,6 +2129,16 @@ impl Nautilus {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         // The surfaces, painted once.
@@ -2066,49 +2162,20 @@ impl Nautilus {
             ..Default::default()
         });
         let painted = textures::paint_all();
-        let layers = textures::Surface::ALL.len() as u32;
-        let surfaces = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Dive3d surfaces"),
-            size: wgpu::Extent3d {
-                width: textures::SIZE as u32,
-                height: textures::SIZE as u32,
-                depth_or_array_layers: layers,
-            },
-            mip_level_count: painted.len() as u32,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        for (level, mip) in painted.iter().enumerate() {
-            let size = (textures::SIZE >> level).max(1) as u32;
-            for (layer, texels) in mip.iter().enumerate() {
-                gpu.queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &surfaces,
-                        mip_level: level as u32,
-                        origin: wgpu::Origin3d {
-                            x: 0,
-                            y: 0,
-                            z: layer as u32,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    texels,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(size * 4),
-                        rows_per_image: Some(size),
-                    },
-                    wgpu::Extent3d {
-                        width: size,
-                        height: size,
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-        }
+        let surfaces = surface_array(
+            device,
+            &gpu.queue,
+            "Dive3d surfaces",
+            textures::SIZE,
+            &painted.surfaces,
+        );
+        let fine = surface_array(
+            device,
+            &gpu.queue,
+            "Dive3d fine surfaces",
+            textures::FINE_SIZE,
+            &painted.fine,
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Dive3d surfaces"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -2123,10 +2190,12 @@ impl Nautilus {
             ..Default::default()
         });
         let ice_bake_view = ice_bake.create_view(&wgpu::TextureViewDescriptor::default());
-        let surfaces_view = surfaces.create_view(&wgpu::TextureViewDescriptor {
+        let array = wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
-        });
+        };
+        let surfaces_view = surfaces.create_view(&array);
+        let fine_view = fine.create_view(&array);
         let caustic = caustic_texture(device, &gpu.queue);
         let caustic_view = caustic.create_view(&wgpu::TextureViewDescriptor::default());
         let caustic_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2141,6 +2210,7 @@ impl Nautilus {
             layout: layout.clone(),
             globals: globals.clone(),
             surfaces: surfaces_view,
+            fine: fine_view,
             sampler,
             caustic: caustic_view,
             caustic_sampler,
@@ -2623,7 +2693,7 @@ impl Nautilus {
                     .filter(|(_, i)| i.extra[2] > 0.01 || ice_sheet(i))
                     .map(|(index, i)| Staged {
                         kind: kind_of(model, i),
-                        slot: pipeline_slot(i) as u32,
+                        slot: staged_slot(i, depth(i)) as u32,
                         model: model as u32,
                         lod: level_of(model, i) as u32,
                         depth: depth(i),
