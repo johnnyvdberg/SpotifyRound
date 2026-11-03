@@ -9,31 +9,34 @@
 //! its tilted axis. Lighting is done in linear light and encoded once.
 //!
 //! The maps are 4096 × 2048: on the 850-pixel disc that is still about one and
-//! a half texels per pixel at the centre, at a quarter of the memory of the 8K
-//! originals. Each is stored in the smallest format that holds it — the day map
-//! as sRGB, so the GPU linearises it and builds a gamma-correct mip chain; lights
-//! and clouds as one channel each; relief and the water mask together — and the
-//! GPU builds every mip chain, which is what stops the city lights shimmering as
-//! they are minified. Frames are drawn into a small ring of textures that Slint
-//! samples directly, on the same device it renders the UI with, so a frame never
-//! leaves the GPU.
+//! a half texels per pixel at the centre. `build.rs` builds their mip chains
+//! (the day map's in linear light), which is what stops the city lights
+//! shimmering as they are minified, and compresses every level to ETC2 or
+//! EAC, which the Pi's GPU samples directly: the day map with the water mask
+//! in its alpha, the city lights and the clouds as one channel each, the
+//! relief's two slopes as two. That is 24 bits a texel where RGBA8 maps held
+//! 80, and most of the frame is spent fetching from the maps. Frames are
+//! drawn into a small ring of textures that Slint samples directly, on the
+//! same device it renders the UI with, so a frame never leaves the GPU.
 //!
 //! Maps, all distributed by <https://www.solarsystemscope.com/textures/> (CC BY 4.0),
 //! reduced from 8K: day and night (NASA Blue Marble / Black Marble), a cloud
 //! sheet, a normal map for terrain relief and a specular map for water.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use slint::wgpu_30::wgpu;
 
+use crate::etc::Layout;
 use crate::gpu::Graphics;
 use crate::visuals::Visual;
 
-const DAY: &[u8] = include_bytes!("../assets/earth/day.jpg");
-const NIGHT: &[u8] = include_bytes!("../assets/earth/night.jpg");
-const CLOUDS: &[u8] = include_bytes!("../assets/earth/clouds.jpg");
-const NORMAL: &[u8] = include_bytes!("../assets/earth/normal.tif");
-const SPECULAR: &[u8] = include_bytes!("../assets/earth/specular.tif");
+/// The maps, compressed by `build.rs` from `assets/earth`.
+mod earth {
+    use super::Packed;
+    use crate::etc::Layout;
+    include!(concat!(env!("OUT_DIR"), "/earth.rs"));
+}
 
 /// Size of the rendered frame. The view draws it 1:1, so nothing is scaled.
 pub const SIZE: u32 = 1080;
@@ -82,113 +85,28 @@ const SUN: [f32; 3] = [-0.62, 0.22, 0.75];
 /// drifts from full day to full night and back over half an hour.
 const SUN_PERIOD: f32 = 1800.0;
 
-/// One decoded equirectangular map, still on the CPU.
-struct Map {
+/// One map as `build.rs` packed it: every mip level, largest first, each as
+/// ETC2 or EAC blocks.
+pub(crate) struct Packed {
     width: u32,
     height: u32,
-    /// Bytes per texel: one for the single-channel sheets (the clouds and the
-    /// city lights are stored as greyscale JPEGs), three for everything else.
-    channels: u32,
-    /// Texels exactly as decoded.
-    pixels: Vec<u8>,
+    levels: u32,
+    layout: Layout,
+    data: &'static [u8],
 }
 
-impl Map {
-    fn decode(bytes: &[u8]) -> Result<Self> {
-        let image = image::load_from_memory(bytes).context("decoding an Earth map")?;
-        let (width, height) = (image.width(), image.height());
-        // A greyscale sheet is kept as it is: expanding it to RGB only for
-        // `into_grey` to fold it back costs two passes over 8 million texels
-        // and gives the very same bytes.
-        let (channels, pixels) = match image {
-            image::DynamicImage::ImageLuma8(grey) => (1, grey.into_raw()),
-            other => (3, other.into_rgb8().into_raw()),
-        };
-        Ok(Self {
-            width,
-            height,
-            channels,
-            pixels,
+impl Packed {
+    /// Each level's size and blocks, largest first.
+    fn levels(&self) -> impl Iterator<Item = (u32, u32, &'static [u8])> {
+        let mut at = 0;
+        (0..self.levels).map(move |level| {
+            let (width, height) = ((self.width >> level).max(1), (self.height >> level).max(1));
+            let size =
+                crate::etc::level_size(width as usize, height as usize, self.layout.block_bytes());
+            let blocks = &self.data[at..at + size];
+            at += size;
+            (width, height, blocks)
         })
-    }
-
-    /// Expand to RGBA for the GPU; the colour maps keep their channels.
-    fn to_rgba(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.pixels.len() / self.channels as usize * 4);
-        if self.channels == 1 {
-            for &grey in &self.pixels {
-                out.extend_from_slice(&[grey, grey, grey, 255]);
-            }
-            return out;
-        }
-        let (texels, _) = self.pixels.as_chunks::<3>();
-        for texel in texels {
-            out.extend_from_slice(&[texel[0], texel[1], texel[2], 255]);
-        }
-        out
-    }
-
-    /// The relief's two slopes with `water` alongside, for one texture that
-    /// answers both "which way does the ground face" and "is this sea".
-    fn pack_relief(&self, water: Map) -> Vec<u8> {
-        let (texels, _) = self.pixels.as_chunks::<3>();
-        let (water_width, water_height) = (water.width, water.height);
-        let mask = water.into_grey();
-        let mut out = Vec::with_capacity(texels.len() * 4);
-        for (i, texel) in texels.iter().enumerate() {
-            // The water map is the same size as the relief; were it not, the
-            // nearest row and column would do.
-            let x = (i as u32 % self.width) * water_width / self.width;
-            let y = (i as u32 / self.width) * water_height / self.height;
-            let sea = mask[(y * water_width + x) as usize];
-            out.extend_from_slice(&[texel[0], texel[1], sea, 255]);
-        }
-        out
-    }
-
-    /// Luminance, for the cloud and water masks. A greyscale map already is.
-    fn into_grey(self) -> Vec<u8> {
-        if self.channels == 1 {
-            return self.pixels;
-        }
-        let (texels, _) = self.pixels.as_chunks::<3>();
-        texels
-            .iter()
-            .map(|texel| {
-                ((texel[0] as u32 * 77 + texel[1] as u32 * 150 + texel[2] as u32 * 29) >> 8) as u8
-            })
-            .collect()
-    }
-
-    /// Shrink the map if the GPU cannot hold it at its native size. This is the
-    /// only place anything is resampled, and it never happens on the Pi.
-    fn fit(&mut self, limit: u32) {
-        if self.width <= limit && self.height <= limit {
-            return;
-        }
-        let scale = limit as f32 / self.width.max(self.height) as f32;
-        let width = ((self.width as f32 * scale) as u32).clamp(1, limit);
-        let height = ((self.height as f32 * scale) as u32).clamp(1, limit);
-        let pixels = std::mem::take(&mut self.pixels);
-        let filter = image::imageops::FilterType::Lanczos3;
-        let resized = if self.channels == 1 {
-            image::GrayImage::from_raw(self.width, self.height, pixels)
-                .map(|source| image::imageops::resize(&source, width, height, filter).into_raw())
-        } else {
-            image::RgbImage::from_raw(self.width, self.height, pixels)
-                .map(|source| image::imageops::resize(&source, width, height, filter).into_raw())
-        };
-        let Some(resized) = resized else {
-            return;
-        };
-        tracing::warn!(
-            from = format!("{}x{}", self.width, self.height),
-            to = format!("{width}x{height}"),
-            "the GPU cannot hold this map, shrinking it"
-        );
-        self.width = width;
-        self.height = height;
-        self.pixels = resized;
     }
 }
 
@@ -218,7 +136,7 @@ struct Uniforms {
 
 /// Everything needed to draw one frame of the planet.
 pub(crate) struct Globe {
-    /// One pipeline per [`Region`], in its order.
+    /// One pipeline per [`Pass`], in [`PASSES`] order.
     pipelines: Vec<wgpu::RenderPipeline>,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -230,57 +148,16 @@ pub(crate) struct Globe {
 impl Globe {
     pub(crate) fn new(gpu: &Graphics) -> Result<Self> {
         let device = &gpu.device;
-        let limit = device.limits().max_texture_dimension_2d;
 
-        // Decoding the five JPEG and TIFF sheets is most of the start-up time
-        // and purely CPU work, so each gets a core of its own: on the Pi's four
-        // A76s the planet comes up several times sooner. Holding all the
-        // decoded sheets at once costs about 50 MB, briefly.
-        let decoded = std::thread::scope(|scope| {
-            [DAY, NIGHT, CLOUDS, NORMAL, SPECULAR]
-                .map(|bytes| scope.spawn(move || Map::decode(bytes)))
-                .map(|job| {
-                    job.join()
-                        .unwrap_or_else(|_| Err(anyhow::anyhow!("decoding an Earth map panicked")))
-                })
-        });
-        let [day, night, clouds, relief, water] = decoded;
-
-        // Bound in shader order: day, night, clouds, relief with the water mask.
-        let mips = MipChain::new(device);
-        let mut views = Vec::with_capacity(4);
-        for (name, map) in [("day", day), ("night", night), ("clouds", clouds)] {
-            let mut map = map?;
-            map.fit(limit);
-            let (width, height) = (map.width, map.height);
-            let (format, texel_bytes, data) = if name == "day" {
-                (wgpu::TextureFormat::Rgba8UnormSrgb, 4, map.to_rgba())
-            } else {
-                (wgpu::TextureFormat::R8Unorm, 1, map.into_grey())
-            };
-            views.push(upload(
-                gpu,
-                &mips,
-                name,
-                width,
-                height,
-                format,
-                &data,
-                texel_bytes,
-            )?);
-        }
-        let relief = relief?;
-        let water = water?;
-        views.push(upload(
-            gpu,
-            &mips,
-            "relief",
-            relief.width,
-            relief.height,
-            wgpu::TextureFormat::Rgba8Unorm,
-            &relief.pack_relief(water),
-            4,
-        )?);
+        // Bound in shader order: day with the water mask, night, clouds,
+        // relief. Blocks straight from the binary: nothing to decode.
+        let views = [
+            ("day", &earth::DAY),
+            ("night", &earth::NIGHT),
+            ("clouds", &earth::CLOUDS),
+            ("relief", &earth::RELIEF),
+        ]
+        .map(|(name, packed)| upload(gpu, name, packed));
 
         let sampler_with = |label, anisotropy_clamp| {
             device.create_sampler(&wgpu::SamplerDescriptor {
@@ -430,11 +307,11 @@ impl Globe {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipelines = Region::ALL
+        let pipelines = PASSES
             .iter()
-            .map(|region| {
+            .map(|pass| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(region.label()),
+                    label: Some(pass.label),
                     layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
                         module: &shader,
@@ -444,12 +321,25 @@ impl Globe {
                     },
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
-                        entry_point: Some(region.entry_point()),
+                        entry_point: Some(pass.entry_point),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: wgpu::TextureFormat::Rgba8Unorm,
-                            // The regions tile the frame, so nothing blends; the
-                            // frame is opaque, which is what Slint's RGBA images want.
-                            blend: None,
+                            // The regions tile the frame, so only the planet's
+                            // edge blends, over the halo drawn under it; alpha
+                            // stays 1, since the frame is opaque, which is what
+                            // Slint's RGBA images want.
+                            blend: pass.blend.then_some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::SrcAlpha,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
                             write_mask: wgpu::ColorWrites::ALL,
                         })],
                         compilation_options: Default::default(),
@@ -527,9 +417,9 @@ impl Globe {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            for (region, pipeline) in Region::ALL.iter().zip(&self.pipelines) {
+            for (step, pipeline) in PASSES.iter().zip(&self.pipelines) {
                 pass.set_pipeline(pipeline);
-                pass.draw(region.vertices(), 0..1);
+                pass.draw(step.region.vertices(), 0..1);
             }
         }
         gpu.submit(encoder.finish());
@@ -603,42 +493,68 @@ impl Globe {
 /// the polygon strays at most 0.15 pixels from the planet's circle.
 const SEGMENTS: u32 = 128;
 
-/// The frame's four regions, drawn in this order, each by its own pipeline:
-/// annuli of [`SEGMENTS`] quads around the centre that tile the frame.
+/// The frame's four regions: annuli of [`SEGMENTS`] quads around the centre
+/// that tile the frame, in [`Region::outer`] order.
 #[derive(Clone, Copy)]
 enum Region {
-    /// Inside the planet, where every pixel is fully covered (`fs_disc`).
+    /// Inside the planet, where every pixel is fully covered.
     Disc,
-    /// The planet's anti-aliased edge, two pixels wide: the surface blended
-    /// with the limb, the one shader that still runs at two threads (`fs_main`).
+    /// The planet's anti-aliased edge, two pixels wide.
     Edge,
-    /// The limb's glow and the rest of the atmosphere over space (`fs_halo`).
+    /// The limb's glow and the rest of the atmosphere over space.
     Halo,
-    /// The corners beyond the atmosphere: space only (`fs_space`).
+    /// The corners beyond the atmosphere: space only.
     Space,
 }
 
+/// One draw of the frame: a region and the shader that paints it.
+struct Pass {
+    region: Region,
+    label: &'static str,
+    entry_point: &'static str,
+    /// Blended over what the passes before it drew, by the shader's alpha.
+    blend: bool,
+}
+
+/// The frame's draws, in order, each with a pipeline of its own. The edge is
+/// drawn twice: the limb over space as the halo paints it, then the planet's
+/// surface over that at its coverage. One shader doing both held the surface,
+/// the limb and space at once, needed 57 registers and ran at two threads;
+/// apart, every shader of the frame fits in the 32 that four threads allow.
+const PASSES: [Pass; 5] = [
+    Pass {
+        region: Region::Disc,
+        label: "Globe disc pipeline",
+        entry_point: "fs_disc",
+        blend: false,
+    },
+    Pass {
+        region: Region::Edge,
+        label: "Globe edge halo pipeline",
+        entry_point: "fs_halo",
+        blend: false,
+    },
+    Pass {
+        region: Region::Edge,
+        label: "Globe edge pipeline",
+        entry_point: "fs_edge",
+        blend: true,
+    },
+    Pass {
+        region: Region::Halo,
+        label: "Globe halo pipeline",
+        entry_point: "fs_halo",
+        blend: false,
+    },
+    Pass {
+        region: Region::Space,
+        label: "Globe space pipeline",
+        entry_point: "fs_space",
+        blend: false,
+    },
+];
+
 impl Region {
-    const ALL: [Region; 4] = [Region::Disc, Region::Edge, Region::Halo, Region::Space];
-
-    fn label(self) -> &'static str {
-        match self {
-            Region::Disc => "Globe disc pipeline",
-            Region::Edge => "Globe edge pipeline",
-            Region::Halo => "Globe halo pipeline",
-            Region::Space => "Globe space pipeline",
-        }
-    }
-
-    fn entry_point(self) -> &'static str {
-        match self {
-            Region::Disc => "fs_disc",
-            Region::Edge => "fs_main",
-            Region::Halo => "fs_halo",
-            Region::Space => "fs_space",
-        }
-    }
-
     /// The vertex range `vs_region` turns into this annulus.
     fn vertices(self) -> std::ops::Range<u32> {
         let quads = 6 * SEGMENTS;
@@ -654,12 +570,12 @@ impl Region {
         // closer in by this factor.
         let inscribed = (std::f32::consts::PI / SEGMENTS as f32).cos();
         match self {
-            // Inside the circle a pixel short of the edge (`shade` blends
-            // the last 0.75 pixels with the limb), so the polygon, which lies
+            // Inside the circle a pixel short of the edge (`fs_edge` blends
+            // the last 0.75 pixels over the limb), so the polygon, which lies
             // within its vertices, holds fully covered pixels only.
             Region::Disc => (planet - 1.0) / half,
             // Outside the circle a pixel past the edge, where the planet
-            // covers nothing (`shade` returns the limb alone from 0.75 on).
+            // covers nothing (`fs_edge`'s coverage is 0 from 0.75 on).
             Region::Edge => (planet + 1.0) / inscribed / half,
             // Around the atmosphere with a pixel to spare: past it `fs_halo`
             // paints only space, so the halo may reach beyond it, not short.
@@ -871,21 +787,34 @@ fn rotate(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
     [0, 1, 2].map(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2])
 }
 
-/// Upload a map at its native size and let the GPU build the mip chain.
-#[allow(clippy::too_many_arguments)]
-fn upload(
-    gpu: &Graphics,
-    mips: &MipChain,
-    label: &str,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-    data: &[u8],
-    bytes_per_texel: u32,
-) -> Result<wgpu::TextureView> {
+/// Upload a map with its mip chain, compressed if the GPU samples ETC2 and
+/// decompressed on the CPU if not. Levels larger than the GPU allows are left
+/// out, which never happens on the Pi.
+fn upload(gpu: &Graphics, label: &str, packed: &Packed) -> wgpu::TextureView {
+    use wgpu::TextureFormat as F;
     let device = &gpu.device;
-    let queue = &gpu.queue;
-    let levels = (width.max(height) as f32).log2().floor() as u32 + 1;
+    let compressed = device
+        .features()
+        .contains(wgpu::Features::TEXTURE_COMPRESSION_ETC2);
+    // The day map is sRGB, so the GPU linearises it before filtering.
+    let format = match (packed.layout, compressed) {
+        (Layout::Rgba, true) => F::Etc2Rgba8UnormSrgb,
+        (Layout::Rgb, true) => F::Etc2Rgb8UnormSrgb,
+        (Layout::R11, true) => F::EacR11Unorm,
+        (Layout::Rg11, true) => F::EacRg11Unorm,
+        (Layout::Rgba | Layout::Rgb, false) => F::Rgba8UnormSrgb,
+        (Layout::R11, false) => F::R8Unorm,
+        (Layout::Rg11, false) => F::Rg8Unorm,
+    };
+    if !compressed {
+        tracing::info!(map = label, "the GPU has no ETC2: decompressing the map");
+    }
+    let limit = device.limits().max_texture_dimension_2d;
+    let levels: Vec<_> = packed
+        .levels()
+        .skip_while(|&(width, height, _)| width.max(height) > limit)
+        .collect();
+    let (width, height, _) = levels[0];
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -893,220 +822,49 @@ fn upload(
             height,
             depth_or_array_layers: 1,
         },
-        mip_level_count: levels,
+        mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * bytes_per_texel),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    mips.build(gpu, &texture, levels, format);
-    Ok(texture.create_view(&wgpu::TextureViewDescriptor::default()))
-}
-
-/// Builds mip chains on the GPU: every level is the previous one sampled with a
-/// linear filter. Doing this here rather than on the CPU is what removes the
-/// shimmer from the city lights when the map is minified.
-struct MipChain {
-    layout: wgpu::BindGroupLayout,
-    pipelines: [(wgpu::TextureFormat, wgpu::RenderPipeline); 3],
-    sampler: wgpu::Sampler,
-}
-
-impl MipChain {
-    fn new(device: &wgpu::Device) -> Self {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Mip chain"),
-            entries: &[
-                texture(0),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Mip chain shader"),
-            source: wgpu::ShaderSource::Wgsl(MIP_SHADER.into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Mip chain layout"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let make = |format: wgpu::TextureFormat| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Mip chain pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
+    for (level, &(width, height, blocks)) in levels.iter().enumerate() {
+        let decompressed;
+        let (data, bytes_per_row, rows, extent) = if compressed {
+            // Copies of compressed levels are whole blocks, even where the
+            // level is smaller than one.
+            let (columns, rows) = (width.div_ceil(4), height.div_ceil(4));
+            let row = columns * packed.layout.block_bytes() as u32;
+            (blocks, row, rows, (columns * 4, rows * 4))
+        } else {
+            decompressed =
+                crate::etc::decompress(blocks, width as usize, height as usize, packed.layout);
+            let channels = packed.layout.channels() as u32;
+            (&decompressed[..], width * channels, height, (width, height))
         };
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Mip chain sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        Self {
-            layout,
-            pipelines: [
-                (
-                    wgpu::TextureFormat::Rgba8Unorm,
-                    make(wgpu::TextureFormat::Rgba8Unorm),
-                ),
-                (
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
-                    make(wgpu::TextureFormat::Rgba8UnormSrgb),
-                ),
-                (
-                    wgpu::TextureFormat::R8Unorm,
-                    make(wgpu::TextureFormat::R8Unorm),
-                ),
-            ],
-            sampler,
-        }
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d {
+                width: extent.0,
+                height: extent.1,
+                depth_or_array_layers: 1,
+            },
+        );
     }
-
-    fn build(
-        &self,
-        gpu: &Graphics,
-        texture: &wgpu::Texture,
-        levels: u32,
-        format: wgpu::TextureFormat,
-    ) {
-        let device = &gpu.device;
-        let Some((_, pipeline)) = self.pipelines.iter().find(|(f, _)| *f == format) else {
-            tracing::warn!(?format, "no mip pipeline for this map format");
-            return;
-        };
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Mip chain"),
-        });
-        for level in 1..levels {
-            let source = texture.create_view(&wgpu::TextureViewDescriptor {
-                base_mip_level: level - 1,
-                mip_level_count: Some(1),
-                ..Default::default()
-            });
-            let target = texture.create_view(&wgpu::TextureViewDescriptor {
-                base_mip_level: level,
-                mip_level_count: Some(1),
-                ..Default::default()
-            });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Mip chain"),
-                layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            });
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Mip chain pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        gpu.submit(encoder.finish());
-    }
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
-
-/// The mip chain shader: a full-screen triangle that copies one level into the
-/// next with a linear filter.
-const MIP_SHADER: &str = r#"
-struct Varying {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> Varying {
-    var corners = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0),
-    );
-    let corner = corners[index];
-    var out: Varying;
-    out.position = vec4<f32>(corner, 0.0, 1.0);
-    out.uv = corner * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
-    return out;
-}
-
-@group(0) @binding(0) var source: texture_2d<f32>;
-@group(0) @binding(1) var source_sampler: sampler;
-
-@fragment
-fn fs_main(in: Varying) -> @location(0) vec4<f32> {
-    return textureSample(source, source_sampler, in.uv);
-}
-"#;
 
 /// The globe shader, with the fixed lighting numbers folded in.
 fn shader_source() -> String {
@@ -1201,15 +959,14 @@ fn vs_main(@builtin(vertex_index) index: u32) -> Varying {{
     return out;
 }}
 
-// The frame in four regions, each with a shader of its own (`Region`): the
-// planet's inside, where every pixel is fully covered, a band two pixels wide
-// along its anti-aliased edge, the halo of air beyond it, and space. Each is an
-// annulus of `SEGMENTS` quads between two of `RADII` (in half frames, from
-// the centre); vertex `index` picks the annulus by its range. Shared edges
-// are computed from the same numbers, so the regions meet without gaps or
-// overlap. One shader for the whole frame needed more registers than the
-// V3D gives four threads, for the limb's sake, and so ran the planet at two;
-// only the edge still needs both, and it is a few thousand pixels.
+// The frame in four regions (`Region`), each drawn with a shader of its own
+// (`PASSES`): the planet's inside, where every pixel is fully covered, a band
+// two pixels wide along its anti-aliased edge, the halo of air beyond it, and
+// space. Each is an annulus of `SEGMENTS` quads between two of `radii` (in half
+// frames, from the centre); vertex `index` picks the annulus by its range.
+// Shared edges are computed from the same numbers, so the regions meet without
+// gaps or overlap. One shader for the whole frame needed more registers than
+// the V3D gives four threads, for the limb's sake, and so ran the planet at two.
 const SEGMENTS: u32 = {segments}u;
 
 @vertex
@@ -1238,7 +995,8 @@ fn fs_disc(in: Varying) -> @location(0) vec4<f32> {{
     return encode(surface(in.position.xy, p, length(p)), 1.0);
 }}
 
-// Past the planet's edge: the limb's glow over space, as `fs_main` paints it.
+// Past the planet's edge: the limb's glow over space. Also under the edge,
+// where `fs_edge` lays the planet over it.
 @fragment
 fn fs_halo(in: Varying) -> @location(0) vec4<f32> {{
     let p = vec2<f32>(
@@ -1302,17 +1060,18 @@ fn space(position: vec2<f32>) -> vec3<f32> {{
     return air.rgb + BACKGROUND * (1.0 - air.a);
 }}
 
+// The planet's anti-aliased edge, over the halo `fs_halo` drew under it
+// (`PASSES`): the surface, its alpha how much of the pixel it covers, a pixel
+// either side of the limb.
 @fragment
-fn fs_main(in: Varying) -> @location(0) vec4<f32> {{
-    // Any pixel of the frame, though it now draws only the planet's edge
-    // (`fs_disc`, `fs_halo` and `fs_space` paint the rest the same way).
-    // Laid over space the way Slint composited the frame when it was
-    // transparent: Slint takes a wgpu texture for straight alpha.
-    let globe = shade(in);
-    if (globe.a >= 1.0) {{
-        return vec4<f32>(globe.rgb, 1.0);
-    }}
-    return vec4<f32>(globe.rgb * globe.a + space(in.position.xy) * (1.0 - globe.a), 1.0);
+fn fs_edge(in: Varying) -> @location(0) vec4<f32> {{
+    let p = vec2<f32>(
+        (in.position.x - params.frame.x) / params.frame.z,
+        (params.frame.y - in.position.y) / params.frame.z,
+    );
+    let distance = length(p);
+    let coverage = smoothstep01(-0.75, 0.75, (1.0 - distance) * params.frame.z);
+    return encode(surface(in.position.xy, p, distance), coverage);
 }}
 
 struct Geometry {{
@@ -1320,7 +1079,7 @@ struct Geometry {{
     @location(1) air: vec4<f32>,
 }};
 
-// What never changes for a pixel, worked out once into the tables `shade`
+// What never changes for a pixel, worked out once into the tables `surface`
 // reads: where it lies on the maps before the planet turns, and what the air
 // between it and the viewer lets through.
 @fragment
@@ -1344,30 +1103,6 @@ fn fs_geometry(in: Varying) -> Geometry {{
     let fresnel = 0.02 + 0.98 * pow(1.0 - z, 5.0);
     out.air = vec4<f32>(exp(-AIR * airmass(z)), fresnel);
     return out;
-}}
-
-fn shade(in: Varying) -> vec4<f32> {{
-    // Screen position in planet radii, y up.
-    let p = vec2<f32>(
-        (in.position.x - params.frame.x) / params.frame.z,
-        (params.frame.y - in.position.y) / params.frame.z,
-    );
-    let distance = length(p);
-    let atmosphere = params.frame.w / params.frame.z;
-    if (distance > atmosphere) {{
-        return vec4<f32>(0.0);
-    }}
-    // Anti-aliasing at the limb: a pixel either side of the edge.
-    let edge = (distance - 1.0) * params.frame.z;
-    let coverage = smoothstep01(-0.75, 0.75, -edge);
-    if (coverage <= 0.0) {{
-        return limb(p, distance);
-    }}
-    let planet = encode(surface(in.position.xy, p, distance), 1.0);
-    if (coverage >= 1.0) {{
-        return planet;
-    }}
-    return mix(limb(p, distance), planet, coverage);
 }}
 
 // The planet's surface at `position` (in pixels; `p` and `distance` in planet
@@ -1396,7 +1131,8 @@ fn surface(position: vec2<f32>, p: vec2<f32>, distance: f32) -> vec3<f32> {{
     let north = vec3<f32>(-n.y * sin_lon, cos_lat, -n.y * cos_lon);
     let relief = textureSampleBias(relief_map, soft_sampler, uv, BIAS + 0.4);
     let bump = relief.rg - vec2<f32>(0.5);
-    let water = relief.b;
+    let ground = textureSampleBias(day_map, map_sampler, uv, BIAS);
+    let water = ground.a;
     let tilted = normalize(n + (east * bump.x + north * bump.y) * RELIEF);
 
     let sun = params.sun.xyz;
@@ -1418,7 +1154,7 @@ fn surface(position: vec2<f32>, p: vec2<f32>, distance: f32) -> vec3<f32> {{
     }}
 
     // The ground, lit by reddened sunlight and the sky.
-    let albedo = textureSampleBias(day_map, map_sampler, uv, BIAS).rgb * mix(1.0, 0.8, water);
+    let albedo = ground.rgb * mix(1.0, 0.8, water);
     let sun_ground = sunlight(mu_sun);
     let direct = sun_ground * max(dot(tilted, sun) + 0.03, 0.0) * (1.0 - 0.6 * shadow);
     let sky = SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun);
@@ -1610,6 +1346,68 @@ mod tests {
             let path = std::path::Path::new(&dir).join(format!("globe-{k}.png"));
             image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
                 .expect("a preview image");
+        }
+    }
+
+    /// What `build.rs` compressed against the source maps, level 0.
+    #[test]
+    fn the_compressed_maps_stay_close_to_the_originals() {
+        let open = |name: &str| {
+            image::open(format!(
+                "{}/assets/earth/{name}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect("a source map")
+        };
+        let psnr = |a: &[u8], b: &[u8]| {
+            let mse = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| (*x as f64 - *y as f64).powi(2))
+                .sum::<f64>()
+                / a.len() as f64;
+            10.0 * (255.0f64.powi(2) / mse).log10()
+        };
+        let level0 = |packed: &Packed| {
+            let (width, height, blocks) = packed.levels().next().expect("a level");
+            crate::etc::decompress(blocks, width as usize, height as usize, packed.layout)
+        };
+        let day = level0(&earth::DAY);
+        let colour: Vec<u8> = day.chunks(4).flat_map(|t| [t[0], t[1], t[2]]).collect();
+        let water: Vec<u8> = day.chunks(4).map(|t| t[3]).collect();
+        let mask = image::imageops::resize(
+            &open("specular.tif").to_luma8(),
+            earth::DAY.width,
+            earth::DAY.height,
+            image::imageops::FilterType::Triangle,
+        );
+        let relief: Vec<u8> = open("normal.tif")
+            .to_rgb8()
+            .pixels()
+            .flat_map(|c| [c[0], c[1]])
+            .collect();
+        let scores = [
+            ("day", psnr(&colour, &open("day.jpg").to_rgb8().into_raw())),
+            ("water", psnr(&water, &mask.into_raw())),
+            (
+                "night",
+                psnr(
+                    &level0(&earth::NIGHT),
+                    &open("night.jpg").to_luma8().into_raw(),
+                ),
+            ),
+            (
+                "clouds",
+                psnr(
+                    &level0(&earth::CLOUDS),
+                    &open("clouds.jpg").to_luma8().into_raw(),
+                ),
+            ),
+            ("relief", psnr(&level0(&earth::RELIEF), &relief)),
+        ];
+        for (name, db) in scores {
+            eprintln!("{name}: {db:.1} dB");
+            assert!(db > 34.0, "{name} PSNR {db:.1} dB");
         }
     }
 

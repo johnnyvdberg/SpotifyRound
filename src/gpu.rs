@@ -384,6 +384,12 @@ fn open(adapter: &wgpu::Adapter, label: &str, headless: bool) -> Result<Graphics
             );
         }
     }
+    // The globe's maps are ETC2 and EAC where the GPU samples them (the V3D
+    // does, on GL and Vulkan alike); without it, or with `SPOTIFY_ROUND_ETC2=0`
+    // to compare, they are uploaded uncompressed.
+    if std::env::var("SPOTIFY_ROUND_ETC2").as_deref() != Ok("0") {
+        features |= adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_ETC2;
+    }
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some(label),
         required_features: features,
