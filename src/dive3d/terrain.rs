@@ -71,7 +71,7 @@ pub struct Point {
 /// drowned city's silted paving; the meadow's sand, the glass sponges' silt
 /// and the blue hole's sand.
 const LAYERS: [usize; crate::voyage::BIOMES] = [
-    12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13, 12, 13, 12,
+    12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13, 12, 13, 12, 13,
 ];
 /// How much of a layer index's fraction the living reef takes: under one
 /// half, so the layer still rounds to itself (`REEF_SHARE` in `scene.wesl`).
@@ -657,10 +657,34 @@ fn build(w: &World, s: f32, i: i32, j: i32) -> (Vec<Point>, [f32; 3], f32) {
         }
     }
     // The skirts, under the four edges in the order `indices` stitches them.
+    // Each hangs below the lowest the edge beside it can be drawn at: this
+    // level's neighbours, the coarser level's span across it (`RATIO` of
+    // these), and, where the edge is steep, the finer level's vertices in
+    // between. A fixed depth leaves the crack open down a cliff: the blue
+    // hole's wall drops six units within one coarse spacing, and from the
+    // floor its far rim showed through.
     for edge in edges() {
         for k in 0..SIDE {
+            let y = |k: usize| points[edge[k]].position[1];
+            let (before, after) = (k.saturating_sub(1), (k + 1).min(QUADS));
+            let start = k / RATIO as usize * RATIO as usize;
+            let mut low = [before, after, start, (start + RATIO as usize).min(QUADS)]
+                .into_iter()
+                .fold(y(k), |low, n| low.min(y(n)));
+            if (y(before) - y(k)).abs().max((y(after) - y(k)).abs()) > SKIRT * s {
+                let here = points[edge[k]].position;
+                for n in [before, after] {
+                    let there = points[edge[n]].position;
+                    for step in 1..RATIO {
+                        let t = step as f32 / RATIO as f32;
+                        let x = here[0] + (there[0] - here[0]) * t;
+                        let z = here[2] + (there[2] - here[2]) * t;
+                        low = low.min(w.seabed.ground(x, z));
+                    }
+                }
+            }
             let mut p = points[edge[k]];
-            p.position[1] -= SKIRT * s;
+            p.position[1] = low - SKIRT * s;
             points.push(p);
         }
     }
@@ -738,9 +762,11 @@ mod tests {
     #[test]
     fn tiles_cover_the_view_without_overlapping() {
         let seabed = Seabed::new(7, 0.3);
+        // At cruising height over whatever sea the circuit puts here.
+        let floor = seabed.ground(3.3, crate::dive3d::world::corridor(3.3));
         let w = World {
             seabed: &seabed,
-            pose: Pose::level(3.3, -2.0),
+            pose: Pose::level(3.3, floor + 0.6),
             t: 0.0,
             slack: 0.0,
         };

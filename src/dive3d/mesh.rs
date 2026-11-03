@@ -23,12 +23,20 @@ use std::f32::consts::{PI, TAU};
 
 use glam::Vec3;
 
+// The museum's models are built only to bake them (`baked`).
+#[cfg(test)]
+mod exhibits;
+
 /// Levels of detail per model, the full one first.
 pub const LODS: usize = 3;
 
 thread_local! {
     /// How many times coarser than its full detail a model is being built.
     static COARSER: Cell<u32> = const { Cell::new(0) };
+    /// How far the last coarser level of a scan strays from its full
+    /// detail, in the model's own units: the simplifier's own reckoning,
+    /// which a streamed model's levels are measured by (`streamed`).
+    static CAST_ERROR: Cell<f32> = const { Cell::new(0.0) };
 }
 
 /// `n` segments, halved for each step coarser, but never fewer than `least`.
@@ -788,10 +796,48 @@ pub enum Model {
     /// deep, faced inward, banded with limestone strata, broken by two
     /// overhanging ledges and lipped over the bank at the top.
     HoleWall,
+    /// Atlantis' far volcano: a broad, craggy cone with concave flanks,
+    /// narrowing all the way up to a crater whose rim dips into a hollow
+    /// throat. A unit across at the foot and a unit tall.
+    Volcano,
+    // The drowned museum's (`exhibits`), streamed in as it comes near and
+    // dropped once it is left behind: none is in the library the dive
+    // starts with ([`Model::is_streamed`]). First the Smithsonian's
+    // specimens, each a unit tall on y = 0.
+    Mammoth,
+    GroundSloth,
+    Triceratops,
+    Megalodon,
+    Archaeopteryx,
+    WalrusWhale,
+    PilotWhale,
+    Tortoise,
+    Porcupinefish,
+    Murex,
+    Diplocaulus,
+    StegosaurusSpike,
+    Dinictis,
+    Trilobite,
+    DeerSkull,
+    KingCrab,
+    Allosaurus,
+    Seadragon,
+    /// A great whale's skeleton, a unit long, skull to +x.
+    WhaleSkeleton,
+    /// A painting's canvas: a unit square facing +z, its image's own
+    /// coordinates in `aux`.
+    Canvas,
+    /// A round arch of buff and slate terracotta, springing from x = ±1.
+    MuseumArch,
+    Pyrite,
+    Bismuth,
+    Malachite,
+    Geode,
+    Tourmaline,
 }
 
 impl Model {
-    pub const ALL: [Model; 99] = [
+    pub const ALL: [Model; 126] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -891,6 +937,33 @@ impl Model {
         Model::Mangrove2,
         Model::GlassSponge,
         Model::HoleWall,
+        Model::Volcano,
+        Model::Mammoth,
+        Model::GroundSloth,
+        Model::Triceratops,
+        Model::Megalodon,
+        Model::Archaeopteryx,
+        Model::WalrusWhale,
+        Model::PilotWhale,
+        Model::Tortoise,
+        Model::Porcupinefish,
+        Model::Murex,
+        Model::Diplocaulus,
+        Model::StegosaurusSpike,
+        Model::Dinictis,
+        Model::Trilobite,
+        Model::DeerSkull,
+        Model::KingCrab,
+        Model::Allosaurus,
+        Model::Seadragon,
+        Model::WhaleSkeleton,
+        Model::Canvas,
+        Model::MuseumArch,
+        Model::Pyrite,
+        Model::Bismuth,
+        Model::Malachite,
+        Model::Geode,
+        Model::Tourmaline,
     ];
 
     /// Whether this is one of the drowned city's models, whose triangles
@@ -913,6 +986,26 @@ impl Model {
 
     pub fn index(self) -> usize {
         self as usize
+    }
+
+    /// Whether this is one of the museum's own models, which the renderer
+    /// builds only as the museum comes near and drops once it is behind:
+    /// every model from the first specimen on.
+    pub fn is_streamed(self) -> bool {
+        self.index() >= Model::Mammoth.index()
+    }
+
+    /// Whether a streamed model is a scan, whose coarser levels the
+    /// simplifier measures (`streamed`): the rest are built whole only.
+    #[cfg(test)]
+    pub fn is_scan(self) -> bool {
+        self.is_streamed() && self.index() < Model::WhaleSkeleton.index()
+    }
+
+    /// The museum's models, in the order they are streamed in.
+    #[cfg(test)]
+    pub fn streamed() -> impl Iterator<Item = Model> {
+        Model::ALL.into_iter().filter(|m| m.is_streamed())
     }
 
     fn build(self) -> Mesh {
@@ -1231,6 +1324,29 @@ impl Model {
             Model::Mangrove2 => mangrove(2),
             Model::GlassSponge => glass_sponge(),
             Model::HoleWall => hole_wall(),
+            Model::Volcano => volcano(),
+            #[cfg(test)]
+            Model::WhaleSkeleton => exhibits::whale_skeleton(),
+            #[cfg(test)]
+            Model::Canvas => exhibits::canvas(),
+            #[cfg(test)]
+            Model::MuseumArch => exhibits::arch(),
+            #[cfg(test)]
+            Model::Pyrite => exhibits::pyrite(),
+            #[cfg(test)]
+            Model::Bismuth => exhibits::bismuth(),
+            #[cfg(test)]
+            Model::Malachite => exhibits::malachite(),
+            #[cfg(test)]
+            Model::Geode => exhibits::geode(),
+            #[cfg(test)]
+            Model::Tourmaline => exhibits::tourmaline(),
+            #[cfg(test)]
+            _ => exhibits::specimen(exhibits::scan(self)),
+            // The museum's are never built while the dive runs: they come
+            // in baked ([`baked`]).
+            #[cfg(not(test))]
+            _ => unreachable!("{self:?} is baked"),
         }
     }
 }
@@ -2547,6 +2663,51 @@ fn vent() -> Mesh {
                 0.10 + 0.10 * band + 0.20 * lip,
                 0.085 + 0.08 * band + 0.17 * lip,
                 0.075 + 0.06 * band + 0.11 * lip,
+            ]
+        },
+        |y| [0.0, y],
+    )
+}
+
+/// Atlantis' far volcano, a unit across at its foot and a unit tall. The
+/// flanks are concave, steepening toward the summit as a stratovolcano's
+/// do, and narrow without ever flaring out again: the rim is the narrowest
+/// the cone gets, and the crater sinks inside it. Gullies run down the
+/// flanks, and the rock darkens from ash-grey at the foot to black, with a
+/// glowing crust round the crater's lip.
+fn volcano() -> Mesh {
+    let profile = [
+        (0.50, 0.00),
+        (0.42, 0.06),
+        (0.33, 0.16),
+        (0.25, 0.30),
+        (0.18, 0.48),
+        (0.13, 0.66),
+        (0.10, 0.82),
+        (0.085, 0.94),
+        (0.08, 1.00),
+        (0.06, 0.97),
+        (0.04, 0.90),
+        (0.00, 0.88),
+    ];
+    lathe(
+        &profile,
+        28,
+        |y, a| {
+            // Gullies and spurs down the flanks, fading toward the rim so the
+            // crater stays round, and a notch in the rim where lava spills.
+            let gully = 0.10 * (a * 9.0 + y * 3.0).sin() + 0.05 * (a * 17.0 - y * 7.0).sin();
+            let notch = -0.12 * smooth(0.85, 1.0, y) * smooth(0.6, 1.0, a.cos());
+            1.0 + gully * (1.0 - 0.7 * y) + notch
+        },
+        |y, a| {
+            let band = 0.5 + 0.5 * (y * 23.0 + a * 3.0).sin();
+            let lip = smooth(0.90, 1.0, y);
+            let ash = 1.0 - y;
+            [
+                0.11 + 0.05 * band + 0.06 * ash + 0.55 * lip,
+                0.10 + 0.04 * band + 0.06 * ash + 0.18 * lip,
+                0.095 + 0.035 * band + 0.06 * ash + 0.05 * lip,
             ]
         },
         |y| [0.0, y],
@@ -3939,8 +4100,8 @@ fn turtle() -> Mesh {
     let mut m = loft(
         -0.36,
         0.50,
+        30,
         20,
-        12,
         |x| {
             if x < 0.26 {
                 let t = (x + 0.36) / 0.62;
@@ -3956,14 +4117,39 @@ fn turtle() -> Mesh {
         },
         |x, up| {
             if x >= 0.26 {
-                [1.3, 1.2, 0.9]
+                // The head's large scales, pale at their edges.
+                let t = (x - 0.26) / 0.24;
+                let scale = ((t * 9.0).sin() * (up * 4.0).cos()).abs();
+                let v = 0.95 + 0.4 * smooth(0.75, 1.0, scale);
+                [v, v * 0.92, v * 0.72]
             } else if up > 0.0 {
-                // The scutes, pale at their seams.
-                let seam = ((x * 15.0).sin() * (up * 5.0).cos()).abs();
-                let v = if seam < 0.10 { 1.5 } else { 0.85 + 0.25 * seam };
-                [v, v * 0.95, v * 0.8]
+                // The carapace's scutes, after a hawksbill's: five down the
+                // spine, four either side and a ring of small ones round the
+                // rim, each its own shade of amber with dark streaks
+                // fanning out over it and dark seams between.
+                let t = ((x + 0.36) / 0.62).clamp(0.0, 0.999);
+                let (row, count) = if up > 0.82 {
+                    (0u32, 5.0)
+                } else if up > 0.42 {
+                    (1, 4.0)
+                } else {
+                    (2, 11.0)
+                };
+                let f = t * count + if row == 1 { 0.5 } else { 0.0 };
+                let (cell, local) = (f.floor(), f.fract());
+                let edge = [0.82, 0.42]
+                    .iter()
+                    .map(|&b| (up - b).abs() * 4.0)
+                    .fold(local.min(1.0 - local), f32::min);
+                let seam = 1.0 - 0.5 * smooth(0.12, 0.0, edge);
+                let shade = 0.8 + 0.45 * jitter(cell as u32 + row * 16, 77);
+                let streak = ((local - 0.5) * 7.0 + up * 11.0 + cell * 2.3).sin();
+                let streak = 1.0 - 0.38 * smooth(0.3, 0.9, streak);
+                let v = shade * streak * seam;
+                [v * 1.15, v * 0.95, v * 0.62]
             } else {
-                [2.6, 2.4, 1.6]
+                // The plastron: pale cream.
+                [2.0, 1.9, 1.35]
             }
         },
     );
@@ -3976,13 +4162,13 @@ fn turtle() -> Mesh {
             [-0.06, 0.05],
         ],
         0.018,
-        [1.2, 1.15, 0.9],
+        [1.7, 1.6, 1.25],
     )
     .laid_flat();
     let hind = extrude(
         &[[0.0, 0.0], [0.05, 0.03], [-0.03, 0.17], [-0.10, 0.12]],
         0.015,
-        [1.2, 1.15, 0.9],
+        [1.7, 1.6, 1.25],
     )
     .laid_flat();
     // Laid flat, the paddles reach out along -z, and droop by `droop`;
@@ -4763,7 +4949,9 @@ fn cast_with(obj: &str, like: Mesh, crease: Option<f32>) -> Mesh {
         let adapter =
             meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&flat), 12, 0).expect("positions");
         let want = (faces.len() >> (2 * step)).max(3 * 96);
-        faces = meshopt::simplify_sloppy(&faces, &adapter, want, 1.0, None);
+        let mut error = 0.0;
+        faces = meshopt::simplify_sloppy(&faces, &adapter, want, 1.0, Some(&mut error));
+        CAST_ERROR.set(error * meshopt::simplify_scale(&adapter));
     }
     let bounds = |p: &mut dyn Iterator<Item = Vec3>| {
         p.fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| (lo.min(q), hi.max(q)))
@@ -4771,6 +4959,9 @@ fn cast_with(obj: &str, like: Mesh, crease: Option<f32>) -> Mesh {
     let (lo, hi) = bounds(&mut pos.iter().copied());
     let (want_lo, want_hi) = bounds(&mut like.vertices.iter().map(|v| Vec3::from_array(v.pos)));
     let k = (want_hi[1] - want_lo[1]) / (hi[1] - lo[1]);
+    if step > 0 {
+        CAST_ERROR.set(CAST_ERROR.get() * k);
+    }
     let (centre, want) = ((lo + hi) * 0.5, (want_lo + want_hi) * 0.5);
     let mut out = Mesh::default();
     for (p, own) in pos.into_iter().zip(own) {
@@ -5297,6 +5488,16 @@ struct Built {
 
 impl Built {
     fn of(model: Model) -> Self {
+        // The museum's models are left empty: the renderer builds them as
+        // the museum comes near ([`streamed`]).
+        if model.is_streamed() {
+            return Self {
+                levels: vec![Mesh::default()],
+                sealed: false,
+                measures: vec![(0.0, 0.0, 0.0)],
+                parts: vec![[0; city::PARTS]],
+            };
+        }
         let mut levels: Vec<Mesh> = Vec::new();
         for step in 0..LODS as u32 {
             COARSER.set(step);
@@ -5368,6 +5569,151 @@ fn by_part(mesh: &mut Mesh) -> [u32; city::PARTS] {
     }
     mesh.indices = triangles.into_iter().flatten().collect();
     counts
+}
+
+/// One level of a museum model, built while the museum comes near
+/// (`stream`): the full scan at `step` 0, a quarter of its triangles each
+/// step on. Measured by the simplifier's own error rather than by
+/// [`Mesh::distance`], which on a scan of thousands of triangles would take
+/// longer than the frame it is built in. Their colour is the scan's own and
+/// changes as little as its shape, so the error is the one measure.
+#[cfg(test)]
+fn streamed(model: Model, step: u32) -> (Vec<Packed>, Vec<u32>, f32) {
+    debug_assert!(model.is_streamed());
+    COARSER.set(step);
+    CAST_ERROR.set(0.0);
+    let mut mesh = optimized(model.build());
+    COARSER.set(0);
+    // A vertex whose faces all collapsed (a rod's end ground to a point)
+    // has no normal: outward from the model's middle.
+    let n = mesh.vertices.len().max(1) as f32;
+    let middle = mesh
+        .vertices
+        .iter()
+        .fold(Vec3::ZERO, |a, v| a + Vec3::from_array(v.pos) / n);
+    for v in &mut mesh.vertices {
+        if Vec3::from_array(v.normal).length_squared() < 1e-6 {
+            v.normal = (Vec3::from_array(v.pos) - middle)
+                .try_normalize()
+                .unwrap_or(Vec3::Y)
+                .to_array();
+        }
+    }
+    (
+        mesh.vertices.iter().map(Packed::from).collect(),
+        mesh.indices,
+        CAST_ERROR.get(),
+    )
+}
+
+/// The museum's models as they are drawn, every level of each, built once
+/// and kept in `assets/museum/models.bin`, so the dive only copies them to
+/// the GPU as the museum comes near (`stream`) and never builds them while
+/// it runs. `museum_models_are_baked` builds them again and checks the file;
+/// `DIVE3D_BAKE=1 cargo test --release museum_models_are_baked` writes it.
+///
+/// The file, little-endian: `MUSEUM1\0`, the size of a [`Packed`] vertex,
+/// the number of models; then each model's name, its number of levels, and
+/// each level's error, vertex and index counts followed by its vertices and
+/// its indices.
+pub mod baked {
+    use super::{Model, Packed};
+
+    pub const FILE: &str = "assets/museum/models.bin";
+    const MAGIC: &[u8; 8] = b"MUSEUM1\0";
+    static DATA: &[u8] = include_bytes!("../../assets/museum/models.bin");
+
+    /// One level: its error against the full model, and its vertices and
+    /// indices as the buffers take them.
+    pub struct Level {
+        pub error: f32,
+        pub vertices: &'static [u8],
+        pub indices: &'static [u8],
+    }
+
+    impl Level {
+        pub fn vertex_count(&self) -> u32 {
+            (self.vertices.len() / size_of::<Packed>()) as u32
+        }
+
+        pub fn index_count(&self) -> u32 {
+            (self.indices.len() / 4) as u32
+        }
+    }
+
+    /// Reads the file from its start.
+    struct Reader(usize);
+
+    impl Reader {
+        fn take(&mut self, n: usize) -> &'static [u8] {
+            let bytes = &DATA[self.0..self.0 + n];
+            self.0 += n;
+            bytes
+        }
+
+        fn word(&mut self) -> u32 {
+            u32::from_le_bytes(self.take(4).try_into().expect("four bytes"))
+        }
+    }
+
+    /// Every baked model with its levels, read from the file in place.
+    pub fn models() -> Vec<(Model, Vec<Level>)> {
+        let mut r = Reader(0);
+        assert_eq!(r.take(8), MAGIC, "{FILE} is not baked models");
+        assert_eq!(
+            r.word() as usize,
+            size_of::<Packed>(),
+            "{FILE}: bake it again"
+        );
+        (0..r.word())
+            .map(|_| {
+                let length = r.word() as usize;
+                let name = std::str::from_utf8(r.take(length)).expect("a name");
+                let model = *Model::ALL
+                    .iter()
+                    .find(|m| format!("{m:?}") == name)
+                    .unwrap_or_else(|| panic!("{FILE}: no model {name}"));
+                let levels = (0..r.word())
+                    .map(|_| {
+                        let error = f32::from_bits(r.word());
+                        let (vertices, indices) = (r.word() as usize, r.word() as usize);
+                        Level {
+                            error,
+                            vertices: r.take(vertices * size_of::<Packed>()),
+                            indices: r.take(indices * 4),
+                        }
+                    })
+                    .collect();
+                (model, levels)
+            })
+            .collect()
+    }
+
+    /// The file's bytes, the models built afresh: a scan's full detail and
+    /// its coarser levels, the others whole.
+    #[cfg(test)]
+    pub fn bake() -> Vec<u8> {
+        let mut out = MAGIC.to_vec();
+        let word = |out: &mut Vec<u8>, n: usize| out.extend((n as u32).to_le_bytes());
+        word(&mut out, size_of::<Packed>());
+        word(&mut out, Model::streamed().count());
+        for model in Model::streamed() {
+            let name = format!("{model:?}");
+            word(&mut out, name.len());
+            out.extend(name.as_bytes());
+            let levels = if model.is_scan() { super::LODS } else { 1 };
+            word(&mut out, levels);
+            for step in 0..levels {
+                let (vertices, indices, error) = super::streamed(model, step as u32);
+                out.extend(error.to_bits().to_le_bytes());
+                word(&mut out, vertices.len());
+                word(&mut out, indices.len());
+                out.extend(bytemuck::cast_slice(&vertices));
+                out.extend(bytemuck::cast_slice(&indices));
+            }
+        }
+        out
+    }
 }
 
 impl Library {
@@ -5706,18 +6052,59 @@ fn mangrove(stand: u32) -> Mesh {
             .collect();
         m.append(tube(&knots, 6, 4));
     }
-    // Aerial roots dropping straight from the trunk, not yet in the floor.
+    // What hangs free and moves in the current: aerial roots dropping
+    // straight from the trunk, not yet in the floor, and streamers of algae
+    // trailing from the arches. Each carries in `aux.y` how far it is from
+    // where it hangs to its free tip, so the shader's sway (`anim::SWAY`)
+    // stirs the tips while the arches, rooted at both ends, stay put.
     if COARSER.get() == 0 {
+        let hanging = |top: f32, tip: f32| {
+            move |p: [f32; 3]| [0.0, ((top - p[1]) / (top - tip).max(1e-3)).clamp(0.0, 1.0)]
+        };
         for k in 0..4 {
             let a = k as f32 * 1.7 + 0.3;
             let at = Vec3::new(a.cos() * 0.08, 0.0, a.sin() * 0.08);
-            m.append(rod(
-                (at + Vec3::Y * 0.95).to_array(),
-                (at + Vec3::Y * (0.30 + 0.12 * k as f32)).to_array(),
-                0.010,
-                0.006,
-                bark,
-            ));
+            let (top, tip) = (0.95, 0.30 + 0.12 * k as f32);
+            m.append(
+                rod(
+                    (at + Vec3::Y * top).to_array(),
+                    (at + Vec3::Y * tip).to_array(),
+                    0.010,
+                    0.006,
+                    bark,
+                )
+                .with_aux(hanging(top, tip)),
+            );
+        }
+        for k in 0..roots {
+            if jitter(k as u32 + 16 * stand, 960) < 0.45 {
+                continue;
+            }
+            let h = |n: u32| jitter(k as u32 + 16 * stand, 950 + n);
+            // Where this root's arch is highest, a third of the way out.
+            let a = (k as f32 + 0.4 * h(0)) / roots as f32 * TAU;
+            let out = Vec3::new(a.cos(), 0.0, a.sin());
+            let reach = (0.45 + 0.5 * h(2)) * (1.0 + lop * (a - lop_at).cos());
+            let from = Vec3::new(0.0, 0.5 + high + 0.32 * h(1), 0.0) + out * 0.04;
+            let bend = out * (reach * 0.55) + Vec3::Y * (from.y + 0.08);
+            let t = 0.35;
+            let at =
+                from * (1.0 - t) * (1.0 - t) + bend * 2.0 * t * (1.0 - t) + out * reach * t * t;
+            for j in 0..3 {
+                let side = Vec3::new(-out.z, 0.0, out.x) * (0.012 * (j as f32 - 1.0));
+                let top = at.y - 0.01;
+                let tip = top - (0.10 + 0.14 * jitter(k as u32 * 3 + j, 970 + stand));
+                m.append(
+                    rod(
+                        (at + side).with_y(top).to_array(),
+                        (at + side * 1.6).with_y(tip).to_array(),
+                        0.006,
+                        0.002,
+                        algae,
+                    )
+                    .with_aux(hanging(top, tip)),
+                );
+            }
         }
     }
     m
@@ -5954,10 +6341,33 @@ mod tests {
     }
 
     #[test]
+    fn baked_models_have_sane_normals() {
+        for (model, levels) in baked::models() {
+            assert!(!levels.is_empty(), "{model:?} has no levels");
+            assert_eq!(levels[0].error, 0.0, "{model:?}'s full detail is itself");
+            for level in levels {
+                let vertices: Vec<Packed> = bytemuck::pod_collect_to_vec(level.vertices);
+                let indices: Vec<u32> = bytemuck::pod_collect_to_vec(level.indices);
+                assert!(!indices.is_empty() && indices.len().is_multiple_of(3), "{model:?}");
+                for &i in &indices {
+                    let n = vertices[i as usize].normal;
+                    let (x, y, z) = (n[0] as f32, n[1] as f32, n[2] as f32);
+                    assert!(x * x + y * y + z * z > 0.0, "{model:?} has a broken normal");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_model_builds_with_sane_normals() {
         let library = Library::build();
         assert_eq!(library.lods.len(), Model::ALL.len());
         for (model, lods) in Model::ALL.iter().zip(&library.lods) {
+            // The museum's are left empty, and come in baked (checked by
+            // `baked_models_have_sane_normals`).
+            if model.is_streamed() {
+                continue;
+            }
             println!(
                 "{model:?}: {}",
                 lods.iter()

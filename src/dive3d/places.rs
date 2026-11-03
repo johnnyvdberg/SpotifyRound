@@ -66,7 +66,8 @@ pub fn biome_name(id: usize) -> &'static str {
         13 => "city",
         14 => "meadow",
         15 => "sponges",
-        _ => "hole",
+        16 => "hole",
+        _ => "museum",
     }
 }
 
@@ -190,6 +191,38 @@ pub fn all() -> Vec<Place> {
         ("out", 0.80),
     ] {
         places.push(Place::new(format!("{hole}-hole-{name}"), hole + at, seed));
+    }
+    // Through the museum (`world::museum`): before its front, in at the
+    // doors, round the loop in the natural history hall, through the
+    // mineral hall and the picture gallery, in whatever order the visit
+    // has them, and out at the back.
+    let museum = leg_of(super::world::MUSEUM, seed) as f64;
+    for k in 0..17 {
+        let at = 0.0 + 0.05 * k as f64;
+        places.push(Place::new(
+            format!("{}-museum-{:02}", museum as usize, k),
+            museum + at,
+            seed,
+        ));
+    }
+    // Close looks at things that have gone wrong before: the reef's heads
+    // on the bommies' slopes (they once floated off the edges) and the
+    // mangroves' roots meeting the silt.
+    let coral = leg_of(super::world::CORAL, seed) as f64;
+    let meadow = leg_of(super::world::MEADOW, seed) as f64;
+    for (name, at) in [
+        (format!("{}-coral-slope-1", coral as usize), coral + 0.30),
+        (format!("{}-coral-slope-2", coral as usize), coral + 0.62),
+        (
+            format!("{}-meadow-mangroves-1", meadow as usize),
+            meadow + 0.30,
+        ),
+        (
+            format!("{}-meadow-mangroves-2", meadow as usize),
+            meadow + 0.60,
+        ),
+    ] {
+        places.push(Place::new(name, at, seed));
     }
     // Another submarine met on the way: the encounters run on the visit's
     // clock (`submarines` in `world.rs`), so these are moments of visits 0

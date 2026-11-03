@@ -48,7 +48,7 @@ struct Globals {
     ice: vec4<f32>,
     lights: array<vec4<f32>, 8>,
     light_colours: array<vec4<f32>, 8>,
-    // This visit's seventeen-leg biome circuit, four legs a vector.
+    // This visit's eighteen-leg biome circuit, four legs a vector.
     order: array<vec4<f32>, 5>,
     // The biome mix at the window and how much of this sea has a sky over
     // it: xy is the pair, z the blend, w the sky's strength there.
@@ -67,6 +67,9 @@ struct Globals {
 // The baked per-biome skyboxes: a cubemap array, one cube per biome, in id
 // order. One fetch replaces the old per-pixel sky arithmetic.
 @group(0) @binding(13) var sky_cubes: texture_cube_array<f32>;
+// The museum's paintings, one layer each (`dive3d::paintings`), streamed in
+// as the museum comes near; a single grey layer the rest of the voyage.
+@group(0) @binding(14) var paintings: texture_2d_array<f32>;
 // Textures store 0..1.6 as 0..1, so they can brighten as well as darken.
 const TEXTURE_RANGE: f32 = 1.6;
 // log2 of the surfaces' size, `textures::SIZE`.
@@ -157,7 +160,7 @@ const LEG: f32 = 16.5;
 // ahead and off to port of the voyage's way.
 const CURRENT: vec2<f32> = vec2<f32>(0.8, -0.6);
 const BLEND: f32 = 0.10;
-const BIOMES: i32 = 17;
+const BIOMES: i32 = 18;
 const SHALLOWS: i32 = 0;
 const FOREST: i32 = 1;
 const WRECKS: i32 = 2;
@@ -175,6 +178,7 @@ const CITY: i32 = 13;
 const MEADOW: i32 = 14;
 const SPONGE_REEF: i32 = 15;
 const BLUE_HOLE: i32 = 16;
+const MUSEUM: i32 = 17;
 
 // One component of a four-leg vector. A dynamic index into a uniform vector
 // is not worth the risk on every shader the Pi compiles, so this is unrolled.
@@ -298,7 +302,7 @@ fn presence(l: Leg, id: i32) -> f32 {
     return select(0.0, 1.0 - l.w, l.a == id) + select(0.0, l.w, l.b == id);
 }
 
-fn by_biome(l: Leg, values: array<f32, 17>) -> f32 {
+fn by_biome(l: Leg, values: array<f32, 18>) -> f32 {
     var v = values;
     return mix(v[l.a], v[l.b], l.w);
 }
@@ -811,7 +815,7 @@ fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> 
 }
 
 fn floor_albedo(l: Leg) -> vec3<f32> {
-    var albedos = array<vec3<f32>, 17>(
+    var albedos = array<vec3<f32>, 18>(
         vec3<f32>(0.62, 0.56, 0.42),
         vec3<f32>(0.40, 0.36, 0.26),
         vec3<f32>(0.32, 0.30, 0.26),
@@ -829,6 +833,7 @@ fn floor_albedo(l: Leg) -> vec3<f32> {
         vec3<f32>(0.55, 0.52, 0.38),
         vec3<f32>(0.30, 0.31, 0.31),
         vec3<f32>(0.72, 0.68, 0.56),
+        vec3<f32>(0.45, 0.42, 0.36),
     );
     return mix(albedos[l.a], albedos[l.b], l.w);
 }
@@ -837,8 +842,9 @@ fn surface_of(l: Leg) -> vec2<i32> {
     // Sand, sand, silt, sand, basalt, silt, sand, silt, then reef, silt,
     // basalt, salt (ice's crystalline layer), ooze (silt) and the drowned
     // city's silted paving, then the meadow's sand, the glass sponges' silt
-    // and the blue hole's sand: by biome.
-    var layers = array<i32, 17>(12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13, 12, 13, 12);
+    // and the blue hole's sand, and the silt over the museum's forecourt:
+    // by biome.
+    var layers = array<i32, 18>(12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13, 12, 13, 12, 13);
     return vec2<i32>(layers[l.a], layers[l.b]);
 }
 
@@ -2109,6 +2115,21 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // The sea texture is opaquely composited by Slint; the fade lives in the
     // colour, never in the alpha.
     return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FADE_OPAQUE));
+}
+
+// A painting's canvas (`world::material::CANVAS`): layer `surface.x` of the
+// paintings, laid over the unit quad (`mesh::exhibits::canvas`) by its own
+// coordinates, lit as the model's colour is, with a little of its own glow
+// so it reads in the dim hall, and hazed. Entry point of the canvas
+// pipelines only, in either profile. The level of detail is the GPU's own,
+// from how the canvas falls on the screen: a level guessed from distance
+// alone blurs a large painting seen close and square on.
+@fragment
+fn fs_canvas(in: Lit) -> @location(0) vec4<f32> {
+    let uv = vec2<f32>(in.local.x + 0.5, 0.5 - in.local.y);
+    let paint = textureSample(paintings, surface_sampler, uv, i32(in.surface.x + 0.5)).rgb;
+    let colour = paint * (in.albedo + vec3<f32>(in.glow));
+    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 1.0);
 }
 
 // The tunnel's own fragment shader: `vault_hd` with everything that varies

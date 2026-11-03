@@ -17,9 +17,29 @@ mod helm;
 mod mesh;
 #[cfg(test)]
 mod places;
+mod stream;
 mod terrain;
 mod textures;
 mod world;
+
+/// The museum's paintings, built from `assets/museum` by `build.rs`: their
+/// canvases' sizes and an ETC2 texture array of them, one layer each.
+pub mod paintings {
+    /// A painting as the museum hangs it: which hall, its canvas in
+    /// centimetres, and for its label, what it is and who painted it.
+    #[allow(dead_code)]
+    pub struct Painting {
+        pub masters: bool,
+        pub height: f32,
+        pub width: f32,
+        /// The source image's size, before it is fitted to a layer.
+        pub pixels: [u32; 2],
+        pub title: &'static str,
+        pub painter: &'static str,
+    }
+
+    include!(concat!(env!("OUT_DIR"), "/museum.rs"));
+}
 
 use anyhow::Result;
 use slint::wgpu_30::wgpu;
@@ -188,6 +208,7 @@ fn sky_cube_texels() -> Vec<u8> {
         [0.08, 0.36, 0.62],
         [0.006, 0.014, 0.022],
         [0.06, 0.40, 0.70],
+        [0.06, 0.30, 0.56],
     ];
     const HORIZON: [[f32; 3]; crate::voyage::BIOMES] = [
         [0.46, 0.80, 0.92],
@@ -207,10 +228,11 @@ fn sky_cube_texels() -> Vec<u8> {
         [0.48, 0.82, 0.88],
         [0.020, 0.040, 0.060],
         [0.52, 0.86, 0.95],
+        [0.40, 0.74, 0.88],
     ];
     const CLOUDINESS: [f32; crate::voyage::BIOMES] = [
         0.65, 0.35, 0.80, 0.20, 0.0, 0.0, 0.35, 0.10, 0.55, 0.72, 0.0, 0.60, 0.0, 0.0, 0.45, 0.0,
-        0.30,
+        0.30, 0.40,
     ];
     const CLOUD_TINT: [[f32; 3]; crate::voyage::BIOMES] = [
         [0.98, 0.98, 0.96],
@@ -230,6 +252,7 @@ fn sky_cube_texels() -> Vec<u8> {
         [0.98, 0.98, 0.95],
         [0.0; 3],
         [1.0, 0.98, 0.94],
+        [0.96, 0.97, 0.96],
     ];
     const SUN_TINT: [[f32; 3]; crate::voyage::BIOMES] = [
         [1.0, 0.96, 0.82],
@@ -249,6 +272,7 @@ fn sky_cube_texels() -> Vec<u8> {
         [1.0, 0.95, 0.80],
         [0.0; 3],
         [1.0, 0.95, 0.82],
+        [1.0, 0.95, 0.84],
     ];
     let sun = {
         let d = world::SUN;
@@ -436,6 +460,11 @@ pub(crate) struct Nautilus {
     impostors: Vec<wgpu::RenderPipeline>,
     globals: wgpu::Buffer,
     group: wgpu::BindGroup,
+    /// What the bind group is made of, to make it again when the museum's
+    /// paintings come in or go ([`stream`]).
+    bindings: Bindings,
+    /// The museum's models and paintings, while it is near.
+    stream: stream::Stream,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     /// Per model, its levels of detail, the full one first.
@@ -501,13 +530,47 @@ pub(crate) struct Nautilus {
     skip_elements: u64,
 }
 
+/// The resources of the scene's bind group, kept so it can be made again
+/// with the museum's paintings in it or without.
+struct Bindings {
+    layout: wgpu::BindGroupLayout,
+    globals: wgpu::Buffer,
+    surfaces: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+    caustic: wgpu::TextureView,
+    caustic_sampler: wgpu::Sampler,
+    ice_bake: wgpu::TextureView,
+    sky: wgpu::TextureView,
+}
+
+impl Bindings {
+    fn group(&self, device: &wgpu::Device, paintings: &wgpu::TextureView) -> wgpu::BindGroup {
+        let view = wgpu::BindingResource::TextureView;
+        let entry = |binding, resource| wgpu::BindGroupEntry { binding, resource };
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Dive3d globals"),
+            layout: &self.layout,
+            entries: &[
+                entry(0, self.globals.as_entire_binding()),
+                entry(2, view(&self.surfaces)),
+                entry(3, wgpu::BindingResource::Sampler(&self.sampler)),
+                entry(4, view(&self.caustic)),
+                entry(5, wgpu::BindingResource::Sampler(&self.caustic_sampler)),
+                entry(12, view(&self.ice_bake)),
+                entry(13, view(&self.sky)),
+                entry(14, view(paintings)),
+            ],
+        })
+    }
+}
+
 /// The materials models get a pipeline of their own for, as `MATERIAL` in
 /// `scene.wesl`: plain first, then every solid one of [`world::material`] (the
 /// glass ones go through [`GLASS`]). There is no pipeline that reads the
 /// material per instance: an unlisted material is a bug, which
 /// `every_instance_has_a_pipeline` catches. Each has a second pipeline for
 /// models that stand on the seabed (`GROUNDED`).
-const MATERIALS: [i32; 8] = [
+const MATERIALS: [i32; 9] = [
     0,
     world::material::LAVA as i32,
     world::material::COPPER as i32,
@@ -516,6 +579,7 @@ const MATERIALS: [i32; 8] = [
     world::material::GOLD as i32,
     world::material::CITY as i32,
     world::material::KEEL as i32,
+    world::material::CANVAS as i32,
 ];
 
 /// Whether an instance is the polar ice sheet, whose coverage is worked out
@@ -928,6 +992,9 @@ mod effect {
     /// The drowned fort (M3): `FortWall`, `FortTower`, `FortGate`,
     /// `FortEnd` and its `Cannon`.
     pub const FORT: u64 = 1 << 52;
+    /// The museum's own (`world::museum`): its streamed specimens, the
+    /// whale's skeleton, the canvases, the arches and the minerals.
+    pub const MUSEUM: u64 = 1 << 53;
 
     pub const MODEL_BITS: u64 = ((1 << 31) - 1)
         | CORALS
@@ -947,7 +1014,8 @@ mod effect {
         | MANGROVES
         | GLASS_SPONGES
         | HOLE_WALL
-        | FORT;
+        | FORT
+        | MUSEUM;
     pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
     pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
 
@@ -1114,6 +1182,12 @@ mod effect {
             "the glass-sponge reef",
         ),
         ("hole wall", HOLE_WALL, "HoleWall", "the blue hole's shaft"),
+        (
+            "museum",
+            MUSEUM,
+            "Mammoth, GroundSloth, Triceratops, Megalodon, Archaeopteryx, WalrusWhale, PilotWhale, Tortoise, Porcupinefish, Murex, Diplocaulus, StegosaurusSpike, Dinictis, Trilobite, DeerSkull, KingCrab, Allosaurus, Seadragon, WhaleSkeleton, Canvas, MuseumArch, Pyrite, Bismuth, Malachite, Geode, Tourmaline",
+            "the museum's specimens, paintings, arches and minerals",
+        ),
         ("planes", PLANES, "Plane", "sea surface, ice sheet"),
         ("ice keels", ICE_KEELS, "Keel", "arctic ice keels"),
         (
@@ -1199,7 +1273,7 @@ fn model_bit(model: usize) -> u64 {
         | Model::SeaWhip => effect::CORALS,
         Model::Sargassum => effect::SARGASSUM,
         Model::Tree => effect::TREES,
-        Model::Vent => effect::VENTS,
+        Model::Vent | Model::Volcano => effect::VENTS,
         Model::Plane => effect::PLANES,
         Model::Keel => effect::ICE_KEELS,
         Model::Submarine | Model::Screw => effect::SUBMARINE,
@@ -1231,6 +1305,7 @@ fn model_bit(model: usize) -> u64 {
         Model::Mangrove | Model::Mangrove1 | Model::Mangrove2 => effect::MANGROVES,
         Model::GlassSponge => effect::GLASS_SPONGES,
         Model::HoleWall => effect::HOLE_WALL,
+        _ => effect::MUSEUM,
     }
 }
 
@@ -1517,10 +1592,13 @@ fn compile(
                     for &anim in &ANIMS {
                         // The city has its own set; the ice and its keels
                         // hang from the pack and never stand on the seabed.
+                        // A painting hangs on a wall, still.
+                        let canvas = material == world::material::CANVAS as i32;
                         if material == world::material::CITY as i32
                             || ((material == world::material::ICE as i32
                                 || material == world::material::KEEL as i32)
                                 && grounded > 0.5)
+                            || (canvas && (grounded > 0.5 || anim != 0))
                         {
                             pipelines.push(None);
                             continue;
@@ -1531,6 +1609,8 @@ fn compile(
                             // The tunnel has a fragment shader of its own.
                             if material == world::material::VAULT as i32 && fading == 0.0 {
                                 "fs_vault"
+                            } else if canvas {
+                                "fs_canvas"
                             } else {
                                 "fs_model"
                             },
@@ -1952,6 +2032,16 @@ impl Nautilus {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         // The surfaces, painted once.
@@ -2046,43 +2136,18 @@ impl Nautilus {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let group_with = |sampler: &wgpu::Sampler| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Dive3d globals"),
-                layout: &layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: globals.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&surfaces_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&caustic_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&caustic_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 12,
-                        resource: wgpu::BindingResource::TextureView(&ice_bake_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 13,
-                        resource: wgpu::BindingResource::TextureView(&sky_view),
-                    },
-                ],
-            })
+        let bindings = Bindings {
+            layout: layout.clone(),
+            globals: globals.clone(),
+            surfaces: surfaces_view,
+            sampler,
+            caustic: caustic_view,
+            caustic_sampler,
+            ice_bake: ice_bake_view,
+            sky: sky_view,
         };
-        let group = group_with(&sampler);
+        let stream = stream::Stream::new(gpu);
+        let group = bindings.group(device, &stream.view);
 
         let render = render_size();
         let target = |label, format, samples, usage| {
@@ -2216,6 +2281,8 @@ impl Nautilus {
             impostors,
             globals,
             group,
+            bindings,
+            stream,
             vertices,
             indices,
             lods: library.lods,
@@ -2329,6 +2396,20 @@ impl Nautilus {
         #[cfg(test)]
         world::SKIPPED.store(self.skip, std::sync::atomic::Ordering::Relaxed);
         world::build(&world, &mut self.frame, &mut self.static_cache);
+        // The museum's models and paintings, a piece a frame as it nears,
+        // let go once it is behind.
+        let wanted = world::museum_ahead(&self.seabed, pose.pos[0]);
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut regroup = self.stream.step(gpu, &mut self.lods, wanted);
+        // A screenshot jumps straight to its moment: there it all comes in
+        // at once (`stream_comes_and_goes` steps it a piece at a time).
+        #[cfg(test)]
+        while wanted && !self.stream.complete() {
+            regroup |= self.stream.step(gpu, &mut self.lods, wanted);
+        }
+        if regroup {
+            self.group = self.bindings.group(&gpu.device, &self.stream.view);
+        }
         // Bake the ice sheet's noise for the region around the camera, and
         // re-bake only when the camera has moved far enough that the margin
         // is gone (16 of the 64 units).
@@ -2533,7 +2614,7 @@ impl Nautilus {
             order.extend(
                 list.iter()
                     .enumerate()
-                    .filter(|_| !hides_model(hides, model))
+                    .filter(|_| !hides_model(hides, model) && lods[model][0].count > 0)
                     .filter(|(_, i)| shown(i))
                     // The ice's coverage is per pixel; every other fading
                     // instance at zero coverage would discard every fragment,
@@ -2554,7 +2635,7 @@ impl Nautilus {
             order.extend(
                 list.iter()
                     .enumerate()
-                    .filter(|_| !hides_model(hides, model))
+                    .filter(|_| !hides_model(hides, model) && lods[model][0].count > 0)
                     .filter(|(_, i)| shown(i))
                     .map(|(index, i)| Staged {
                         kind: Kind::Glass,
@@ -2905,6 +2986,8 @@ impl Nautilus {
                     pass.set_vertex_buffer(0, this.vertices.slice(..));
                     pass.set_index_buffer(this.indices.slice(..), wgpu::IndexFormat::Uint32);
                     let mut bound = None;
+                    // Whether the museum's own buffers are bound (`stream`).
+                    let mut streamed = false;
                     let drawn: Vec<&Draw> =
                         this.draws.iter().filter(|d| d.kind == wanted).collect();
                     let mut next = 0;
@@ -2967,6 +3050,15 @@ impl Nautilus {
                                 Kind::Glass => &this.glass[d.slot],
                             });
                             bound = Some(d.slot);
+                        }
+                        if this.stream.resident[d.model] != streamed {
+                            streamed = !streamed;
+                            let (vertices, indices) = match &this.stream.buffers {
+                                Some((v, i)) if streamed => (v, i),
+                                _ => (&this.vertices, &this.indices),
+                            };
+                            pass.set_vertex_buffer(0, vertices.slice(..));
+                            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
                         }
                         let l = this.lods[d.model][d.lod];
                         let count = if this.skips(part::DRAW_CALLS) {
@@ -3478,9 +3570,11 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     let haze = world::SIGHT_K / blend(world::SIGHT);
     // How much this sea has a sky the water can open on to: the shallow seas
     // can through Snell's window, the polar ice through its leads; the cave,
-    // the deep, the bloom, the drowned city and the glass sponges cannot.
+    // the deep, the bloom, the drowned city and the glass sponges cannot;
+    // the museum's roofs leave it a little, over its forecourt.
     let sky = blend([
         1.0, 0.75, 0.60, 0.18, 0.0, 0.0, 0.65, 0.45, 1.0, 1.0, 0.0, 0.85, 0.0, 0.0, 1.0, 0.0, 0.9,
+        0.3,
     ]);
 
     // The lights that matter most: nearest what the window looks at, a
@@ -3569,6 +3663,81 @@ mod tests {
     /// are not compiled (start-up time), so this is what keeps a new material
     /// or animation from being drawn with the wrong shader. `DIVE3D_SLOTS=1`
     /// prints which pipelines the voyage used.
+    /// The museum's models, baked into `mesh::baked::FILE`, are what they
+    /// build to now. `DIVE3D_BAKE=1` bakes them again first.
+    #[test]
+    fn museum_models_are_baked() {
+        let baked = mesh::baked::bake();
+        if std::env::var_os("DIVE3D_BAKE").is_some() {
+            std::fs::write(mesh::baked::FILE, &baked).expect("writing the baked models");
+        }
+        let file = std::fs::read(mesh::baked::FILE).expect("the baked models");
+        assert!(
+            file == baked,
+            "the museum's models have changed since they were baked: \
+             DIVE3D_BAKE=1 cargo test --release museum_models_are_baked"
+        );
+    }
+
+    /// The museum's models and paintings come in a piece a frame, each scan
+    /// with its coarser levels, and go again once it is behind: the library
+    /// is left as it was and the bind group shows the stand-in again.
+    #[test]
+    fn stream_comes_and_goes() {
+        if std::fs::metadata(mesh::baked::FILE).is_ok_and(|m| m.len() == 0) {
+            return;
+        }
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
+        let before = scene.lods.clone();
+        let mut frames = 0;
+        let mut slowest = std::time::Duration::ZERO;
+        let mut regrouped = 0;
+        while !scene.stream.complete() {
+            let started = std::time::Instant::now();
+            regrouped += usize::from(scene.stream.step(&gpu, &mut scene.lods, true));
+            slowest = slowest.max(started.elapsed());
+            if std::env::var_os("DIVE3D_STREAM_STEPS").is_some() {
+                eprintln!("stream step {frames}: {} us", started.elapsed().as_micros());
+            }
+            frames += 1;
+            assert!(frames < 1000, "the museum never finishes coming in");
+        }
+        // Every model, the paintings' texture, every painting, and the view
+        // swapped in.
+        let pieces = mesh::Model::streamed().count() + 1 + paintings::PAINTINGS.len() + 1;
+        assert_eq!(frames, pieces);
+        assert_eq!(regrouped, 1);
+        eprintln!("the museum came in over {frames} frames, the slowest {slowest:?}");
+        for model in mesh::Model::streamed() {
+            let lods = &scene.lods[model.index()];
+            assert!(scene.stream.resident[model.index()]);
+            assert!(
+                lods.iter().all(|l| l.count > 0),
+                "{model:?} has an empty level"
+            );
+            if model.is_scan() {
+                assert_eq!(lods.len(), mesh::LODS);
+                // Each level coarser and further from the full scan.
+                for pair in lods.windows(2) {
+                    assert!(pair[1].count < pair[0].count, "{model:?}");
+                    assert!(pair[1].error > pair[0].error, "{model:?}");
+                }
+            } else {
+                assert_eq!(lods.len(), 1);
+            }
+        }
+        assert!(scene.stream.step(&gpu, &mut scene.lods, false));
+        assert!(!scene.stream.holding());
+        for (now, was) in scene.lods.iter().zip(&before) {
+            assert_eq!(now.len(), was.len());
+            for (a, b) in now.iter().zip(was) {
+                assert_eq!((a.first, a.count, a.base), (b.first, b.count, b.base));
+            }
+        }
+        assert!(scene.stream.resident.iter().all(|r| !r));
+    }
+
     #[test]
     fn every_instance_has_a_pipeline() {
         use std::collections::BTreeSet;

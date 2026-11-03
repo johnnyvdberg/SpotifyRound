@@ -19,6 +19,10 @@ use super::mesh::{self, Model};
 use super::textures::Surface;
 use crate::voyage::{BIOMES, Biome};
 
+mod museum;
+use museum::{museum, museum_lights};
+pub use museum::{museum_ahead, museum_reach, tour};
+
 pub const SHALLOWS: usize = 0;
 pub const FOREST: usize = 1;
 pub const WRECKS: usize = 2;
@@ -44,6 +48,7 @@ pub const CITY: usize = 13;
 pub const MEADOW: usize = 14;
 pub const SPONGE_REEF: usize = 15;
 pub const BLUE_HOLE: usize = 16;
+pub const MUSEUM: usize = 17;
 
 /// Height of the cave's vault above its floor, and the ice's thickness.
 pub const CAVE_ROOF: f32 = 1.6;
@@ -69,7 +74,7 @@ pub const SIGHT: [f32; BIOMES] = [
     // trench, coral, sargasso, vents, brine, bloom, city
     13.0, 12.0, 10.0, 6.0, 6.5, 5.5, 11.0, //
     // meadow, glass sponges, blue hole
-    11.0, 8.5, 16.0,
+    11.0, 8.5, 16.0, 12.0,
 ];
 /// How sharply the haze thickens: the fog is `1 - exp(-SIGHT_K d / sight)`,
 /// scaled to reach exactly one at `sight` (`fog_of` in `scene.wesl`).
@@ -156,6 +161,7 @@ pub const FLOOR_ALBEDO: [[f32; 3]; BIOMES] = [
     [0.30, 0.31, 0.31],
     // The blue hole's bank: white carbonate sand.
     [0.72, 0.68, 0.56],
+    [0.45, 0.42, 0.36],
 ];
 
 /// The living reef's colours, as a reef flat seen from above is a mosaic of
@@ -289,6 +295,9 @@ pub mod material {
     /// (`fs_model`'s case 12), in a pipeline of its own so the sheet's
     /// shader carries none of it.
     pub const KEEL: f32 = 12.0;
+    /// A painting's canvas: `fs_canvas` draws layer `surface.x` of the
+    /// museum's paintings over it.
+    pub const CANVAS: f32 = 13.0;
 }
 
 // Sprite kinds.
@@ -987,14 +996,14 @@ fn corridor_point(p: [f32; 3], floor: f32) -> [f32; 3] {
 /// units; here they are compressed, so the drop into the abyss is a steep
 /// shelf rather than a gulf. The gauge undoes this (`helm::depth_reading`).
 pub const SEABED: [f32; BIOMES] = [
-    1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2, 2.2, 3.4, 8.2, 6.3, 10.2, 7.2, 1.9, 8.6, 2.8,
+    1.7, 3.6, 4.9, 5.8, 6.6, 9.3, 3.5, 4.2, 2.2, 3.4, 8.2, 6.3, 10.2, 7.2, 1.9, 8.6, 2.8, 4.0,
 ];
 /// How strongly the heightmap's relief shows in each biome: rugged in the
 /// abyss, nearly flat under the paved city of Atlantis, the salt of the
 /// brine flats and the drowned city's streets.
 pub const RELIEF: [f32; BIOMES] = [
     0.25, 0.35, 0.35, 0.12, 0.20, 1.20, 0.40, 0.30, 0.45, 0.30, 0.90, 0.06, 0.35, 0.08, 0.15, 0.30,
-    0.08,
+    0.08, 0.05,
 ];
 
 /// The seabed of one visit: its heightmap and the biome sequence's seed.
@@ -1069,13 +1078,14 @@ impl Seabed {
             &b,
             [
                 0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05, 0.06, 0.05, 0.08, 0.02, 0.04, 0.02,
-                0.03, 0.04, 0.04,
+                0.03, 0.04, 0.04, 0.02,
             ],
         );
         let ridges = Self::by_biome(
             &b,
             [
-                1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0, 1.2, 1.4, 2.2, 1.6,
+                1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0, 1.2, 1.4, 2.2,
+                1.6, 1.0,
             ],
         );
         let n = 0.65 * vnoise(x * 1.3, z * 1.3, 1) + 0.35 * vnoise(x * 3.1 + 5.0, z * 3.1, 2);
@@ -1095,7 +1105,7 @@ impl Seabed {
                 &b,
                 [
                     1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.15, 1.0, 0.3, 1.0,
-                    1.0, 0.6,
+                    1.0, 0.6, 0.5,
                 ],
             );
         // The lava cave's massif, rising either side of its tunnel.
@@ -1358,6 +1368,10 @@ impl Seabed {
                 let k = smooth(0.0, 0.5, inside) * smooth(0.3, 0.6, b.weight(CITY) as f32);
                 ceiling += (roof.min(ceiling) - ceiling) * k;
             }
+        }
+        // Under the museum's door heads.
+        if let Some((roof, k)) = museum::roof(&self.order, self.seed, x) {
+            ceiling += (roof.min(ceiling) - ceiling) * k;
         }
         ceiling
     }
@@ -1674,7 +1688,7 @@ impl Frame {
         Instance {
             rows,
             colour: [colour[0], colour[1], colour[2], 0.0],
-            extra: [0.0, 0.0, self.fade, 0.0],
+            extra: [0.0, 0.0, self.fade * edge(), 0.0],
             surface,
             ..Default::default()
         }
@@ -1773,9 +1787,12 @@ impl Frame {
     fn style(&mut self, skin: Option<[f32; 4]>) {
         self.fade = 1.0;
         self.skin = skin;
+        EDGE.with(|e| e.set(1.0));
     }
 
     fn sprite(&mut self, p: [f32; 3], size: f32, colour: [f32; 3], kind: f32) {
+        // Faded with the edge of the reach of what is being placed.
+        let colour = colour.map(|c| c * edge());
         self.sprites.push(Sprite {
             place: [p[0], p[1], p[2], size],
             tint: [colour[0], colour[1], colour[2], kind],
@@ -1805,6 +1822,8 @@ impl Frame {
     /// Sediment spilling from a lip: the shader owns the fall and the fade,
     /// so the anchor is the lip and the placer stays cacheable.
     fn mote_sprite(&mut self, p: [f32; 3], size: f32, colour: [f32; 3], n: f32, h: f32, fall: f32) {
+        // Faded with the edge of the reach of what is being placed.
+        let colour = colour.map(|c| c * edge());
         self.sprites.push(Sprite {
             place: [p[0], p[1], p[2], size],
             tint: [colour[0], colour[1], colour[2], MOTE],
@@ -1824,6 +1843,8 @@ impl Frame {
         rate: f32,
         mode: f32,
     ) {
+        // Faded with the edge of the reach of what is being placed.
+        let colour = colour.map(|c| c * edge());
         self.sprites.push(Sprite {
             place: [p[0], p[1], p[2], size],
             tint: [colour[0], colour[1], colour[2], GLOW],
@@ -1842,6 +1863,8 @@ impl Frame {
         rate: f32,
         rise: f32,
     ) {
+        // Faded with the edge of the reach of what is being placed.
+        let colour = colour.map(|c| c * edge());
         self.sprites.push(Sprite {
             place: [p[0], p[1], p[2], size],
             tint: [colour[0], colour[1], colour[2], EMBER],
@@ -1861,6 +1884,8 @@ impl Frame {
         life: f32,
         wave: f32,
     ) {
+        // Faded with the edge of the reach of what is being placed.
+        let colour = colour.map(|c| c * edge());
         self.sprites.push(Sprite {
             place: [p[0], p[1], p[2], size],
             tint: [colour[0], colour[1], colour[2], BUBBLE],
@@ -1877,6 +1902,8 @@ impl Frame {
     }
 
     fn light(&mut self, pos: [f32; 3], range: f32, colour: [f32; 3]) {
+        // Faded with the edge of the reach of what is being placed.
+        let colour = colour.map(|c| c * edge());
         self.lights.push(Light {
             pos,
             range,
@@ -1888,6 +1915,8 @@ impl Frame {
     /// A light whose brightness flickers: the shader does the flicker from the
     /// camera clock and this phase, so a cached placement keeps breathing.
     fn light_flicker(&mut self, pos: [f32; 3], range: f32, colour: [f32; 3], phase: f32) {
+        // Faded with the edge of the reach of what is being placed.
+        let colour = colour.map(|c| c * edge());
         self.lights.push(Light {
             pos,
             range,
@@ -1998,6 +2027,7 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::CoralTable => carried(Surface::Coral, 3.0),
         Model::Sargassum => carried(Surface::Kelp, 2.0),
         Model::Vent => fixed(Surface::Basalt, 2.5),
+        Model::Volcano => fixed(Surface::Basalt, 6.0),
         Model::Tree => carried(Surface::Kelp, 2.0),
         Model::Submarine => carried(Surface::Plates, 5.0),
         Model::Screw => carried(Surface::Copper, 1.0),
@@ -2166,6 +2196,76 @@ pub fn seat(w: &World, x: f32, z: f32, radius: f32, rule: &Bed) -> Option<Seat> 
     })
 }
 
+/// The ground under a footprint of radius `radius` about (x, z), eight
+/// points round its rim: the lowest of them, where an upright thing that does
+/// not lean with the slope (a coral head, a sponge) is rooted so its downhill
+/// side is in the ground rather than over it (the sand line hides the uphill
+/// side, buried instead), and how far the rim bends from the plane through
+/// the middle: nothing on an even slope, much on a crest or a lip.
+fn footprint_ground(w: &World, x: f32, z: f32, radius: f32) -> (f32, f32) {
+    const RIM: [[f32; 2]; 8] = [
+        [1.0, 0.0],
+        [0.707, 0.707],
+        [0.0, 1.0],
+        [-0.707, 0.707],
+        [-1.0, 0.0],
+        [-0.707, -0.707],
+        [0.0, -1.0],
+        [0.707, -0.707],
+    ];
+    let y = w.ground(x, z);
+    let rim = RIM.map(|d| w.ground(x + d[0] * radius, z + d[1] * radius));
+    let low = rim.iter().copied().fold(y, f32::min);
+    // Opposite points: their mean against the middle is the bend, which a
+    // plane, however steep, does not have.
+    let bend = (0..4)
+        .map(|k| ((rim[k] + rim[k + 4]) * 0.5 - y).abs())
+        .fold(0.0, f32::max);
+    (low, bend)
+}
+
+/// The lowest ground under a footprint of radius `radius` about (x, z).
+fn rooted(w: &World, x: f32, z: f32, radius: f32) -> f32 {
+    footprint_ground(w, x, z, radius).0
+}
+
+/// Settles a placed stone ([`mesh::rock`]: its flattened base the plane
+/// y = -0.75, about 0.66 across) so the rim of that base is in the ground all
+/// round, not only under its middle: on a crest or a mound's edge the ground
+/// falls away from the middle and would show the base hanging over it. The
+/// stone is let down by as much as that; `None` where it would have to sink
+/// by more than `deepest` of its height to touch, which is a lip it would
+/// stick out of rather than lie on.
+fn settle(w: &World, mut rows: [[f32; 4]; 3], height: f32, deepest: f32) -> Option<[[f32; 4]; 3]> {
+    let mut lift = f32::MIN;
+    for k in 0..8 {
+        let a = k as f32 * (TAU / 8.0);
+        let l = [0.62 * a.cos(), -0.75, 0.62 * a.sin()];
+        let p = rows.map(|r| r[0] * l[0] + r[1] * l[1] + r[2] * l[2] + r[3]);
+        lift = lift.max(p[1] - w.ground(p[0], p[2]));
+    }
+    // A sliver of the base under the sand even where it lies flat.
+    let drop = lift + 0.04 * height;
+    if drop > deepest * height {
+        return None;
+    }
+    if drop > 0.0 {
+        rows[1][3] -= drop;
+    }
+    Some(rows)
+}
+
+/// Where a thing `height` tall and `radius` round roots at (x, z), or
+/// `None` where it would stand on a lip with its rim out over the drop: the
+/// ground bends away under it by more than a quarter of its height. On an
+/// even slope it is let down toward the lowest ground under it, but by no
+/// more than a third of its height, so a coral on a bank keeps most of
+/// itself out of the bank rather than vanishing into it.
+fn root(w: &World, x: f32, z: f32, radius: f32, height: f32) -> Option<f32> {
+    let (low, bend) = footprint_ground(w, x, z, radius);
+    (bend <= height * 0.25).then(|| low.max(w.ground(x, z) - height * 0.33))
+}
+
 /// How far something has faded in, given its biome's share and the share it
 /// needs: things grow out of the seabed and melt away rather than pop.
 fn fade(share: f32, needs: f32) -> f32 {
@@ -2288,35 +2388,89 @@ fn cell_point(ix: i32, iz: i32, size: f32, salt: u32) -> (f32, f32) {
 type Cell = (i32, i32, f32, f32);
 
 thread_local! {
-    /// The visible-cell lists, one vector per caller in flight; the build calls
-    /// `cells` nineteen times a frame and the lists are short.
-    static CELLS: std::cell::RefCell<Vec<Vec<Cell>>> =
+    /// The visible-cell lists, one pair per caller in flight: the cells and
+    /// how far each has faded at the edge of its placer's reach. The build
+    /// calls `cells` some thirty times a frame and the lists are short.
+    static CELLS: std::cell::RefCell<Vec<(Vec<Cell>, Vec<f32>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// How far what is being placed now has faded at the edge of its
+    /// placer's reach: set by [`CellIter`] for each cell it hands out, and
+    /// applied by the frame to every model, sprite and light placed in it.
+    static EDGE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
 }
 
-/// A cell list borrowed from the pool. Dropping it returns the vector, so the
-/// next frame reuses the capacity instead of allocating nineteen times.
-struct Cells(Vec<Cell>);
+/// The fade at the edge of the reach for what is placed now ([`EDGE`]).
+fn edge() -> f32 {
+    EDGE.with(std::cell::Cell::get)
+}
+
+/// A cell list borrowed from the pool. Dropping it returns the vectors, so
+/// the next frame reuses the capacity instead of allocating each time.
+struct Cells {
+    list: Vec<Cell>,
+    /// For each cell, how far it has faded out toward the far end of its
+    /// placer's reach: a placer's cut-off is often nearer than the haze
+    /// hides things, and what is lit from within shows further still, so a
+    /// jellyfish or a stone appeared out of clear water in the middle of the
+    /// window as the boat came within reach of it.
+    edges: Vec<f32>,
+}
 
 impl std::ops::Deref for Cells {
     type Target = Vec<(i32, i32, f32, f32)>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.list
     }
 }
 
 impl Drop for Cells {
     fn drop(&mut self) {
-        let list = std::mem::take(&mut self.0);
-        CELLS.with(|pool| pool.borrow_mut().push(list));
+        let lists = (
+            std::mem::take(&mut self.list),
+            std::mem::take(&mut self.edges),
+        );
+        CELLS.with(|pool| pool.borrow_mut().push(lists));
+    }
+}
+
+/// Hands out a placer's cells, setting [`EDGE`] for each so everything the
+/// placer puts in that cell fades with it; a cell list walked inside
+/// another's cell fades by both, and the outer fade comes back when it ends.
+struct CellIter<'a> {
+    cells: &'a Cells,
+    at: usize,
+    outer: f32,
+}
+
+impl<'a> Iterator for CellIter<'a> {
+    type Item = &'a (i32, i32, f32, f32);
+    fn next(&mut self) -> Option<Self::Item> {
+        let Some(cell) = self.cells.list.get(self.at) else {
+            EDGE.with(|e| e.set(self.outer));
+            return None;
+        };
+        let fade = self.outer * self.cells.edges[self.at];
+        EDGE.with(|e| e.set(fade));
+        self.at += 1;
+        Some(cell)
+    }
+}
+
+impl Drop for CellIter<'_> {
+    fn drop(&mut self) {
+        EDGE.with(|e| e.set(self.outer));
     }
 }
 
 impl<'a> IntoIterator for &'a Cells {
     type Item = &'a (i32, i32, f32, f32);
-    type IntoIter = std::slice::Iter<'a, (i32, i32, f32, f32)>;
+    type IntoIter = CellIter<'a>;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        CellIter {
+            cells: self,
+            at: 0,
+            outer: edge(),
+        }
     }
 }
 
@@ -2355,14 +2509,20 @@ fn lit_cells(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
 }
 
 fn cells_within(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
+    // Things fade out over the last stretch of the reach rather than stop
+    // at its end: measured from the reach itself, not the margin the static
+    // cache adds, which only keeps them placed while the boat moves on.
+    let reach = far;
+    let band = (reach * 0.25).clamp(0.8, 3.0);
     let far = far + w.margin(far);
     let ([x0, x1, z0, z1], o, r) = footprint(w, near * 0.5, far);
     let c = w.pose.pos;
     let abeam = w.pose.abeam;
-    let mut out = CELLS
+    let (mut out, mut edges) = CELLS
         .with(|pool| pool.borrow_mut().pop())
         .unwrap_or_default();
     out.clear();
+    edges.clear();
     for iz in ((z0 - size) / size).floor() as i32..=((z1 + size) / size).ceil() as i32 {
         for ix in ((x0 - size) / size).floor() as i32..=((x1 + size) / size).ceil() as i32 {
             let (x, z) = cell_point(ix, iz, size, salt);
@@ -2375,9 +2535,10 @@ fn cells_within(w: &World, size: f32, near: f32, far: f32, salt: u32) -> Cells {
                 continue;
             }
             out.push((ix, iz, x, z));
+            edges.push(smooth(reach, reach - band, depth));
         }
     }
-    Cells(out)
+    Cells { list: out, edges }
 }
 
 /// The static decor's placements, rebuilt only when the camera crosses a
@@ -2471,7 +2632,6 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (atlantis, marble),
         (temple, marble),
         (cave, rock),
-        (polar, None),
         (kelp, None),
         (forest, algae),
         (drifters, None),
@@ -2480,14 +2640,18 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (meadow, None),
         (sponge_reef, None),
         (blue_hole, None),
+        (museum, None),
         (near_detail, None),
         (abyss_glow, None),
     ];
-    let steps: [(Placer, Option<[f32; 4]>); 15] = [
+    let steps: [(Placer, Option<[f32; 4]>); 18] = [
         (planes, None),
         (volcano, None),
         (city_beams, None),
         (tunnel, None),
+        (halls, None),
+        // The penguins and narwhals swim their processions by the clock.
+        (polar, None),
         (vents, basalt),
         (ice, None),
         (divers, copper),
@@ -2497,6 +2661,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (wildlife, None),
         (squid, skin),
         (submarines, None),
+        (museum_lights, None),
         (shafts, None),
         (particles, None),
     ];
@@ -2512,7 +2677,6 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "atlantis",
         "temple",
         "cave",
-        "polar",
         "kelp",
         "forest",
         "drifters",
@@ -2521,15 +2685,18 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "meadow",
         "sponge_reef",
         "blue_hole",
+        "museum",
         "near_detail",
         "abyss_glow",
     ];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 15] = [
+    const STEP_NAMES: [&str; 18] = [
         "planes",
         "volcano",
         "city_beams",
         "tunnel",
+        "halls",
+        "polar",
         "vents",
         "ice",
         "divers",
@@ -2539,6 +2706,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "wildlife",
         "squid",
         "submarines",
+        "museum_lights",
         "shafts",
         "particles",
     ];
@@ -2718,13 +2886,14 @@ fn planes(w: &World, f: &mut Frame) {
 /// buries what falls there; the reef, built of coral, almost none.
 const STONES: [f32; BIOMES] = [
     0.45, 0.40, 0.30, 0.40, 0.15, 0.55, 0.40, 0.50, 0.045, 0.15, 0.50, 0.22, 0.12, 0.30, 0.10,
-    0.20, 0.35,
+    0.20, 0.35, 0.0,
 ];
 /// Per biome, the share of its boulders that are bedrock outcropping rather
 /// than loose stones: none where the bottom is deep sediment or, in Atlantis,
 /// paving.
 const OUTCROPS: [f32; BIOMES] = [
-    0.30, 0.30, 0.10, 0.0, 0.50, 0.60, 0.20, 0.70, 0.20, 0.0, 0.60, 0.0, 0.0, 0.0, 0.10, 0.20, 0.60,
+    0.30, 0.30, 0.10, 0.0, 0.50, 0.60, 0.20, 0.70, 0.20, 0.0, 0.60, 0.0, 0.0, 0.0, 0.10, 0.20,
+    0.60, 0.0,
 ];
 
 fn rocks(w: &World, f: &mut Frame) {
@@ -2776,7 +2945,7 @@ fn rocks(w: &World, f: &mut Frame) {
             &b,
             [
                 0.32, 0.24, 0.22, 0.30, 0.12, 0.14, 0.26, 0.27, 0.34, 0.30, 0.16, 0.55, 0.23, 0.24,
-                0.30, 0.26, 0.50,
+                0.30, 0.26, 0.50, 0.30,
             ],
         );
         let model =
@@ -2792,7 +2961,10 @@ fn rocks(w: &World, f: &mut Frame) {
             tone * 1.02 + 0.20 * reef,
             tone * 0.98 + 0.12 * reef,
         ];
-        let i = f.put(model, place(p, yaw, pitch, roll, shape), colour);
+        let Some(rows) = settle(w, place(p, yaw, pitch, roll, shape), height, 0.3) else {
+            continue;
+        };
+        let i = f.put(model, rows, colour);
         i.grounded();
         if reef > 0.5 {
             i.textured(Surface::Coral, 4.0);
@@ -2823,8 +2995,8 @@ fn rocks(w: &World, f: &mut Frame) {
                 };
                 let yaw = hash(ix, iz, 26 + k) * TAU;
                 let (pitch, roll) = st.tilt(yaw);
-                f.put(
-                    [Model::Rock0, Model::Rock1, Model::Rock2][k as usize % 3],
+                let Some(rows) = settle(
+                    w,
                     place(
                         [sx, st.foot(&bed::STONE, s * 1.2) + s * 0.55, sz],
                         yaw,
@@ -2832,6 +3004,14 @@ fn rocks(w: &World, f: &mut Frame) {
                         roll,
                         [s * 1.2, s * 0.7, s],
                     ),
+                    s * 1.2,
+                    0.3,
+                ) else {
+                    continue;
+                };
+                f.put(
+                    [Model::Rock0, Model::Rock1, Model::Rock2][k as usize % 3],
+                    rows,
                     colour,
                 )
                 .grounded()
@@ -2861,8 +3041,15 @@ fn kelp_here(w: &World, ix: i32, iz: i32) -> Option<(f32, f32)> {
     }
     let height = 0.5 + (KELP_TALL - 0.5) * hash(ix, iz, 22);
     // It must not reach the ceiling a sister keeps under: a raised bank in the
-    // shallows would otherwise put a blade through her keel.
-    let room = (-0.55 - w.ground(x, z)).max(0.0);
+    // shallows would otherwise put a blade through her keel, and so would
+    // the ice's lower ceiling where the shallows meet the arctic. The ice is
+    // read a hull's length either way, for she may be over the plant from
+    // the colder side.
+    let ice = [-SUB_LENGTH, 0.0, SUB_LENGTH]
+        .map(|dx| w.share(x + dx, z, ARCTIC))
+        .into_iter()
+        .fold(0.0f32, f32::max);
+    let room = (-0.55 - 0.85 * ice - w.ground(x, z)).max(0.0);
     let height = height.min(room);
     if height < 0.2 {
         return None;
@@ -3262,7 +3449,6 @@ fn reef(w: &World, f: &mut Frame) {
             continue;
         }
         let mound = reef_mound(field);
-        let y = w.ground(x, z);
         let grown = fade(live, needs);
         let depth = (x - c[0]) * out[0] + (z - c[2]) * out[2];
         let species = reef_species(x, z, hash(ix, iz, 63));
@@ -3284,6 +3470,11 @@ fn reef(w: &World, f: &mut Frame) {
             FINGER => (Model::CoralFinger, Some(2.0), s, 0.54, 0.18),
             _ if hash(ix, iz, 66) < 0.5 => (Model::Anemone, None, s * 0.6, 0.49, 0.33),
             _ => (Model::SeaWhip, None, s * 0.9, 1.0, 0.3),
+        };
+        // Rooted at the lowest ground it spreads over: a table or a brain
+        // on a bank otherwise hangs its downhill rim over the sand.
+        let Some(y) = root(w, x, z, half * s * 0.8, tall * s * tall_by) else {
+            continue;
         };
         if depth < MODELS + w.margin(MODELS) {
             if !w.visible([x, y + 0.1, z], 0.25) {
@@ -3400,11 +3591,15 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
             for k in 0..heads {
                 let a = yaw + k as f32 * 2.4;
                 let off = (0.04 + 0.30 * hash(ix + k, iz, 82)) * grow;
-                let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
+                let s = (0.24 + 0.14 * hash(ix, iz + k, 83)) * grow;
+                let (px, pz) = (x + a.cos() * off, z + a.sin() * off);
+                let Some(py) = root(w, px, pz, s * 0.3, s * 0.45) else {
+                    continue;
+                };
+                let p = [px, py - 0.01, pz];
                 if !w.visible(p, 0.3) {
                     continue;
                 }
-                let s = (0.24 + 0.14 * hash(ix, iz + k, 83)) * grow;
                 f.put(
                     Model::Coral,
                     place(
@@ -3433,7 +3628,11 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
                 let s = (0.15 + 0.10 * hash(ix, iz + k, 121)) * grow * (1.0 - 0.22 * k as f32);
                 let a = yaw + k as f32 * 2.3;
                 let reach = 0.16 * grow * k as f32;
-                let p = [x + a.cos() * reach, y - 0.01, z + a.sin() * reach];
+                let (px, pz) = (x + a.cos() * reach, z + a.sin() * reach);
+                let Some(py) = root(w, px, pz, s * 0.9, s * 0.72) else {
+                    continue;
+                };
+                let p = [px, py - 0.01, pz];
                 if !w.visible(p, s * 1.2) {
                     continue;
                 }
@@ -3456,11 +3655,14 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
                 for k in 0..domes {
                     let a = yaw + k as f32 * 2.4;
                     let r = s * (1.0 - 0.4 * k as f32);
-                    let p = [
+                    let (px, pz) = (
                         x + a.cos() * s * 1.6 * k as f32,
-                        y - 0.02,
                         z + a.sin() * s * 1.6 * k as f32,
-                    ];
+                    );
+                    let Some(py) = root(w, px, pz, r * 0.85, r * 0.76) else {
+                        continue;
+                    };
+                    let p = [px, py - 0.02, pz];
                     f.put(
                         Model::CoralBrain,
                         place(
@@ -3477,8 +3679,9 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
                 }
                 if hash(ix, iz, 98) < 0.6 {
                     let a = yaw - 1.7;
-                    let p = [x + a.cos() * s * 1.3, y - 0.01, z + a.sin() * s * 1.3];
                     let r = 0.08 + 0.05 * hash(ix, iz, 99);
+                    let (px, pz) = (x + a.cos() * s * 1.3, z + a.sin() * s * 1.3);
+                    let p = [px, rooted(w, px, pz, r * 0.3) - 0.01, pz];
                     f.put(
                         Model::Anemone,
                         place(p, a, 0.0, 0.0, [r, r, r]),
@@ -3502,11 +3705,15 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
             for k in 0..clumps {
                 let a = yaw + k as f32 * 2.4;
                 let off = (0.04 + 0.18 * hash(ix + k, iz, 125)) * grow;
-                let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
+                let s = (base + 0.12 * hash(ix, iz + k, 126)) * grow;
+                let (px, pz) = (x + a.cos() * off, z + a.sin() * off);
+                let Some(py) = root(w, px, pz, s * 0.25, s * 0.4) else {
+                    continue;
+                };
+                let p = [px, py - 0.01, pz];
                 if !w.visible(p, 0.25) {
                     continue;
                 }
-                let s = (base + 0.12 * hash(ix, iz + k, 126)) * grow;
                 f.put(model, place(p, a, 0.0, 0.0, [s, s, s]), shade(k))
                     .moving(anim::SWAY, a, 0.015, 0.4)
                     .glowing(0.28)
@@ -3519,12 +3726,15 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
             // an anemone at their foot.
             let fans = 1 + (hash(ix, iz, 130) * 2.0) as i32;
             for k in 0..fans {
-                let p = [
+                let (px, pz) = (
                     x + (hash(ix + k, iz, 131) - 0.5) * 0.4,
-                    y - 0.01,
                     z + (hash(ix, iz + k, 132) - 0.5) * 0.2,
-                ];
+                );
                 let s = 0.10 + 0.09 * hash(ix + k, iz, 133);
+                let Some(py) = root(w, px, pz, s * 0.3, s * 0.8) else {
+                    continue;
+                };
+                let p = [px, py - 0.01, pz];
                 if !w.visible(p, s) {
                     continue;
                 }
@@ -3541,7 +3751,13 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
             let s = (0.22 + 0.14 * hash(ix, iz, 136)) * grow;
             f.put(
                 Model::SeaWhip,
-                place([x, y - 0.01, z], yaw, 0.0, 0.0, [s, s, s]),
+                place(
+                    [x, rooted(w, x, z, s * 0.2) - 0.01, z],
+                    yaw,
+                    0.0,
+                    0.0,
+                    [s, s, s],
+                ),
                 shade(0),
             )
             .moving(anim::SWAY, yaw, 0.08, 0.5)
@@ -3552,7 +3768,11 @@ fn coral_garden(f: &mut Frame, w: &World, site: GardenSite) {
             f.put(
                 Model::Anemone,
                 place(
-                    [x + a.cos() * 0.12, y - 0.01, z + a.sin() * 0.12],
+                    [
+                        x + a.cos() * 0.12,
+                        w.ground(x + a.cos() * 0.12, z + a.sin() * 0.12) - 0.01,
+                        z + a.sin() * 0.12,
+                    ],
                     a,
                     0.0,
                     0.0,
@@ -4829,19 +5049,14 @@ fn volcano(w: &World, f: &mut Frame) {
             continue;
         }
         let show = presence;
-        // A broad cone, its crater's rim the chimney's flared mouth.
+        // A broad cone narrowing up to its crater.
         let yaw = hash(ix, iz, 92) * TAU;
         f.put(
-            Model::Cone,
-            place([x, y, z], yaw, 0.0, 0.0, [5.2, h * 0.95, 5.2]),
-            [0.14, 0.13, 0.12],
+            Model::Volcano,
+            place([x, y, z], yaw, 0.0, 0.0, [10.4, h, 10.4]),
+            [1.0, 0.95, 0.9],
         )
         .grounded();
-        f.put(
-            Model::Vent,
-            place([x, y + h * 0.72, z], yaw, 0.0, 0.0, [1.3, h * 0.28, 1.3]),
-            [0.16, 0.13, 0.11],
-        );
         let crater = [x, y + h * 0.97, z];
         f.glow_sprite(
             crater,
@@ -7368,13 +7583,18 @@ fn cave(w: &World, f: &mut Frame) {
             between([x, top, z], [x, top - len - 0.08, z], r),
             [0.13, 0.10, 0.09],
         );
+        // A drop of molten rock at its tip, breathing slowly: the shader's
+        // crater flicker from the camera clock, since the cave is placed
+        // once for the static cache and a pulse worked out here held still
+        // until the next rebuild, then jumped.
         if hash(ix, iz, 113) > 0.75 {
-            let pulse = 0.7 + 0.3 * (w.t * 3.0 + ix as f32).sin();
-            f.sprite(
+            f.glow_sprite(
                 [x, top - len - 0.08, z],
                 0.035,
-                [1.0 * pulse, 0.45 * pulse, 0.10],
-                GLOW,
+                [1.0, 0.45, 0.10],
+                ix as f32 + 7.0 * iz as f32,
+                2.3,
+                1.0,
             );
         }
     }
@@ -7414,7 +7634,8 @@ fn cave(w: &World, f: &mut Frame) {
             );
         }
     }
-    halls(w, f);
+    // The halls' fall and colonies move with the clock, so they are placed
+    // each frame (`build`'s steps), not here in the static cache.
     cave_props(w, f);
 }
 
@@ -7813,11 +8034,12 @@ fn cave_props(w: &World, f: &mut Frame) {
                 .material(material::LAVA)
                 .glowing(0.75);
                 let a = at(0.0, 0.82);
-                let flicker = 0.85 + 0.15 * (w.t * 0.7 + n.x).sin();
+                // The flicker is the shader's, from the camera clock: the
+                // nooks are placed once for the static cache.
                 f.light_flicker(
                     [a[0], floor + 0.22, a[2]],
                     0.75,
-                    [1.2 * flicker, 0.36 * flicker, 0.07 * flicker],
+                    [1.2, 0.36, 0.07],
                     h(160) * TAU,
                 );
                 for k in 0..10 {
@@ -7992,10 +8214,10 @@ fn cave_props(w: &World, f: &mut Frame) {
                 )
                 .material(material::CRYSTAL)
                 .glowing(0.22 + 0.18 * h(140 + k));
+                // A glint at the tip now and then: the shader's blink, from
+                // the camera clock, as the nooks are in the static cache.
                 if k % 3 == 0 {
-                    let twinkle = (w.t * 1.3 + k as f32 * 2.1).sin().max(0.0).powi(8);
-                    let warm = 0.7 + 0.9 * twinkle;
-                    f.sprite(tip, 0.03, [0.6 * warm, 0.5 * warm, 1.1 * warm], GLOW);
+                    f.glow_sprite(tip, 0.03, [0.9, 0.75, 1.65], k as f32 * 2.1, 1.3, 0.0);
                 }
             }
         }
@@ -8887,6 +9109,8 @@ pub mod element {
     pub const WRECK_HULLS: u32 = 22;
     // Imported (M3): the drowned fort above the wrecks, and its cannon.
     pub const FORT: u32 = 23;
+    // The drowned museum (`world::museum`).
+    pub const MUSEUM: u32 = 24;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -8942,6 +9166,10 @@ pub const ELEMENTS: &[(u32, &str)] = &[
         "wrecks: the Dutch hulls and their fallen masts",
     ),
     (element::FORT, "wrecks: the drowned fort and its cannon"),
+    (
+        element::MUSEUM,
+        "the museum: its halls, specimens, paintings and minerals",
+    ),
 ];
 
 /// The element `i` is part of, or 0.
@@ -9032,11 +9260,9 @@ fn divers(w: &World, f: &mut Frame) {
     f.fade = fade_in;
     // The party walks a lane beside the corridor and steps round what stands
     // in it: each diver treads the same path as the one in front.
-    let obstacles = obstacles(w, lead - 1.6, lead + 0.8, lane(lead, 1.5, side));
-    let path = |x: f32| {
-        let base = lane(x, 1.5, side);
-        base + obstacles.iter().map(|&o| detour(o, x, base)).sum::<f32>()
-    };
+    let obstacles = obstacles(w, f, lead - 3.0, lead + 2.0, lane(lead, 1.5, side));
+    let route = Route::plan(&obstacles, lead - 3.0, lead + 2.0, |x| lane(x, 1.5, side));
+    let path = |x: f32| route.at(x);
     for d in 0..3 {
         let fd = d as f32;
         let x = lead - fd * 0.30;
@@ -9058,65 +9284,149 @@ fn divers(w: &World, f: &mut Frame) {
     f.fade = fade_in;
 }
 
-/// What a diver must walk round near `lane` between `x0` and `x1`: boulders,
-/// tree trunks and columns, as (x, z, radius). These are the same cells that
-/// `rocks`, `forest` and `ruins` place.
-fn obstacles(w: &World, x0: f32, x1: f32, lane: f32) -> Vec<(f32, f32, f32)> {
+/// What a diver must walk round near `lane` between `x0` and `x1`: whatever
+/// stands on the seabed there at a diver's height, read from the frame the
+/// still scenery has already been placed in, so a column, a fallen drum, a
+/// boulder, a statue's plinth or a temple's step is walked round whichever
+/// placer put it there. Each is its footprint in the world, as a box
+/// (x0, x1, z0, z1). Swimmers, weed and corals that sway, and what lies flat
+/// (mosaics, the near detail, the debris' chips), are walked over or through,
+/// and so are the great pieces of Atlantis' plan, platforms and ring walls
+/// broader than a few strides both ways, which the lane keeps clear of.
+fn obstacles(w: &World, f: &Frame, x0: f32, x1: f32, lane: f32) -> Vec<[f32; 4]> {
+    const TALL: f32 = 0.2;
     let mut found = Vec::new();
-    let mut scan =
-        |size: f32, salt: u32, keep: &dyn Fn(i32, i32, f32, f32) -> Option<(f32, f32, f32)>| {
-            for iz in ((lane - 1.2) / size).floor() as i32..=((lane + 1.2) / size).ceil() as i32 {
-                for ix in ((x0 - 0.6) / size).floor() as i32..=((x1 + 0.6) / size).ceil() as i32 {
-                    let (x, z) = cell_point(ix, iz, size, salt);
-                    found.extend(keep(ix, iz, x, z));
-                }
+    for (m, list) in f.solid.iter().enumerate() {
+        let model = Model::ALL[m];
+        for i in list {
+            let r = i.rows;
+            let (cx, cz) = (r[0][3], r[2][3]);
+            // The model's unit box, ±1 along each of its axes, in the world;
+            // of a tree, only its trunk and buttresses stand in the way, the
+            // crown is overhead.
+            // A stone is chipped round, narrower than its box at a diver's
+            // height.
+            let foot = match model {
+                Model::Tree => 0.14,
+                Model::Rock0 | Model::Rock1 | Model::Rock2 => 0.7,
+                _ => 1.0,
+            };
+            let hx = foot * (r[0][0].abs() + r[0][1].abs() + r[0][2].abs());
+            let hz = foot * (r[2][0].abs() + r[2][1].abs() + r[2][2].abs());
+            if cx + hx < x0 || cx - hx > x1 || (cz - lane).abs() > hz + 1.2 {
+                continue;
             }
-        };
-    // The stones and outcrops `rocks` places, by the same rules.
-    scan(0.55, 10, &|ix, iz, x, z| {
-        let roll = 1.0 - hash(ix, iz, 12);
-        let size = 0.05 + 0.20 * hash(ix, iz, 13).powf(2.0);
-        if size <= 0.06 || (size > 0.1 && (z - corridor(x)).abs() < 0.7) {
-            return None;
+            if i.anim[0] != 0.0 && model != Model::Tree {
+                continue;
+            }
+            let e = i.anim[1] as u32;
+            if matches!(
+                e,
+                element::MOSAICS | element::NEAR_DETAIL | element::CANALS | element::HALOCLINE
+            ) || hx.max(hz) < 0.025
+                || hx.min(hz) > 0.8
+            {
+                continue;
+            }
+            // Standing where a diver walks: up from the ground and not all
+            // overhead, a capital on its shaft or a bough.
+            let hy = r[1][0].abs() + r[1][1].abs() + r[1][2].abs();
+            let ground = w.ground(cx, cz);
+            if r[1][3] + hy < ground + 0.03 || r[1][3] - hy > ground + TALL {
+                continue;
+            }
+            found.push([cx - hx, cx + hx, cz - hz, cz + hz]);
         }
-        let b = w.biome(x, z);
-        if roll > World::by_biome(&b, STONES) {
-            return None;
-        }
-        let outcrop = size > 0.11 && hash(ix, iz, 18) < World::by_biome(&b, OUTCROPS);
-        Some((x, z, size * if outcrop { 1.9 } else { 1.2 }))
-    });
-    scan(0.75, 30, &|ix, iz, x, z| {
-        let grows = w.share(x, z, FOREST) >= hash(ix, iz, 31) * 0.7 + 0.2;
-        (grows && (z - corridor(x)).abs() >= 0.6).then_some((x, z, 0.12))
-    });
-    // Columns stand at their cell's centre, in rows.
-    scan(0.55, 70, &|ix, iz, _, _| {
-        let (x, z) = ((ix as f32 + 0.5) * 0.55, (iz as f32 + 0.5) * 0.55);
-        let stands = hash(0, iz, 71) >= 0.45
-            && w.share(x, z, ATLANTIS) >= hash(ix, iz, 72) * 0.5 + 0.4
-            && hash(ix, iz, 73) >= 0.15
-            && (z - corridor(x)).abs() >= 0.5;
-        stands.then_some((x, z, 0.13))
-    });
+    }
     found
 }
 
-/// How far a path along `base` swings aside at `x` to pass obstacle `o`:
-/// smoothly, starting a little before it and back after.
-fn detour(o: (f32, f32, f32), x: f32, base: f32) -> f32 {
-    let (ox, oz, r) = o;
-    let reach = r + 0.4;
-    let u = (x - ox) / reach;
-    if u.abs() >= 1.0 {
-        return 0.0;
+/// The divers' way along their lane between the [`obstacles`]: at stations
+/// a twentieth of a unit apart, fixed in the world so the way does not shift
+/// as the party walks on, how far across it they tread. Each station takes the
+/// free ground nearest the lane, and a few passes then pull each toward its
+/// neighbours, still on free ground, so the way bends round a stone a little
+/// before it rather than stepping sideways at its edge.
+struct Route {
+    first: i32,
+    across: Vec<f32>,
+}
+
+impl Route {
+    const STEP: f32 = 0.05;
+    /// How far a diver keeps from what it passes: half its body and a
+    /// little room.
+    const CLEAR: f32 = 0.07;
+    /// The farthest it strays from its lane to find a way through; past that
+    /// it walks the lane, and the lane keeps clear of what is that broad.
+    const STRAY: f32 = 1.2;
+
+    fn plan(obstacles: &[[f32; 4]], x0: f32, x1: f32, lane: impl Fn(f32) -> f32) -> Self {
+        let first = (x0 / Self::STEP).floor() as i32;
+        let last = (x1 / Self::STEP).ceil() as i32;
+        let xs: Vec<f32> = (first..=last).map(|i| i as f32 * Self::STEP).collect();
+        let base: Vec<f32> = xs.iter().map(|&x| lane(x)).collect();
+        // The blocked spans across each station, merged.
+        let blocked: Vec<Vec<[f32; 2]>> = xs
+            .iter()
+            .map(|&x| {
+                let mut spans: Vec<[f32; 2]> = obstacles
+                    .iter()
+                    .filter(|o| x > o[0] - Self::CLEAR && x < o[1] + Self::CLEAR)
+                    .map(|o| [o[2] - Self::CLEAR, o[3] + Self::CLEAR])
+                    .collect();
+                spans.sort_by(|a, b| a[0].total_cmp(&b[0]));
+                let mut merged: Vec<[f32; 2]> = Vec::new();
+                for s in spans {
+                    match merged.last_mut() {
+                        // A gap narrower than a diver is no way through.
+                        Some(m) if s[0] <= m[1] + Self::CLEAR => m[1] = m[1].max(s[1]),
+                        _ => merged.push(s),
+                    }
+                }
+                merged
+            })
+            .collect();
+        // Free ground at station `i` nearest `want`, on the side of whatever
+        // is in the way that `side` is on: a station never jumps across a
+        // stone its neighbours pass on the other side of.
+        let free = |i: usize, want: f32, side: f32| {
+            let Some(span) = blocked[i].iter().find(|s| want > s[0] && want < s[1]) else {
+                return want;
+            };
+            let (near, far) = if side - span[0] < span[1] - side {
+                (span[0], span[1])
+            } else {
+                (span[1], span[0])
+            };
+            [near, far]
+                .into_iter()
+                .find(|z| (z - base[i]).abs() <= Self::STRAY)
+                .unwrap_or(want)
+        };
+        // Along the lane, each station passing on the side the one before
+        // it did, then evened out.
+        let mut across = Vec::with_capacity(xs.len());
+        for i in 0..xs.len() {
+            let side = if i == 0 { base[0] } else { across[i - 1] };
+            across.push(free(i, base[i], side));
+        }
+        for _ in 0..16 {
+            for i in 1..xs.len() - 1 {
+                let want = 0.85 * (across[i - 1] + across[i + 1]) * 0.5 + 0.15 * base[i];
+                across[i] = free(i, want, across[i]);
+            }
+        }
+        Route { first, across }
     }
-    let clearance = r + 0.18 - (base - oz).abs();
-    if clearance <= 0.0 {
-        return 0.0;
+
+    /// How far across the way is at `x`, between the stations about it.
+    fn at(&self, x: f32) -> f32 {
+        let u = x / Self::STEP - self.first as f32;
+        let i = (u.floor().max(0.0) as usize).min(self.across.len() - 2);
+        let t = (u - i as f32).clamp(0.0, 1.0);
+        self.across[i] + (self.across[i + 1] - self.across[i]) * t
     }
-    let away = if base >= oz { 1.0 } else { -1.0 };
-    away * clearance * (0.5 + 0.5 * (PI * u).cos())
 }
 
 fn diver(w: &World, f: &mut Frame, feet: [f32; 3], s: f32, stride: f32, lamp: bool) {
@@ -9288,6 +9598,7 @@ const SPECIES: [Species; 9] = [
         back: [0.22, 0.26, 0.28],
         gate: [
             1.0, 0.8, 1.0, 1.0, 0.0, 0.0, 0.5, 0.8, 0.8, 0.5, 0.1, 0.3, 0.4, 0.6, 0.8, 0.2, 1.0,
+            0.0,
         ],
         salt: 200,
         part: 0,
@@ -9301,6 +9612,7 @@ const SPECIES: [Species; 9] = [
         back: [0.30, 0.36, 0.38],
         gate: [
             1.0, 1.0, 0.8, 0.6, 0.15, 0.0, 0.8, 0.7, 1.0, 0.7, 0.2, 0.4, 0.9, 1.0, 1.0, 0.3, 0.9,
+            0.0,
         ],
         salt: 210,
         part: 0,
@@ -9314,6 +9626,7 @@ const SPECIES: [Species; 9] = [
         back: [0.48, 0.40, 0.20],
         gate: [
             1.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.4, 0.0, 0.1, 0.0, 0.7, 0.8, 0.0, 0.5,
+            0.0,
         ],
         salt: 220,
         part: 0,
@@ -9327,6 +9640,7 @@ const SPECIES: [Species; 9] = [
         back: [0.32, 0.42, 0.46],
         gate: [
             1.0, 1.0, 0.0, 0.5, 0.0, 0.0, 0.6, 0.4, 1.0, 0.6, 0.2, 0.5, 0.3, 0.4, 1.0, 0.0, 0.6,
+            0.0,
         ],
         salt: 230,
         part: 0,
@@ -9340,6 +9654,7 @@ const SPECIES: [Species; 9] = [
         back: [0.52, 0.42, 0.16],
         gate: [
             0.6, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0, 0.1, 0.8, 1.0, 0.0, 0.2, 0.3, 0.2, 0.3, 0.0, 0.4,
+            0.0,
         ],
         salt: 240,
         part: 0,
@@ -9356,6 +9671,7 @@ const SPECIES: [Species; 9] = [
         back: [0.10, 0.30, 0.62],
         gate: [
             0.7, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6,
+            0.0,
         ],
         salt: 250,
         part: super::part::LIFE,
@@ -9369,6 +9685,7 @@ const SPECIES: [Species; 9] = [
         back: [0.80, 0.34, 0.30],
         gate: [
             0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4,
+            0.0,
         ],
         salt: 260,
         part: super::part::LIFE,
@@ -9382,6 +9699,7 @@ const SPECIES: [Species; 9] = [
         back: [0.95, 0.42, 0.06],
         gate: [
             0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,
         ],
         salt: 270,
         part: super::part::LIFE,
@@ -9395,6 +9713,7 @@ const SPECIES: [Species; 9] = [
         back: [0.85, 0.72, 0.66],
         gate: [
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.3, 0.0, 0.0, 0.0, 0.4, 0.0,
+            0.0,
         ],
         salt: 280,
         part: super::part::LIFE,
@@ -9752,7 +10071,9 @@ fn gliders(w: &World, f: &mut Frame) {
                 0.06 * (w.t * 0.3 + phase).sin(),
                 [length; 3],
             ),
-            [0.20, 0.17, 0.10],
+            // Amber brown: the shell's scutes and the pale plastron are the
+            // model's own colours over this.
+            [0.42, 0.30, 0.17],
         )
         .moving(anim::FLUKE, phase, 0.22, 1.5);
     }
@@ -9819,6 +10140,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Cruise,
         seas: [
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.0,
+            0.0,
         ],
         speed: 0.008,
         spacing: 0.7,
@@ -9837,6 +10159,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Lurk,
         seas: [
             0.25, 0.0, 0.9, 0.45, 0.0, 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.15, 0.0, 0.0, 0.3,
+            0.0,
         ],
         speed: 0.0,
         spacing: 0.9,
@@ -9855,6 +10178,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Cruise,
         seas: [
             0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.3, 0.0,
+            0.0,
         ],
         speed: -0.015,
         spacing: 1.6,
@@ -9873,6 +10197,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Rest,
         seas: [
             0.8, 0.0, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.6, 0.2, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.3,
+            0.0,
         ],
         speed: 0.0,
         spacing: 1.3,
@@ -9891,6 +10216,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Glide,
         seas: [
             0.5, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6, 0.0, 0.3,
+            0.0,
         ],
         speed: 0.035,
         spacing: 2.4,
@@ -9909,6 +10235,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Walk,
         seas: [
             0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.5, 0.0, 0.0, 1.0, 0.8, 0.0, 0.0, 0.3, 0.7, 0.0,
+            0.0,
         ],
         speed: 0.0,
         spacing: 0.7,
@@ -9927,6 +10254,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Walk,
         seas: [
             0.1, 0.2, 0.8, 0.6, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.6, 0.2,
+            0.0,
         ],
         speed: 0.0,
         spacing: 0.9,
@@ -9945,6 +10273,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Play,
         seas: [
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,
         ],
         speed: 0.10,
         spacing: 2.4,
@@ -9963,6 +10292,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Play,
         seas: [
             0.3, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,
         ],
         speed: 0.16,
         spacing: 3.8,
@@ -9981,6 +10311,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Cruise,
         seas: [
             0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.8,
+            0.0,
         ],
         speed: -0.06,
         spacing: 3.0,
@@ -9999,6 +10330,7 @@ const LIFE: [Creature; 11] = [
         motion: Motion::Chain,
         seas: [
             0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.4, 0.0,
+            0.0,
         ],
         speed: 0.01,
         spacing: 3.0,
@@ -10557,11 +10889,13 @@ fn jelly(w: &World, f: &mut Frame, site: JellySite) {
     let phase = hash(ix, iz, 353) * TAU;
     let y = w.ground(x, z) + 0.3 + hash(ix, iz, 354) * (0.3 * z + 0.3);
     let p = [x, y, z];
-    let show = w.reveal(p, s * 4.0);
-    if show <= 0.001 {
+    // Placed for the static cache: whether it is in view must widen with the
+    // cache's slack, or one just past the rim when the cache was built
+    // would appear mid-glass a frame later.
+    if !w.visible(p, s * 4.0) {
         return;
     }
-    f.fade = fade(here, needs) * show;
+    f.fade = fade(here, needs);
     // Which kind: the abyss keeps to helmet and crystal jellies and the comb
     // jellies' rainbows; elsewhere the moon jelly is commonest.
     let deep = w.share(x, z, ABYSS);
@@ -11856,35 +12190,85 @@ fn meadow(w: &World, f: &mut Frame) {
         if here < needs {
             continue;
         }
-        let y = w.ground(x, z);
+        let spread = 0.45 + 0.35 * hash(ix, iz, 1422);
+        // Rooted at the lowest ground its roots reach, so none ends in the
+        // water over a hollow; on the higher side they run on into the silt.
+        let y = rooted(w, x, z, spread * 0.8);
         let deep = w.surface() - y;
         if deep < 0.3 {
             continue;
         }
-        let spread = 0.45 + 0.35 * hash(ix, iz, 1422);
         if !w.visible([x, y + deep * 0.5, z], deep.max(spread)) {
             continue;
         }
         f.fade = fade(here, needs);
         // No two stands alike: splayed wider one way than the other,
         // leaning a little, the bark paler or redder, so a row of them is
-        // not one tree repeated.
+        // not one tree repeated; some with a young one beside them.
         let (long, lean) = (0.75 + 0.5 * hash(ix, iz, 1424), hash(ix, iz, 1425) - 0.5);
         let bark = 0.8 + 0.4 * hash(ix, iz, 1426);
         let red = 0.12 * hash(ix, iz, 1427);
+        let tone = [bark * (1.0 + red), bark, bark * (1.0 - red)];
         let stand = [Model::Mangrove, Model::Mangrove1, Model::Mangrove2];
+        let yaw = hash(ix, iz, 1423) * TAU;
         f.put(
             stand[(hash(ix, iz, 1429) * 3.0) as usize % 3],
             place(
                 [x, y - 0.03, z],
-                hash(ix, iz, 1423) * TAU,
+                yaw,
                 0.08 * lean,
                 0.05 * (hash(ix, iz, 1428) - 0.5),
                 [spread * long, deep, spread / long.sqrt()],
             ),
-            [bark * (1.0 + red), bark, bark * (1.0 - red)],
+            tone,
         )
-        .textured(Surface::Wood, 2.0);
+        .textured(Surface::Wood, 2.0)
+        .moving(anim::SWAY, hash(ix, iz, 1430) * TAU, 0.05, 0.45)
+        .grounded();
+        if hash(ix, iz, 1431) < 0.4 {
+            let a = yaw + 2.0 + hash(ix, iz, 1432);
+            let (sx, sz) = (x + a.cos() * spread * 0.9, z + a.sin() * spread * 0.9);
+            let small = spread * (0.35 + 0.2 * hash(ix, iz, 1433));
+            let sy = rooted(w, sx, sz, small * 0.8);
+            let sdeep = w.surface() - sy;
+            if sdeep > 0.3 {
+                f.put(
+                    stand[(hash(ix, iz, 1434) * 3.0) as usize % 3],
+                    place(
+                        [sx, sy - 0.02, sz],
+                        a * 3.0,
+                        0.1 * (hash(ix, iz, 1435) - 0.5),
+                        0.0,
+                        [small, sdeep, small],
+                    ),
+                    tone.map(|c| c * 1.08),
+                )
+                .textured(Surface::Wood, 2.0)
+                .moving(anim::SWAY, a, 0.05, 0.45)
+                .grounded();
+            }
+        }
+        // Pencil roots poking up out of the silt round it, where they show.
+        let c = w.pose.pos;
+        if (x - c[0]).hypot(z - c[2]) < 6.0 {
+            for k in 0..10 {
+                let a = hash(ix * 16 + k, iz, 1436) * TAU;
+                let r = spread * (0.5 + 0.9 * hash(ix * 16 + k, iz, 1437));
+                let (px, pz) = (x + a.cos() * r, z + a.sin() * r);
+                let foot = w.ground(px, pz);
+                let tall = 0.03 + 0.05 * hash(ix * 16 + k, iz, 1438);
+                f.put(
+                    Model::Tube,
+                    between([px, foot - 0.01, pz], [px, foot + tall, pz], 0.005),
+                    [0.42, 0.36, 0.28],
+                )
+                .grounded();
+            }
+        }
+        // A shoal of small fish keeping among the roots of some.
+        if hash(ix, iz, 1439) < 0.35 {
+            reef_fish(f, w, ix, iz, [x, y + 0.25, z], spread * 0.6);
+        }
     }
 }
 
@@ -11939,7 +12323,7 @@ fn sponge_reef(w: &World, f: &mut Frame) {
             f.put(
                 Model::GlassSponge,
                 place(
-                    [px, w.ground(px, pz) - 0.01, pz],
+                    [px, rooted(w, px, pz, h * girth * 0.5) - 0.01, pz],
                     r(5) * TAU,
                     lean,
                     0.1 * (r(6) - 0.5),
@@ -12088,6 +12472,7 @@ const STREWN: [(f32, [f32; STREWN_KINDS]); BIOMES] = [
     (0.20, [0.20, 0.40, 0.20, 0.10, 0.10, 0.00]), // meadow
     (0.20, [0.30, 0.00, 0.30, 0.00, 0.30, 0.10]), // glass sponges
     (0.20, [0.60, 0.30, 0.10, 0.00, 0.00, 0.00]), // blue hole
+    (0.10, [0.60, 0.20, 0.10, 0.10, 0.00, 0.00]), // museum
 ];
 
 /// The small things on the seabed just under the window, in every sea that
@@ -12561,23 +12946,26 @@ mod tests {
                 };
                 let mut frame = Frame::new();
                 build(&world, &mut frame, &mut StaticCache::default());
+                // The trailing diver can be just outside the rim of the
+                // round window, and is then not placed at all.
                 let bodies = &frame.solid[Model::Diver.index()];
-                if bodies.len() != PARTY {
+                let placed = bodies.len();
+                if !(PARTY - 1..=PARTY).contains(&placed) {
                     continue;
                 }
                 assert_eq!(
                     frame.solid[Model::DiverHelmet.index()].len(),
-                    PARTY,
+                    placed,
                     "every {name} diver wears a helmet"
                 );
                 assert_eq!(
                     frame.solid[Model::DiverLimb.index()].len(),
-                    7 * PARTY,
+                    7 * placed,
                     "every {name} diver has two arms and two legs"
                 );
                 assert_eq!(
                     frame.solid[Model::DiverBoot.index()].len(),
-                    2 * PARTY,
+                    2 * placed,
                     "every {name} diver wears two boots"
                 );
                 let visible = bodies
@@ -12607,6 +12995,76 @@ mod tests {
                 "only {best} of the party ever show in the {name}"
             );
         }
+    }
+
+    /// Divers walk round columns, fallen drums, boulders and trees: over
+    /// the forest and Atlantis legs of three visits, hardly a diver's body is
+    /// inside the footprint of such a thing standing at its height.
+    #[test]
+    fn divers_walk_round_what_stands_in_their_way() {
+        let solid = [
+            Model::Shaft,
+            Model::Cylinder,
+            Model::Rock0,
+            Model::Rock1,
+            Model::Rock2,
+            Model::Tree,
+        ];
+        let (mut divers, mut clipped) = (0, Vec::new());
+        let start = Voyage::default().advance(0.0, 0.0).x;
+        for visit in [0, 3, 7] {
+            let seabed = Seabed::new(visit, 0.0);
+            // Each party's slot as its leader comes level with the boat, and
+            // the seconds either side as it walks past what stands there.
+            for k in 0..400 {
+                let level = ((f64::from(k) + 0.5) * 7.0 - start) / (crate::voyage::SPEED - 0.02);
+                for step in -6..=6 {
+                    let seconds = level + f64::from(step) * 2.0;
+                    let x = (start + crate::voyage::SPEED * seconds) as f32;
+                    let pose = Pose::level(x, seabed.ground(x, 0.6) + 0.5);
+                    let world = World {
+                        seabed: &seabed,
+                        pose,
+                        t: seconds as f32,
+                        slack: 0.0,
+                    };
+                    let mut frame = Frame::new();
+                    build(&world, &mut frame, &mut StaticCache::default());
+                    let leg = visit;
+                    for b in &frame.solid[Model::Diver.index()] {
+                        divers += 1;
+                        let p = [b.rows[0][3], b.rows[1][3], b.rows[2][3]];
+                        for model in solid {
+                            for o in &frame.solid[model.index()] {
+                                let r = o.rows;
+                                let trunk = if model == Model::Tree { 0.11 } else { 1.0 };
+                                let reach = trunk
+                                    * (r[0][0].abs() + r[0][2].abs())
+                                        .min(r[2][0].abs() + r[2][2].abs());
+                                let hy = r[1][0].abs() + r[1][1].abs() + r[1][2].abs();
+                                let d = (p[0] - r[0][3]).hypot(p[2] - r[2][3]);
+                                // A pebble is stepped over.
+                                if reach > 0.07 && d < reach * 0.8 && (p[1] - r[1][3]).abs() < hy {
+                                    clipped.push((leg, seconds, model, d, reach));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("{divers} divers, {} clipping", clipped.len());
+        for c in clipped.iter().take(10) {
+            println!("{c:?}");
+        }
+        assert!(divers > 0, "no divers walked");
+        // Where a thicket closes the lane from side to side there is no way
+        // through within a few strides of it, and a diver brushes a stone.
+        assert!(
+            clipped.len() * 100 <= divers,
+            "{} of {divers} divers walk through things",
+            clipped.len()
+        );
     }
 
     #[test]

@@ -45,7 +45,7 @@ use std::f32::consts::TAU;
 
 use super::world::{
     ATLANTIS, CAVE, GALLERY_LONG, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope,
-    gallery_start, tunnel_stretch,
+    gallery_start, tour, tunnel_stretch,
 };
 use crate::voyage::{Position, SPEED};
 
@@ -268,7 +268,10 @@ fn open(seabed: &Seabed, x: f32) -> f32 {
         let out = (start - x).max(x - (start + GALLERY_LONG)).max(0.0);
         smooth(0.0, 5.0, out)
     });
-    cave.min(gallery)
+    // And through the museum, whose doors are on the lane and whose loop
+    // is the tour's own (`world::tour`).
+    let museum = super::world::museum_reach(seabed, x).map_or(1.0, |out| smooth(0.0, 5.0, out));
+    cave.min(gallery).min(museum)
 }
 
 /// How far, as a share of [`SWING`], the boat may be swung off its track at
@@ -391,6 +394,26 @@ impl Helm {
         // How fast the track bends, per unit along it, for the bank.
         let bend =
             -(track(x + 0.05, phase, open).1.atan() - track(x - 0.05, phase, open).1.atan()) / 0.1;
+        // In the museum the tour takes the boat off its track, in at the
+        // front door, once round the great hall and out at the back.
+        let (x, z, heading, bend, toured) = match tour(seabed, x) {
+            Some(t) => {
+                let w = t.weight;
+                let mut d = t.heading - heading;
+                d -= TAU * (d / TAU).round();
+                (
+                    x + (t.x - x) * w,
+                    z + (t.z - z) * w,
+                    heading + d * w,
+                    bend * (1.0 - w),
+                    w,
+                )
+            }
+            None => (x, z, heading, bend, 0.0),
+        };
+        // The heading as near the nose's as whole turns allow, so that once
+        // round the loop the helm does not unwind it again.
+        let heading = heading + TAU * ((self.course.value - heading) / TAU).round();
 
         let (swung, most) = swing(seabed, x, phase);
         if fresh {
@@ -517,7 +540,10 @@ impl Helm {
             let climb = (self.height.rate / SPEED as f32).atan() * 0.6;
             self.pitch
                 .follow(climb.clamp(-PITCH, PITCH), 0.35, attitude_dt, 0.012);
-            self.course.follow(heading, 0.5, attitude_dt, 0.05);
+            // Round the museum's loop the helm is put over harder than
+            // anywhere on the open track.
+            self.course
+                .follow(heading, 0.5, attitude_dt, 0.05 + 0.05 * toured);
             // Bank a little into the bend, as the sail heels a boat inward.
             let turning = bend * SPEED as f32 * warp;
             let bank = (-turning * 10.0).clamp(-BANK, BANK);

@@ -13,10 +13,11 @@
 //! z s`, scaled so the darkest material is 0.75 and the lightest 1.6, the
 //! countershading the game's own swimmers use. A glTF's base colour (its
 //! texture sampled at each vertex, times its factor) comes out as the
-//! vertices' colour, `v x y z r g b`. A glTF's IN may end in `#PICK`, the
-//! nodes to keep from a kit of several (a fort's modules, a ship without
-//! her rigging): comma-separated parts of node names, `-` before a part to
-//! drop the nodes it names instead.
+//! vertices' colour, `v x y z r g b` (with no base colour texture, its
+//! occlusion map's, so a white cast keeps its relief). A glTF's IN may end
+//! in `#PICK`, the nodes to keep from a kit of several (a fort's modules, a
+//! ship without her rigging): comma-separated parts of node names, `-`
+//! before a part to drop the nodes it names instead.
 use std::collections::HashMap;
 
 fn main() {
@@ -239,12 +240,24 @@ fn gltf(path: &str, pick: &str) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>) {
             let texture = pbr
                 .base_color_texture()
                 .map(|t| &images[t.texture().source().index()]);
+            // A cast scanned without its colour (a museum's plaster or
+            // bone, white) keeps its occlusion instead, so its relief still
+            // shows in the reduced model's shade.
+            let occlusion = texture.is_none().then(|| {
+                prim.material()
+                    .occlusion_texture()
+                    .map(|t| &images[t.texture().source().index()])
+            });
             let local: Vec<u32> = pos
                 .iter()
                 .zip(&uv)
                 .map(|(&p, &t)| {
                     let p = apply(world, p);
-                    let c = texture.map_or([1.0; 3], |img| sample(img, t));
+                    let c = match (texture, occlusion.flatten()) {
+                        (Some(img), _) => sample(img, t),
+                        (None, Some(img)) => [sample(img, t)[0]; 3],
+                        (None, None) => [1.0; 3],
+                    };
                     let c = [0, 1, 2].map(|k| c[k] * factor[k]);
                     let i = *seen.entry(p.map(f32::to_bits)).or_insert_with(|| {
                         verts.push(p);
@@ -298,9 +311,10 @@ fn apply(m: [[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
 fn sample(img: &gltf::image::Data, uv: [f32; 2]) -> [f32; 3] {
     let (w, h) = (img.width as usize, img.height as usize);
     let step = match img.format {
+        gltf::image::Format::R8 => 1,
         gltf::image::Format::R8G8B8 => 3,
         gltf::image::Format::R8G8B8A8 => 4,
-        f => panic!("base colour texture in {f:?}"),
+        f => panic!("texture in {f:?}"),
     };
     let texel = |x: isize, y: isize| {
         let (x, y) = (
@@ -308,7 +322,7 @@ fn sample(img: &gltf::image::Data, uv: [f32; 2]) -> [f32; 3] {
             y.rem_euclid(h as isize) as usize,
         );
         let o = (y * w + x) * step;
-        [0, 1, 2].map(|k| img.pixels[o + k] as f32 / 255.0)
+        [0, 1, 2].map(|k| img.pixels[o + k.min(step - 1)] as f32 / 255.0)
     };
     let (fx, fy) = (uv[0] * w as f32 - 0.5, uv[1] * h as f32 - 0.5);
     let (x, y) = (fx.floor(), fy.floor());
