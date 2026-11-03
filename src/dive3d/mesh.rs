@@ -18,6 +18,7 @@
 //! fetch and post-transform caches.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 use glam::Vec3;
@@ -170,6 +171,50 @@ impl Mesh {
             v.normal = n.normalize_or_zero().to_array();
         }
         self
+    }
+
+    /// Normals smoothed only between faces less than `angle` radians apart:
+    /// each corner takes the faces round its vertex that lie near its own
+    /// face's plane, and a vertex splits where an edge is sharper.
+    fn creased(self, angle: f32) -> Self {
+        let limit = angle.cos();
+        let p = |i: u32| Vec3::from_array(self.vertices[i as usize].pos);
+        let tris = self.indices.as_chunks::<3>().0;
+        // Area-weighted face normals, and the faces round each vertex.
+        let face: Vec<Vec3> = tris
+            .iter()
+            .map(|t| (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0])))
+            .collect();
+        let mut round = vec![vec![]; self.vertices.len()];
+        for (f, t) in tris.iter().enumerate() {
+            for &i in t {
+                round[i as usize].push(f);
+            }
+        }
+        let mut out = Mesh::default();
+        let mut made: HashMap<(u32, [u32; 3]), u32> = HashMap::new();
+        for (f, t) in tris.iter().enumerate() {
+            let own = face[f].normalize_or_zero();
+            for &i in t {
+                let n = round[i as usize]
+                    .iter()
+                    .filter(|&&g| face[g].normalize_or_zero().dot(own) >= limit)
+                    .map(|&g| face[g])
+                    .sum::<Vec3>()
+                    .normalize_or_zero();
+                let key = (i, n.to_array().map(|c| (c * 64.0).round() as i32 as u32));
+                let j = *made.entry(key).or_insert_with(|| {
+                    let v = self.vertices[i as usize];
+                    out.vertices.push(Vertex {
+                        normal: n.to_array(),
+                        ..v
+                    });
+                    out.vertices.len() as u32 - 1
+                });
+                out.indices.push(j);
+            }
+        }
+        out
     }
 
     /// A triangle with its own vertices and a flat normal, for hard edges.
@@ -685,6 +730,33 @@ pub enum Model {
     Torso,
     /// The colossus's head, lying apart, a unit across.
     Head,
+    /// Bronze sea creatures on their bases (Poly Haven's scans, coloured
+    /// from their textures), each a unit tall on y = 0: a shark, a manta
+    /// ray and a breaching whale.
+    BronzeShark,
+    BronzeRay,
+    BronzeWhale,
+    /// A wreck's cargo (Poly Haven's scans, coloured from their textures),
+    /// each a unit tall on y = 0: an iron-bound chest, long along x, and a
+    /// barrel standing on its end.
+    Chest,
+    Barrel,
+    /// Dutch ships' hulls as wrecks (Poly Haven's, M2): a unit long, bow to
+    /// +x, keel on y = 0, holed, silted and grown over (`wreck`): a fluyt
+    /// and two larger ships with their castles.
+    WreckFluyt,
+    WreckGalleon,
+    WreckPinas,
+    /// A colonial fort's modules (Poly Haven's Modular Fort 01, M3), in the
+    /// kit's own metres, standing on y = 0, centred: a thick rampart 14.6
+    /// long on x with its battered outer face to +z, a round corner tower,
+    /// a gate in a thinner wall (7.4) and the rampart's end (4.8).
+    FortWall,
+    FortTower,
+    FortGate,
+    FortEnd,
+    /// A naval gun on its carriage, muzzle to +x, in metres (2.3 long).
+    Cannon,
     /// A storage amphora standing on its point, a unit tall.
     Amphora,
     /// A trireme's hull with its bronze ram and some oars, stern -1 to ram +1.
@@ -719,7 +791,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 86] = [
+    pub const ALL: [Model; 99] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -794,6 +866,19 @@ impl Model {
         Model::Statue,
         Model::Torso,
         Model::Head,
+        Model::BronzeShark,
+        Model::BronzeRay,
+        Model::BronzeWhale,
+        Model::Chest,
+        Model::Barrel,
+        Model::WreckFluyt,
+        Model::WreckGalleon,
+        Model::WreckPinas,
+        Model::FortWall,
+        Model::FortTower,
+        Model::FortGate,
+        Model::FortEnd,
+        Model::Cannon,
         Model::Amphora,
         Model::Trireme,
         Model::Aqueduct,
@@ -1111,6 +1196,29 @@ impl Model {
             Model::Statue => cast(SOPHOCLES, statue(true)),
             Model::Torso => cast(BELVEDERE_TORSO, statue(false)),
             Model::Head => cast(BEARDED_HEAD, colossal_head()),
+            Model::BronzeShark => cast(BRONZE_SHARK, plinth_post()),
+            Model::BronzeRay => cast(BRONZE_RAY, plinth_post()),
+            Model::BronzeWhale => cast(BRONZE_WHALE, plinth_post()),
+            Model::Chest => cast_creased(TREASURE_CHEST, plinth_post(), 0.5),
+            Model::Barrel => cast_creased(BARREL, plinth_post(), 0.5),
+            // Each holed in its own places along her sides, (x, y, side, radius).
+            Model::WreckFluyt => wreck(
+                WRECK_FLUYT,
+                &[[0.10, 0.11, 1.0, 0.06], [-0.05, 0.12, -1.0, 0.05]],
+            ),
+            Model::WreckGalleon => wreck(
+                WRECK_GALLEON,
+                &[[-0.05, 0.11, -1.0, 0.065], [0.18, 0.12, 1.0, 0.05]],
+            ),
+            Model::FortWall => drowned(cast_creased(FORT_WALL, upright(FORT_WALL), 0.6)),
+            Model::FortTower => drowned(cast_creased(FORT_TOWER, upright(FORT_TOWER), 0.6)),
+            Model::FortGate => drowned(cast_creased(FORT_GATE, upright(FORT_GATE), 0.6)),
+            Model::FortEnd => drowned(cast_creased(FORT_END, upright(FORT_END), 0.6)),
+            Model::Cannon => drowned(cast_creased(CANNON, upright(CANNON), 0.6)),
+            Model::WreckPinas => wreck(
+                WRECK_PINAS,
+                &[[0.05, 0.11, 1.0, 0.07], [-0.2, 0.12, 1.0, 0.045]],
+            ),
             Model::Amphora => amphora(),
             Model::Trireme => trireme(),
             Model::Aqueduct => aqueduct(),
@@ -4485,17 +4593,148 @@ fn statue(head: bool) -> Mesh {
 
 /// Imported models (assets/models/CREDITS.md, rebuilt by deploy/models.sh):
 /// scans of the SMK's public-domain casts, reduced offline to 3,000
-/// triangles.
+/// triangles, and Poly Haven's bronzes, their textures baked into the
+/// vertices' colours.
 const SOPHOCLES: &str = include_str!("../../assets/models/sophocles.obj");
 const BELVEDERE_TORSO: &str = include_str!("../../assets/models/belvedere-torso.obj");
 const BEARDED_HEAD: &str = include_str!("../../assets/models/bearded-head.obj");
+const BRONZE_SHARK: &str = include_str!("../../assets/models/bronze-shark.obj");
+const BRONZE_RAY: &str = include_str!("../../assets/models/bronze-ray.obj");
+const BRONZE_WHALE: &str = include_str!("../../assets/models/bronze-whale.obj");
+const TREASURE_CHEST: &str = include_str!("../../assets/models/treasure-chest.obj");
+const BARREL: &str = include_str!("../../assets/models/barrel.obj");
+const WRECK_FLUYT: &str = include_str!("../../assets/models/wreck-fluyt.obj");
+const WRECK_GALLEON: &str = include_str!("../../assets/models/wreck-galleon.obj");
+const WRECK_PINAS: &str = include_str!("../../assets/models/wreck-pinas.obj");
+const FORT_WALL: &str = include_str!("../../assets/models/fort-wall.obj");
+const FORT_TOWER: &str = include_str!("../../assets/models/fort-tower.obj");
+const FORT_GATE: &str = include_str!("../../assets/models/fort-gate.obj");
+const FORT_END: &str = include_str!("../../assets/models/fort-end.obj");
+const CANNON: &str = include_str!("../../assets/models/cannon.obj");
+
+/// What a still import with no procedural model is fitted to: a unit tall
+/// on y = 0, centred on the axis, nothing animated.
+fn plinth_post() -> Mesh {
+    let mut m = Mesh::default();
+    m.vertex([0.0; 3], [1.0; 3], [0.0; 2]);
+    m.vertex([0.0, 1.0, 0.0], [1.0; 3], [0.0; 2]);
+    m
+}
+
+/// What an import is fitted to when it keeps its own size: as long and
+/// tall as the file, lifted to stand on y = 0.
+fn upright(obj: &str) -> Mesh {
+    let (lo, hi) = obj
+        .lines()
+        .filter_map(|l| l.strip_prefix("v "))
+        .filter_map(|l| l.split_whitespace().nth(1)?.parse::<f32>().ok())
+        .fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+    let mut m = Mesh::default();
+    m.vertex([0.0; 3], [1.0; 3], [0.0; 2]);
+    m.vertex([0.0, hi - lo, 0.0], [1.0; 3], [0.0; 2]);
+    m
+}
+
+/// An import's colours as the years under water leave them: greyed and
+/// darkened, and silt lying on whatever faces up, patchy.
+fn drowned(mut m: Mesh) -> Mesh {
+    for (i, v) in m.vertices.iter_mut().enumerate() {
+        let c = v.colour;
+        let grey = 0.3 * c[0] + 0.5 * c[1] + 0.2 * c[2];
+        let worn = [0, 1, 2].map(|k| (c[k] * 0.55 + grey * 0.45) * 0.85);
+        let up = smooth(0.45, 0.85, v.normal[1]) * (0.55 + 0.45 * jitter(i as u32, 91));
+        let silt = [0.62, 0.58, 0.50];
+        v.colour = [0, 1, 2].map(|k| worn[k] + (silt[k] - worn[k]) * up);
+    }
+    m
+}
+
+/// A ship's hull from `obj` worn to a wreck: breached where `holes` say
+/// (`[x, y, side, radius]`, the side +1 or -1 in z: a ragged black gap
+/// laid over the planking, the wood round it darkened, since cutting the
+/// reduced hull's few large faces leaves no outline worth its triangles),
+/// her paint and wood greyed and darkened by the years under water, and
+/// silt lying on whatever faces up, decks and wales.
+fn wreck(obj: &str, holes: &[[f32; 4]]) -> Mesh {
+    let m = cast_creased(obj, upright(obj), 0.6);
+    // A breach's ragged edge, in its radius, at angle `a` (9 jagged
+    // points round it, wandering in and out by a third).
+    let ragged = |k: usize, a: f32| {
+        let a = a / TAU * 9.0 + 9.0;
+        let (i, t) = (a.floor() as u32 % 9, a.fract());
+        let at = |i: u32| 0.7 + 0.6 * jitter(i + 16 * k as u32, 93);
+        at(i) + (at((i + 1) % 9) - at(i)) * t
+    };
+    // How far out of the nearest breach a point lies, in its radius.
+    let near = |p: [f32; 3]| {
+        holes
+            .iter()
+            .enumerate()
+            .map(|(k, &[x, y, side, r])| {
+                if p[2] * side <= 0.0 {
+                    return f32::MAX;
+                }
+                let (dx, dy) = (p[0] - x, p[1] - y);
+                (dx * dx + dy * dy).sqrt() / (r * ragged(k, dy.atan2(dx)))
+            })
+            .fold(f32::MAX, f32::min)
+    };
+    let mut m = drowned(m);
+    for v in &mut m.vertices {
+        let burnt = 1.0 - 0.5 * (1.0 - (near(v.pos) - 1.0) / 0.8).clamp(0.0, 1.0);
+        v.colour = v.colour.map(|c| c * burnt);
+    }
+    // The gaps: a fan just proud of the hull's side, following its curve.
+    let hull: Vec<[f32; 3]> = m.vertices.iter().map(|v| v.pos).collect();
+    for (k, &[x, y, side, r]) in holes.iter().enumerate() {
+        let skin = |px: f32, py: f32| {
+            hull.iter()
+                .filter(|p| (p[0] - px).abs() < 0.03 && (p[1] - py).abs() < 0.03)
+                .map(|p| p[2] * side)
+                .fold(0.0f32, f32::max)
+                + 0.004
+        };
+        let normal = [0.0, 0.0, side];
+        let dark = [0.04, 0.045, 0.05];
+        let centre = m.vertex([x, y, side * skin(x, y)], dark, [0.0; 2]);
+        let ring: Vec<u32> = (0..18)
+            .map(|i| {
+                let a = i as f32 / 18.0 * TAU;
+                let e = r * ragged(k, a);
+                // Kept off the bilge's turn, where a flat gap would stand out.
+                let (px, py) = (x + a.cos() * e, (y + a.sin() * e).max(0.07));
+                m.vertex([px, py, side * skin(px, py)], dark, [0.0; 2])
+            })
+            .collect();
+        for v in &mut m.vertices[centre as usize..] {
+            v.normal = normal;
+        }
+        for i in 0..18 {
+            m.tri(centre, ring[i], ring[(i + 1) % 18]);
+        }
+    }
+    m
+}
 
 /// The scanned cast `obj` in the place of `like`, the procedural model it
 /// replaces: as tall and centred as it, each vertex taking the `aux` of
-/// `like`'s nearest so the LODs and sway work unchanged, the marble crusted
-/// with the sea's growth from the foot up.
+/// `like`'s nearest so the LODs and sway work unchanged, the marble (or
+/// the file's own colours, `v x y z r g b`) crusted with the sea's growth
+/// from the foot up.
 fn cast(obj: &str, like: Mesh) -> Mesh {
+    cast_with(obj, like, None)
+}
+
+/// [`cast`] for a made thing (a chest, a hull, a wall): its normals bend
+/// only across edges gentler than `crease` radians, so planks, corners and
+/// bands keep their hard edges instead of the smooth shading of a statue.
+fn cast_creased(obj: &str, like: Mesh, crease: f32) -> Mesh {
+    cast_with(obj, like, Some(crease))
+}
+
+fn cast_with(obj: &str, like: Mesh, crease: Option<f32>) -> Mesh {
     let mut pos = vec![];
+    let mut own = vec![];
     let mut faces = vec![];
     for line in obj.lines() {
         let mut words = line.split_whitespace();
@@ -4504,10 +4743,27 @@ fn cast(obj: &str, like: Mesh) -> Mesh {
                 let v: Vec<f32> = words.map(|w| w.parse().unwrap_or(0.0)).collect();
                 // The files keep their source's handedness: z flips back.
                 pos.push(Vec3::new(v[0], v[1], -v[2]));
+                own.push(if v.len() >= 6 {
+                    [v[3], v[4], v[5]]
+                } else {
+                    [1.0; 3]
+                });
             }
             Some("f") => faces.extend(words.map(|w| w.parse::<u32>().unwrap_or(1) - 1)),
             _ => {}
         }
+    }
+    // The coarser levels (`Built::of`) keep a quarter of the triangles a
+    // step, clustered (meshoptimizer's sloppy simplifier keeps the volume
+    // of thin parts, such as a chest's panels, that edge collapses lose), so
+    // a far scan costs what it shows.
+    let step = COARSER.get();
+    if step > 0 {
+        let flat: Vec<[f32; 3]> = pos.iter().map(|p| p.to_array()).collect();
+        let adapter =
+            meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&flat), 12, 0).expect("positions");
+        let want = (faces.len() >> (2 * step)).max(3 * 96);
+        faces = meshopt::simplify_sloppy(&faces, &adapter, want, 1.0, None);
     }
     let bounds = |p: &mut dyn Iterator<Item = Vec3>| {
         p.fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| (lo.min(q), hi.max(q)))
@@ -4517,7 +4773,7 @@ fn cast(obj: &str, like: Mesh) -> Mesh {
     let k = (want_hi[1] - want_lo[1]) / (hi[1] - lo[1]);
     let (centre, want) = ((lo + hi) * 0.5, (want_lo + want_hi) * 0.5);
     let mut out = Mesh::default();
-    for p in pos {
+    for (p, own) in pos.into_iter().zip(own) {
         let p = want + (p - centre) * k;
         let aux = like
             .vertices
@@ -4531,10 +4787,13 @@ fn cast(obj: &str, like: Mesh) -> Mesh {
         let crust =
             (1.0 - y / 0.4).clamp(0.0, 1.0) * (0.6 + 0.4 * (p[0] * 37.0 + y * 29.0).sin().abs());
         let colour = [1.0 - 0.45 * crust, 1.0 - 0.32 * crust, 1.0 - 0.42 * crust];
-        out.vertex(p.to_array(), colour, aux);
+        out.vertex(p.to_array(), [0, 1, 2].map(|c| colour[c] * own[c]), aux);
     }
     out.indices = faces;
-    let mut out = out.smooth();
+    let mut out = match crease {
+        Some(angle) => out.creased(angle),
+        None => out.smooth(),
+    };
     // A vertex the reduction left only on collapsed faces: outward.
     for v in &mut out.vertices {
         if v.normal == [0.0; 3] {

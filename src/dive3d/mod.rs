@@ -925,6 +925,9 @@ mod effect {
     pub const GLASS_SPONGES: u64 = 1 << 50;
     /// `HoleWall`: the blue hole's shaft.
     pub const HOLE_WALL: u64 = 1 << 51;
+    /// The drowned fort (M3): `FortWall`, `FortTower`, `FortGate`,
+    /// `FortEnd` and its `Cannon`.
+    pub const FORT: u64 = 1 << 52;
 
     pub const MODEL_BITS: u64 = ((1 << 31) - 1)
         | CORALS
@@ -943,7 +946,8 @@ mod effect {
         | SEAGRASS
         | MANGROVES
         | GLASS_SPONGES
-        | HOLE_WALL;
+        | HOLE_WALL
+        | FORT;
     pub const SPRITE_BITS: u64 = MOTES | BUBBLES | GLOWS | EMBERS;
     pub const ALL: u64 = MODEL_BITS | SPRITE_BITS;
 
@@ -961,7 +965,12 @@ mod effect {
             "Shaft, Capital, Break, Prism",
             "columns, capitals, broken columns, temple pediments",
         ),
-        ("wreck", WRECK, "Hull, Sail", "galleon hulls and sails"),
+        (
+            "wreck",
+            WRECK,
+            "Hull, Sail, Chest, Barrel, WreckFluyt, WreckGalleon, WreckPinas",
+            "galleon hulls and sails, their chests and barrels",
+        ),
         (
             "cylinders",
             CYLINDERS,
@@ -1082,8 +1091,14 @@ mod effect {
         (
             "atlantis plan",
             ATLANTIS_PLAN,
-            "Statue, Torso, Head, Amphora, Trireme, Aqueduct, Stele, Mosaic, Lighthouse",
+            "Statue, Torso, Head, BronzeShark, BronzeRay, BronzeWhale, Amphora, Trireme, Aqueduct, Stele, Mosaic, Lighthouse",
             "Atlantis' statues, colossus, harbour, aqueduct, stelae, mosaics, lighthouse",
+        ),
+        (
+            "fort",
+            FORT,
+            "FortWall, FortTower, FortGate, FortEnd, Cannon",
+            "the drowned fort above the wrecks and its cannon",
         ),
         ("seagrass", SEAGRASS, "Seagrass", "the meadow's seagrass"),
         (
@@ -1148,7 +1163,13 @@ fn model_bit(model: usize) -> u64 {
         Model::Rock1 => effect::ROCK1,
         Model::Rock2 => effect::ROCK2,
         Model::Shaft | Model::Capital | Model::Break | Model::Prism => effect::RUINS,
-        Model::Hull | Model::Sail => effect::WRECK,
+        Model::Hull
+        | Model::Sail
+        | Model::Chest
+        | Model::Barrel
+        | Model::WreckFluyt
+        | Model::WreckGalleon
+        | Model::WreckPinas => effect::WRECK,
         Model::Cylinder => effect::CYLINDERS,
         Model::Box => effect::BOXES,
         Model::Sphere => effect::SPHERES,
@@ -1194,12 +1215,18 @@ fn model_bit(model: usize) -> u64 {
         Model::Statue
         | Model::Torso
         | Model::Head
+        | Model::BronzeShark
+        | Model::BronzeRay
+        | Model::BronzeWhale
         | Model::Amphora
         | Model::Trireme
         | Model::Aqueduct
         | Model::Stele
         | Model::Mosaic
         | Model::Lighthouse => effect::ATLANTIS_PLAN,
+        Model::FortWall | Model::FortTower | Model::FortGate | Model::FortEnd | Model::Cannon => {
+            effect::FORT
+        }
         Model::Seagrass => effect::SEAGRASS,
         Model::Mangrove | Model::Mangrove1 | Model::Mangrove2 => effect::MANGROVES,
         Model::GlassSponge => effect::GLASS_SPONGES,

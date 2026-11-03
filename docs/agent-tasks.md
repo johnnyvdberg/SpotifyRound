@@ -94,11 +94,12 @@ run at once**, from different groups. Model tier is a suggestion.
 | V8 | lostcity | Lost city: travel through large corridors with detailed interiors | Opus | done, merged into `main` (the drowned city's galleria; `docs/handoff/v8.md`) |
 | V9 | biomes | Three new biomes unlike the current ones | Opus | done, merged into `main` (meadow, glass sponges, blue hole; `docs/handoff/v9.md`) |
 | V10 | detail | More detail in every biome with headroom | Sonnet | done, merged: near detail, faceted rocks, kelp, seagrass, glass sponges, coral, the volcano, the abyss's glow and the forest's frond crowns, three mangrove stands (`docs/handoff/v10.md`) |
-| M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | started: statues are SMK scans (V6); Quaternius's Drive was over quota on 2026-11-01; Poly Haven is next for rocks and props |
-| M2 | models | Quaternius ships as worn wrecks | Opus | todo |
-| M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | todo (needs the glTF importer from M1) |
+| M1 | models | Imported models: Quaternius (CC0) as the house source for animals and props, SMK scans for statues | Opus | done on branch `m1-gltf`: glTF reader baking textures to colours, LODs for imports, Poly Haven bronzes (Atlantis), chests and barrels (wrecks); Quaternius's Drive still over quota 2026-11-02; rocks left for after T1 (`docs/handoff/m1.md`) |
+| M2 | models | Quaternius ships as worn wrecks | Opus | done on branch `m2-wrecks` with Poly Haven's Dutch ships (Quaternius's Drive over quota): holed, silted, listing, masts snapped; wrecks +0.10 ms median, worst 8.91 (`docs/handoff/m2.md`) |
+| M3 | models | A drowned colonial fort from Poly Haven's modular fort, with its cannon | Opus | done on branch `m3-fort`: half way through the wrecks, tower, gate, ramparts sunk and toppled, eight cannon down the bank; +0.35 ms median where in view, worst 0.65 (`docs/handoff/m3.md`) |
 | D1 | display | OpenGL ES on the kiosk's display, for its early-Z | Opus | done on branch `d1-display`: femtovg vendored and specialised per pipeline; live GL beats Vulkan + Skia on the dive (61 fps both, 1.0-1.6 ms less GPU a frame) but the globe drops to 53 fps, so the default stays Vulkan; `SPOTIFY_ROUND_DISPLAY=gl` switches (`docs/handoff/d1.md`) |
 | T1 | terrain | Terrain noise from FastNoiseLite | Opus | done on branch `t1-terrain`: warped OpenSimplex2 height, dunes (shallows, wrecks, sargasso), ridged rock (abyss, vents), Voronoi brine terraces and pools; Pi median 7.14 -> 7.23 ms, worst 10.48, none over 11; seabed build 96 -> 95 ms (`docs/handoff/t1.md`) |
+| D2 | display | The globe at full speed on GL, so GL can be the display's default | Opus | todo |
 
 Order: tooling and perf first (they make room and make change visible), then V1 (sets the visible
 range everything else is built for), then V3/V4, V5, V6/V7, V8, V9, V10.
@@ -253,6 +254,18 @@ GL surface sharing the dive's texture through an EGL image (`opengl_surface.rs` 
 dive image drawn through its one large shader every frame) and drawing that image with a plain
 textured quad. Measure live, not headless: the window's own drawing is the question.
 
+### D2. The globe on GL
+
+D1 (`docs/handoff/d1.md`) made GL + femtovg faster than Vulkan + Skia live on the dive (1.0-1.6 ms
+less GPU a frame, 61 fps), but the globe drops to 53 fps on GL (17.6 ms GPU against 15.1 on
+Vulkan, about 7 long gaps a second): its frame shader costs more on GL, gains nothing from early-Z
+and has no adaptive scale. Make the globe hold 61 fps with headroom on GL: get its fragment shader
+to 4 threads (`deploy/v3d-shaderdb`, confirm on the Pi through GL), split or specialise it as the
+dive's shaders were, give it the adaptive scale, or whatever the measurements point to. Keep the
+globe's look (before/after pictures). Measure live with `deploy/live-pi.sh` on both displays, the
+globe and the dive. When GL is better on every scene, set `DISPLAY_GL_DEFAULT = true` in
+`src/gpu.rs` and say so in the handoff; Vulkan stays reachable with `SPOTIFY_ROUND_DISPLAY=vulkan`.
+
 ### T1. Terrain noise from FastNoiseLite
 
 The user asks for FastNoiseLite (https://github.com/Auburn/FastNoiseLite, MIT; Rust crate
@@ -303,3 +316,9 @@ deterministic (`places.rs` screenshots must still find their places).
   (`world::SIGHT`, a table in `docs/nautilus.md`), the abyss's far wall and Atlantis' farthest
   temples among it; tune a sea by its one number. The surface from below
   (`water-surface.jpg`) is best judged live, since its facets move.
+- models (M1-M3, 2026-11-02): three branches stacked `m1-gltf` -> `m2-wrecks` -> `m3-fort` (merge
+  `m3-fort` to take all three). Look at the bronzes (`docs/handoff/img/m1-bronzes.jpg`), the
+  Dutch wrecks (`m2-wrecks.jpg`) and the fort (`m3-fort.jpg`). Quaternius's Google Drive still
+  answers "Quota exceeded" for every file, so nothing came from the house source: when it works
+  again, its ships and fish are `models.tsv` rows. `deploy/models.sh` now fetches Poly Haven
+  assets (`polyhaven:ASSET#NODES`).

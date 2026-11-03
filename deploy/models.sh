@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # The imported models in assets/models, rebuilt from their originals.
 #
-#   deploy/models.sh
+#   deploy/models.sh [FILE ...]
 #       fetches each original listed in assets/models/models.tsv into
 #       target/models/ (once) and reduces it to the listed triangle count
 #       with tools/decimate. For a higher quality level later, raise the
 #       count in models.tsv and run this again: the originals keep every
-#       detail. A source is a URL, or itch:CREATOR/GAME/UPLOAD:PATH for a
-#       file inside a free itch.io download.
+#       detail. A source is a URL, itch:CREATOR/GAME/UPLOAD:PATH for a
+#       file inside a free itch.io download, or polyhaven:ASSET for a Poly
+#       Haven model's 1k glTF with its buffer and textures (api.polyhaven.com);
+#       polyhaven:ASSET#PICK keeps only the nodes PICK names (tools/decimate).
+#       Given FILEs, only those are rebuilt.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p target/models
@@ -33,6 +36,29 @@ fetch() {
         fi
         original=$dir/$path
         ;;
+    polyhaven:*)
+        local asset=${source#polyhaven:} pick='' dir
+        if [[ $asset == *'#'* ]]; then
+            pick=#${asset#*#}
+            asset=${asset%%#*}
+        fi
+        dir=target/models/polyhaven-$asset
+        if [ ! -d "$dir" ]; then
+            mkdir -p "$dir.part"
+            curl -sS -A "SpotifyRound-models" "https://api.polyhaven.com/files/$asset" |
+                python3 -c 'import json,sys
+g = json.load(sys.stdin)["gltf"]["1k"]["gltf"]
+print(g["url"], "model.gltf")
+for path, f in g["include"].items():
+    print(f["url"], path)' |
+                while read -r url path; do
+                    mkdir -p "$dir.part/$(dirname "$path")"
+                    curl -sSL -A "SpotifyRound-models" -o "$dir.part/$path" "$url"
+                done
+            mv "$dir.part" "$dir"
+        fi
+        original=$dir/model.gltf$pick
+        ;;
     *)
         original=target/models/${source##*/}
         # The SMK's server drops long transfers part way; resume until whole.
@@ -44,6 +70,9 @@ fetch() {
 }
 
 grep -v '^#' assets/models/models.tsv | while IFS=$'\t' read -r file triangles up fit turn source; do
+    if [ $# -gt 0 ] && [[ " $* " != *" $file "* ]]; then
+        continue
+    fi
     fetch "$source"
     "$tool" "$original" "assets/models/$file" "$triangles" "$up" "$fit" "$turn"
 done
