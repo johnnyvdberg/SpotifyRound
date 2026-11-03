@@ -1,5 +1,8 @@
 # Pipeline optimisation log
 
+The A/B screenshots this history names (`docs/branch-*.png`) were removed on 2026-11-03, their
+branches merged or abandoned; they are in git history at `da1fb0d`.
+
 Working notes for the throughput pass on the Nautilus scene. Measurements are
 from `DIVE3D_STATS=1`, `dive3d::tests::coverage`, `previews` frame captures and
 `deploy/v3d-shaderdb/shaderdb.sh`; the reference comparison lives in
@@ -1106,7 +1109,7 @@ Every fading instance except the ice is now drawn with the solid pipelines:
 depth write, instead of blending over what is behind. Only the ice keeps the
 blended path, because its coverage is per pixel.
 
-- **Desktop visual gate**: [branch-fade-opaque.png](branch-fade-opaque.png) —
+- **Desktop visual gate**: `branch-fade-opaque.png` —
   mean **0.41/255**, max 201 at the deepest fades; the image shows current /
   branch / amplified difference. An audit caught that the first cut also put
   the coverage in the sea texture's alpha: the solid pipelines write alpha,
@@ -1122,7 +1125,6 @@ blended path, because its coverage is per pixel.
 
 The branch image:
 
-![fade-opaque: current / opaque / amplified difference](branch-fade-opaque.png)
 
 The branch is kept. The deepest fades can still be hybridised (keep the blend
 below ~0.5 coverage) if the 201/255 local colour change reads too strongly.
@@ -1190,7 +1192,7 @@ fragment samples it once and keeps the surface fetch and sun term. The bake is
 re-done when the camera has moved 16 units (an ~0.5–1 ms M1 / 2–3 ms Pi hitch
 every ~5 minutes of voyage).
 
-- **Visual gate**: [branch-ice-bake.png](branch-ice-bake.png) — mean
+- **Visual gate**: `branch-ice-bake.png` — mean
   **0.001/255, max 3**; the ice is pixel-identical on all four legs.
 - **Pi effect table (paired, same run)**: `pass: fading ice` is now **0.37 ms**
   (was 1.12), `model: planes` 0.44, `everything` 9.31, sea 7.28. The 0.7 ms
@@ -1198,7 +1200,6 @@ every ~5 minutes of voyage).
   that run (8.72 overall, 6.84 arctic, 10.26 forest control) also carry the
   day's run drift, so the paired table is the number to trust.
 
-![ice-bake: current / baked / amplified difference](branch-ice-bake.png)
 
 Ice-opaque is the one-line orthogonal follow-up (0.1–0.2 ms): after the bake
 the fragment is cheap enough that the blend is a small share.
@@ -1229,7 +1230,7 @@ The audit's cleanest geometry win: the fish loft was 12 segments × 10 rings
 now an 8×7 loft (~140 verts, −45%), and the kelp gets a 2× LOD bias so its
 coarse 30-vertex LOD is chosen for the far half.
 
-- **Visual gate**: [branch-fish-kelp.png](branch-fish-kelp.png) — mean
+- **Visual gate**: `branch-fish-kelp.png` — mean
   **0.016/255**, max 199 at the nearest fish outline. The school reads the
   same; the kelp's far blades are the subtle part.
 - **Vertex count**: a mid frame drops from ~150k model verts (the audit's
@@ -1245,7 +1246,6 @@ predicted: the fish legs only lose ~0.2 ms. The geometry was not the frame's
 limiter at this count — the fill/other passes are — but the leaner mesh is
 what makes the model-count growth cheaper, and it is kept.
 
-![fish-kelp: current / branch / amplified difference](branch-fish-kelp.png)
 
 Next: the **flat/static vertex shader** for the small-instance tail is the
 only remaining model change that scales with count. It must be gated on the
@@ -1303,7 +1303,6 @@ Desktop visual A/B: `branch-cpu-lean.png`, **mean 0.0000/255, max 0** — the
 frame is identical. Pi: **8.687 ms** vs 8.686 before; nothing to measure at
 current counts, which is the expected result for the cap and the env cache.
 
-![cpu-lean: current / branch / amplified difference](branch-cpu-lean.png)
 
 ### Next
 
@@ -1367,7 +1366,6 @@ It is kept because it is free, visually exact, and scales the right way — at
 larger counts the lists are longer and the 19 allocations per frame grow with
 them. It does not solve the frame.
 
-![cell-pool: current / pooled / amplified difference](branch-cell-pool.png)
 
 ### Next
 
@@ -1394,7 +1392,6 @@ local position about the shell's base from the same camera clock
   prerequisite, not a frame-time win.
 - Tests: 109 pass.
 
-![shell hinge: current / shader hinge / amplified difference](branch-shell-hinge.png)
 
 ### Remaining before the cache
 
@@ -1507,7 +1504,6 @@ built the cone. The lean stays in the placement; the sway is now the shader's
 - Pi: expected flat; this is a prerequisite, and the static cache still needs
   the trench light, the wreck/ruin flicker and the polar phases.
 
-![rocks sway: current / shader sway / amplified difference](branch-rocks-sway.png)
 
 The rocks now have no placement-time `w.t` (the fans were already
 `anim::SWAY`), so they can join the static cache together with the gardens and
@@ -1524,7 +1520,6 @@ camera clock.
 - Visual: **mean 0.0000/255, max 5** — indistinguishable.
 - Pi: no change expected; this is another prerequisite for the cache.
 
-![crinoid wave: current / shader wave / amplified difference](branch-crinoid.png)
 
 The trench still has two `w.t` uses that are not instance matrices: the
 sediment sprites and the deep blink lights. Those are the CPU sprite/light
@@ -1546,7 +1541,6 @@ clock.
 - Visual: **mean 0.0000/255, max 0** — pixel-identical.
 - Pi: no change expected.
 
-![penguin flap: current / shader flap / difference](branch-penguin-flap.png)
 
 The polar still has the narwhals' body bob/yaw and the penguins' bubble trail
 (sprites) on `w.t`. The narwhals' body motion shares the instance's `anim`
@@ -1570,7 +1564,6 @@ pod's formation, with the fluke's beat folded into the same kind.
 - Visual: **mean 0.0000/255, max 0** — pixel-identical.
 - Pi: no change expected.
 
-![narwhal body: current / shader body / difference](branch-narwhal-body.png)
 
 All the instance-side placement-time `w.t` is now shader-driven. The only
 remaining `w.t` in the would-be cache set is in the **sprite/light lists**:
@@ -1597,7 +1590,6 @@ breathing.
   it is the light's colour.w + one branch in `light_at`, and the light path
   was not on the critical path before it.
 
-![light flicker: current / shader flicker / amplified difference](branch-light-flicker.png)
 
 The sprites are the last `w.t` in the would-be cached placers: the trench's
 sediment and sea-pen glows, the ruin crater sprites, the cave embers, the polar
@@ -1677,7 +1669,6 @@ may need to make itself.
 - Pi: the mark itself is microseconds; the app-level win is the post/notifier
   work below, not this pool.
 
-![mark pool: current / pooled / difference](branch-mark-pool.png)
 
 The UI-side items with real milliseconds are still the three per-frame
 `invoke_from_event_loop` posts and the notifier's extra window-clear pass (a
@@ -1772,7 +1763,6 @@ cell-step copy stays proportional to the visible set.
 
 Kept: the scaffold, the pixel-exactness, the scaling shape.
 
-![cell cache: current / cell-cached / difference](branch-cell-cache.png)
 
 ## 38. Sprite/light split: the exact shape
 
@@ -1893,7 +1883,6 @@ sprite is too, so the polar can join the §37 cell cache. The cave/ruins/trench
 sprite kinds (MOTE/GLOW/EMBER) remain: the same `stretch.yzw` channel, one
 shader branch each.
 
-![polar bubble shader: current / shader-aged / difference](docs/branch-polar-bubble-shader.png)
 
 ## 42. Cave embers: the EMBER kind is shader-side, pixel-identical
 
@@ -1908,7 +1897,6 @@ moved ahead of the animation block.
 - Visual: **mean 0.0000/255, max 0** — pixel-identical.
 - Pi: no change expected.
 
-![cave ember shader: current / shader-risen / difference](branch-cave-ember-shader.png)
 
 Remaining sprite kinds: the trench's MOTE sediment and the GLOW pulses (sea
 pens, ruins craters, cave pools). Both fit the same `stretch.yzw` channel; the
@@ -1926,7 +1914,6 @@ the same mode so it tracks the flicker as before.
 - Visual: **mean 0.0000/255, max 1** — pixel-identical (one rounding unit).
 - Pi: no change expected.
 
-![crater glow: current / shader flicker / difference](branch-crater-glow-shader.png)
 
 Remaining: the sea pens' blink (GLOW mode 0) and the trench's MOTE sediment.
 Then the four placers join the cell cache and the full set gets measured.
@@ -1942,7 +1929,6 @@ distinguished by `stretch.w > 0.5`, so both live in the same kind.
 - Visual: **mean 0.0000/255, max 0** — pixel-identical.
 - Pi: no change expected.
 
-![sea-pen blink: current / shader blink / difference](branch-sea-pen-blink.png)
 
 Only the trench's **MOTE** sediment remains before all four placers are
 camera-static; then they join the §37 cell cache and the full set is measured.
@@ -1957,7 +1943,6 @@ drop, and `smooth01(0,0.1,age)*(1-age)` as the fade.
 - Visual: **mean 0.0000/255, max 0** — pixel-identical.
 - Pi: no change expected.
 
-![sediment mote: current / shader fall / difference](branch-sediment-mote.png)
 
 **All four sprite kinds (MOTE, GLOW, EMBER, BUBBLE) are now shader-timed.**
 Every instance-side and sprite-side placement `w.t` in the four remaining
@@ -1992,7 +1977,6 @@ they can join; the planes/ice stay per-frame by nature. Then chunk streaming
 for the static cells beyond the camera cell, and the packing/UI/resolution
 items.
 
-![full cell cache: current / full cache / difference](branch-full-cell-cache.png)
 
 ## 47. Nine placers cached: -0.52 ms mean on the Pi, pixel-identical
 
@@ -2021,7 +2005,6 @@ Next: chunk streaming for the static cells beyond the camera cell (so a
 larger static set can be cached for the voyage rather than one cell), and the
 packing/UI/resolution items.
 
-![nine-placer cache: seven / nine / difference](branch-nine-placer-cache.png)
 
 ## 48. Cache cell size: 0.5 is neutral; keep the finer 0.2
 
@@ -2378,7 +2361,6 @@ second instance layout — the shape the vertex-format change (44 -> 24 B,
 struct conversion in `Library::build`, the shader decoding f16/i8/u8, the
 previews gate.
 
-![surface subset: nine-placer / subset / difference](branch-surface-subset.png)
 
 ## 60. Vertex format: the exact 14-byte layout and the decode
 
@@ -2448,7 +2430,6 @@ surface-subset state (43c4b39 + this doc record). The next attempt should
 start from a single-leg render with the tunnel excluded, confirm the model
 vertices decode, then pack the tunnel, then the full previews.
 
-![packed vertex attempt: surface subset / packed / difference](branch-packed-vertex.png)
 
 ## 62. Cached per-instance LOD scale: pixel-identical, neutral at these counts
 
@@ -2466,7 +2447,6 @@ instances built outside `put` (the tunnel) still compute it.
 Kept: pixel-exact, free, and one less per-instance computation that grows
 with the count.
 
-![scale cache: nine-placer / cached scale / difference](branch-scale-cache.png)
 
 ## 63. Packed vertices, whole scene: pixel-identical at last
 
@@ -2490,7 +2470,6 @@ The layout: `Float32x3` (12) + `Snorm8x4` (4) + `Unorm8x4` (4) +
 Kept: exact, and 20 bytes less vertex fetch per vertex (150k vertices is
 3 MB/frame less).
 
-![packed whole scene: nine-placer / packed / difference](branch-packed-whole.png)
 
 The same whole-scene rule applies to any future vertex-format change: every
 buffer a pipeline draws must use its layout. The tunnel conversion is the
@@ -2516,7 +2495,6 @@ a single-ice-plane isolation render, not another full previews run.
 
 Reverted to `ce4467b`; the failed A/B is kept.
 
-![ice subset: packed / ice subset / difference](branch-ice-subset.png)
 
 ## 65. Current full-frame cost, refreshed
 
@@ -2553,7 +2531,6 @@ Where the headroom is, in order of measured value:
 
 Draw calls are not a lever on this device: ~250 draws at ~0.7 us is ~0.18 ms.
 
-![ice subset attempt, rejected](branch-ice-subset.png)
 
 ## 66. Audit correction: the UI handoff is one post, not three
 
@@ -2672,7 +2649,6 @@ sharpness for headroom, and the look should not drift without being asked.
   (older baseline; the packed-vertex frame is 8.45 ms today), look diffs
   0.27/0.30/0.34 mean /255 over the four preview legs.
 
-![adaptive scale: not a visual branch — same frames, stepped](branch-packed-whole.png)
 
 ## 71. KMS overlay: the savings estimate and the hard blocker
 

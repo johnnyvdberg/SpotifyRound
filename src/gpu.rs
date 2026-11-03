@@ -247,9 +247,9 @@ fn display_on_gl() -> bool {
 
 /// The display's backend when `SPOTIFY_ROUND_DISPLAY` is unset: Vulkan + Skia.
 /// GL measured as fast or faster in the benchmarks (`docs/handoff/d1.md`,
-/// `docs/handoff/d2.md`), but on the kiosk in daily use Vulkan was faster,
-/// and GL's driver costs more CPU on the UI thread
-/// (`docs/handoff/globe-etc2-gl-cpu.md`); `gl` still switches to it.
+/// `d2.md`, in git at `da1fb0d`), but on the kiosk in daily use Vulkan was
+/// faster, and GL's driver costs more CPU on the UI thread
+/// (`globe-etc2-gl-cpu.md`, the same); `gl` still switches to it.
 const DISPLAY_GL_DEFAULT: bool = false;
 
 /// Create the device and make Slint use it, on the first backend of

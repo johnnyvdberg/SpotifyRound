@@ -175,9 +175,10 @@ impl Globe {
         };
         // Anisotropic filtering keeps the grazing view near the limb sharp;
         // the Pi's V3D does apply it, and at 16x it was a third of the frame
-        // (`docs/handoff/d2.md`). At 4x, with the relief and the cloud shadows
-        // (soft by design) filtered without it, the frame differs from 16x
-        // in under one pixel in a hundred, along the limb, by a few levels.
+        // (`docs/handoff/d2.md`, in git at `da1fb0d`). At 4x, with the relief
+        // and the cloud shadows (soft by design) filtered without it, the
+        // frame differs from 16x in under one pixel in a hundred, along the
+        // limb, by a few levels.
         let sampler = sampler_with("Earth sampler", ANISOTROPY);
         let soft_sampler = sampler_with("Earth soft sampler", 1);
 

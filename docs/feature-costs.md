@@ -1,8 +1,11 @@
 # What each part and effect costs
 
+The handoff notes cited below (`docs/handoff/*.md`) were removed on 2026-11-03, their tasks all
+merged; they are in git history at `da1fb0d`.
+
 The frame-time price of every pass, model group and sprite kind of the dive, measured on the Pi 5
 (OpenGL ES, Mesa 26.2.2, V3D 7.1) with `dive3d::feature_costs::features`. Every later task that
-adds a part or effect adds its row here (rule 8 of `docs/agent-tasks.md`: a pass is a row of
+adds a part or effect adds its row here (`docs/engine-features.md`: a pass is a row of
 `PASSES` in `src/dive3d/feature_costs.rs` and a bit of `dive3d::part`; a model group or sprite
 kind is an entry of `dive3d::effect::MODEL_GROUPS`/`SPRITE_GROUPS`, which this benchmark picks up
 by itself).
