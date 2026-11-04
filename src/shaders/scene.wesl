@@ -670,18 +670,6 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
         return vec4<f32>(col * SEA_SCALE, 1.0);
     }
     var col = water_at(dir);
-    let up = smooth01(0.05, 0.65, dir.y);
-    // Under the water's ceiling the surface's glint is never seen: the
-    // ceiling covers everything over a tenth of the way up its band.
-    if (SKY != SKY_CEILING && up > 0.0) {
-        let t = g.camera.w;
-        let wave = sin(dir.x * 13.0 + t * 0.8 + sin(dir.z * 9.0 - t * 0.5))
-            * sin(dir.z * 10.0 - t * 0.65 + sin(dir.x * 7.0 + t * 0.4));
-        let glint = pow(max(0.0, 0.5 + 0.5 * wave), 14.0);
-        let surface = vec3<f32>(0.10, 0.32, 0.35) * (0.72 + 0.28 * wave)
-            + vec3<f32>(0.95, 0.88, 0.68) * glint * (0.35 + g.sun.w * 0.8);
-        col = mix(col, surface, up * 0.88);
-    }
     // Above the horizon, the underside of the water surface: its ripples,
     // Snell's window and the mirror round it (`water_ceiling`).
     if (SKY == SKY_CEILING && dir.y > 0.0) {
@@ -2561,22 +2549,25 @@ fn vs_shaft(
 // A bundle of thin streaks rather than a bar: the light the surface's
 // ripples focus (the caustic web, read across the shaft and drifting along
 // it as the waves move) under a soft edge; brightest just under the surface,
-// dimming down it as the water takes the light, and gone before its foot.
+// dimming down it as the water takes the light, and faded out over its
+// lower half, so it ends in the water, never on the floor.
 @fragment
 fn fs_shaft(in: Shaft) -> @location(0) vec4<f32> {
     let x = in.corner.x;
     let y = in.corner.y;
     let edge = 1.0 - x * x;
-    let web = textureSampleLevel(
-        caustic_map,
+    // From the ripple tile's copy of the web, with its mips, at the level
+    // the pixel's own footprint picks: a shaft a few pixels across takes the
+    // web averaged, instead of single texels that flicker as it drifts.
+    let web = textureSample(
+        ripple_map,
         caustic_sampler,
         vec2<f32>(x * 0.11 + in.seed, in.seed * 3.0 + g.camera.w * (0.006 + 0.004 * in.seed)),
-        0.0,
     ).r;
     let streaks = 0.4 + 1.6 * web;
     let fall = 0.5 + 0.5 * y;
-    let along = smooth01(1.0, 0.82, y) * (0.35 + 0.65 * fall * fall) * smooth01(-1.0, -0.55, y);
-    return vec4<f32>(in.colour * (edge * edge * streaks * along * 1.4), 0.0);
+    let along = smooth01(1.0, 0.82, y) * fall * fall * smooth01(-1.0, 0.1, y);
+    return vec4<f32>(in.colour * (edge * edge * streaks * along * 1.15), 0.0);
 }
 
 // ---------------------------------------------------------------------------

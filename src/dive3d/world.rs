@@ -2126,6 +2126,8 @@ fn own_skin(model: Model) -> Option<[f32; 4]> {
         Model::Sail => carried(Surface::Canvas, 1.5),
         Model::Fan | Model::Star | Model::Shell | Model::Sponge => carried(Surface::Coral, 2.5),
         Model::Keel => fixed(Surface::Ice, 1.5),
+        // The blue hole's limestone: grain and relief over its strata.
+        Model::HoleWall => fixed(Surface::Rock, 1.5),
         Model::Hex => fixed(Surface::Basalt, 2.5),
         Model::Capsule => carried(Surface::Canvas, 1.0),
         Model::Diver | Model::DiverLimb => carried(Surface::Canvas, 2.0),
@@ -9278,6 +9280,9 @@ pub mod element {
     pub const FORT: u32 = 23;
     // The drowned museum (`world::museum`).
     pub const MUSEUM: u32 = 24;
+    /// The blue hole's ledges' sponges and fans, and the boulders on its
+    /// floor.
+    pub const HOLE_LIFE: u32 = 25;
 }
 
 /// Every element of [`element`], named for the feature table.
@@ -9336,6 +9341,10 @@ pub const ELEMENTS: &[(u32, &str)] = &[
     (
         element::MUSEUM,
         "the museum: its halls, specimens, paintings and minerals",
+    ),
+    (
+        element::HOLE_LIFE,
+        "the blue hole: sponges and fans on its ledges, boulders on its floor",
     ),
 ];
 
@@ -12046,11 +12055,15 @@ fn compose(parent: &[[f32; 4]; 3], child: &[[f32; 4]; 3]) -> [[f32; 4]; 3] {
 }
 
 /// Shafts of sunlight slanting down from the surface where it is shallow and
-/// bright enough: through the shallows, between the forest's trees, over the
+/// bright enough, fading out a few metres down ([`SHAFT_DEPTH`]) and never
+/// reaching the floor: through the shallows, between the forest's trees, over the
 /// wrecks and the shallow reef, down into the trench and through the leads in
 /// the ice. Each is rooted in a cell of a
 /// grid fixed in the world, so the boat sails among them; they breathe as the
 /// waves above gather and scatter the light, and sway with them.
+/// How far down the sun's shafts reach before they have faded out.
+const SHAFT_DEPTH: f32 = 3.5;
+
 fn shafts(w: &World, f: &mut Frame) {
     temple_light(w, f);
     gallery_light(w, f);
@@ -12075,7 +12088,8 @@ fn shafts(w: &World, f: &mut Frame) {
         }
         // Under the ice only the open leads let the sun through, so fewer.
         let roof = top - ICE * b.weight(ARCTIC) as f32;
-        let foot = w.ground(x, z) + 0.15 + 0.4 * hash(ix, iz, 452);
+        let foot = (w.ground(x, z) + 0.8 + 0.4 * hash(ix, iz, 452))
+            .max(roof - SHAFT_DEPTH * (0.7 + 0.3 * hash(ix, iz, 454)));
         if foot > roof - 0.3 {
             continue;
         }
@@ -12100,6 +12114,26 @@ fn shafts(w: &World, f: &mut Frame) {
         let breathe = 0.45 + 0.55 * (w.t * (0.25 + 0.2 * h) + h * 70.0).sin().max(0.0);
         let k =
             bright.min(1.0) * breathe * smooth(far, far - 2.0, depth) * 1.3 / (0.5 + width * 6.0);
+        // Not drawn where it cannot be seen: too faint, or its nearest point
+        // already lost in the haze a shaft's light shows through (the
+        // shader's `fog_of(d / LIGHT_SIGHT)`): far below the surface, the
+        // whole of it.
+        let c = w.pose.pos;
+        let along = {
+            let to = [c[0] - start[0], c[1] - start[1], c[2] - start[2]];
+            let r2 = run[0] * run[0] + run[1] * run[1] + run[2] * run[2];
+            ((to[0] * run[0] + to[1] * run[1] + to[2] * run[2]) / r2.max(1e-6)).clamp(0.0, 1.0)
+        };
+        let nearest = [
+            start[0] + run[0] * along - c[0],
+            start[1] + run[1] * along - c[1],
+            start[2] + run[2] * along - c[2],
+        ];
+        let reach =
+            (nearest[0] * nearest[0] + nearest[1] * nearest[1] + nearest[2] * nearest[2]).sqrt();
+        if k < 0.01 || fog(reach, w.sight() * LIGHT_SIGHT) > 0.99 {
+            continue;
+        }
         // Through the sargasso's golden weed the light comes down gold.
         let gold = b.weight(SARGASSO) as f32;
         f.shafts.push(Sprite {
@@ -12598,8 +12632,96 @@ fn blue_hole(w: &World, f: &mut Frame) {
                     place(top, h(4) * TAU, PI, 0.0, [thick, long, thick]),
                     [0.70, 0.66, 0.58],
                 )
+                .textured(Surface::Rock, 3.0)
                 .element(element::STALACTITES);
             }
+        }
+        // What grows on the ledges' tops, where the stout lip makes a
+        // shelf: tube sponges in threes, purple, ochre and rust, and small
+        // fans, sparser down the shaft as the light goes.
+        for (l, &ledge) in mesh::HOLE_LEDGES.iter().enumerate() {
+            let n = 120;
+            for i in 0..n {
+                let h = |k: u32| hash(i, l as i32, 1480 + k);
+                let a = (i as f32 + h(0)) / n as f32 * TAU;
+                let stout = smooth(
+                    -0.3,
+                    0.6,
+                    (a * 2.0 + ledge * 9.0).sin() + 0.4 * (a * 5.0).sin(),
+                );
+                if h(1) > stout * (0.45 + 0.6 * ledge) {
+                    continue;
+                }
+                let wander = 0.015 * (a * 3.0 + ledge * 20.0).sin();
+                let y = ledge + wander + 0.012;
+                let r = mesh::hole_wall_radius(a, y) - 0.03;
+                let foot = at([a.cos() * r, y, a.sin() * r]);
+                if !w.visible(foot, 0.2) {
+                    continue;
+                }
+                let yaw = h(2) * TAU;
+                if h(3) < 0.6 {
+                    let hue = [[0.46, 0.26, 0.52], [0.78, 0.58, 0.26], [0.66, 0.32, 0.20]]
+                        [(h(4) * 3.0) as usize % 3];
+                    for k in 0..3 {
+                        let t = yaw + k as f32 * 2.1;
+                        let tall = 0.09 + 0.14 * hash(i, l as i32 + 7 * k, 1490);
+                        f.put(
+                            Model::Sponge,
+                            place(
+                                [
+                                    foot[0] + t.cos() * 0.035,
+                                    foot[1] - 0.005,
+                                    foot[2] + t.sin() * 0.035,
+                                ],
+                                t,
+                                0.0,
+                                0.0,
+                                [0.03, tall, 0.03],
+                            ),
+                            hue,
+                        )
+                        .glowing(0.08)
+                        .element(element::HOLE_LIFE);
+                    }
+                } else {
+                    let s = 0.12 + 0.10 * h(5);
+                    let hue = [[0.80, 0.42, 0.24], [0.86, 0.74, 0.30]][(h(6) * 2.0) as usize % 2];
+                    f.put(Model::Fan, place(foot, yaw, 0.0, 0.0, [s; 3]), hue)
+                        .moving(anim::SWAY, yaw, 0.1, 0.5)
+                        .element(element::HOLE_LIFE);
+                }
+            }
+        }
+        // Boulders fallen from the walls, heaped on the floor's cone and
+        // strewn to its foot.
+        for i in 0..26 {
+            let h = |k: u32| hash(i, 0, 1495 + k);
+            let a = h(0) * TAU;
+            let out = 0.15 + 0.7 * h(1).sqrt();
+            let (u, v) = (a.cos() * out * HOLE_ALONG, a.sin() * out * HOLE_ACROSS);
+            let (sy, cy) = yaw.sin_cos();
+            let (x, z) = (c[0] + cy * u + sy * v, c[1] - sy * u + cy * v);
+            let y = w.ground(x, z);
+            let s = 0.08 + 0.22 * h(2) * h(2);
+            if !w.visible([x, y, z], s) {
+                continue;
+            }
+            let model = [Model::Rock0, Model::Rock1, Model::Rock2][(h(3) * 3.0) as usize % 3];
+            let grey = 0.55 + 0.2 * h(4);
+            f.put(
+                model,
+                place(
+                    [x, y - s * 0.2, z],
+                    h(5) * TAU,
+                    0.0,
+                    0.0,
+                    [s, s * 0.7, s * 0.85],
+                ),
+                [grey, grey * 0.97, grey * 0.9],
+            )
+            .grounded()
+            .element(element::HOLE_LIFE);
         }
         // The halocline, a little under the first ledge, and the faint
         // stain of the sulphide cloud a little under that.

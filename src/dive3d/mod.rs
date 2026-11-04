@@ -114,7 +114,12 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// split out so it can be timed without a GPU. One byte a texel: the lighting
 /// samples it at every vertex, so it stays as small as it can be.
 fn caustic_texels() -> Vec<u8> {
-    ripple_texels().as_chunks::<4>().0.iter().map(|t| t[0]).collect()
+    ripple_texels()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|t| t[0])
+        .collect()
 }
 
 /// The water surface's tile, for the surface seen from below
@@ -728,10 +733,14 @@ fn form_slot(s: &Sprite) -> usize {
 }
 
 /// What the open water opens on to overhead, as `SKY` in `scene.wesl`: the
-/// underside of the water surface while the boat is within six units of it,
-/// else nothing but the sea.
+/// underside of the water surface while any of it shows through the water
+/// straight overhead, where it is nearest and the haze thinnest
+/// (`world::UP_CLEAR`), else nothing but the sea: deeper, the surface is
+/// neither shaded nor faked.
 fn sky_mode(g: &Globals) -> usize {
-    usize::from(g.camera[1] > -6.0)
+    let overhead = (-g.camera[1]).max(0.0) * (1.0 - world::UP_CLEAR);
+    let sight = world::SIGHT_K / g.water[3].max(1e-6);
+    usize::from(world::fog(overhead, sight) < 0.995)
 }
 
 /// Which pipeline a run of instances is drawn with, in the order they are drawn.

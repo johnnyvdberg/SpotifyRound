@@ -6509,11 +6509,15 @@ fn hole_wall() -> Mesh {
         [0, 1, 2].map(|j| c[j] + ([0.38, 0.44, 0.30][j] - c[j]) * growth * 0.6)
     };
     // The rows from just under the floor to the rim, then the lip turned
-    // out over the bank.
+    // out over the bank: sharply, so the rock's projection turns from the
+    // wall's across-and-up to the floor's on a sliver, not across a broad
+    // sloping band it would smear.
     let mut rows: Vec<(f32, f32)> = (0..=up)
         .map(|i| (-0.04 + 1.04 * i as f32 / up as f32, 0.0))
         .collect();
-    rows.push((1.035, 0.15));
+    rows.push((1.03, 0.0));
+    rows.push((1.036, 0.03));
+    rows.push((1.045, 0.15));
     rows.push((1.06, 0.32));
     let mut grid = Vec::with_capacity(rows.len());
     for &(y, flare) in &rows {
