@@ -177,6 +177,8 @@ impl Stream {
                     error: level.error,
                     stray: 0.0,
                     edge: 0.0,
+                    reach: [level.error; 3],
+                    span: [0.0; 3],
                     ..empty
                 });
                 self.filled = (base + level.vertex_count(), first + level.index_count());

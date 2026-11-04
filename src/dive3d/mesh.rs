@@ -5689,6 +5689,12 @@ pub struct Lod {
     /// The longest edge of what it changed: how fine the colours and normals
     /// it carries there are.
     pub edge: f32,
+    /// `error` and `edge` along each of the model's own axes: an instance
+    /// stretched more one way than another (a mangrove to the water's depth)
+    /// strays by these times its axes, often far less than the longest
+    /// axis times `error` (`level_of`).
+    pub reach: [f32; 3],
+    pub span: [f32; 3],
     /// A city model's indices run part by part ([`city`]): how many indices
     /// each part takes, in the order of its constants. All zero for the
     /// rest, which are drawn in one piece.
@@ -5713,8 +5719,8 @@ fn optimized(mut mesh: Mesh) -> Mesh {
 struct Built {
     levels: Vec<Mesh>,
     sealed: bool,
-    /// Per level, `(error, stray, edge)` against the full one.
-    measures: Vec<(f32, f32, f32)>,
+    /// Per level, its [`Measure`] against the full one.
+    measures: Vec<Measure>,
     /// Per level, a city model's indices per part.
     parts: Vec<[u32; city::PARTS]>,
 }
@@ -5727,7 +5733,7 @@ impl Built {
             return Self {
                 levels: vec![Mesh::default()],
                 sealed: false,
-                measures: vec![(0.0, 0.0, 0.0)],
+                measures: vec![Measure::default()],
                 parts: vec![[0; city::PARTS]],
             };
         }
@@ -5770,12 +5776,16 @@ impl Built {
         let measures = levels
             .iter()
             .map(|mesh| {
-                let (error, stray) = levels[0].distance(mesh);
-                (
-                    error.max(mesh.distance(&levels[0]).0),
+                let (error, stray, reach) = levels[0].distance(mesh);
+                let (back, _, back_reach) = mesh.distance(&levels[0]);
+                let (edge, span) = mesh.longest_new_edge(&levels[0]);
+                Measure {
+                    error: error.max(back),
                     stray,
-                    mesh.longest_new_edge(&levels[0]),
-                )
+                    edge,
+                    reach: [0, 1, 2].map(|k| reach[k].max(back_reach[k])),
+                    span,
+                }
             })
             .collect();
         Self {
@@ -5785,6 +5795,16 @@ impl Built {
             parts,
         }
     }
+}
+
+/// How far a level strays from its model's full detail (see [`Lod`]).
+#[derive(Clone, Copy, Default)]
+struct Measure {
+    error: f32,
+    stray: f32,
+    edge: f32,
+    reach: [f32; 3],
+    span: [f32; 3],
 }
 
 /// Sort a city mesh's triangles by the part they belong to (the kind its
@@ -6008,17 +6028,17 @@ impl Library {
         for built in models {
             sealed.push(built.sealed);
             let mut list = Vec::new();
-            for ((mesh, &(error, stray, edge)), &parts) in
-                built.levels.iter().zip(&built.measures).zip(&built.parts)
-            {
+            for ((mesh, m), &parts) in built.levels.iter().zip(&built.measures).zip(&built.parts) {
                 list.push(Lod {
                     first: indices.len() as u32,
                     count: mesh.indices.len() as u32,
                     base: vertices.len() as i32,
                     vertices: mesh.vertices.len() as u32,
-                    error,
-                    stray,
-                    edge,
+                    error: m.error,
+                    stray: m.stray,
+                    edge: m.edge,
+                    reach: m.reach,
+                    span: m.span,
                     parts,
                 });
                 vertices.extend(mesh.vertices.iter().map(Packed::from));
@@ -6039,12 +6059,12 @@ impl Mesh {
     /// How far any of this mesh's vertices lies from `other`'s surface; and
     /// how far `other`'s colour and normal there stray from the vertex's own,
     /// the larger of the two, the normal's by the sine of the angle between.
-    fn distance(&self, other: &Mesh) -> (f32, f32) {
+    fn distance(&self, other: &Mesh) -> (f32, f32, [f32; 3]) {
         let triangles: Vec<[u32; 3]> = other.indices.as_chunks::<3>().0.to_vec();
         let corner = |t: &[u32; 3]| t.map(|i| other.vertices[i as usize].pos);
-        let (mut far, mut stray) = (0.0f32, 0.0f32);
+        let (mut far, mut stray, mut reach) = (0.0f32, 0.0f32, [0.0f32; 3]);
         for v in &self.vertices {
-            let nearest: Vec<(f32, [u32; 3], [f32; 3])> = triangles
+            let nearest: Vec<(f32, [u32; 3], [f32; 3], Vec3)> = triangles
                 .iter()
                 .map(|t| {
                     let c = corner(t);
@@ -6052,11 +6072,15 @@ impl Mesh {
                     let q = Vec3::from_array(c[0]) * w[0]
                         + Vec3::from_array(c[1]) * w[1]
                         + Vec3::from_array(c[2]) * w[2];
-                    ((Vec3::from_array(v.pos) - q).length(), *t, w)
+                    let gap = Vec3::from_array(v.pos) - q;
+                    (gap.length(), *t, w, gap)
                 })
                 .collect();
             let best = nearest.iter().map(|n| n.0).fold(f32::MAX, f32::min);
             far = far.max(best);
+            if let Some(n) = nearest.iter().find(|n| n.0 == best) {
+                reach = [0, 1, 2].map(|k| reach[k].max(n.3[k].abs()));
+            }
             let blend = |t: [u32; 3], w: [f32; 3], f: fn(&Vertex) -> [f32; 3]| {
                 let [a, b, c] = t.map(|i| f(&other.vertices[i as usize]));
                 [0, 1, 2].map(|k| a[k] * w[0] + b[k] * w[1] + c[k] * w[2])
@@ -6085,12 +6109,12 @@ impl Mesh {
             let n = normal.cross(Vec3::from_array(v.normal));
             stray = stray.max(tint).max(n.length());
         }
-        (far, stray)
+        (far, stray, reach)
     }
 
     /// The longest edge of the triangles this mesh has and `full` has not:
     /// how coarse the parts it changed are.
-    fn longest_new_edge(&self, full: &Mesh) -> f32 {
+    fn longest_new_edge(&self, full: &Mesh) -> (f32, [f32; 3]) {
         let key = |m: &Mesh, t: &[u32; 3]| {
             let mut k = t.map(|i| m.vertices[i as usize].pos.map(|c| (c * 1e4).round() as i64));
             k.sort();
@@ -6103,7 +6127,7 @@ impl Mesh {
             .iter()
             .map(|t| key(full, t))
             .collect();
-        let mut longest = 0.0f32;
+        let (mut longest, mut span) = (0.0f32, [0.0f32; 3]);
         for t in self.indices.as_chunks::<3>().0 {
             if old.contains(&key(self, t)) {
                 continue;
@@ -6112,9 +6136,10 @@ impl Mesh {
                 let d = Vec3::from_array(self.vertices[a as usize].pos)
                     - Vec3::from_array(self.vertices[b as usize].pos);
                 longest = longest.max(d.length());
+                span = [0, 1, 2].map(|k| span[k].max(d[k].abs()));
             }
         }
-        longest
+        (longest, span)
     }
 
     /// Whether the mesh is closed, every edge shared by exactly two triangles

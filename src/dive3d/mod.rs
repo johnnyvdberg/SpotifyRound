@@ -699,11 +699,12 @@ fn material_slot(i: &Instance) -> usize {
 }
 
 /// The animations models get a pipeline of their own for, as `ANIM` in
-/// `scene.wesl`: none, and the sway nearly all the reef's life moves with.
-/// Everything else is drawn by the last, -1, which reads the kind per
-/// instance. A still model's vertex shader is half the length and its
-/// binning pass a sixth, and the GPU runs both for every vertex.
-const ANIMS: [i32; 3] = [0, world::anim::SWAY as i32, -1];
+/// `scene.wesl`: none, the sway nearly all the reef's life moves with, and
+/// the fishes' swim. Everything else is drawn by the last, -1, which reads
+/// the kind per instance. A still model's vertex shader is half the length
+/// and its binning pass a sixth, and the GPU runs both for every vertex;
+/// the fish, the most numerous swimmers, were half the any-kind's cost.
+const ANIMS: [i32; 4] = [0, world::anim::SWAY as i32, world::anim::SWIM as i32, -1];
 
 /// The index into [`ANIMS`] of the pipeline for an instance.
 fn anim_slot(i: &Instance) -> usize {
@@ -3674,7 +3675,18 @@ fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32, haze: f32, bias: 
     if near <= NEAR {
         return 0;
     }
-    let pixels = scale * (sea * 0.5) / (world::VIEW * near);
+    let unit = (sea * 0.5) / (world::VIEW * near);
+    let pixels = scale * unit;
+    // Each of the instance's own axes, for the levels' strays along them.
+    let axes = [0, 1, 2].map(|c| {
+        (0..3)
+            .map(|r| i.rows[r][c] * i.rows[r][c])
+            .sum::<f32>()
+            .sqrt()
+    });
+    // Both bounds hold (a stray of (x, y, z) in the model is at most
+    // |x|·axis x + |y|·axis y + |z|·axis z in the world, and at most its
+    // length times the longest axis): the tighter is taken.
     // What the haze leaves of a difference: the fog over it, out to the
     // sight where it hides it all (`haze` is `world::SIGHT_K` over the sight).
     let clear = 1.0 - world::fog(near, world::SIGHT_K / haze);
@@ -3684,8 +3696,10 @@ fn level_of(lods: &[Lod], i: &Instance, pose: &Pose, sea: f32, haze: f32, bias: 
         .rev()
         .find(|&l| {
             let lod = &lods[l];
-            lod.error * pixels < error_limit * bias
-                && (lod.stray < LOD_STRAY || lod.edge * pixels < edge_limit * bias)
+            let along = |v: [f32; 3]| (v[0] * axes[0] + v[1] * axes[1] + v[2] * axes[2]) * unit;
+            let error = (lod.error * pixels).min(along(lod.reach));
+            let edge = (lod.edge * pixels).min(along(lod.span));
+            error < error_limit * bias && (lod.stray < LOD_STRAY || edge < edge_limit * bias)
         })
         .unwrap_or(0)
 }
