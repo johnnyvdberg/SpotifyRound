@@ -45,7 +45,7 @@ use std::f32::consts::TAU;
 
 use super::world::{
     ATLANTIS, CAVE, GALLERY_LONG, Seabed, TRENCH, TUNNEL, TUNNEL_SHARE, corridor, corridor_slope,
-    gallery_start, tour, tunnel_stretch,
+    gallery_start, hole_tour, tour, tunnel_stretch,
 };
 use crate::voyage::{Position, SPEED};
 
@@ -396,21 +396,28 @@ impl Helm {
             -(track(x + 0.05, phase, open).1.atan() - track(x - 0.05, phase, open).1.atan()) / 0.1;
         // In the museum the tour takes the boat off its track, in at the
         // front door, once round the great hall and out at the back.
-        let (x, z, heading, bend, toured) = match tour(seabed, x) {
-            Some(t) => {
-                let w = t.weight;
-                let mut d = t.heading - heading;
-                d -= TAU * (d / TAU).round();
-                (
-                    x + (t.x - x) * w,
-                    z + (t.z - z) * w,
-                    heading + d * w,
-                    bend * (1.0 - w),
-                    w,
-                )
-            }
-            None => (x, z, heading, bend, 0.0),
-        };
+        // Down the blue hole the way spirals round the shaft and sets the
+        // height too.
+        let (x, z, heading, bend, toured, held) =
+            match tour(seabed, x).or_else(|| hole_tour(seabed, x)) {
+                Some(t) => {
+                    // A swipe's passage sweeps through on the track: at
+                    // many times its pace the spiral down the hole would
+                    // whirl the nose round.
+                    let w = t.weight * smooth(6.0, 2.0, warp);
+                    let mut d = t.heading - heading;
+                    d -= TAU * (d / TAU).round();
+                    (
+                        x + (t.x - x) * w,
+                        z + (t.z - z) * w,
+                        heading + d * w,
+                        bend * (1.0 - w),
+                        w,
+                        t.height,
+                    )
+                }
+                None => (x, z, heading, bend, 0.0, None),
+            };
         // The heading as near the nose's as whole turns allow, so that once
         // round the loop the helm does not unwind it again.
         let heading = heading + TAU * ((self.course.value - heading) / TAU).round();
@@ -500,7 +507,10 @@ impl Helm {
                 .follow(swung.clamp(-most, most), 0.12, attitude_dt, spare);
             self.cruise += (about - self.cruise) * (1.0 - (-voyage_dt / 4.0).exp());
         }
-        let target = (self.cruise + alt).max(rise).min(roof).max(floor);
+        let mut target = (self.cruise + alt).max(rise).min(roof).max(floor);
+        if let Some(y) = held {
+            target = (target + (y - target) * toured).min(roof).max(floor);
+        }
         if fresh {
             self.height = Spring::at(target.min(overhead.max(floor)));
             self.target = target;
@@ -540,10 +550,11 @@ impl Helm {
             let climb = (self.height.rate / SPEED as f32).atan() * 0.6;
             self.pitch
                 .follow(climb.clamp(-PITCH, PITCH), 0.35, attitude_dt, 0.012);
-            // Round the museum's loop the helm is put over harder than
-            // anywhere on the open track.
+            // Round the museum's loop and down the blue hole's spiral the
+            // helm is put over harder than anywhere on the open track,
+            // enough for the spiral's tightest bends.
             self.course
-                .follow(heading, 0.5, attitude_dt, 0.05 + 0.05 * toured);
+                .follow(heading, 0.5, attitude_dt, 0.05 + 0.10 * toured);
             // Bank a little into the bend, as the sail heels a boat inward.
             let turning = bend * SPEED as f32 * warp;
             let bank = (-turning * 10.0).clamp(-BANK, BANK);

@@ -1032,8 +1032,8 @@ mod effect {
     /// Every model group, named for the `effect_cost` table: what the bit
     /// covers, the models it is made of, and what those models are used for.
     pub const MODEL_GROUPS: &[(&str, u64, &str, &str)] = &[
-        ("fish", FISH, "Fish", "shoals"),
-        ("kelp", KELP, "Kelp", "kelp beds, sea pens"),
+        ("fish", FISH, "Fish, Angler", "shoals, anglerfish"),
+        ("kelp", KELP, "Kelp", "kelp beds"),
         ("rock 0", ROCK0, "Rock0", "boulders, stones, trench lips"),
         ("rock 1", ROCK1, "Rock1", "boulders, stones, trench lips"),
         ("rock 2", ROCK2, "Rock2", "boulders, stones, trench lips"),
@@ -1065,20 +1065,15 @@ mod effect {
             "spheres",
             SPHERES,
             "Sphere",
-            "coral buds, pearls, gold, eyes, ports, lanterns, anglerfish",
+            "coral buds, pearls, gold, eyes, ports, lanterns",
         ),
         (
             "cave hexes",
             CAVE_HEX,
-            "Hex, Crystal, CrystalCluster",
+            "Hex, Crystal, CrystalCluster, Halite, SaltChimney",
             "basalt columns, crystal points and clusters",
         ),
-        (
-            "cones",
-            CONES,
-            "Cone",
-            "stalactites, crinoid arms, ruined spires",
-        ),
+        ("cones", CONES, "Cone", "stalactites, ruined spires"),
         (
             "divers",
             DIVERS,
@@ -1100,8 +1095,18 @@ mod effect {
             "Bell, JellyArm, JellyFringe, Comb",
             "drifting jellyfish, their arms and tentacles, and comb jellies",
         ),
-        ("shells", SHELLS, "Shell", "clams and pearls"),
-        ("fans", FANS, "Fan", "sea fans"),
+        (
+            "shells",
+            SHELLS,
+            "Shell, Mussels",
+            "clams, pearls and seep mussels",
+        ),
+        (
+            "fans",
+            FANS,
+            "Fan, SeaPen, Crinoid",
+            "sea fans, sea pens and crinoids",
+        ),
         ("stars", STARS, "Star", "starfish"),
         ("sponges", SPONGES, "Sponge", "sponges"),
         (
@@ -1241,7 +1246,7 @@ mod effect {
 fn model_bit(model: usize) -> u64 {
     use mesh::Model;
     match Model::ALL[model] {
-        Model::Fish => effect::FISH,
+        Model::Fish | Model::Angler => effect::FISH,
         Model::Kelp => effect::KELP,
         Model::Rock0 => effect::ROCK0,
         Model::Rock1 => effect::ROCK1,
@@ -1257,7 +1262,11 @@ fn model_bit(model: usize) -> u64 {
         Model::Cylinder => effect::CYLINDERS,
         Model::Box => effect::BOXES,
         Model::Sphere => effect::SPHERES,
-        Model::Hex | Model::Crystal | Model::CrystalCluster => effect::CAVE_HEX,
+        Model::Hex
+        | Model::Crystal
+        | Model::CrystalCluster
+        | Model::Halite
+        | Model::SaltChimney => effect::CAVE_HEX,
         Model::Cone => effect::CONES,
         Model::Diver | Model::DiverHelmet | Model::DiverLimb | Model::DiverBoot => effect::DIVERS,
         Model::Shark => effect::SHARKS,
@@ -1270,8 +1279,8 @@ fn model_bit(model: usize) -> u64 {
         Model::Mantle => effect::SQUID,
         Model::Tube => effect::TUBES,
         Model::Bell | Model::JellyArm | Model::JellyFringe | Model::Comb => effect::JELLYFISH,
-        Model::Shell => effect::SHELLS,
-        Model::Fan => effect::FANS,
+        Model::Shell | Model::Mussels => effect::SHELLS,
+        Model::Fan | Model::SeaPen | Model::Crinoid => effect::FANS,
         Model::Star | Model::Urchin | Model::Cucumber => effect::STARS,
         Model::Sponge => effect::SPONGES,
         Model::Coral
@@ -3629,6 +3638,10 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         let c = mix3(c, [0.05, 0.22, 0.32], arctic * 0.75);
         mix3(c, [0.030, 0.012, 0.010], cave * 0.85)
     };
+    // Down the blue hole's shaft the water thickens: the halocline's
+    // sulphide and the fine silt hanging in still water close in the sight
+    // and take the colour out of the light, more the deeper the boat goes.
+    let murk = share(world::BLUE_HOLE) * soft(3.0, 6.5, pose.depth as f32);
     let water = cast(water_tone(depth));
     let deep = cast(water_tone((depth + 0.30).min(1.1)));
     // The new seas' own tone, over the depth ramp: the bright, clear blue of
@@ -3656,6 +3669,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         share(world::SPONGE_REEF) * 0.75,
     );
     let water = mix3(water, hole, share(world::BLUE_HOLE) * 0.75);
+    let water = mix3(water, [0.025, 0.060, 0.070], murk * 0.80);
     let deep = mix3(deep, [0.025, 0.20, 0.38], share(world::CORAL) * 0.65);
     let deep = mix3(deep, [0.14, 0.13, 0.05], share(world::SARGASSO) * 0.60);
     let deep = mix3(deep, [0.005, 0.006, 0.008], share(world::VENTS) * 0.65);
@@ -3669,6 +3683,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         share(world::SPONGE_REEF) * 0.70,
     );
     let deep = mix3(deep, [0.008, 0.035, 0.16], share(world::BLUE_HOLE) * 0.65);
+    let deep = mix3(deep, [0.006, 0.016, 0.020], murk * 0.85);
     // Over the trench the water is clear, and daylight reaches its walls;
     // the shallow reef gets a little more of it, the vents almost none.
     let sun = (-depth * 4.3).exp()
@@ -3680,7 +3695,8 @@ fn globals(w: &World, frame: &Frame) -> Globals {
         * (1.0 - 0.60 * share(world::CITY))
         * (1.0 + 0.40 * share(world::MEADOW))
         * (1.0 - 0.50 * share(world::SPONGE_REEF))
-        * (1.0 + 0.30 * share(world::BLUE_HOLE));
+        * (1.0 + 0.30 * share(world::BLUE_HOLE))
+        * (1.0 - 0.75 * murk);
     let lamp = 0.22 + 0.95 * soft(0.12, 0.70, depth);
     let [right, up, out] = pose.basis;
     let in_boat = |v: [f32; 3]| {
@@ -3732,7 +3748,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     // across the avenue and their windows show from much further.
     // The haze reaches the water's full colour at the sea's sight
     // (`world::SIGHT`), where the placers stop placing.
-    let haze = world::SIGHT_K / blend(world::SIGHT);
+    let haze = world::SIGHT_K / (blend(world::SIGHT) * (1.0 - 0.75 * murk));
     // How much this sea has a sky the water can open on to: the shallow seas
     // can through Snell's window, the polar ice through its leads; the cave,
     // the deep, the bloom, the drowned city and the glass sponges cannot;

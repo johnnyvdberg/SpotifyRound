@@ -20,8 +20,8 @@ use super::textures::Surface;
 use crate::voyage::{BIOMES, Biome};
 
 mod museum;
+pub use museum::{Tour, museum_ahead, museum_reach, tour};
 use museum::{museum, museum_lights};
-pub use museum::{museum_ahead, museum_reach, tour};
 
 pub const SHALLOWS: usize = 0;
 pub const FOREST: usize = 1;
@@ -257,8 +257,8 @@ pub mod anim {
     pub const PULSE: f32 = 5.0;
     /// A tridacna shell hinged at its base, opening and closing.
     pub const SHELL: f32 = 6.0;
-    /// An arm waving about the vertical: the trench crinoids.
-    pub const WAVE: f32 = 7.0;
+    // 7, an arm waving about the vertical, went with the trench's cone
+    // crinoids: `Model::Crinoid` sways whole.
     /// A flipper beating about the forward axis: the polar penguins.
     pub const FLAP: f32 = 8.0;
     /// A narwhal's body: a slow bob and yaw, with the fluke's beat.
@@ -3432,7 +3432,7 @@ fn gardens(w: &World, f: &mut Frame) {
                     place([x, y + 0.03, z], 0.0, 0.0, 0.0, [0.018; 3]),
                     [0.9, 0.88, 0.82],
                 )
-                .glowing(0.35)
+                .glowing(0.16)
                 .material(material::COPPER);
             } else {
                 let hue = if hash(ix, iz, 44) < 0.5 {
@@ -4018,62 +4018,68 @@ fn brine_garden(f: &mut Frame, w: &World, site: GardenSite) {
         yaw,
     } = site;
     let roll = hash(ix, iz, 95);
-    if roll < 0.55 {
-        let towers = 2 + (hash(ix, iz, 96) * 3.0) as i32;
+    // Salt crust stained here and there with iron, from white to a pale
+    // ochre.
+    let stain = hash(ix, iz, 107) * 0.18;
+    let crust = [0.93, 0.90 - stain * 0.3, 0.84 - stain];
+    if roll < 0.4 {
+        // A chimney or two, built up by the brine seeping out, with salt
+        // crystals heaped at their feet.
+        let towers = 1 + (hash(ix, iz, 96) * 2.0) as i32;
         for k in 0..towers {
             let a = yaw + k as f32 * 2.4;
-            let off = 0.05 + 0.12 * hash(ix + k, iz, 97);
-            let p = [x + a.cos() * off, y - 0.02, z + a.sin() * off];
-            if !w.visible(p, 0.2) {
+            let off = 0.04 + 0.10 * hash(ix + k, iz, 97);
+            let p = [x + a.cos() * off, y - 0.01, z + a.sin() * off];
+            if !w.visible(p, 0.3) {
                 continue;
             }
-            let s = 0.025 + 0.040 * hash(ix, iz + k, 98);
-            let tall = s * (1.6 + 1.4 * hash(ix, iz, 101));
-            let lean = (
-                (hash(ix, iz + k, 99) - 0.5) * 0.5,
-                (hash(ix, iz + k, 100) - 0.5) * 0.5,
-            );
-            // Salt crust stained here and there with iron, from white to a
-            // pale ochre.
-            let stain = hash(ix, iz + k, 107) * 0.18;
-            let crust = [0.93, 0.90 - stain * 0.3, 0.84 - stain];
-            let roll = hash(ix, iz + k, 106);
-            if roll < 0.25 {
-                // Some of the salt is translucent: a prism catching the light
-                // through its faces, a glint rather than a white slab.
-                let rows = place(p, a, lean.0, lean.1, [s * 0.45, tall, s * 0.45]);
-                f.glass(Model::Hex, rows, [0.42, 0.52, 0.55]).glowing(0.10);
-            } else if roll < 0.6 {
-                // A crusted column.
-                let rows = place(p, a, lean.0, lean.1, [s * 0.45, tall, s * 0.45]);
-                f.put(Model::Hex, rows, crust)
-                    .textured(Surface::Marble, 2.0)
-                    .glowing(0.16)
-                    .grounded();
-            } else {
-                // A spire, built up to a point by the brine seeping out.
-                let rows = place(p, a, lean.0, lean.1, [s * 0.7, tall * 1.3, s * 0.7]);
-                f.put(Model::Cone, rows, crust)
-                    .textured(Surface::Marble, 2.0)
-                    .glowing(0.16)
-                    .grounded();
-            }
+            let tall = 0.10 + 0.20 * hash(ix, iz + k, 98);
+            let wide = tall * (0.7 + 0.3 * hash(ix, iz + k, 101));
+            let lean = (hash(ix, iz + k, 99) - 0.5) * 0.3;
+            f.put(
+                Model::SaltChimney,
+                place(p, a, lean, 0.0, [wide, tall, wide]),
+                crust,
+            )
+            .textured(Surface::Marble, 2.0)
+            .glowing(0.16)
+            .grounded();
+            let s = wide * 0.5;
+            f.put(
+                Model::Halite,
+                place([p[0], p[1] - 0.005, p[2]], a + 1.0, 0.0, 0.0, [s; 3]),
+                [0.95, 0.94, 0.90],
+            )
+            .glowing(0.16)
+            .grounded();
         }
-    } else if roll < 0.8 {
-        // A shallow pan of brine: a dark, still sheet sunk into the crust.
-        let r = 0.07 + 0.10 * hash(ix, iz, 102);
+    } else if roll < 0.6 {
+        // A heap of salt crystals.
+        let p = [x, y - 0.01, z];
+        if w.visible(p, 0.2) {
+            let s = 0.07 + 0.09 * hash(ix, iz, 100);
+            f.put(Model::Halite, place(p, yaw, 0.0, 0.0, [s; 3]), crust)
+                .textured(Surface::Marble, 2.0)
+                .glowing(0.16)
+                .grounded();
+        }
+    } else if roll < 0.85 {
+        // A shallow pan of brine: a dark, still sheet sunk into the crust,
+        // ringed with the seep mussels that live off what wells up in it.
+        let r = 0.10 + 0.12 * hash(ix, iz, 102);
+        let squash = 0.7 + 0.3 * hash(ix, iz, 103);
         let p = [x, y + 0.004, z];
-        if w.visible(p, r) {
+        if w.visible(p, r * 1.2) {
             f.put(
                 Model::Sphere,
-                place(
-                    p,
-                    0.0,
-                    0.0,
-                    0.0,
-                    [r, 0.004, r * (0.7 + 0.3 * hash(ix, iz, 103))],
-                ),
+                place(p, yaw, 0.0, 0.0, [r, 0.004, r * squash]),
                 [0.035, 0.10, 0.11],
+            )
+            .grounded();
+            f.put(
+                Model::Mussels,
+                place([x, y - 0.004, z], yaw, 0.0, 0.0, [r, r * 0.8, r * squash]),
+                [0.9, 0.85, 0.8],
             )
             .grounded();
         }
@@ -4239,46 +4245,30 @@ fn trench(w: &World, f: &mut Frame) {
         } else if slope.abs() < 0.6 {
             if pick < 0.55 {
                 // A sea pen, glowing faintly as sea pens do.
-                let h = 0.12 + 0.12 * hash(ix, iz, 515);
+                let h = 0.16 + 0.14 * hash(ix, iz, 515);
                 f.put(
-                    Model::Kelp,
-                    place([x, y, z], yaw, 0.0, 0.0, [0.35, h, 0.35]),
-                    [0.90, 0.62, 0.40],
+                    Model::SeaPen,
+                    place([x, y - 0.01, z], yaw, 0.0, 0.0, [h; 3]),
+                    [0.95, 0.62, 0.40],
                 )
                 .moving(anim::SWAY, yaw, 0.04, 0.7)
                 .glowing(0.12)
                 .grounded();
             } else if pick < 0.8 {
                 // A crinoid: a stalk and a crown of feathery arms.
-                let h = 0.12 + 0.1 * hash(ix, iz, 516);
-                let top = [x, y + h, z];
+                let h = 0.2 + 0.12 * hash(ix, iz, 516);
                 let hue = if hash(ix, iz, 517) < 0.5 {
                     [0.92, 0.75, 0.25]
                 } else {
                     [0.80, 0.25, 0.30]
                 };
                 f.put(
-                    Model::Cylinder,
-                    between([x, y - 0.01, z], top, 0.005),
-                    [0.45, 0.40, 0.32],
+                    Model::Crinoid,
+                    place([x, y - 0.01, z], yaw, 0.0, 0.0, [h; 3]),
+                    hue,
                 )
+                .moving(anim::SWAY, yaw, 0.05, 0.6)
                 .grounded();
-                for k in 0..5 {
-                    // The wave is the shader's (anim::WAVE); the placement
-                    // keeps only the arm's fixed bearing.
-                    let a = k as f32 / 5.0 * TAU + yaw;
-                    let tip = [
-                        top[0] + a.cos() * 0.07,
-                        top[1] + 0.05,
-                        top[2] + a.sin() * 0.07,
-                    ];
-                    f.put(Model::Cone, between(top, tip, 0.008), hue).moving(
-                        anim::WAVE,
-                        k as f32,
-                        0.15,
-                        0.6,
-                    );
-                }
             }
         }
     }
@@ -10696,39 +10686,74 @@ fn creature(
                 .moving(anim::FLUKE, phase, 0.06, beat);
         }
         Motion::Chain => {
-            // A stem drifting in a slow curve, twenty-odd bells along it,
-            // largest at the head; each bell takes the stroke a little after
-            // the one before, so it runs down the colony.
+            // A siphonophore, as the deep ones are: a cluster of swimming
+            // bells at its head, pulsing a little out of step, and behind
+            // them a thin glowing stem drifting in a slow curve, hung with
+            // small bracts and fishing tentacles; not a string of equal beads.
             let y0 = w.ground(x, z) + c.height.0 + (c.height.1 - c.height.0) * pick;
-            let bells = 22;
-            let step = size * 1.7;
+            let links = 12;
+            let step = size * 2.6;
             let head = [x, y0, z];
-            if w.reveal(head, step * bells as f32) <= 0.001 {
+            if w.reveal(head, step * links as f32) <= 0.001 {
                 return;
             }
-            for b in 0..bells {
-                let fb = b as f32;
+            let stem = |fb: f32| {
                 let bend = 0.35 * (fb * 0.15 + w.t * 0.08 + phase).sin();
-                let p = [
+                [
                     x - fb * step * bend.cos(),
-                    y0 - fb * step * 0.35 + 0.05 * (w.t * 0.2 + phase + fb * 0.2).sin(),
+                    y0 - fb * step * 0.3 + 0.05 * (w.t * 0.2 + phase + fb * 0.2).sin(),
                     z + fb * step * bend.sin(),
-                ];
+                ]
+            };
+            // The bells, in two staggered rows along the head.
+            for b in 0..6 {
+                let fb = b as f32;
+                let p = stem(-0.4 * fb);
+                let side = if b % 2 == 0 { 1.0 } else { -1.0 };
+                let p = [p[0], p[1] + side * size * 0.5, p[2] + side * size * 0.6];
                 f.fade = show(p);
                 if f.fade <= 0.001 {
                     continue;
                 }
-                let s = size * (1.0 - 0.025 * fb);
+                let s = size * (1.25 - 0.06 * fb);
                 f.glass(
                     Model::Bell,
-                    place(p, phase + fb, 1.3, 0.0, [s, s * 1.2, s]),
+                    place(p, phase + fb, 1.3 + 0.3 * side, 0.0, [s, s * 1.2, s]),
                     c.colour,
                 )
-                .moving(anim::PULSE, phase - fb * 0.45, 0.18, TAU * 0.9)
+                .moving(anim::PULSE, phase - fb * 0.8, 0.18, TAU * 0.9)
                 .material(material::JELLY)
                 .glowing(c.glow);
-                if b % 3 == 0 {
-                    f.sprite(p, s * 1.6, [0.15, 0.30, 0.45], GLOW);
+            }
+            f.fade = show(head);
+            if f.fade > 0.001 {
+                f.sprite(head, size * 3.0, [0.15, 0.30, 0.45], GLOW);
+            }
+            // The stem, and on it the cormidia: a bract and a tentacle
+            // hanging from every other link.
+            for l in 0..links {
+                let (a, b) = (stem(l as f32), stem(l as f32 + 1.0));
+                f.fade = show(a);
+                if f.fade <= 0.001 {
+                    continue;
+                }
+                f.glass(Model::Tube, between(a, b, size * 0.08), c.colour)
+                    .glowing(c.glow);
+                if l % 2 == 1 {
+                    let s = size * 0.55;
+                    f.glass(
+                        Model::Bell,
+                        place(a, phase + l as f32, 0.6, 0.0, [s, s, s]),
+                        c.colour,
+                    )
+                    .moving(anim::PULSE, phase + l as f32, 0.1, TAU * 0.6)
+                    .material(material::JELLY)
+                    .glowing(0.5 * c.glow);
+                    let long = size * (3.0 + 2.0 * hash(l, 7, c.salt));
+                    let tip = [a[0], a[1] - long, a[2]];
+                    f.glass(Model::Tube, between(a, tip, size * 0.03), c.colour)
+                        .moving(anim::WRITHE, phase + l as f32, 0.01, 0.9)
+                        .glowing(0.6 * c.glow);
                 }
             }
         }
@@ -10750,76 +10775,7 @@ fn squid(w: &World, f: &mut Frame) {
             continue;
         }
         f.fade = fade(w.share(x, z, ABYSS), 0.4) * show;
-        let jet = 0.5 + 0.5 * (w.t * 0.9).sin();
-        let mottled = [0.40, 0.12, 0.08];
-        // It swims mantle first, toward -x: the mantle runs from the head.
-        f.put(
-            Model::Mantle,
-            place(head, PI, 0.0, 0.0, [s, s * (1.0 - 0.1 * jet), s]),
-            mottled,
-        );
-        f.put(
-            Model::Sphere,
-            place(
-                add(head, [0.07 * s, 0.0, 0.0]),
-                0.0,
-                0.0,
-                0.0,
-                [0.075 * s, 0.05 * s, 0.05 * s],
-            ),
-            mottled,
-        );
-        for side in [-1.0f32, 1.0] {
-            let eye = add(head, [0.06 * s, 0.012 * s, side * 0.045 * s]);
-            f.put(
-                Model::Sphere,
-                place(eye, 0.0, 0.0, 0.0, [0.026 * s; 3]),
-                [0.70, 0.62, 0.40],
-            )
-            .glowing(0.15);
-            f.put(
-                Model::Sphere,
-                place(
-                    add(eye, [0.004 * s, 0.0, side * 0.018 * s]),
-                    0.0,
-                    0.0,
-                    0.0,
-                    [0.013 * s; 3],
-                ),
-                [0.01, 0.01, 0.015],
-            );
-        }
-        for a in 0..10 {
-            let fa = a as f32;
-            let tentacle = a >= 8;
-            let reach = if tentacle {
-                0.70
-            } else {
-                0.24 + 0.16 * hash(a, k, 331)
-            };
-            let ang = fa / 10.0 * TAU;
-            let spread = if tentacle {
-                0.03
-            } else {
-                0.06 + 0.10 * (1.0 - jet)
-            };
-            let root = add(head, [0.11 * s, 0.0, 0.0]);
-            let tip = add(
-                root,
-                [
-                    reach * s,
-                    ang.sin() * spread * s * 2.0,
-                    ang.cos() * spread * s * 2.0,
-                ],
-            );
-            let r = if tentacle { 0.006 * s } else { 0.014 * s };
-            f.put(Model::Tube, between(root, tip, r), mottled).moving(
-                anim::WRITHE,
-                fa * 1.9,
-                0.05 * s,
-                1.6 + 0.3 * hash(a, 0, 332),
-            );
-        }
+        squid_body(w, f, head, s, k);
     }
     // Anglerfish, lit only by their lures.
     for &(ix, iz, x, z) in &cells(w, 1.4, 1.0, 6.0, 340) {
@@ -10834,43 +10790,107 @@ fn squid(w: &World, f: &mut Frame) {
             continue;
         }
         f.fade = fade(w.share(x, z, ABYSS), 0.5) * show;
+        let yaw = hash(ix, iz, 343) * TAU;
+        anglerfish(w, f, p, yaw, 0.06, ix + 31 * iz, show);
+    }
+}
+
+/// The giant squid's body with its head at `head`, `s` its scale, `k` its
+/// own: the mantle trailing toward +x, the eyes, the eight arms and the two
+/// long tentacles writhing ahead of it toward -x, the way it swims.
+fn squid_body(w: &World, f: &mut Frame, head: [f32; 3], s: f32, k: i32) {
+    let jet = 0.5 + 0.5 * (w.t * 0.9).sin();
+    let mottled = [0.40, 0.12, 0.08];
+    // It swims mantle first, toward -x: the mantle runs from the head.
+    f.put(
+        Model::Mantle,
+        place(head, PI, 0.0, 0.0, [s, s * (1.0 - 0.1 * jet), s]),
+        mottled,
+    );
+    f.put(
+        Model::Sphere,
+        place(
+            add(head, [0.07 * s, 0.0, 0.0]),
+            0.0,
+            0.0,
+            0.0,
+            [0.075 * s, 0.05 * s, 0.05 * s],
+        ),
+        mottled,
+    );
+    for side in [-1.0f32, 1.0] {
+        let eye = add(head, [0.06 * s, 0.012 * s, side * 0.045 * s]);
         f.put(
             Model::Sphere,
-            place(p, 0.0, 0.0, 0.0, [0.045, 0.035, 0.03]),
-            [0.12, 0.10, 0.10],
-        );
-        let lure = add(p, [0.04, 0.03, 0.0]);
-        let flicker = 0.75 + 0.25 * (w.t * 3.1 + ix as f32).sin() * (w.t * 1.7).sin();
-        f.sprite(
-            lure,
-            0.012,
-            [
-                0.45 * flicker * show,
-                1.0 * flicker * show,
-                0.85 * flicker * show,
-            ],
-            GLOW,
-        );
-        f.sprite(
-            lure,
-            0.06,
-            [
-                0.05 * flicker * show,
-                0.12 * flicker * show,
-                0.10 * flicker * show,
-            ],
-            GLOW,
-        );
-        f.light(
-            lure,
-            0.15,
-            [
-                0.3 * flicker * show,
-                0.8 * flicker * show,
-                0.7 * flicker * show,
-            ],
+            place(eye, 0.0, 0.0, 0.0, [0.026 * s; 3]),
+            [0.70, 0.62, 0.40],
+        )
+        .glowing(0.15);
+        f.put(
+            Model::Sphere,
+            place(
+                add(eye, [0.004 * s, 0.0, side * 0.018 * s]),
+                0.0,
+                0.0,
+                0.0,
+                [0.013 * s; 3],
+            ),
+            [0.01, 0.01, 0.015],
         );
     }
+    for a in 0..10 {
+        let fa = a as f32;
+        let tentacle = a >= 8;
+        let reach = if tentacle {
+            0.70
+        } else {
+            0.24 + 0.16 * hash(a, k, 331)
+        };
+        let ang = fa / 10.0 * TAU;
+        let spread = if tentacle {
+            0.03
+        } else {
+            0.06 + 0.10 * (1.0 - jet)
+        };
+        let root = add(head, [0.11 * s, 0.0, 0.0]);
+        let tip = add(
+            root,
+            [
+                reach * s,
+                ang.sin() * spread * s * 2.0,
+                ang.cos() * spread * s * 2.0,
+            ],
+        );
+        let r = if tentacle { 0.006 * s } else { 0.014 * s };
+        f.put(Model::Tube, between(root, tip, r), mottled).moving(
+            anim::WRITHE,
+            fa * 1.9,
+            0.05 * s,
+            1.6 + 0.3 * hash(a, 0, 332),
+        );
+    }
+}
+
+/// An anglerfish at `p`, its jaw toward `yaw`, `size` its half-length,
+/// hanging nearly still with its lure glowing and flickering before its
+/// mouth; `show` dims the glow with the fish as it comes into sight.
+fn anglerfish(w: &World, f: &mut Frame, p: [f32; 3], yaw: f32, size: f32, k: i32, show: f32) {
+    let rows = place(p, yaw, 0.0, 0.0, [size; 3]);
+    f.put(Model::Angler, rows, [0.13, 0.10, 0.10])
+        .moving(anim::SWIM, k as f32, 0.06, 1.1);
+    let l = mesh::ANGLER_LURE;
+    let lure =
+        [0, 1, 2].map(|i| rows[i][0] * l[0] + rows[i][1] * l[1] + rows[i][2] * l[2] + rows[i][3]);
+    let flicker = 0.75 + 0.25 * (w.t * 3.1 + k as f32).sin() * (w.t * 1.7).sin();
+    let glow = flicker * show;
+    f.sprite(
+        lure,
+        0.2 * size,
+        [0.45 * glow, 1.0 * glow, 0.85 * glow],
+        GLOW,
+    );
+    f.sprite(lure, size, [0.05 * glow, 0.12 * glow, 0.10 * glow], GLOW);
+    f.light(lure, 2.5 * size, [0.3 * glow, 0.8 * glow, 0.7 * glow]);
 }
 
 /// Jellyfish drifting where the water carries them. Every motion of theirs —
@@ -11106,7 +11126,7 @@ fn jelly(w: &World, f: &mut Frame, site: JellySite) {
         )
         .moving(anim::GLIDE, phase, 0.25, 0.30 + 0.20 * hash(ix, iz, 358))
         .material(material::COMB)
-        .glowing(0.35);
+        .glowing(0.16);
         return;
     }
     let m = &MEDUSAE[kind];
@@ -12558,6 +12578,99 @@ fn sponge_reef(w: &World, f: &mut Frame) {
     }
 }
 
+/// How far either side of the blue hole's middle, along the lane, its way
+/// runs: nearly the whole leg, so the spiral down and up is taken slowly
+/// enough for the helm's climb.
+const HOLE_WAY: f32 = 7.6;
+/// The ellipse the way circles the shaft on, as a share of the hole's: wide
+/// enough that the window, on the outside of the turn, is close to the wall,
+/// and clear of its ledges.
+const HOLE_ORBIT: f32 = 0.48;
+/// How many times round the shaft the way goes, down and back up.
+const HOLE_TURNS: f32 = 2.0;
+/// How far over the hole's floor the way's lowest point is.
+const HOLE_BOTTOM: f32 = 2.5;
+
+/// The boat's way through the blue hole at voyage `x`, if it is on it: in
+/// along the lane over the bank to the rim, then round the shaft with the
+/// wall to port, where the window looks, sinking for one turn to near the
+/// floor and climbing back for the next, then straight across the mouth and
+/// out over the far bank. As [`tour`] for the museum, with the height the
+/// helm holds instead of its cruise over the seabed.
+pub fn hole_tour(seabed: &Seabed, x: f32) -> Option<Tour> {
+    let leg = crate::voyage::LEG as f32;
+    let k = (x / leg).floor() as i64;
+    if seabed.order[k.rem_euclid(BIOMES as i64) as usize] != BLUE_HOLE {
+        return None;
+    }
+    let cx = (k as f32 + 0.5) * leg;
+    let (c, _, _) = hole_at(cx, corridor(cx));
+    let s = corridor_slope(cx);
+    let n = (1.0 + s * s).sqrt();
+    let (along, across) = ([1.0 / n, s / n], [-s / n, 1.0 / n]);
+    let (s0, s1) = (c[0] - HOLE_WAY / n, c[0] + HOLE_WAY / n);
+    if !(s0..s1).contains(&x) {
+        return None;
+    }
+    let (a, b) = (HOLE_ALONG * HOLE_ORBIT, HOLE_ACROSS * HOLE_ORBIT);
+    let lap = TAU * (0.5 * (a * a + b * b)).sqrt();
+    let spiral = HOLE_TURNS * lap;
+    let way = 2.0 * HOLE_WAY + spiral;
+    // (u, v) along and across the hole from its middle, and how far down
+    // the shaft (0 to 1), at `p` along the way.
+    let on_way = |p: f32| -> (f32, f32, f32) {
+        if p < HOLE_WAY {
+            // Easing across to the spiral's side, to meet it where it runs
+            // along the way: met end on, it would turn the boat square.
+            (p - HOLE_WAY, b * smooth(0.0, HOLE_WAY, p), 0.0)
+        } else if p < HOLE_WAY + spiral {
+            let t = (p - HOLE_WAY) / spiral;
+            // Clockwise from the side, so the middle is to starboard and
+            // the wall to port.
+            let th = 0.5 * PI - HOLE_TURNS * TAU * t;
+            let down = smooth(0.0, 0.5, t) * smooth(1.0, 0.5, t);
+            (a * th.cos(), b * th.sin(), down)
+        } else {
+            let q = p - HOLE_WAY - spiral;
+            (q, b * smooth(HOLE_WAY, 0.0, q), 0.0)
+        }
+    };
+    let p = (x - s0) / (s1 - s0) * way;
+    let (u, v, down) = on_way(p);
+    let at = |u: f32, v: f32| {
+        [
+            c[0] + along[0] * u + across[0] * v,
+            c[1] + along[1] * u + across[1] * v,
+        ]
+    };
+    // The heading some way ahead, about four seconds' run, as the museum's.
+    let lead = 4.0 * crate::voyage::SPEED as f32 * way / (s1 - s0) * n;
+    let (u1, v1, _) = on_way(p + lead);
+    let (u2, v2, _) = on_way(p + lead + 0.05);
+    let (d1, d2) = (at(u1, v1), at(u2, v2));
+    let here = at(u, v);
+    // The bank about the rim, and the floor of the shaft under it.
+    let bank = [0.0f32, 0.25, 0.5, 0.75]
+        .iter()
+        .map(|&q| {
+            let t = q * TAU;
+            let (bu, bv) = (t.cos() * HOLE_ALONG * 1.4, t.sin() * HOLE_ACROSS * 1.4);
+            let p = at(bu, bv);
+            seabed.ground(p[0], p[1])
+        })
+        .sum::<f32>()
+        / 4.0;
+    let top = bank + 0.55;
+    let bottom = bank - HOLE_DEPTH + HOLE_BOTTOM;
+    Some(Tour {
+        x: here[0],
+        z: here[1],
+        heading: yaw_along(d2[0] - d1[0], d2[1] - d1[1]),
+        weight: smooth(s0, s0 + 1.0, x) * smooth(s1, s1 - 1.0, x),
+        height: Some(top + (bottom - top) * down),
+    })
+}
+
 /// The blue hole of the leg at `x` or either side of it, if one is near:
 /// its centre, its yaw, and the bank's height round its rim.
 fn blue_hole_near(w: &World, x: f32) -> Vec<([f32; 2], f32, f32)> {
@@ -12735,6 +12848,134 @@ fn blue_hole(w: &World, f: &mut Frame) {
             .glowing(0.05)
             .element(element::HALOCLINE);
         }
+        hole_life(w, f, &at);
+    }
+}
+
+/// What lives down the blue hole, where the light gives out: anglerfish
+/// lurking in the mouths of its nooks, their lures before them; a giant
+/// squid crossing the shaft; jellies drifting, their bells lit; a school
+/// of lanternfish circling with their photophores; and colonies of glowing
+/// zoanthids speckling the nooks. `at` takes a point in the wall's frame
+/// (a unit round, a unit from the floor to the rim) to the world.
+fn hole_life(w: &World, f: &mut Frame, at: &dyn Fn([f32; 3]) -> [f32; 3]) {
+    let t = w.t;
+    // Down in the dark: none of the glow shows in the sunlit top of the
+    // shaft.
+    let dark = |y: f32| smooth(0.75, 0.55, y);
+    for k in 0..mesh::HOLE_NOOKS {
+        let (a, y, _, high, depth) = mesh::hole_nook(k);
+        if y > 0.72 {
+            continue;
+        }
+        let h = |n: u32| hash(k as i32, 0, 1600 + n);
+        // Glowing zoanthids crusting the nook's lip and the back of it.
+        for i in 0..6 {
+            let g = |n: u32| hash(k as i32, i, 1610 + n);
+            let da = (g(0) - 0.5) * 0.25;
+            let dy = (g(1) - 0.5) * 2.0 * high;
+            let r = mesh::hole_wall_radius(a + da, y + dy) - 0.01;
+            let p = at([(a + da).cos() * r, y + dy, (a + da).sin() * r]);
+            if !w.visible(p, 0.05) {
+                continue;
+            }
+            let pulse = 0.6 + 0.4 * (t * (0.5 + g(2)) + g(3) * TAU).sin();
+            let glow = pulse * dark(y);
+            let tint = if g(4) < 0.6 {
+                [0.10, 0.55, 0.45]
+            } else {
+                [0.45, 0.30, 0.70]
+            };
+            f.sprite(p, 0.025 + 0.02 * g(5), tint.map(|c| c * glow), GLOW);
+        }
+        // An anglerfish in every other nook, hanging in its mouth facing
+        // out into the shaft.
+        if k % 2 == 0 {
+            let r = 1.0 + 0.25 * depth;
+            let bob = 0.004 * (t * 0.7 + h(0) * TAU).sin();
+            let p = at([a.cos() * r, y + bob - 0.3 * high, a.sin() * r]);
+            let show = w.reveal(p, 0.2);
+            if show > 0.001 {
+                let inward = at([0.0, y, 0.0]);
+                let face = (inward[2] - p[2]).atan2(inward[0] - p[0]);
+                f.fade = show;
+                anglerfish(w, f, p, -face + 0.3 * (h(1) - 0.5), 0.15, k as i32, show);
+                f.fade = 1.0;
+            }
+        }
+    }
+    // The giant squid, cruising round the shaft between the boat's way
+    // and the wall, in the band the window looks across, slowly sinking
+    // and rising.
+    {
+        let a = t * 0.012;
+        let head = at([
+            0.78 * a.cos(),
+            0.50 + 0.10 * (t * 0.017).sin(),
+            0.78 * a.sin(),
+        ]);
+        let show = w.reveal(head, 1.2);
+        if show > 0.001 {
+            f.fade = show;
+            squid_body(w, f, head, 1.4, 7);
+            f.fade = 1.0;
+        }
+    }
+    // Jellies with lit bells, drifting slowly round and up and down.
+    for i in 0..9 {
+        let g = |n: u32| hash(i, 3, 1620 + n);
+        let a = g(0) * TAU + t * 0.01 * (g(1) - 0.5);
+        let r = 0.62 + 0.25 * g(2);
+        let y = 0.40 + 0.3 * g(3) + 0.04 * (t * 0.07 + g(4) * TAU).sin();
+        let p = at([a.cos() * r, y, a.sin() * r]);
+        let show = w.reveal(p, 0.15);
+        if show <= 0.001 {
+            continue;
+        }
+        f.fade = show;
+        let s = 0.06 + 0.04 * g(5);
+        f.glass(
+            Model::Bell,
+            place(p, g(6) * TAU, 0.0, 0.0, [s, s * 0.8, s]),
+            [0.70, 0.12, 0.18],
+        )
+        .moving(anim::PULSE, g(7) * TAU, 0.18, TAU * 0.5)
+        .material(material::JELLY)
+        .glowing(0.16);
+        // The burglar alarm: a ring of blue light round the bell's margin.
+        let flash = 0.5 + 0.5 * (t * 2.3 + g(8) * TAU).sin().max(0.0);
+        f.sprite(
+            p,
+            s * 1.6,
+            [0.05, 0.20, 0.60].map(|c| c * flash * show),
+            GLOW,
+        );
+        f.fade = 1.0;
+    }
+    // Lanternfish, a school wheeling slowly round the shaft low down, each
+    // a dark sliver with its row of blue lights.
+    for i in 0..14 {
+        let g = |n: u32| hash(i, 4, 1630 + n);
+        let a = -t * 0.06 + g(0) * 0.9;
+        let r = 0.72 + 0.12 * g(1);
+        let y = 0.44 + 0.10 * g(2) + 0.02 * (t * 0.5 + g(3) * TAU).sin();
+        let p = at([a.cos() * r, y, a.sin() * r]);
+        let show = w.reveal(p, 0.05);
+        if show <= 0.001 {
+            continue;
+        }
+        // Along the circle, clockwise as the angle falls.
+        let ahead = at([(a - 0.05).cos() * r, y, (a - 0.05).sin() * r]);
+        let heading = (ahead[2] - p[2]).atan2(ahead[0] - p[0]);
+        f.fade = show;
+        f.put(
+            Model::Fish,
+            place(p, -heading, 0.0, 0.0, [0.035, 0.03, 0.025]),
+            [0.10, 0.11, 0.14],
+        )
+        .moving(anim::SWIM, g(4) * TAU, 0.18, 9.0);
+        f.sprite(p, 0.03, [0.10, 0.30, 0.70].map(|c| c * show), GLOW);
+        f.fade = 1.0;
     }
 }
 
@@ -13164,7 +13405,7 @@ mod tests {
             (CORAL, Model::Coral),
             (SARGASSO, Model::Sargassum),
             (VENTS, Model::Vent),
-            (BRINE, Model::Hex),
+            (BRINE, Model::SaltChimney),
             (BLOOM, Model::Sponge),
             (CITY, Model::Tower),
         ];

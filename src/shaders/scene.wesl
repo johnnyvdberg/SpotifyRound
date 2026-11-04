@@ -1059,15 +1059,6 @@ fn animate(p_in: vec3<f32>, aux: vec2<f32>, anim: vec4<f32>, kind: u32) -> vec3<
         let y = p.y * cos(a) - p.z * sin(a);
         p.z = p.y * sin(a) + p.z * cos(a);
         p.y = y;
-    } else if (kind == 7u) {
-        // An arm waving about the vertical: the trench crinoids, which used
-        // to bake the wave into the placement's bearing.
-        let a = anim.z * sin(t);
-        let c = cos(a);
-        let s = sin(a);
-        let x = p.x * c + p.z * s;
-        p.z = -p.x * s + p.z * c;
-        p.x = x;
     } else if (kind == 8u) {
         // A flipper beating about the forward axis: the polar penguins.
         let a = anim.z * sin(t);
@@ -1222,28 +1213,6 @@ fn vs_model(v: Model, i: Instance) -> Lit {
     out.surface = i.surface;
     out.fade = i.extra.z;
     out.fog = fog_at(world);
-    if (MATERIAL == 6 || MATERIAL == 12) {
-        // The ice: the sheet works its colour out per pixel from its bake
-        // and never reads this; a keel under it (`material::KEEL`) is lit
-        // through, by the daylight the sheet lets in, not on its faces: its
-        // own colour (`mesh::keel`, pale where thin, glacial blue where
-        // thick) at the sheet's brightness. Neither needs the lights.
-        out.albedo *= 0.95 + 0.75 * g.sun.w;
-    } else {
-        // The GPU path: sun, lamp, point lights and caustics at the vertex.
-        var light = vec3<f32>(0.0);
-        if (switched(4u)) {
-            let light_n = normalize(n);
-            let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
-            light = g.tint.rgb * (
-                vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(light_n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
-                + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (light_n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
-            );
-        } else {
-            light = light_at(world, normalize(n));
-        }
-        out.albedo *= light;
-    }
     // `world::build` finds the ground and the sand's colour under the model,
     // once per instance.
     out.floor_y = i.extra.w;
@@ -1261,6 +1230,38 @@ fn vs_model(v: Model, i: Instance) -> Lit {
         let tall = length(vec3<f32>(i.m0.y, i.m1.y, i.m2.y));
         let facing = max(dot(normalize(n).xz, CURRENT), 0.0);
         out.floor_y += min(0.25 * tall, 0.06) * facing * facing;
+    }
+    // The foot of a grounded thing, where it is bedded in the sand, is lit
+    // as the sand round it is, from above, and the sand's colour it takes
+    // there is lit with it: mixed in unlit, over a lit model, the band came
+    // out brighter and warmer than the floor beside it, without the water's
+    // green, and ringed every stone with a pale brown skirt.
+    var light_n = normalize(n);
+    if (GROUNDED) {
+        let sunk = 1.0 - smooth01(out.floor_y, out.floor_y + 0.08, world.y);
+        light_n = normalize(mix(light_n, vec3<f32>(0.0, 1.0, 0.0), sunk));
+    }
+    if (MATERIAL == 6 || MATERIAL == 12) {
+        // The ice: the sheet works its colour out per pixel from its bake
+        // and never reads this; a keel under it (`material::KEEL`) is lit
+        // through, by the daylight the sheet lets in, not on its faces: its
+        // own colour (`mesh::keel`, pale where thin, glacial blue where
+        // thick) at the sheet's brightness. Neither needs the lights.
+        out.albedo *= 0.95 + 0.75 * g.sun.w;
+    } else {
+        // The GPU path: sun, lamp, point lights and caustics at the vertex.
+        var light = vec3<f32>(0.0);
+        if (switched(4u)) {
+            let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
+            light = g.tint.rgb * (
+                vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(light_n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
+                + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (light_n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
+            );
+        } else {
+            light = light_at(world, light_n);
+        }
+        out.albedo *= light;
+        out.floor *= light;
     }
     // Nothing that swims is grounded, so the glass pass reads these two
     // slots as how hard the bell is contracted here (the light of the stroke

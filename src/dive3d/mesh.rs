@@ -804,6 +804,25 @@ pub enum Model {
     Cucumber,
     /// A sea urchin: a squat test bristling with spines, a unit across.
     Urchin,
+    /// A sea pen, a unit tall: a swollen stalk, then a feather of soft
+    /// polyp leaves in two rows up its sides.
+    SeaPen,
+    /// A stalked crinoid, a unit tall: a slender stalk and a crown of ten
+    /// feathered arms bowed out and down to sieve the current.
+    Crinoid,
+    /// A deep-sea anglerfish, two long from tail (-1) to jaw (+1), as the
+    /// fish: a great round head, a gaping underslung jaw full of fangs, a
+    /// short tapering body and the rod arching over its brow to the lure.
+    Angler,
+    /// A cluster of rock-salt cubes, about a unit across, the big ones
+    /// hoppered: the brine flats' crystals.
+    Halite,
+    /// A gnarled salt spire a unit tall, flared at the foot, a crater at
+    /// its top where the brine seeps out: the brine flats' chimneys.
+    SaltChimney,
+    /// A band of seep mussels round the edge of a unit circle, to ring a
+    /// brine pan.
+    Mussels,
     // The drowned museum's (`exhibits`), streamed in as it comes near and
     // dropped once it is left behind: none is in the library the dive
     // starts with ([`Model::is_streamed`]). First the Smithsonian's
@@ -864,7 +883,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 151] = [
+    pub const ALL: [Model; 157] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -967,6 +986,12 @@ impl Model {
         Model::Volcano,
         Model::Cucumber,
         Model::Urchin,
+        Model::SeaPen,
+        Model::Crinoid,
+        Model::Angler,
+        Model::Halite,
+        Model::SaltChimney,
+        Model::Mussels,
         Model::Mammoth,
         Model::GroundSloth,
         Model::Triceratops,
@@ -1379,6 +1404,12 @@ impl Model {
             Model::Volcano => volcano(),
             Model::Cucumber => cucumber(),
             Model::Urchin => urchin(),
+            Model::SeaPen => sea_pen(),
+            Model::Crinoid => crinoid(),
+            Model::Angler => angler(),
+            Model::Halite => halite(),
+            Model::SaltChimney => salt_chimney(),
+            Model::Mussels => mussels(),
             #[cfg(test)]
             Model::WhaleSkeleton => exhibits::whale_skeleton(),
             #[cfg(test)]
@@ -4520,6 +4551,405 @@ fn urchin() -> Mesh {
     m.smooth()
 }
 
+/// A sea pen (`Model::SeaPen`), a unit tall, after Pennatula: a bare stalk
+/// swollen where it is dug into the floor, then the rachis, leaning a
+/// little, with soft leaves of polyps in two rows up its sides, broadest a
+/// third of the way up and small at the top, each swept up and curled at
+/// its tip so the whole reads as a quill, not a stalk of spikes. Its sway
+/// follows its height.
+fn sea_pen() -> Mesh {
+    let pale = [1.0, 0.92, 0.80];
+    let lean = |f: f32| Vec3::new(0.05 * f * f, f, 0.0);
+    let stalk: Vec<Knot> = (0..7)
+        .map(|j| {
+            let f = j as f32 / 6.0;
+            let bulb = 0.014 * (-((f - 0.12) / 0.1).powi(2)).exp();
+            Knot {
+                at: lean(f),
+                radius: 0.03 * (1.0 - 0.7 * f) + bulb,
+                colour: pale,
+                aux: [0.0, f],
+            }
+        })
+        .collect();
+    let mut m = tube(&stalk, 6, 4);
+    let mut leaves = Mesh::default();
+    let pairs = fewer(18, 8);
+    for i in 0..pairs {
+        let t = (i as f32 + 0.5) / pairs as f32;
+        let f = 0.30 + 0.68 * t;
+        let long = 0.04 + 0.17 * (std::f32::consts::PI * t.powf(0.7)).sin();
+        let deep = 0.035 * (1.0 - 0.4 * t);
+        let root = lean(f);
+        for side in [-1.0f32, 1.0] {
+            // Each row turned a little toward the viewer's side, so the
+            // two read as a feather from most bearings.
+            let turn = side * 0.35 + 0.15 * (jitter(i as u32, 9500) - 0.5);
+            let out = Vec3::new(side * turn.cos(), 0.0, turn.sin());
+            let at = |r: f32, up: f32| {
+                // Swept up, more so toward the tip, which curls over.
+                let p = root + out * (r * long) + Vec3::Y * (0.55 * r * r * long + up);
+                let f = p.y.clamp(0.0, 1.0);
+                (p, f)
+            };
+            let tint = |r: f32| {
+                let k = 0.82 + 0.18 * r;
+                [k, k * 0.86, k * 0.74]
+            };
+            let rows = [0.0, 0.35, 0.7, 1.0];
+            let mut prev: Option<[u32; 2]> = None;
+            for &r in &rows {
+                let half = deep * (1.0 - 0.75 * r * r);
+                let pair = [-half, half].map(|up| {
+                    let (p, f) = at(r, up);
+                    leaves.vertex(p.to_array(), tint(r), [0.0, f])
+                });
+                if let Some(q) = prev {
+                    leaves.quad(q[0], pair[0], pair[1], q[1]);
+                }
+                prev = Some(pair);
+            }
+        }
+    }
+    m.append(leaves.smooth());
+    m
+}
+
+/// A stalked crinoid (`Model::Crinoid`), a unit tall: a slender jointed
+/// stalk, the cup at its top, and ten arms out of it, bowed up and out and
+/// drooping at their tips as a parachute set against the current, each
+/// fringed with short pinnules in two rows, so the crown is a feathery fan
+/// rather than a star of spikes. Its sway follows its height.
+fn crinoid() -> Mesh {
+    let stalk_top = 0.62;
+    let stalk: Vec<Knot> = (0..5)
+        .map(|j| {
+            let f = j as f32 / 4.0;
+            Knot {
+                at: Vec3::new(0.02 * (f * 2.5).sin(), f * stalk_top, 0.0),
+                radius: 0.016 * (1.0 - 0.3 * f),
+                colour: [0.62, 0.58, 0.50],
+                aux: [0.0, f * stalk_top],
+            }
+        })
+        .collect();
+    let mut m = tube(&stalk, 5, 3);
+    let calyx = Vec3::new(0.02 * 2.5f32.sin(), stalk_top, 0.0);
+    m.append(
+        sphere_with(0, |_| 1.0, |_| [0.9; 3])
+            .scaled([0.035, 0.03, 0.035])
+            .map(|p| (Vec3::from_array(p) + calyx).to_array(), |n| n),
+    );
+    let arms = fewer(10, 6);
+    let knots = fewer(7, 4);
+    let mut pinnules = Mesh::default();
+    for k in 0..arms {
+        let a = (k as f32 + 0.3 * jitter(k as u32, 9510)) / arms as f32 * TAU;
+        let out = Vec3::new(a.cos(), 0.0, a.sin());
+        let reach = 0.26 + 0.06 * jitter(k as u32, 9511);
+        let point = |s: f32| calyx + out * (reach * s) + Vec3::Y * (0.30 * s - 0.26 * s * s * s);
+        let path: Vec<Knot> = (0..knots)
+            .map(|j| {
+                let s = j as f32 / (knots - 1) as f32;
+                let p = point(s);
+                Knot {
+                    at: p,
+                    radius: 0.008 * (1.0 - 0.6 * s),
+                    colour: [1.0, 0.96, 0.9],
+                    aux: [0.0, p.y.clamp(0.0, 1.0)],
+                }
+            })
+            .collect();
+        m.append(tube(&path, 3, 3));
+        // The pinnules: short sheets either side of the arm, leaning on
+        // toward its tip.
+        let n = fewer(9, 4);
+        for i in 0..n {
+            let s = 0.12 + 0.85 * (i as f32 + 0.5) / n as f32;
+            let p = point(s);
+            let along = (point(s + 0.02) - point(s - 0.02)).normalize();
+            let side = along.cross(Vec3::Y).normalize_or(Vec3::X);
+            let long = 0.05 * (1.0 - 0.5 * s);
+            for k2 in [-1.0f32, 1.0] {
+                let tip = p + (side * k2 * 0.8 + along * 0.6) * long;
+                let w = along * 0.006;
+                let aux = |q: Vec3| [0.0, q.y.clamp(0.0, 1.0)];
+                let a0 = pinnules.vertex((p - w).to_array(), [1.0; 3], aux(p));
+                let a1 = pinnules.vertex((p + w).to_array(), [1.0; 3], aux(p));
+                let b0 = pinnules.vertex((tip - w * 0.3).to_array(), [0.92; 3], aux(tip));
+                let b1 = pinnules.vertex((tip + w * 0.3).to_array(), [0.92; 3], aux(tip));
+                pinnules.quad(a0, a1, b1, b0);
+            }
+        }
+    }
+    m.append(pinnules.smooth());
+    m
+}
+
+/// A cluster of halite (`Model::Halite`), about a unit across and half a
+/// unit high: cubes of rock salt grown into one another at odd angles out of
+/// the crust. The bigger ones are hoppers, their edges grown on faster than
+/// their faces, so each face is sunk between raised rims, as salt grows when
+/// the brine starves it.
+fn halite() -> Mesh {
+    let mut m = Mesh::default();
+    let n = fewer(7, 4);
+    for k in 0..n {
+        let j = |salt: u32| jitter(k as u32, salt);
+        let s = if k == 0 { 0.24 } else { 0.07 + 0.11 * j(9700) };
+        let a = j(9701) * TAU;
+        let r = if k == 0 { 0.0 } else { 0.16 + 0.24 * j(9702) };
+        let centre = Vec3::new(a.cos() * r, s * (0.2 + 0.5 * j(9703)), a.sin() * r);
+        let tone = 0.88 + 0.12 * j(9704);
+        let colour = [tone, tone * 0.98, tone * 0.94];
+        let mut cube = Mesh::default();
+        if s > 0.12 {
+            // The hopper: twelve edge bars round a cube sunk a little inside
+            // them.
+            let e = 0.2 * s;
+            cube.append(block([s - e * 1.2; 3], [0.0; 3], colour.map(|c| c * 0.9)));
+            for axis in 0..3 {
+                for (u, v) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                    let mut size = [e; 3];
+                    let mut at = [0.0; 3];
+                    size[axis] = s;
+                    at[(axis + 1) % 3] = u * (s - e);
+                    at[(axis + 2) % 3] = v * (s - e);
+                    cube.append(block(size, at, colour));
+                }
+            }
+        } else {
+            cube = block([s; 3], [0.0; 3], colour);
+        }
+        let q = glam::Quat::from_euler(
+            glam::EulerRot::YXZ,
+            j(9705) * TAU,
+            (j(9706) - 0.5) * 1.2,
+            (j(9707) - 0.5) * 1.2,
+        );
+        let turn = move |p: [f32; 3]| (q * Vec3::from_array(p)).to_array();
+        m.append(cube.map(move |p| (q * Vec3::from_array(p) + centre).to_array(), turn));
+    }
+    m.with_aux(|p| [0.0, p[1].clamp(0.0, 1.0)])
+}
+
+/// A brine chimney (`Model::SaltChimney`), a unit tall: a gnarled spire of
+/// salt crust built up round a seep, flared and knobbled at its foot, bent
+/// as it grew, its top a little crater where the brine wells out and runs
+/// down it, staining the white crust ochre.
+fn salt_chimney() -> Mesh {
+    let mut m = salt_spire(0, 1.0, 1.0);
+    // Offshoots, where the seep found another way out through the crust,
+    // leaning off the main spire low down.
+    for k in 0..2u32 {
+        let a = 2.0 + 2.6 * k as f32 + jitter(k, 9723);
+        let s = 0.35 + 0.2 * jitter(k, 9724);
+        let tip = 0.35 + 0.25 * jitter(k, 9725);
+        let (sa, ca) = a.sin_cos();
+        m.append(salt_spire(k + 1, s, tip).map(
+            move |p| {
+                // Leaning out from the main spire as it rises.
+                let out = 0.16 + 0.25 * p[1];
+                [p[0] + ca * out, p[1], p[2] + sa * out]
+            },
+            |n| n,
+        ));
+    }
+    // Knobs of crust round the foot.
+    for k in 0..fewer(6, 3) {
+        let a = (k as f32 + 0.5 * jitter(k as u32, 9720)) / 6.0 * TAU;
+        let s = 0.06 + 0.05 * jitter(k as u32, 9721);
+        let r = 0.20 + 0.06 * jitter(k as u32, 9722);
+        m.append(
+            sphere_with(
+                1,
+                |p| 1.0 + 0.2 * (p[0] * 5.0 + p[2] * 3.0).sin(),
+                |_| [0.93, 0.91, 0.86],
+            )
+            .scaled([s, s * 0.7, s])
+            .map(
+                |p| [p[0] + a.cos() * r, p[1] + 0.01, p[2] + a.sin() * r],
+                |n| n,
+            )
+            .with_aux(|p| [0.0, p[1].max(0.0)]),
+        );
+    }
+    m
+}
+
+/// One spire of a brine chimney, `size` across its foot as the main one's
+/// and `tall` high: lumpy, flared at the foot, bent, a crater at its top.
+fn salt_spire(salt: u32, size: f32, tall: f32) -> Mesh {
+    let rings = fewer(16, 7);
+    let mut profile: Vec<(f32, f32)> = (0..rings)
+        .map(|j| {
+            let f = j as f32 / (rings - 1) as f32;
+            let r = 0.07 + 0.06 * (1.0 - f) + 0.22 * (1.0 - f).powi(5);
+            (r * size, f * 0.96 * tall)
+        })
+        .collect();
+    // The lip, and down into the crater.
+    profile.push((0.060 * size, tall));
+    profile.push((0.035 * size, tall - 0.03));
+    profile.push((0.0, tall - 0.08));
+    // Lumps in the crust, and beads of it in rows where it grew in spurts.
+    let phase = jitter(salt, 9726) * TAU;
+    let lumpy = move |y: f32, a: f32| {
+        let y = y / tall;
+        1.0 + 0.24 * (a * 3.0 + y * 7.0 + phase).sin() * (a * 2.0 - y * 5.0 + 1.0).cos()
+            + 0.12 * (a * 7.0 - y * 13.0 + phase).sin()
+            + 0.10 * (y * 31.0).sin().abs()
+    };
+    // Ochre where the brine spills over and runs down three channels.
+    let colour = move |y: f32, a: f32| {
+        let run = (0.5 + 0.5 * (a * 3.0 + 0.6 + phase).sin()).powi(3);
+        let stain = (smooth(0.4, 1.0, y / tall) * (0.3 + 0.7 * run)).min(1.0);
+        mix3([0.95, 0.93, 0.88], [0.72, 0.52, 0.30], stain * 0.8)
+    };
+    let bend = 0.08 * (1.0 + jitter(salt, 9727));
+    lathe_down_to(&profile, 12, 6, lumpy, colour, |y| [0.0, y]).map(
+        // Bent over a little as it grew.
+        move |p| [p[0] + bend * p[1] * p[1], p[1], p[2] + 0.03 * p[1]],
+        |n| n,
+    )
+}
+
+/// A bed of mussels (`Model::Mussels`), a unit across: the seep mussels that
+/// ring a brine pool's shore, crowded shoulder to shoulder, each a dark
+/// wedge of a shell stood on its hinge end and leaning out, the bed a band
+/// round the edge of a unit circle so it can be laid round a pan.
+fn mussels() -> Mesh {
+    let mut m = Mesh::default();
+    let n = fewer(48, 16);
+    for k in 0..n {
+        let j = |salt: u32| jitter(k as u32, salt);
+        let a = (k as f32 + 0.8 * j(9730)) / n as f32 * TAU;
+        let r = 0.86 + 0.16 * j(9731);
+        let len = 0.07 + 0.04 * j(9732);
+        let lean = 0.5 + 0.4 * j(9733);
+        let twist = j(9734) * TAU;
+        // A shell: an egg drawn to a point at the hinge, flattened side to
+        // side, black-brown with a horn-coloured edge.
+        let shell = sphere_with(
+            1,
+            |p| 1.0 - 0.35 * smooth(0.2, -1.0, p[1]),
+            |p| {
+                let edge = smooth(0.6, 0.95, p[0].abs());
+                mix3([0.10, 0.08, 0.07], [0.42, 0.34, 0.22], edge * 0.6)
+            },
+        )
+        .scaled([len * 0.45, len, len * 0.22]);
+        let q = glam::Quat::from_rotation_y(-a + twist * 0.3) * glam::Quat::from_rotation_z(-lean);
+        let at = Vec3::new(a.cos() * r, len * 0.5, a.sin() * r);
+        let turn = move |p: [f32; 3]| (q * Vec3::from_array(p)).to_array();
+        m.append(shell.map(move |p| (q * Vec3::from_array(p) + at).to_array(), turn));
+    }
+    m.with_aux(|p| [0.0, p[1].clamp(0.0, 1.0)])
+}
+
+/// The anglerfish's lure: where the tip of its rod is, in the model's
+/// frame, for the glow the placer hangs there.
+pub const ANGLER_LURE: [f32; 3] = [1.12, 0.52, 0.0];
+
+/// A deep-sea anglerfish (`Model::Angler`) after Melanocetus: two long from
+/// tail to jaw, nearly all head. The body balloons behind the eyes and
+/// tapers to a small tail; the lower jaw juts past the upper and the mouth
+/// gapes, black inside, ringed with long, needle fangs, the lower ones
+/// standing up outside the upper lip; the rod (illicium) springs from the
+/// brow and arches forward over the mouth to the lure, where the placer's
+/// glow hangs. Soft, velvety black-brown; its sway follows its length.
+fn angler() -> Mesh {
+    let mut m = loft(
+        -0.95,
+        0.92,
+        12,
+        10,
+        |x| {
+            let t = (x + 0.95) / 1.87;
+            // Round and huge forward of the middle, pinched to the tail.
+            let bulk = (t * PI * 0.92).sin().powf(1.6);
+            let h = 0.04 + 0.50 * bulk * smooth(0.0, 0.45, t);
+            // The jaw hangs below the head's line toward the front.
+            let jaw = 0.10 * smooth(0.55, 0.95, t);
+            (-0.5 * jaw, h, h * 1.05 + jaw, h * 0.80)
+        },
+        |x, up| {
+            // The gape: black where the mouth opens across the front.
+            let mouth = smooth(0.55, 0.75, x) * (1.0 - smooth(0.05, 0.3, (up + 0.15).abs()));
+            let v = 0.85 + 0.15 * up;
+            [v * (1.0 - 0.85 * mouth); 3]
+        },
+    );
+    // The fangs: needles round the gape, the lower ones longer and standing
+    // up and out, the upper ones hanging.
+    let mut teeth = Mesh::default();
+    let fangs = fewer(16, 8);
+    for i in 0..fangs {
+        let f = (i as f32 + 0.5) / fangs as f32 * 2.0 - 1.0;
+        for (lower, base_y, long) in [(true, -0.30, 0.26), (false, 0.08, 0.17)] {
+            let across = f * 0.36;
+            let x = 0.86 - 0.22 * f * f;
+            let base = Vec3::new(x, base_y, across);
+            let long = long * (0.6 + 0.5 * jitter(i as u32 + 40 * lower as u32, 9700));
+            let dir = if lower {
+                Vec3::new(0.35, 1.0, 0.15 * f)
+            } else {
+                Vec3::new(0.25, -1.0, 0.1 * f)
+            }
+            .normalize();
+            let tip = base + dir * long;
+            let side = Vec3::new(0.0, 0.0, 0.018);
+            let aux = |q: Vec3| [q.x, 0.0];
+            let a = teeth.vertex((base - side).to_array(), [1.6; 3], aux(base));
+            let b = teeth.vertex((base + side).to_array(), [1.6; 3], aux(base));
+            let c = teeth.vertex(tip.to_array(), [1.8; 3], aux(tip));
+            teeth.tri(a, b, c);
+        }
+    }
+    m.append(teeth.smooth());
+    // The rod, from the brow up and over, and the lure's bulb.
+    let rod: Vec<Knot> = (0..6)
+        .map(|j| {
+            let t = j as f32 / 5.0;
+            let a = t * 2.4;
+            Knot {
+                at: Vec3::new(
+                    0.40 + 0.72 * (a * 0.5).sin() * t.sqrt(),
+                    0.42 + 0.30 * a.sin() * (1.0 - 0.25 * t),
+                    0.0,
+                ),
+                radius: 0.022 * (1.0 - 0.6 * t),
+                colour: [0.9; 3],
+                aux: [0.5, 0.0],
+            }
+        })
+        .collect();
+    m.append(tube(&rod, 4, 3));
+    m.append(
+        sphere_with(1, |_| 1.0, |_| [2.2, 2.2, 2.0])
+            .scaled([0.055; 3])
+            .map(
+                |p| (Vec3::from_array(p) + Vec3::from_array(ANGLER_LURE)).to_array(),
+                |n| n,
+            ),
+    );
+    // A ragged tail and the small pectorals behind the head.
+    let tail = extrude(
+        &[[-0.88, 0.0], [-1.08, 0.22], [-1.0, 0.0], [-1.08, -0.2]],
+        0.01,
+        [0.8; 3],
+    );
+    let pectoral = extrude(
+        &[[0.05, -0.05], [-0.18, 0.02], [-0.16, -0.18]],
+        0.01,
+        [0.8; 3],
+    )
+    .map(|p| [p[0], p[1], p[2] + 0.38], |n| n);
+    m.append(tail);
+    m.append(pectoral);
+    m.with_aux(|p| [p[0], 0.0])
+}
+
 /// An icosphere bent into any shape: `shape` moves each point of the unit
 /// sphere, `colour` tints it by where it ended up. One subdivision fewer at
 /// each coarser level, so near the window the shape gets its vertices and far
@@ -6189,14 +6619,52 @@ impl Mesh {
 /// hang (`world::blue_hole`).
 pub const HOLE_LEDGES: [f32; 2] = [0.40, 0.66];
 
+/// How many nooks the blue hole's wall is eaten into.
+pub const HOLE_NOOKS: usize = 30;
+
+/// The blue hole's nook `k`, in its frame: its angle round the wall, its
+/// height up it, its half-width (radians) and half-height, and how deep it
+/// goes into the rock. Scattered down the whole shaft, more of them below
+/// the halocline, where the sulphide has eaten at the limestone.
+pub fn hole_nook(k: usize) -> (f32, f32, f32, f32, f32) {
+    let k = k as u32;
+    let a = (k as f32 + 0.6 * jitter(k, 9600)) / HOLE_NOOKS as f32 * TAU;
+    let y = 0.30 + 0.58 * jitter(k, 9601).powf(1.3);
+    let wide = 0.10 + 0.12 * jitter(k, 9602);
+    let high = 0.025 + 0.035 * jitter(k, 9603);
+    let deep = 0.09 + 0.09 * jitter(k, 9604);
+    (a, y, wide, high, deep)
+}
+
 /// The blue hole's wall's radius at angle `a` round it and height `y` up it,
 /// in its own frame: lumpy rock, the two ledges' overhangs with their
-/// recesses under them, the talus at its foot.
+/// recesses under them, nooks eaten into it and crannies along its beds,
+/// the talus at its foot.
 pub fn hole_wall_radius(a: f32, y: f32) -> f32 {
     let lumps = 0.030 * (a * 7.0 + y * 9.0).sin()
         + 0.018 * (a * 13.0 - y * 17.0 + 1.3).sin()
         + 0.010 * (a * 29.0 + y * 31.0).sin();
     let mut r = 1.0 + lumps;
+    for k in 0..HOLE_NOOKS {
+        let (na, ny, wide, high, deep) = hole_nook(k);
+        let mut da = (a - na).rem_euclid(TAU);
+        if da > PI {
+            da -= TAU;
+        }
+        // Flat-floored, round-roofed: a pocket, not a dimple.
+        let dy = (y - ny) / high;
+        let dy = if dy < 0.0 { dy * 1.6 } else { dy };
+        let q = (da / wide).powi(2) + dy * dy;
+        r += deep * (-q * q).exp();
+    }
+    // Crannies: the softer beds weathered back into dark slots, broken
+    // along their length.
+    for (bed, k) in [(0.18f32, 1.0f32), (0.53, 2.0), (0.79, 3.0)] {
+        let wander = 0.012 * (a * 4.0 + k).sin();
+        let slot = (-((y - bed - wander) / 0.012).powi(2)).exp();
+        let broken = smooth01(0.1, 0.5, (a * (3.0 + k) + k * 1.7).sin());
+        r += 0.05 * slot * broken;
+    }
     for &ledge in &HOLE_LEDGES {
         let wander = 0.015 * (a * 3.0 + ledge * 20.0).sin();
         // Each ledge is broken: stout in places, gone in others.
@@ -6478,8 +6946,9 @@ fn glass_sponge() -> Mesh {
 /// The blue hole's wall (`Model::HoleWall`).
 fn hole_wall() -> Mesh {
     let mut m = Mesh::default();
-    let around = fewer(96, 32);
-    let up = fewer(44, 14);
+    // Fine enough to carve the nooks and the crannies' slots.
+    let around = fewer(144, 40);
+    let up = fewer(72, 18);
     let radius = hole_wall_radius;
     let colour = |a: f32, y: f32| {
         // Strata: pale and grey beds, a few of them ochre, wavering round
@@ -6525,9 +6994,12 @@ fn hole_wall() -> Mesh {
             .map(|k| {
                 let a = k as f32 / around as f32 * TAU;
                 let r = radius(a, y.min(1.0)) + flare;
+                // The deeper into a nook or a cranny, the darker: the light
+                // down the shaft does not reach in.
+                let shade = 1.0 - ((r - flare - 1.04) * 5.0).clamp(0.0, 0.65);
                 m.vertex(
                     [a.cos() * r, y, a.sin() * r],
-                    colour(a, y.min(1.0)),
+                    colour(a, y.min(1.0)).map(|c| c * shade),
                     [0.0; 2],
                 )
             })

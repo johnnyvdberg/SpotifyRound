@@ -308,6 +308,7 @@ impl Museum {
             z: p[2],
             heading: yaw_along(d[0], d[1]),
             weight: smooth(s0, s0 + 1.0, x) * smooth(s1, s1 - 1.0, x),
+            height: None,
         })
     }
 
@@ -341,6 +342,9 @@ pub struct Tour {
     /// How far the tour has taken over from the track: 0 to 1 over the
     /// unit after the way leaves it, and back before it rejoins it.
     pub weight: f32,
+    /// The height the way holds the boat at, where it sets one (the blue
+    /// hole's descent), in place of the cruise over the seabed.
+    pub height: Option<f32>,
 }
 
 /// The tour at voyage `x`, if the boat is on one.
