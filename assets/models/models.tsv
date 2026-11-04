@@ -17,7 +17,7 @@ fort-end.obj	300	1	metres	0	polyhaven:modular_fort_01#wall_thick_end_01
 cannon.obj	900	1	metres	0	polyhaven:cannon_01#-ball
 museum-mammoth.obj	16000	1	height	0	https://3d-api.si.edu/content/document/3d_package:341c96cd-f967-4540-8ed1-d3fc56d31f12/resources/woolly-mammoth-100k-4096_std.glb
 museum-ground-sloth.obj	10000	1	height	0	https://3d-api.si.edu/content/document/3d_package:f05ed78e-c2b3-4270-a3e5-8ceacb6130cc/resources/Megalonyx_leptostomus_Cope-150k-4096_std.glb
-museum-triceratops.obj	16000	0	height	90	https://3d-api.si.edu/content/document/3d_package:d8c623be-4ebc-11ea-b77f-2e728ce88125/resources/Triceratops_horridus_Marsh_1889-150k-4096.glb
+museum-triceratops.obj	16000	1	height	180	https://3d-api.si.edu/content/document/3d_package:d8c623be-4ebc-11ea-b77f-2e728ce88125/resources/Triceratops_horridus_Marsh_1889-150k-4096.glb
 museum-megalodon.obj	8000	1	height	0	https://3d-api.si.edu/content/document/3d_package:106e215b-a829-40c6-8e4d-dfba37350f36/resources/carcharodon-megalodon-(usnm-v-10333)-150k-4096.glb
 museum-archaeopteryx.obj	6000	1	height	0	https://3d-api.si.edu/content/document/3d_package:391660da-7c49-499c-91f5-88a298686c09/resources/USNM_PAL_509743-100k-2048_std.glb
 museum-walrus-whale.obj	10000	1	height	0	https://3d-api.si.edu/content/document/3d_package:3b896f42-b8f5-4798-af90-ad46e5d9fcb3/resources/walrus_whale-100k-web.glb

@@ -62,9 +62,27 @@ fn leg_of(id: usize, seed: u64) -> usize {
         .unwrap_or(0)
 }
 
-/// Every place to shoot, in order.
+/// Every place to shoot, in order; or, when `DIVE3D_SHOTS_AT` lists
+/// `seed:seconds` pairs (comma-separated, as the readout's saved places
+/// give them), only those.
 pub fn all() -> Vec<Place> {
     let mut places = Vec::new();
+    if let Ok(list) = std::env::var("DIVE3D_SHOTS_AT") {
+        for pair in list.split(',') {
+            let Some((seed, seconds)) = pair.trim().split_once(':') else {
+                continue;
+            };
+            let (Ok(seed), Ok(seconds)) = (seed.parse::<u64>(), seconds.parse::<f64>()) else {
+                continue;
+            };
+            places.push(Place::new(
+                format!("at-{seconds}s"),
+                seconds / (LEG / SPEED),
+                seed,
+            ));
+        }
+        return places;
+    }
     // Each leg as it settles, in the middle, and as it gives way to the next.
     let seed = seeded().unwrap_or(0);
     for n in 0..BIOMES {

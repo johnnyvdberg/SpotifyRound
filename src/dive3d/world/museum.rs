@@ -394,7 +394,8 @@ type Specimen = (Model, f32, [f32; 2], Mount);
 /// The specimens on the island's stands, each on its own.
 const SHOW_PIECES: [Specimen; 5] = [
     (Model::Mammoth, 0.85, [1.48, 0.56], Mount::Platform),
-    (Model::Triceratops, 0.8, [2.10, 0.59], Mount::Platform),
+    // Lying on its side, as the scan was made: a carcass, not a mount.
+    (Model::Triceratops, 0.9, [3.56, 1.70], Mount::Platform),
     (Model::Megalodon, 0.38, [0.30, 0.84], Mount::Platform),
     (Model::SharkJaws, 0.42, [1.31, 0.51], Mount::Platform),
     (Model::Isthminia, 0.7, [4.64, 1.25], Mount::Platform),
@@ -560,7 +561,8 @@ pub fn museum(w: &World, f: &mut Frame) {
         return;
     }
     for (i, hall) in m.halls.iter().enumerate() {
-        building(w, f, &m, hall, i == 0);
+        let before = i.checked_sub(1).map(|k| &m.halls[k]);
+        building(w, f, &m, hall, before, i + 1 == m.halls.len());
         match hall.kind {
             HallKind::Natural => natural_history(w, f, &m, hall),
             HallKind::Minerals => mineral_cases(w, f, &m, hall),
@@ -572,7 +574,8 @@ pub fn museum(w: &World, f: &mut Frame) {
 
 /// One hall's floor, long walls with their pilasters, frieze and dado, the
 /// vault's ribs and panels round its skylight, and its end walls.
-fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
+fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, before: Option<&Hall>, last: bool) {
+    let first = before.is_none();
     let y = m.floor;
     let (u0, u1) = (hall.from, hall.to());
     let (vm, half, bay) = (hall.middle(), hall.half(), hall.bay());
@@ -638,6 +641,12 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
         }
         for i in 0..=hall.bays {
             let u = u0 + i as f32 * bay;
+            // The hall before has its own at the shared end, in the same
+            // place where the two halls' walls meet: drawn twice, they
+            // would fight for the depth buffer.
+            if i == 0 && before.is_some_and(|b| v == -STARBOARD || b.port == hall.port) {
+                continue;
+            }
             // None behind the picture gallery's centrepiece.
             if hall.kind == HallKind::Masters && v == hall.port {
                 let (_, half) = centrepiece_span(hall);
@@ -715,18 +724,23 @@ fn building(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, first: bool) {
         );
         rod(f, a, b, 0.01, [0.25; 3]);
     }
-    // An end wall at each end, but one between two halls, which serves both.
-    if first {
-        end_wall(w, f, m, hall, u0);
-    }
-    end_wall(w, f, m, hall, u1);
+    // An end wall at each end. Between two halls each closes its own end
+    // with half the wall's thickness on its own side, so a wider or taller
+    // hall next to a narrower one is not left open past the other's walls;
+    // the doorway's arch is the earlier hall's.
+    end_wall(w, f, m, hall, u0, if first { 0.0 } else { 1.0 });
+    end_wall(w, f, m, hall, u1, if last { 0.0 } else { -1.0 });
 }
 
 /// An end wall across the hall at `u`, with the doorway on the lane, the arch
-/// round its head, and the gable up into the vault.
-fn end_wall(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, u: f32) {
+/// round its head, and the gable up into the vault. `side` is 0 for an
+/// outer wall, its whole thickness centred on `u`, or the way into the hall
+/// (+1 or -1) for its half of a wall shared with the next hall.
+fn end_wall(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, u: f32, side: f32) {
     let y = m.floor;
-    let thick = 0.08;
+    let thick = if side == 0.0 { 0.08 } else { 0.04 };
+    let arch_at = u;
+    let u = u + side * thick;
     let span = |a: f32, b: f32, h0: f32, h1: f32, f: &mut Frame| {
         if h0 == 0.0 {
             let foot = m.at(u, 0.5 * (a + b), y);
@@ -746,8 +760,8 @@ fn end_wall(w: &World, f: &mut Frame, m: &Museum, hall: &Hall, u: f32) {
     span(DOOR, hall.port, 0.0, hall.high, f);
     span(-DOOR, DOOR, DOOR_HIGH, hall.high, f);
     // The arch round the door's head, its crown at the lintel.
-    let door = m.at(u, 0.0, y + DOOR_HIGH - 1.2 * DOOR);
-    if w.visible(door, 1.0) {
+    let door = m.at(arch_at, 0.0, y + DOOR_HIGH - 1.2 * DOOR);
+    if side <= 0.0 && w.visible(door, 1.0) {
         f.put(
             Model::MuseumArch,
             place(
@@ -1238,6 +1252,11 @@ fn painting(w: &World, f: &mut Frame, p: [f32; 3], face: [f32; 2], layer: usize,
     // A ring of moulding round the canvas, from `t0` to `t1` of the band in
     // from its outer edge, standing `depth` out from the wall.
     let ring = |f: &mut Frame, t0: f32, t1: f32, depth: f32, colour: [f32; 3], gilt: bool| {
+        // A ring sharing the frame's outer or sight edge with the moulding
+        // under it stands a hair past that edge: in the same plane the two
+        // side faces fight for the depth buffer.
+        let t0 = if t0 == 0.0 && t1 < 1.0 { -0.04 } else { t0 };
+        let t1 = if t1 == 1.0 && t0 > 0.0 { 1.04 } else { t1 };
         let (out_w, out_h) = (hw + band * (1.0 - t0), hh + band * (1.0 - t0));
         let (in_w, in_h) = (hw + band * (1.0 - t1), hh + band * (1.0 - t1));
         let (mid_w, mid_h) = (0.5 * (out_w + in_w), 0.5 * (out_h + in_h));

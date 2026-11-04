@@ -4094,6 +4094,9 @@ mod tests {
             );
             let frame = image::RgbaImage::from_raw(render, render, pixels).expect("a whole frame");
             let file = format!("{}.png", place.name);
+            if let Some(at) = scene.whereabouts() {
+                println!("{}: {at}", place.name);
+            }
             frame.save(dir.join(&file)).expect("a screenshot");
             let thumb = image::imageops::resize(
                 &frame,
