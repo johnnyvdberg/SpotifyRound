@@ -2502,8 +2502,8 @@ struct Shaft {
     // foot).
     @location(0) corner: vec2<f32>,
     @location(1) colour: vec3<f32>,
-    // The shaft's own seed, from where it starts, and how far down it the
-    // light has scattered out wider (0 at the top, 1 at the foot).
+    // The shaft's own seed, and how far down it the light has scattered out
+    // wider (0 at the top, 1 at the foot).
     @location(2) @interpolate(flat) seed: f32,
 };
 
@@ -2530,7 +2530,8 @@ fn vs_shaft(
     var out: Shaft;
     out.position = project(at);
     out.corner = corner;
-    out.seed = fract(sin(dot(top.xz, vec2<f32>(12.9898, 78.233))) * 43758.547);
+    // From where it starts, unless it sways and carries its own (`run.w`).
+    out.seed = select(fract(sin(dot(top.xz, vec2<f32>(12.9898, 78.233))) * 43758.547), run.w, run.w > 0.0);
     // Melting away as the window passes through it, rather than filling the
     // glass, and hazed by the water like everything else.
     let d = length(at - g.camera.xyz);

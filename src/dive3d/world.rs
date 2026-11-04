@@ -718,8 +718,8 @@ pub fn sponge_mound(x: f32, z: f32) -> f32 {
 /// model (`Model::HoleWall`), a unit round in the ellipse's frame; the
 /// seabed only gives it a floor, falling away just behind the wall, so the
 /// model's ledges and recesses never meet the heightmap's slope.
-pub const HOLE_ALONG: f32 = 4.2;
-pub const HOLE_ACROSS: f32 = 3.3;
+pub const HOLE_ALONG: f32 = 5.2;
+pub const HOLE_ACROSS: f32 = 4.1;
 pub const HOLE_DEPTH: f32 = 6.5;
 /// How far under the bank the wall's model ends; its lip, turned out over
 /// the bank, covers the seabed's own short drop.
@@ -2785,7 +2785,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (near_detail, None),
         (abyss_glow, None),
     ];
-    let steps: [(Placer, Option<[f32; 4]>); 18] = [
+    let steps: [(Placer, Option<[f32; 4]>); 19] = [
         (planes, None),
         (volcano, None),
         (city_beams, None),
@@ -2801,6 +2801,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         (gliders, None),
         (wildlife, None),
         (squid, skin),
+        (hole_creatures, skin),
         (submarines, None),
         (museum_lights, None),
         (shafts, None),
@@ -2831,7 +2832,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "abyss_glow",
     ];
     #[cfg(test)]
-    const STEP_NAMES: [&str; 18] = [
+    const STEP_NAMES: [&str; 19] = [
         "planes",
         "volcano",
         "city_beams",
@@ -2846,6 +2847,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         "gliders",
         "wildlife",
         "squid",
+        "hole_creatures",
         "submarines",
         "museum_lights",
         "shafts",
@@ -12164,7 +12166,9 @@ fn shafts(w: &World, f: &mut Frame) {
                 (0.70 - 0.40 * gold) * k,
                 0.0,
             ],
-            stretch: [run[0], run[1], run[2], 0.0],
+            // Its own seed for the streaks, as its top sways: the shader's
+            // seed from where the top is would jump every frame.
+            stretch: [run[0], run[1], run[2], 0.05 + 0.9 * h],
         });
     }
 }
@@ -12585,7 +12589,7 @@ const HOLE_WAY: f32 = 7.6;
 /// The ellipse the way circles the shaft on, as a share of the hole's: wide
 /// enough that the window, on the outside of the turn, is close to the wall,
 /// and clear of its ledges.
-const HOLE_ORBIT: f32 = 0.48;
+const HOLE_ORBIT: f32 = 0.45;
 /// How many times round the shaft the way goes, down and back up.
 const HOLE_TURNS: f32 = 2.0;
 /// How far over the hole's floor the way's lowest point is.
@@ -12622,17 +12626,17 @@ pub fn hole_tour(seabed: &Seabed, x: f32) -> Option<Tour> {
         if p < HOLE_WAY {
             // Easing across to the spiral's side, to meet it where it runs
             // along the way: met end on, it would turn the boat square.
-            (p - HOLE_WAY, b * smooth(0.0, HOLE_WAY, p), 0.0)
+            (p - HOLE_WAY, -b * smooth(0.0, HOLE_WAY, p), 0.0)
         } else if p < HOLE_WAY + spiral {
             let t = (p - HOLE_WAY) / spiral;
-            // Clockwise from the side, so the middle is to starboard and
-            // the wall to port.
-            let th = 0.5 * PI - HOLE_TURNS * TAU * t;
+            // Counter-clockwise from the side, so the middle is to port and
+            // the wall to starboard.
+            let th = -0.5 * PI + HOLE_TURNS * TAU * t;
             let down = smooth(0.0, 0.5, t) * smooth(1.0, 0.5, t);
             (a * th.cos(), b * th.sin(), down)
         } else {
             let q = p - HOLE_WAY - spiral;
-            (q, b * smooth(HOLE_WAY, 0.0, q), 0.0)
+            (q, -b * smooth(HOLE_WAY, 0.0, q), 0.0)
         }
     };
     let p = (x - s0) / (s1 - s0) * way;
@@ -12697,6 +12701,147 @@ fn blue_hole_near(w: &World, x: f32) -> Vec<([f32; 2], f32, f32)> {
         .collect()
 }
 
+/// The blue hole's wall's frame, from its middle, its yaw and the bank
+/// round it: a unit round, a unit from the floor to the rim.
+fn hole_rows(c: [f32; 2], yaw: f32, bank: f32) -> [[f32; 4]; 3] {
+    let floor = bank - HOLE_DEPTH;
+    place(
+        [c[0], floor, c[1]],
+        yaw,
+        0.0,
+        0.0,
+        [HOLE_ALONG, HOLE_DEPTH - HOLE_RIM, HOLE_ACROSS],
+    )
+}
+
+/// The height in the blue hole's frame, between `lo` and `hi`, at which its
+/// wall at angle `a` stands `r` out from the middle: where something
+/// that far out meets the rock above or below it.
+fn hole_wall_at(a: f32, r: f32, lo: f32, hi: f32) -> f32 {
+    let inside = |y: f32| mesh::hole_wall_radius(a, y) > r;
+    let (mut lo, mut hi) = (lo, hi);
+    let rising = inside(hi);
+    for _ in 0..14 {
+        let mid = 0.5 * (lo + hi);
+        if inside(mid) == rising {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Where things sit on the blue hole's wall, in its frame (angle, radius,
+/// height): worked out once, as the wall never changes and finding its
+/// surface takes dozens of looks at its radius.
+struct HoleSeats {
+    /// Stalactites, each with its number and ledge, rooted in the ceiling
+    /// of the ledge's overhang.
+    hanging: Vec<(i32, usize, f32, f32, f32)>,
+    /// What grows on the ledges' tops, standing on the shelf.
+    shelf: Vec<(i32, usize, f32, f32, f32)>,
+    /// The anglerfish, by nook, lying on the nook's floor with its tail to
+    /// the back of it.
+    nooks: Vec<(usize, f32, f32, f32)>,
+}
+
+/// The scale of an anglerfish in a nook (`Model::Angler` is two long at a
+/// unit's).
+const NOOK_ANGLER: f32 = 0.15;
+
+fn hole_seats() -> &'static HoleSeats {
+    static SEATS: std::sync::OnceLock<HoleSeats> = std::sync::OnceLock::new();
+    SEATS.get_or_init(|| {
+        let mut seats = HoleSeats {
+            hanging: Vec::new(),
+            shelf: Vec::new(),
+            nooks: Vec::new(),
+        };
+        for (l, &ledge) in mesh::HOLE_LEDGES.iter().enumerate() {
+            let stout_at = |a: f32| {
+                smooth(
+                    -0.3,
+                    0.6,
+                    (a * 2.0 + ledge * 9.0).sin() + 0.4 * (a * 5.0).sin(),
+                )
+            };
+            for i in 0..90 {
+                let h = |k: u32| hash(i, l as i32, 1460 + k);
+                let a = (i as f32 + h(1)) / 90.0 * TAU;
+                // None where the ledge has broken away and there is no
+                // ceiling to hang from.
+                if h(0) < 0.35 || stout_at(a) < 0.5 {
+                    continue;
+                }
+                let at = ledge + 0.015 * (a * 3.0 + ledge * 20.0).sin();
+                // Between the lip's edge and the back of the recess under
+                // it, up against the overhang's ceiling.
+                let (edge, back) = (
+                    mesh::hole_wall_radius(a, at),
+                    mesh::hole_wall_radius(a, at - 0.06),
+                );
+                let r = edge + (0.5 + 0.35 * h(5)) * (back - edge);
+                let y = hole_wall_at(a, r, at - 0.06, at) + 0.007;
+                seats.hanging.push((i, l, a, r, y));
+            }
+            for i in 0..120 {
+                let h = |k: u32| hash(i, l as i32, 1480 + k);
+                let a = (i as f32 + h(0)) / 120.0 * TAU;
+                let at = ledge + 0.015 * (a * 3.0 + ledge * 20.0).sin();
+                // On the shelf the lip makes, short of the wall behind it.
+                let (edge, wall) = (
+                    mesh::hole_wall_radius(a, at),
+                    mesh::hole_wall_radius(a, at + 0.07),
+                );
+                if wall - edge < 0.02 {
+                    continue;
+                }
+                let r = edge + 0.55 * (wall - edge);
+                let y = hole_wall_at(a, r, at, at + 0.07);
+                seats.shelf.push((i, l, a, r, y));
+            }
+        }
+        let wide = 0.5 * (HOLE_ALONG + HOLE_ACROSS);
+        let deep = HOLE_DEPTH - HOLE_RIM;
+        for k in (0..mesh::HOLE_NOOKS).step_by(2) {
+            let (a, y, _, high, _) = mesh::hole_nook(k);
+            if y > 0.72 {
+                continue;
+            }
+            // Its tail a little short of the back, its belly on the floor.
+            let back = mesh::hole_wall_radius(a, y);
+            let r = back - 0.6 * NOOK_ANGLER * 2.0 / wide;
+            if r < mesh::hole_wall_radius(a, y - 2.5 * high) + 0.02 {
+                continue;
+            }
+            let floor = hole_wall_at(a, r, y - 2.5 * high, y);
+            seats
+                .nooks
+                .push((k, a, r, floor + 0.4 * NOOK_ANGLER / deep));
+        }
+        seats
+    })
+}
+
+/// What moves down the blue hole, placed every frame: the static cache
+/// would hold each where it was when last built, and it would jump.
+fn hole_creatures(w: &World, f: &mut Frame) {
+    for (c, yaw, bank) in blue_hole_near(w, w.camera()) {
+        let rows = hole_rows(c, yaw, bank);
+        let at = |p: [f32; 3]| -> [f32; 3] {
+            [0, 1, 2]
+                .map(|i| rows[i][0] * p[0] + rows[i][1] * p[1] + rows[i][2] * p[2] + rows[i][3])
+        };
+        let middle = at([0.0, 0.5, 0.0]);
+        if !w.visible(middle, HOLE_ALONG * 1.3) {
+            continue;
+        }
+        f.fade = 1.0;
+        hole_life(w, f, &at);
+    }
+}
+
 /// The blue hole (V9): its wall, the stalactites hanging under its two
 /// ledges, and the halocline, where the fresh water over the salt shimmers
 /// across the shaft like a second surface.
@@ -12704,13 +12849,7 @@ fn blue_hole(w: &World, f: &mut Frame) {
     for (c, yaw, bank) in blue_hole_near(w, w.camera()) {
         let floor = bank - HOLE_DEPTH;
         let deep = HOLE_DEPTH - HOLE_RIM;
-        let rows = place(
-            [c[0], floor, c[1]],
-            yaw,
-            0.0,
-            0.0,
-            [HOLE_ALONG, deep, HOLE_ACROSS],
-        );
+        let rows = hole_rows(c, yaw, bank);
         let at = |p: [f32; 3]| -> [f32; 3] {
             [0, 1, 2]
                 .map(|i| rows[i][0] * p[0] + rows[i][1] * p[1] + rows[i][2] * p[2] + rows[i][3])
@@ -12721,89 +12860,76 @@ fn blue_hole(w: &World, f: &mut Frame) {
         }
         f.fade = 1.0;
         f.put(Model::HoleWall, rows, [1.0, 1.0, 1.0]);
-        // Stalactites, from when the hole was a dry cave: under each ledge's
-        // overhang, in the recess behind its lip.
-        for (l, &ledge) in mesh::HOLE_LEDGES.iter().enumerate() {
-            let n = 90;
-            for i in 0..n {
-                let h = |k: u32| hash(i, l as i32, 1460 + k);
-                if h(0) < 0.35 {
-                    continue;
-                }
-                let a = (i as f32 + h(1)) / n as f32 * TAU;
-                let wander = 0.015 * (a * 3.0 + ledge * 20.0).sin();
-                let y = ledge + wander - 0.03;
-                let r = mesh::hole_wall_radius(a, y) - 0.012;
-                let top = at([a.cos() * r, y, a.sin() * r]);
-                let long = 0.10 + 0.35 * h(2) * h(2);
-                if !w.visible([top[0], top[1] - long * 0.5, top[2]], long) {
-                    continue;
-                }
-                let thick = 0.025 + 0.03 * h(3);
-                f.put(
-                    Model::Cone,
-                    place(top, h(4) * TAU, PI, 0.0, [thick, long, thick]),
-                    [0.70, 0.66, 0.58],
-                )
-                .textured(Surface::Rock, 3.0)
-                .element(element::STALACTITES);
+        // Stalactites, from when the hole was a dry cave: rooted in the
+        // ceiling of each ledge's overhang, their bases sunk in the rock.
+        let seats = hole_seats();
+        for &(i, l, a, r, y) in &seats.hanging {
+            let h = |k: u32| hash(i, l as i32, 1460 + k);
+            let top = at([a.cos() * r, y, a.sin() * r]);
+            let long = 0.10 + 0.35 * h(2) * h(2);
+            if !w.visible([top[0], top[1] - long * 0.5, top[2]], long) {
+                continue;
             }
+            // The root sunk into the ceiling and spread over it, in the
+            // wall's own rock, mapped as the wall's is, so the two run on.
+            let thick = 0.30 + 0.20 * h(3);
+            f.put(
+                Model::Stalactite,
+                place(top, h(4) * TAU, PI, 0.0, [thick, long, thick]),
+                [0.34, 0.32, 0.28],
+            )
+            .textured(Surface::Rock, 1.5)
+            .element(element::STALACTITES);
         }
         // What grows on the ledges' tops, where the stout lip makes a
         // shelf: tube sponges in threes, purple, ochre and rust, and small
         // fans, sparser down the shaft as the light goes.
-        for (l, &ledge) in mesh::HOLE_LEDGES.iter().enumerate() {
-            let n = 120;
-            for i in 0..n {
-                let h = |k: u32| hash(i, l as i32, 1480 + k);
-                let a = (i as f32 + h(0)) / n as f32 * TAU;
-                let stout = smooth(
-                    -0.3,
-                    0.6,
-                    (a * 2.0 + ledge * 9.0).sin() + 0.4 * (a * 5.0).sin(),
-                );
-                if h(1) > stout * (0.45 + 0.6 * ledge) {
-                    continue;
+        for &(i, l, a, r, y) in &seats.shelf {
+            let ledge = mesh::HOLE_LEDGES[l];
+            let h = |k: u32| hash(i, l as i32, 1480 + k);
+            let stout = smooth(
+                -0.3,
+                0.6,
+                (a * 2.0 + ledge * 9.0).sin() + 0.4 * (a * 5.0).sin(),
+            );
+            if h(1) > stout * (0.45 + 0.6 * ledge) {
+                continue;
+            }
+            let foot = at([a.cos() * r, y, a.sin() * r]);
+            if !w.visible(foot, 0.2) {
+                continue;
+            }
+            let yaw = h(2) * TAU;
+            if h(3) < 0.6 {
+                let hue = [[0.46, 0.26, 0.52], [0.78, 0.58, 0.26], [0.66, 0.32, 0.20]]
+                    [(h(4) * 3.0) as usize % 3];
+                for k in 0..3 {
+                    let t = yaw + k as f32 * 2.1;
+                    let tall = 0.09 + 0.14 * hash(i, l as i32 + 7 * k, 1490);
+                    f.put(
+                        Model::Sponge,
+                        place(
+                            [
+                                foot[0] + t.cos() * 0.025,
+                                foot[1] - 0.01,
+                                foot[2] + t.sin() * 0.025,
+                            ],
+                            t,
+                            0.0,
+                            0.0,
+                            [0.03, tall, 0.03],
+                        ),
+                        hue,
+                    )
+                    .glowing(0.08)
+                    .element(element::HOLE_LIFE);
                 }
-                let wander = 0.015 * (a * 3.0 + ledge * 20.0).sin();
-                let y = ledge + wander + 0.012;
-                let r = mesh::hole_wall_radius(a, y) - 0.03;
-                let foot = at([a.cos() * r, y, a.sin() * r]);
-                if !w.visible(foot, 0.2) {
-                    continue;
-                }
-                let yaw = h(2) * TAU;
-                if h(3) < 0.6 {
-                    let hue = [[0.46, 0.26, 0.52], [0.78, 0.58, 0.26], [0.66, 0.32, 0.20]]
-                        [(h(4) * 3.0) as usize % 3];
-                    for k in 0..3 {
-                        let t = yaw + k as f32 * 2.1;
-                        let tall = 0.09 + 0.14 * hash(i, l as i32 + 7 * k, 1490);
-                        f.put(
-                            Model::Sponge,
-                            place(
-                                [
-                                    foot[0] + t.cos() * 0.035,
-                                    foot[1] - 0.005,
-                                    foot[2] + t.sin() * 0.035,
-                                ],
-                                t,
-                                0.0,
-                                0.0,
-                                [0.03, tall, 0.03],
-                            ),
-                            hue,
-                        )
-                        .glowing(0.08)
-                        .element(element::HOLE_LIFE);
-                    }
-                } else {
-                    let s = 0.12 + 0.10 * h(5);
-                    let hue = [[0.80, 0.42, 0.24], [0.86, 0.74, 0.30]][(h(6) * 2.0) as usize % 2];
-                    f.put(Model::Fan, place(foot, yaw, 0.0, 0.0, [s; 3]), hue)
-                        .moving(anim::SWAY, yaw, 0.1, 0.5)
-                        .element(element::HOLE_LIFE);
-                }
+            } else {
+                let s = 0.12 + 0.10 * h(5);
+                let hue = [[0.80, 0.42, 0.24], [0.86, 0.74, 0.30]][(h(6) * 2.0) as usize % 2];
+                f.put(Model::Fan, place(foot, yaw, 0.0, 0.0, [s; 3]), hue)
+                    .moving(anim::SWAY, yaw, 0.1, 0.5)
+                    .element(element::HOLE_LIFE);
             }
         }
         // Boulders fallen from the walls, heaped on the floor's cone and
@@ -12848,28 +12974,20 @@ fn blue_hole(w: &World, f: &mut Frame) {
             .glowing(0.05)
             .element(element::HALOCLINE);
         }
-        hole_life(w, f, &at);
+        hole_glows(w, f, &at);
     }
 }
 
-/// What lives down the blue hole, where the light gives out: anglerfish
-/// lurking in the mouths of its nooks, their lures before them; a giant
-/// squid crossing the shaft; jellies drifting, their bells lit; a school
-/// of lanternfish circling with their photophores; and colonies of glowing
-/// zoanthids speckling the nooks. `at` takes a point in the wall's frame
-/// (a unit round, a unit from the floor to the rim) to the world.
-fn hole_life(w: &World, f: &mut Frame, at: &dyn Fn([f32; 3]) -> [f32; 3]) {
-    let t = w.t;
-    // Down in the dark: none of the glow shows in the sunlit top of the
-    // shaft.
+/// The glowing zoanthids crusting the blue hole's nooks, down in the dark
+/// where none of the sunlit top of the shaft reaches. `at` takes a point
+/// in the wall's frame to the world.
+fn hole_glows(w: &World, f: &mut Frame, at: &dyn Fn([f32; 3]) -> [f32; 3]) {
     let dark = |y: f32| smooth(0.75, 0.55, y);
     for k in 0..mesh::HOLE_NOOKS {
-        let (a, y, _, high, depth) = mesh::hole_nook(k);
+        let (a, y, _, high, _) = mesh::hole_nook(k);
         if y > 0.72 {
             continue;
         }
-        let h = |n: u32| hash(k as i32, 0, 1600 + n);
-        // Glowing zoanthids crusting the nook's lip and the back of it.
         for i in 0..6 {
             let g = |n: u32| hash(k as i32, i, 1610 + n);
             let da = (g(0) - 0.5) * 0.25;
@@ -12879,8 +12997,7 @@ fn hole_life(w: &World, f: &mut Frame, at: &dyn Fn([f32; 3]) -> [f32; 3]) {
             if !w.visible(p, 0.05) {
                 continue;
             }
-            let pulse = 0.6 + 0.4 * (t * (0.5 + g(2)) + g(3) * TAU).sin();
-            let glow = pulse * dark(y);
+            let glow = (0.6 + 0.4 * g(2)) * dark(y);
             let tint = if g(4) < 0.6 {
                 [0.10, 0.55, 0.45]
             } else {
@@ -12888,29 +13005,46 @@ fn hole_life(w: &World, f: &mut Frame, at: &dyn Fn([f32; 3]) -> [f32; 3]) {
             };
             f.sprite(p, 0.025 + 0.02 * g(5), tint.map(|c| c * glow), GLOW);
         }
-        // An anglerfish in every other nook, hanging in its mouth facing
-        // out into the shaft.
-        if k % 2 == 0 {
-            let r = 1.0 + 0.25 * depth;
-            let bob = 0.004 * (t * 0.7 + h(0) * TAU).sin();
-            let p = at([a.cos() * r, y + bob - 0.3 * high, a.sin() * r]);
-            let show = w.reveal(p, 0.2);
-            if show > 0.001 {
-                let inward = at([0.0, y, 0.0]);
-                let face = (inward[2] - p[2]).atan2(inward[0] - p[0]);
-                f.fade = show;
-                anglerfish(w, f, p, -face + 0.3 * (h(1) - 0.5), 0.15, k as i32, show);
-                f.fade = 1.0;
-            }
-        }
     }
-    // The giant squid, cruising round the shaft between the boat's way
-    // and the wall, in the band the window looks across, slowly sinking
-    // and rising.
+}
+
+/// What lives down the blue hole, where the light gives out: anglerfish
+/// lying in its nooks, their lures before them; a giant squid cruising
+/// round the shaft; jellies drifting, their bells lit; and a school of
+/// lanternfish circling with their photophores. `at` takes a point in the
+/// wall's frame (a unit round, a unit from the floor to the rim) to the
+/// world.
+fn hole_life(w: &World, f: &mut Frame, at: &dyn Fn([f32; 3]) -> [f32; 3]) {
+    let t = w.t;
+    for &(k, a, r, y) in &hole_seats().nooks {
+        let h = |n: u32| hash(k as i32, 0, 1600 + n);
+        let p = at([a.cos() * r, y, a.sin() * r]);
+        let show = w.reveal(p, 0.2);
+        if show <= 0.001 {
+            continue;
+        }
+        // Facing out of the nook, a little askew.
+        let inward = at([0.0, y, 0.0]);
+        let face = (inward[2] - p[2]).atan2(inward[0] - p[0]);
+        f.fade = show;
+        anglerfish(
+            w,
+            f,
+            p,
+            -face + 0.3 * (h(1) - 0.5),
+            NOOK_ANGLER,
+            k as i32,
+            show,
+        );
+        f.fade = 1.0;
+    }
+    // The giant squid, cruising round the middle of the shaft, inside the
+    // boat's way, where the window looks across it, slowly sinking and
+    // rising.
     {
         let a = t * 0.012;
         let head = at([
-            0.78 * a.cos(),
+            0.22 * a.cos(),
             0.50 + 0.10 * (t * 0.017).sin(),
             0.78 * a.sin(),
         ]);
@@ -12925,7 +13059,7 @@ fn hole_life(w: &World, f: &mut Frame, at: &dyn Fn([f32; 3]) -> [f32; 3]) {
     for i in 0..9 {
         let g = |n: u32| hash(i, 3, 1620 + n);
         let a = g(0) * TAU + t * 0.01 * (g(1) - 0.5);
-        let r = 0.62 + 0.25 * g(2);
+        let r = 0.08 + 0.30 * g(2);
         let y = 0.40 + 0.3 * g(3) + 0.04 * (t * 0.07 + g(4) * TAU).sin();
         let p = at([a.cos() * r, y, a.sin() * r]);
         let show = w.reveal(p, 0.15);
@@ -12957,7 +13091,7 @@ fn hole_life(w: &World, f: &mut Frame, at: &dyn Fn([f32; 3]) -> [f32; 3]) {
     for i in 0..14 {
         let g = |n: u32| hash(i, 4, 1630 + n);
         let a = -t * 0.06 + g(0) * 0.9;
-        let r = 0.72 + 0.12 * g(1);
+        let r = 0.26 + 0.08 * g(1);
         let y = 0.44 + 0.10 * g(2) + 0.02 * (t * 0.5 + g(3) * TAU).sin();
         let p = at([a.cos() * r, y, a.sin() * r]);
         let show = w.reveal(p, 0.05);

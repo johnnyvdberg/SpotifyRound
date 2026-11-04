@@ -1073,7 +1073,12 @@ mod effect {
             "Hex, Crystal, CrystalCluster, Halite, SaltChimney",
             "basalt columns, crystal points and clusters",
         ),
-        ("cones", CONES, "Cone", "stalactites, ruined spires"),
+        (
+            "cones",
+            CONES,
+            "Cone, Stalactite",
+            "stalactites, ruined spires",
+        ),
         (
             "divers",
             DIVERS,
@@ -1267,7 +1272,7 @@ fn model_bit(model: usize) -> u64 {
         | Model::CrystalCluster
         | Model::Halite
         | Model::SaltChimney => effect::CAVE_HEX,
-        Model::Cone => effect::CONES,
+        Model::Cone | Model::Stalactite => effect::CONES,
         Model::Diver | Model::DiverHelmet | Model::DiverLimb | Model::DiverBoot => effect::DIVERS,
         Model::Shark => effect::SHARKS,
         Model::Whale => effect::WHALES,
@@ -3748,7 +3753,7 @@ fn globals(w: &World, frame: &Frame) -> Globals {
     // across the avenue and their windows show from much further.
     // The haze reaches the water's full colour at the sea's sight
     // (`world::SIGHT`), where the placers stop placing.
-    let haze = world::SIGHT_K / (blend(world::SIGHT) * (1.0 - 0.75 * murk));
+    let haze = world::SIGHT_K / (blend(world::SIGHT) * (1.0 - 0.5 * murk));
     // How much this sea has a sky the water can open on to: the shallow seas
     // can through Snell's window, the polar ice through its leads; the cave,
     // the deep, the bloom, the drowned city and the glass sponges cannot;

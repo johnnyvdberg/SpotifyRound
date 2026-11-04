@@ -823,6 +823,9 @@ pub enum Model {
     /// A band of seep mussels round the edge of a unit circle, to ring a
     /// brine pan.
     Mussels,
+    /// A stalactite a unit long, root at y = 0 and point at y = 1 (placed
+    /// upside down), flared at the root where it grows out of the rock.
+    Stalactite,
     // The drowned museum's (`exhibits`), streamed in as it comes near and
     // dropped once it is left behind: none is in the library the dive
     // starts with ([`Model::is_streamed`]). First the Smithsonian's
@@ -883,7 +886,7 @@ pub enum Model {
 }
 
 impl Model {
-    pub const ALL: [Model; 157] = [
+    pub const ALL: [Model; 158] = [
         Model::Sphere,
         Model::Rock0,
         Model::Rock1,
@@ -992,6 +995,7 @@ impl Model {
         Model::Halite,
         Model::SaltChimney,
         Model::Mussels,
+        Model::Stalactite,
         Model::Mammoth,
         Model::GroundSloth,
         Model::Triceratops,
@@ -1410,6 +1414,7 @@ impl Model {
             Model::Halite => halite(),
             Model::SaltChimney => salt_chimney(),
             Model::Mussels => mussels(),
+            Model::Stalactite => stalactite(),
             #[cfg(test)]
             Model::WhaleSkeleton => exhibits::whale_skeleton(),
             #[cfg(test)]
@@ -4812,6 +4817,32 @@ fn salt_spire(salt: u32, size: f32, tall: f32) -> Mesh {
         move |p| [p[0] + bend * p[1] * p[1], p[1], p[2] + 0.03 * p[1]],
         |n| n,
     )
+}
+
+/// A stalactite (`Model::Stalactite`), a unit long and a quarter of a unit
+/// across at its root: the root flares out to run into
+/// the ceiling it hangs from, the shaft tapers in rings where it grew in
+/// spells, with a bulge or two where the drip ran thicker, to a point.
+fn stalactite() -> Mesh {
+    let profile = [
+        (0.70, 0.0),
+        (0.50, 0.03),
+        (0.37, 0.08),
+        (0.30, 0.16),
+        (0.26, 0.28),
+        (0.24, 0.38),
+        (0.17, 0.52),
+        (0.15, 0.62),
+        (0.09, 0.78),
+        (0.05, 0.90),
+        (0.0, 1.0),
+    ];
+    let lumpy = |y: f32, a: f32| {
+        1.0 + 0.12 * (a * 3.0 + y * 9.0).sin()
+            + 0.06 * (a * 5.0 - y * 4.0).sin()
+            + 0.08 * (y * 23.0).sin().abs()
+    };
+    lathe_down_to(&profile, 9, 5, lumpy, |_, _| [1.0; 3], |y| [0.0, y]).scaled([0.35, 1.0, 0.35])
 }
 
 /// A bed of mussels (`Model::Mussels`), a unit across: the seep mussels that
