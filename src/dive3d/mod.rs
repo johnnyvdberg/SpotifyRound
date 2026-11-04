@@ -110,25 +110,104 @@ const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The caustic tile, generated once on the CPU: two sines and a pow in Rust
-/// instead of in every vertex shader.
-/// The CPU side of the caustic precompute, split out so it can be timed without
-/// a GPU.
+/// instead of in every vertex shader. The CPU side of the caustic precompute,
+/// split out so it can be timed without a GPU. One byte a texel: the lighting
+/// samples it at every vertex, so it stays as small as it can be.
 fn caustic_texels() -> Vec<u8> {
-    const SIZE: usize = 256;
-    let mut texels = vec![0u8; SIZE * SIZE];
+    ripple_texels().as_chunks::<4>().0.iter().map(|t| t[0]).collect()
+}
+
+/// The water surface's tile, for the surface seen from below
+/// (`water_ceiling`): red is the caustic web again, green and blue the
+/// slopes of a tile of ripples along its x and y, alpha their height. Every
+/// term is periodic over the tile, so it repeats without a seam.
+fn ripple_texels() -> Vec<u8> {
+    const SIZE: usize = CAUSTIC_SIZE as usize;
+    // The ripples: wave vectors of whole turns over the tile, in every
+    // direction but more across the wind (x) than along it, the shorter the
+    // lower but nearly as steep, as a sea's chop is; each slope scaled so the tile's steepest
+    // stays within the byte.
+    let waves: Vec<([f32; 2], f32, f32)> = (0..28u32)
+        .map(|n| {
+            let r = |salt: u32| {
+                let h = (n.wrapping_mul(2_654_435_761) ^ salt.wrapping_mul(40_503))
+                    .wrapping_mul(2_246_822_519);
+                (h >> 8) as f32 / (1u32 << 24) as f32
+            };
+            let length = 4.0 + 28.0 * r(1).powf(1.3);
+            let angle = (r(2) - 0.5) * 2.4
+                + if n % 3 == 0 {
+                    std::f32::consts::FRAC_PI_2
+                } else {
+                    0.0
+                };
+            let k = [
+                (angle.cos() * length).round(),
+                (angle.sin() * length).round(),
+            ];
+            let k = if k == [0.0, 0.0] { [3.0, 1.0] } else { k };
+            (k, length.powf(-1.15), r(3) * std::f32::consts::TAU)
+        })
+        .collect();
+    let steepest: f32 = waves
+        .iter()
+        .map(|(k, a, _)| a * k[0].hypot(k[1]))
+        .sum::<f32>()
+        * 0.55;
+    let tallest: f32 = waves.iter().map(|w| w.1).sum::<f32>();
+    let mut texels = vec![0u8; SIZE * SIZE * 4];
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     for y in 0..SIZE {
         for x in 0..SIZE {
             let p = [x as f32 / SIZE as f32, y as f32 / SIZE as f32];
-            // Every term is periodic over the tile, so the texture repeats
-            // without a seam when the sea samples it beyond 0..1.
             let (u, v) = (p[0] * std::f32::consts::TAU, p[1] * std::f32::consts::TAU);
             let a = (u * 2.0 + (v * 3.0).sin()).sin();
             let b = (v * 2.0 + (u * 5.0).sin() + 1.7).sin();
             let c = (a + b).abs().mul_add(-0.5, 1.0).max(0.0).powf(7.0);
-            texels[y * SIZE + x] = (c * 255.0) as u8;
+            let (mut sx, mut sy, mut h) = (0.0f32, 0.0f32, 0.0f32);
+            for &(k, amp, phase) in &waves {
+                let at = (k[0] * p[0] + k[1] * p[1]) * std::f32::consts::TAU + phase;
+                h += amp * at.sin();
+                sx += amp * k[0] * at.cos();
+                sy += amp * k[1] * at.cos();
+            }
+            let o = (y * SIZE + x) * 4;
+            texels[o] = (c * 255.0) as u8;
+            texels[o + 1] = byte(0.5 + 0.5 * sx / steepest);
+            texels[o + 2] = byte(0.5 + 0.5 * sy / steepest);
+            texels[o + 3] = byte(0.5 + 0.5 * h / tallest);
         }
     }
     texels
+}
+
+/// The caustic tile's side, in texels.
+const CAUSTIC_SIZE: u32 = 256;
+
+/// The ripple tile's mip chain, each level the mean of four of the one
+/// before: far off, the ripples' slopes average out instead of shimmering.
+fn ripple_levels() -> Vec<Vec<u8>> {
+    let mut levels = vec![ripple_texels()];
+    let mut side = CAUSTIC_SIZE as usize;
+    while side > 1 {
+        let half = side / 2;
+        let last = levels.last().expect("the full level");
+        let mut next = vec![0u8; half * half * 4];
+        for y in 0..half {
+            for x in 0..half {
+                for c in 0..4 {
+                    let at = |dx: usize, dy: usize| {
+                        u32::from(last[((2 * y + dy) * side + 2 * x + dx) * 4 + c])
+                    };
+                    next[(y * half + x) * 4 + c] =
+                        ((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8;
+                }
+            }
+        }
+        levels.push(next);
+        side = half;
+    }
+    levels
 }
 
 /// A texture array of `side` texels a side from painted layers and their
@@ -200,13 +279,12 @@ fn surface_array(
 }
 
 fn caustic_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
-    const SIZE: u32 = 256;
     let texels = caustic_texels();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Dive3d caustics"),
         size: wgpu::Extent3d {
-            width: SIZE,
-            height: SIZE,
+            width: CAUSTIC_SIZE,
+            height: CAUSTIC_SIZE,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -226,232 +304,56 @@ fn caustic_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture 
         &texels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(SIZE),
-            rows_per_image: Some(SIZE),
+            bytes_per_row: Some(CAUSTIC_SIZE),
+            rows_per_image: Some(CAUSTIC_SIZE),
         },
         wgpu::Extent3d {
-            width: SIZE,
-            height: SIZE,
+            width: CAUSTIC_SIZE,
+            height: CAUSTIC_SIZE,
             depth_or_array_layers: 1,
         },
     );
     texture
 }
 
-/// Resolution of one face of the sky cubemap.
-const SKY_RES: u32 = 96;
-/// One cubemap per biome, in biome-id order.
-const SKY_LAYERS: u32 = 6 * crate::voyage::BIOMES as u32;
-
-fn smooth01(a: f32, b: f32, v: f32) -> f32 {
-    let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// The per-biome skyboxes, baked once into a cubemap array: one face set per
-/// biome, in the same order and with the same palettes the shader used to
-/// evaluate per pixel. Sampling this is one texture fetch, where the old
-/// procedural sky cost the Pi most of a frame in the arctic.
-fn sky_cube_texels() -> Vec<u8> {
-    // Zenith, horizon, cloudiness, cloud tint and sun tint, by biome id.
-    const ZENITH: [[f32; 3]; crate::voyage::BIOMES] = [
-        [0.07, 0.34, 0.62],
-        [0.06, 0.25, 0.30],
-        [0.10, 0.13, 0.14],
-        [0.045, 0.12, 0.32],
-        [0.010, 0.006, 0.004],
-        [0.002, 0.006, 0.014],
-        [0.04, 0.13, 0.26],
-        [0.05, 0.24, 0.42],
-        [0.06, 0.38, 0.68],
-        [0.24, 0.18, 0.05],
-        [0.020, 0.012, 0.010],
-        [0.28, 0.36, 0.42],
-        [0.020, 0.030, 0.080],
-        // The drowned city is too deep for a sky; its cube is the water's
-        // own teal-green, in case a border ever samples it.
-        [0.010, 0.045, 0.040],
-        // The meadow under a bright tropical sky, the glass sponges far too
-        // deep for one, and over the blue hole the same clear sky as the reef.
-        [0.08, 0.36, 0.62],
-        [0.006, 0.014, 0.022],
-        [0.06, 0.40, 0.70],
-        [0.06, 0.30, 0.56],
-    ];
-    const HORIZON: [[f32; 3]; crate::voyage::BIOMES] = [
-        [0.46, 0.80, 0.92],
-        [0.32, 0.62, 0.56],
-        [0.34, 0.40, 0.38],
-        [0.18, 0.34, 0.58],
-        [0.050, 0.020, 0.010],
-        [0.010, 0.030, 0.060],
-        [0.20, 0.44, 0.60],
-        [0.26, 0.54, 0.66],
-        [0.50, 0.88, 0.94],
-        [0.76, 0.58, 0.20],
-        [0.10, 0.04, 0.02],
-        [0.74, 0.82, 0.86],
-        [0.06, 0.08, 0.17],
-        [0.040, 0.120, 0.100],
-        [0.48, 0.82, 0.88],
-        [0.020, 0.040, 0.060],
-        [0.52, 0.86, 0.95],
-        [0.40, 0.74, 0.88],
-    ];
-    const CLOUDINESS: [f32; crate::voyage::BIOMES] = [
-        0.65, 0.35, 0.80, 0.20, 0.0, 0.0, 0.35, 0.10, 0.55, 0.72, 0.0, 0.60, 0.0, 0.0, 0.45, 0.0,
-        0.30, 0.40,
-    ];
-    const CLOUD_TINT: [[f32; 3]; crate::voyage::BIOMES] = [
-        [0.98, 0.98, 0.96],
-        [0.82, 0.90, 0.82],
-        [0.58, 0.62, 0.64],
-        [0.76, 0.78, 0.90],
-        [0.0; 3],
-        [0.0; 3],
-        [0.86, 0.92, 0.96],
-        [0.92, 0.95, 0.98],
-        [1.0, 0.98, 0.94],
-        [0.98, 0.80, 0.46],
-        [0.0; 3],
-        [0.94, 0.94, 0.92],
-        [0.0; 3],
-        [0.0; 3],
-        [0.98, 0.98, 0.95],
-        [0.0; 3],
-        [1.0, 0.98, 0.94],
-        [0.96, 0.97, 0.96],
-    ];
-    const SUN_TINT: [[f32; 3]; crate::voyage::BIOMES] = [
-        [1.0, 0.96, 0.82],
-        [1.0, 0.92, 0.68],
-        [0.72, 0.74, 0.70],
-        [1.0, 0.88, 0.70],
-        [0.0; 3],
-        [0.0; 3],
-        [1.0, 0.96, 0.88],
-        [1.0, 0.97, 0.86],
-        [1.0, 0.94, 0.76],
-        [1.0, 0.68, 0.26],
-        [0.0; 3],
-        [1.0, 0.94, 0.82],
-        [0.0; 3],
-        [0.0; 3],
-        [1.0, 0.95, 0.80],
-        [0.0; 3],
-        [1.0, 0.95, 0.82],
-        [1.0, 0.95, 0.84],
-    ];
-    let sun = {
-        let d = world::SUN;
-        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        [d[0] / l, d[1] / l, d[2] / l]
-    };
-    let res = SKY_RES;
-    let mut out = vec![0u8; (SKY_LAYERS * res * res * 4) as usize];
-    // Six cube faces, each a square, then the biome layers one after another.
-    for face in 0..6u32 {
-        for y in 0..res {
-            for x in 0..res {
-                let u = (x as f32 + 0.5) / res as f32 * 2.0 - 1.0;
-                let v = (y as f32 + 0.5) / res as f32 * 2.0 - 1.0;
-                let mut dir = match face {
-                    0 => [1.0, -v, -u],
-                    1 => [-1.0, -v, u],
-                    2 => [u, 1.0, v],
-                    3 => [u, -1.0, -v],
-                    4 => [u, -v, 1.0],
-                    _ => [-u, -v, -1.0],
-                };
-                let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
-                dir = [dir[0] / l, dir[1] / l, dir[2] / l];
-                for biome in 0..crate::voyage::BIOMES {
-                    let up = dir[1].clamp(0.0, 1.0);
-                    let mut c = [0.0f32; 3];
-                    for k in 0..3 {
-                        c[k] = HORIZON[biome][k]
-                            + (ZENITH[biome][k] - HORIZON[biome][k]) * up.powf(0.55);
-                    }
-                    let toward_sun = (dir[0] * sun[0] + dir[1] * sun[1] + dir[2] * sun[2]).max(0.0);
-                    let halo = toward_sun.powf(24.0) * 0.18 + toward_sun.powf(6.0) * 0.06;
-                    let disc = smooth01(0.9992, 0.9997, toward_sun) * 1.8;
-                    for k in 0..3 {
-                        c[k] += SUN_TINT[biome][k] * (halo + disc);
-                    }
-                    // Clouds, from the same value noise the shader used, baked
-                    // still: one fetch replaces the per-pixel noise.
-                    let cloud = CLOUDINESS[biome] * smooth01(0.0, 0.12, up);
-                    if cloud > 0.0 {
-                        let ax = dir[0] / (0.45 + 1.1 * up) * 6.5;
-                        let az = dir[2] / (0.45 + 1.1 * up) * 6.5;
-                        let field = world::vnoise(ax, az, 71);
-                        let shred = 0.5 + 0.5 * (ax * 1.7 + az * 1.3).sin();
-                        let cover = smooth01(0.38, 0.62, field * 0.72 + shred * 0.28);
-                        let lit = 0.78 + 0.30 * toward_sun;
-                        for k in 0..3 {
-                            c[k] = c[k] * (1.0 - cover * cloud * 0.85)
-                                + CLOUD_TINT[biome][k] * lit * cover * cloud * 0.85;
-                        }
-                    }
-                    // The polar aurora, through the leads.
-                    if biome == world::ARCTIC {
-                        let band = (dir[0] * 7.0).sin()
-                            + 0.6 * (dir[2] * 5.0 + 1.3).sin()
-                            + 0.3 * (dir[0] * 13.0 - dir[2] * 9.0).sin();
-                        let curtain = smooth01(0.45, 1.30, band) * smooth01(0.0, 0.18, up);
-                        let violet = smooth01(1.05, 1.55, band) * smooth01(0.0, 0.25, up);
-                        c[0] += 0.08 * curtain * 0.55 + 0.24 * violet * 0.22;
-                        c[1] += 0.55 * curtain * 0.55 + 0.20 * violet * 0.22;
-                        c[2] += 0.30 * curtain * 0.55 + 0.60 * violet * 0.22;
-                    }
-                    let layer = biome as u32 * 6 + face;
-                    let at = ((layer * res + y) * res + x) as usize * 4;
-                    out[at] = (c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                    out[at + 1] = (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                    out[at + 2] = (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                    out[at + 3] = 255;
-                }
-            }
-        }
-    }
-    out
-}
-
-fn sky_cube_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+fn ripple_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    let levels = ripple_levels();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Dive3d skyboxes"),
+        label: Some("Dive3d ripples"),
         size: wgpu::Extent3d {
-            width: SKY_RES,
-            height: SKY_RES,
-            depth_or_array_layers: SKY_LAYERS,
+            width: CAUSTIC_SIZE,
+            height: CAUSTIC_SIZE,
+            depth_or_array_layers: 1,
         },
-        mip_level_count: 1,
+        mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let texels = sky_cube_texels();
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &texels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(SKY_RES * 4),
-            rows_per_image: Some(SKY_RES),
-        },
-        wgpu::Extent3d {
-            width: SKY_RES,
-            height: SKY_RES,
-            depth_or_array_layers: SKY_LAYERS,
-        },
-    );
+    for (level, texels) in levels.iter().enumerate() {
+        let side = (CAUSTIC_SIZE >> level).max(1);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            texels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(side * 4),
+                rows_per_image: Some(side),
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
     texture
 }
 
@@ -479,8 +381,8 @@ struct Globals {
     light_colours: [[f32; 4]; 8],
     /// This visit's biome circuit, four legs a vector.
     order: [[f32; 4]; 5],
-    /// The biome mix the sky reads at the window: a, b, w, and how much of
-    /// the sea there has a sky above it at all.
+    /// The biome mix at the window: a, b, w, and how much of the sea there
+    /// has daylight above it at all (the surface's brightness from below).
     sky: [f32; 4],
 }
 
@@ -639,9 +541,9 @@ struct Bindings {
     normals: wgpu::TextureView,
     sampler: wgpu::Sampler,
     caustic: wgpu::TextureView,
+    ripples: wgpu::TextureView,
     caustic_sampler: wgpu::Sampler,
     ice_bake: wgpu::TextureView,
-    sky: wgpu::TextureView,
 }
 
 impl Bindings {
@@ -658,7 +560,7 @@ impl Bindings {
                 entry(4, view(&self.caustic)),
                 entry(5, wgpu::BindingResource::Sampler(&self.caustic_sampler)),
                 entry(12, view(&self.ice_bake)),
-                entry(13, view(&self.sky)),
+                entry(13, view(&self.ripples)),
                 entry(14, view(paintings)),
                 entry(15, view(&self.fine)),
                 entry(16, view(&self.normals)),
@@ -825,47 +727,11 @@ fn form_slot(s: &Sprite) -> usize {
     }
 }
 
-/// Which sky the open water opens on to overhead, as `SKY` in `scene.wesl`:
-/// the polar sky where the arctic's leads show it, else the underside of the
-/// water surface while the boat is within six units of it, else nothing but
-/// the sea. The tests are the ones `fs_background` made for every pixel. The
-/// underside has a variant with the sky through Snell's window, for a view
-/// that looks far enough up to see into it.
+/// What the open water opens on to overhead, as `SKY` in `scene.wesl`: the
+/// underside of the water surface while the boat is within six units of it,
+/// else nothing but the sea.
 fn sky_mode(g: &Globals) -> usize {
-    let arctic = world::ARCTIC as i32;
-    let (a, b, w) = ((g.sky[0] + 0.5) as i32, (g.sky[1] + 0.5) as i32, g.sky[2]);
-    let polar = if a == arctic { 1.0 - w } else { 0.0 } + if b == arctic { w } else { 0.0 };
-    if g.sky[3] > 0.002 && polar > 0.01 {
-        2
-    } else if g.camera[1] > -6.0 {
-        if g.sky[3] > 0.002 && highest_view(g) > SNELL_REACH {
-            3
-        } else {
-            1
-        }
-    } else {
-        0
-    }
-}
-
-/// How far up the window ever looks before `fs_background` takes in the sky
-/// through Snell's window (0.64), less a margin for the round window's edge
-/// between the corners `highest_view` tries.
-const SNELL_REACH: f32 = 0.6;
-
-/// The greatest upward slope (the y of the unit ray) anywhere in the view:
-/// at one of its corners, as the ray's height is greatest at the edge of a
-/// square that is level or tilted.
-fn highest_view(g: &Globals) -> f32 {
-    let s = g.view[0];
-    [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
-        .iter()
-        .map(|&(x, y): &(f32, f32)| {
-            let (lx, ly) = (x * s, y * s);
-            let y = lx * g.right[1] + ly * g.up[1] + g.out[1];
-            y / (lx * lx + ly * ly + 1.0).sqrt()
-        })
-        .fold(f32::MIN, f32::max)
+    usize::from(g.camera[1] > -6.0)
 }
 
 /// Which pipeline a run of instances is drawn with, in the order they are drawn.
@@ -1663,7 +1529,7 @@ fn compile(
     };
     // Depth is reversed — near at 1, far toward 0 — for precision far out.
     let nearer = wgpu::CompareFunction::Greater;
-    let backgrounds = (0..4)
+    let backgrounds = (0..2)
         .map(|sky| {
             pipeline(
                 "Dive3d water",
@@ -2215,7 +2081,7 @@ impl Nautilus {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::CubeArray,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
                     count: None,
@@ -2267,11 +2133,6 @@ impl Nautilus {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let sky = sky_cube_texture(device, &gpu.queue);
-        let sky_view = sky.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::CubeArray),
-            ..Default::default()
-        });
         let painted = textures::paint_all();
         let surfaces = surface_array(
             device,
@@ -2317,12 +2178,15 @@ impl Nautilus {
         let normals_view = normals.create_view(&array);
         let caustic = caustic_texture(device, &gpu.queue);
         let caustic_view = caustic.create_view(&wgpu::TextureViewDescriptor::default());
+        let ripples = ripple_texture(device, &gpu.queue);
+        let ripples_view = ripples.create_view(&wgpu::TextureViewDescriptor::default());
         let caustic_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Dive3d caustics"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let bindings = Bindings {
@@ -2333,9 +2197,9 @@ impl Nautilus {
             normals: normals_view,
             sampler,
             caustic: caustic_view,
+            ripples: ripples_view,
             caustic_sampler,
             ice_bake: ice_bake_view,
-            sky: sky_view,
         };
         let stream = stream::Stream::new(gpu);
         let group = bindings.group(device, &stream.view);

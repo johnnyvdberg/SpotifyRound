@@ -595,7 +595,7 @@ impl Helm {
         let basis = basis(
             self.course.value + self.crab.value + self.swing.value,
             pitch,
-            roll,
+            roll + shot_tilt(),
         );
         // The window is on the hull's side, a girth out from its middle.
         let out = basis[2];
@@ -686,6 +686,26 @@ impl Helm {
 
 /// The window's axes for a boat at `yaw`, `pitch` and `roll`: the boat's nose
 /// is +x, its keel -y and the window looks along +z.
+/// For the screenshots only: `DIVE3D_SHOTS_TILT` turns the window up by
+/// that many radians (down if negative), to see the surface overhead.
+fn shot_tilt() -> f32 {
+    #[cfg(test)]
+    {
+        use std::sync::OnceLock;
+        static TILT: OnceLock<f32> = OnceLock::new();
+        *TILT.get_or_init(|| {
+            std::env::var("DIVE3D_SHOTS_TILT")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0.0)
+        })
+    }
+    #[cfg(not(test))]
+    {
+        0.0
+    }
+}
+
 fn basis(yaw: f32, pitch: f32, roll: f32) -> [[f32; 3]; 3] {
     let m = super::world::place([0.0; 3], yaw, pitch, roll, [1.0; 3]);
     [

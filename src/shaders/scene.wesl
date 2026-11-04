@@ -50,8 +50,8 @@ struct Globals {
     light_colours: array<vec4<f32>, 8>,
     // This visit's eighteen-leg biome circuit, four legs a vector.
     order: array<vec4<f32>, 5>,
-    // The biome mix at the window and how much of this sea has a sky over
-    // it: xy is the pair, z the blend, w the sky's strength there.
+    // The biome mix at the window and how much of this sea has daylight over
+    // it: xy is the pair, z the blend, w the daylight's strength there.
     sky: vec4<f32>,
 };
 
@@ -64,9 +64,9 @@ struct Globals {
 @group(0) @binding(5) var caustic_sampler: sampler;
 // The ice sheet's baked floes/leads/bumps/coverage, one sample per pixel.
 @group(0) @binding(12) var ice_bake: texture_2d<f32>;
-// The baked per-biome skyboxes: a cubemap array, one cube per biome, in id
-// order. One fetch replaces the old per-pixel sky arithmetic.
-@group(0) @binding(13) var sky_cubes: texture_cube_array<f32>;
+// The water surface's tile (`water_ceiling`): the caustic web in red, the
+// ripples' slopes in green and blue, with its mips.
+@group(0) @binding(13) var ripple_map: texture_2d<f32>;
 // The museum's paintings, one layer each (`dive3d::paintings`), streamed in
 // as the museum comes near; a single grey layer the rest of the voyage.
 @group(0) @binding(14) var paintings: texture_2d_array<f32>;
@@ -138,19 +138,14 @@ override CITY_PART: i32 = -1;
 // its bending of the glass blend from.
 override SEA_SCALE: f32 = 1.0;
 
-// What the open water's pipeline opens on to overhead: the plain sea, the
-// underside of the water surface, the polar sky through the ice's leads, or
-// the underside with the sky through Snell's window over it, for a view
-// steep enough to reach the window (`sky_mode` on the CPU picks one a frame,
-// by the same tests the shader used to make per pixel). Each compiles only
-// its own: together they kept the water at two threads on the Pi, and it
-// shades most of a reef view. The sky's one fetch alone halves the
-// ceiling's threads, and the salon's window never looks that far up.
+// What the open water's pipeline opens on to overhead: the plain sea, or the
+// underside of the water surface (`sky_mode` on the CPU picks one a frame).
+// Each compiles only its own: together they kept the water at two threads
+// on the Pi, and it shades most of a reef view. No sky is ever drawn: from
+// below, the surface is all the window sees of what is over the sea.
 override SKY: i32 = 1;
 const SKY_OPEN: i32 = 0;
 const SKY_CEILING: i32 = 1;
-const SKY_POLAR: i32 = 2;
-const SKY_SNELL: i32 = 3;
 
 // The impostor form this pipeline draws (`fs_impostor`): 0 staghorn,
 // 1 table, 2 fingers, 3 dome or bush, 5 fish; -1 any. A form a pipeline
@@ -355,12 +350,12 @@ fn water_at(dir: vec3<f32>) -> vec3<f32> {
 // ray; the surface lies at y = 0, so the pixel is that intersection. This is
 // the ceiling of a shallow sea and it must read as water, not sky: from
 // below, a surface is a mirror of the dim water under it except where a ray
-// meets it within the critical angle, 48.6 degrees of its normal, and leaves
-// for the sky. Level, that is Snell's window overhead, which the side window
-// barely looks up to; but the waves tilt the surface, so the faces turned
-// toward the window flash bright out of the mirror, brightest at the
-// window's rim, and the swells and a chop running across them keep the
-// facets moving. The caustic web is the light the waves focus under it.
+// meets it within the critical angle, 48.6 degrees of its normal, and the
+// day's light comes through. Level, that is Snell's window overhead; but two
+// layers of ripples (`ripple_map`'s green and blue) and the swells under
+// them tilt the surface, so its edge breaks into bright facets out of the
+// mirror, brightest at the window's rim. The caustic web is the light the
+// waves focus under it.
 fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     let up = max(dir.y, 0.002);
     let reach = clamp(-g.camera.y / up, 0.0, 180.0);
@@ -371,97 +366,68 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     if (haze > 0.995) {
         return open;
     }
-    let caustic = textureSampleLevel(
-        caustic_map,
+    // The ripples' level of detail: a pixel's footprint on the surface,
+    // stretched as the ray grazes it, in texels of each tile.
+    let footprint = reach * 0.0016 / max(up, 0.08);
+    let fine = textureSampleLevel(
+        ripple_map,
         caustic_sampler,
-        fract(at * 0.30 + vec2<f32>(t * 0.008, t * -0.006)),
-        0.0,
-    ).r;
-    let web = smooth01(0.30, 0.96, caustic);
-    let p1 = at.x * 0.9 + t * 0.30;
-    let p2 = at.y * 0.8 - t * 0.26;
-    let p3 = (at.x + at.y) * 1.7 + t * 0.50;
-    // The swells' light: their slopes' cosines serve as well as the sines
-    // the shader once spent on it.
-    let c1 = cos(p1);
-    let c2 = cos(p2);
-    let c3 = cos(p3);
-    let sun = 0.5 + 0.25 * (c1 + 0.7 * c2 + 0.3 * c3);
-    // Worked out as scalars first and laid on the water's colours once at the
-    // end: three colours live across the waves' arithmetic cost the shader
-    // half its threads.
-    var mirror = 0.0;
-    var down = 0.0;
-    var bright = 0.0;
-    // The facets fade out deep in the haze, where they no longer show and
-    // the pixels skip them. (`fenced` keeps the compiler from hoisting the
-    // waves up beside the caustic fetch, where both would hold their
-    // registers at once.)
-    let facets = 1.0 - smooth01(0.70, 0.90, haze);
-    if (!debug(OLD_CEILING) && facets > 0.0 && !fenced()) {
-        // The surface's slope: the three swells' and a short chop across
-        // them, and the fine cells of the web, which lie on the wave faces
-        // that focus it.
-        let p4 = dot(at, vec2<f32>(7.3, -5.6)) - t * 1.7;
-        let p5 = dot(at, vec2<f32>(-4.4, 6.9)) - t * 1.5;
-        let tilt = 0.40 * (web - 0.35);
-        let c4 = cos(p4);
-        let c5 = cos(p5);
-        let sx = 0.09 * c1 + 0.12 * c3 + 0.17 * c4 - 0.11 * c5 + dir.x * tilt;
-        let sz = 0.13 * c2 + 0.12 * c3 - 0.13 * c4 + 0.17 * c5 + dir.z * tilt;
-        // The ray against the surface's normal (-sx, 1, -sz).
-        let inv = inverseSqrt(1.0 + sx * sx + sz * sz);
-        let facing = (dir.y - dir.x * sx - dir.z * sz) * inv;
-        // Inside the critical angle the sky, outside it the mirror, with the
-        // horizon crowded into a bright rim between them.
-        let window = smooth01(0.56, 0.72, facing);
-        let rim = window * (1.0 - smooth01(0.72, 0.88, facing));
-        // The mirror shows the water below, darker the steeper it looks down.
-        down = smooth01(-0.9, 0.2, dir.y - 2.0 * facing * inv);
-        mirror = 0.55 * (1.0 - window) * facets;
-        bright = (window * 0.6 + rim * 0.25) * g.sky.w * (0.45 + 0.9 * g.sun.w) * facets;
+        vec2<f32>(at.x * 0.31 - at.y * 0.12, at.x * 0.12 + at.y * 0.31) + vec2<f32>(t * -0.031, t * 0.024),
+        clamp(log2(footprint * 256.0 * 0.33), 0.0, 8.0),
+    );
+    let broad = textureSampleLevel(
+        ripple_map,
+        caustic_sampler,
+        at * 0.105 + vec2<f32>(t * 0.017, t * 0.011),
+        clamp(log2(footprint * 256.0 * 0.105), 0.0, 8.0),
+    );
+    // The swells under the ripples: their slopes' cosines serve as well as
+    // the sines.
+    let c1 = cos(at.x * 0.9 + t * 0.30);
+    let c2 = cos(at.y * 0.8 - t * 0.26);
+    let c3 = cos((at.x + at.y) * 1.7 + t * 0.50);
+    var sx = 0.06 * c1 + 0.05 * c3;
+    var sz = 0.07 * c2 + 0.05 * c3;
+    if (!debug(OLD_CEILING)) {
+        // The fine layer turned against the broad one, so their crests cross.
+        let f = fine.gb * 2.0 - 1.0;
+        let b = broad.gb * 2.0 - 1.0;
+        sx += 0.16 * b.x + 0.30 * (f.x * 0.93 + f.y * 0.36);
+        sz += 0.16 * b.y + 0.30 * (f.y * 0.93 - f.x * 0.36);
     }
-    let base = mix(g.deep.rgb, g.water.rgb, 0.50) * 1.05;
-    var colour = base * (0.975 + 0.05 * web) * (0.82 + 0.20 * sun)
-        + vec3<f32>(0.18, 0.32, 0.31) * web * (0.06 + 0.10 * g.sun.w);
-    let below = mix(g.deep.rgb, g.water.rgb, down) * 1.1;
-    colour = mix(colour, below, mirror) + vec3<f32>(0.62, 0.84, 0.88) * g.tint.rgb * bright;
-    // Keep the ceiling a backdrop: wash it toward the open water so it
-    // never competes with the scene in front of it, and dissolve it into the
+    // The ray against the surface's normal (-sx, 1, -sz).
+    let inv = inverseSqrt(1.0 + sx * sx + sz * sz);
+    let facing = (dir.y - dir.x * sx - dir.z * sz) * inv;
+    // Snell's window: within 48.6 degrees of the normal (a cosine of 0.661)
+    // the light from above comes through, all the more the nearer the
+    // normal; outside it the surface is a perfect mirror of the water under
+    // it; and at its edge the whole horizon above is crowded into a bright
+    // rim. Softened with distance, where a pixel spans many ripples.
+    let soft = 0.03 + 0.12 * smooth01(4.0, 40.0, reach);
+    let window = smooth01(0.661 - soft * 0.3, 0.661 + soft + 0.12, facing);
+    let rim = smooth01(0.661 - soft, 0.661, facing) * (1.0 - smooth01(0.661, 0.661 + soft + 0.06, facing));
+    // The mirror: the water below along the reflected ray, darker the
+    // steeper it looks down.
+    let down = facing * inv * 2.0;
+    let mirrored = dir.y - down;
+    let below = mix(g.deep.rgb, g.water.rgb, smooth01(-0.95, 0.1, mirrored)) * 0.85;
+    // What comes through: the day's light, brightest straight up through
+    // the water and toward the sun, nothing over the deep seas.
+    let day = g.sky.w * (0.45 + 0.9 * g.sun.w);
+    let through = mix(g.water.rgb, vec3<f32>(0.80, 0.95, 0.97), 0.6) * g.tint.rgb
+        * (0.9 + 0.6 * smooth01(0.661, 1.0, facing)) * day;
+    var colour = mix(below, mix(below, through, min(day, 1.0)), window)
+        + vec3<f32>(0.75, 0.92, 0.95) * g.tint.rgb * rim * day * 0.55;
+    // The light the waves focus, caught on the underside where they do.
+    let web = smooth01(0.35, 0.95, fine.r);
+    colour += vec3<f32>(0.18, 0.30, 0.30) * web * (0.25 + 0.75 * window) * day * 0.35;
+    // A backdrop still: a little toward the open water, and into the
     // water's own haze at the sea's sight.
-    colour = mix(colour, open, 0.42);
+    colour = mix(colour, open, 0.22);
     colour = mix(colour, open, haze);
     return colour;
 }
 
-
-// ---------------------------------------------------------------------------
-// Sky
-// ---------------------------------------------------------------------------
-//
-// The sky the water opens on to: the gradient overhead, the sun, the cloud
-// deck and, under the ice, the aurora. A ray can only leave the water inside
-// Snell's window; under the polar sheet the leads are the other way out. The
-// ceiling itself is water (`water_ceiling`), never this. The deep seas have
-// no sky: `g.sky.w` fades it to nothing over the cave, the vents, the bloom
-// and the abyss.
-
-fn sky_leg() -> Leg {
-    return Leg(i32(g.sky.x + 0.5), i32(g.sky.y + 0.5), g.sky.z);
-}
-
-// The sky toward `dir`, from the baked cubemap of the biome or the mix of
-// the two biomes at a border. Sampling a cube is one fetch, where the
-// procedural version cost the Pi most of a frame in the arctic.
-fn sky_at(dir_in: vec3<f32>, l: Leg) -> vec3<f32> {
-    let dir = normalize(dir_in);
-    let a = textureSampleLevel(sky_cubes, surface_sampler, dir, l.a, 0.0).rgb;
-    if (l.w <= 0.01 || l.a == l.b) {
-        return a;
-    }
-    let b = textureSampleLevel(sky_cubes, surface_sampler, dir, l.b, 0.0).rgb;
-    return mix(a, b, l.w);
-}
 
 fn switched(bit: u32) -> bool {
     return debug(bit);
@@ -707,7 +673,7 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     let up = smooth01(0.05, 0.65, dir.y);
     // Under the water's ceiling the surface's glint is never seen: the
     // ceiling covers everything over a tenth of the way up its band.
-    if (SKY != SKY_CEILING && SKY != SKY_SNELL && up > 0.0) {
+    if (SKY != SKY_CEILING && up > 0.0) {
         let t = g.camera.w;
         let wave = sin(dir.x * 13.0 + t * 0.8 + sin(dir.z * 9.0 - t * 0.5))
             * sin(dir.z * 10.0 - t * 0.65 + sin(dir.x * 7.0 + t * 0.4));
@@ -716,24 +682,10 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
             + vec3<f32>(0.95, 0.88, 0.68) * glint * (0.35 + g.sun.w * 0.8);
         col = mix(col, surface, up * 0.88);
     }
-    // Above the horizon is either the polar ice's sky, seen through a lead,
-    // or the underside of the water surface: caustics, swell and the sun's
-    // sheen, never a painted cloud deck. The sky itself only appears where a
-    // ray can actually leave the water, in Snell's window overhead.
-    if (dir.y > 0.0) {
-        if (SKY == SKY_POLAR) {
-            let arctic = presence(sky_leg(), ARCTIC);
-            let sky = sky_at(dir, sky_leg());
-            let sky_up = smooth01(0.0, 0.12, dir.y) * g.sky.w * arctic;
-            col = mix(col, sky, sky_up);
-        } else if (SKY == SKY_CEILING || SKY == SKY_SNELL) {
-            var ceiling = water_ceiling(dir, g.camera.w);
-            if (SKY == SKY_SNELL && g.sky.w > 0.002 && dir.y > 0.64) {
-                let sky = sky_at(dir, sky_leg());
-                ceiling = mix(ceiling, sky, smooth01(0.64, 0.85, dir.y) * g.sky.w);
-            }
-            col = mix(col, ceiling, smooth01(0.0, 0.06, dir.y));
-        }
+    // Above the horizon, the underside of the water surface: its ripples,
+    // Snell's window and the mirror round it (`water_ceiling`).
+    if (SKY == SKY_CEILING && dir.y > 0.0) {
+        col = mix(col, water_ceiling(dir, g.camera.w), smooth01(0.0, 0.06, dir.y));
     }
     return vec4<f32>(col * SEA_SCALE, 1.0);
 
@@ -2557,13 +2509,19 @@ fn fs_pool(in: Pool) -> @location(0) vec4<f32> {
 
 struct Shaft {
     @builtin(position) position: vec4<f32>,
+    // Across the ribbon (-1..1) and along it (1 at the surface, -1 at the
+    // foot).
     @location(0) corner: vec2<f32>,
     @location(1) colour: vec3<f32>,
+    // The shaft's own seed, from where it starts, and how far down it the
+    // light has scattered out wider (0 at the top, 1 at the foot).
+    @location(2) @interpolate(flat) seed: f32,
 };
 
-// A ribbon from `place` down the run in `run`, `place.w` wide either side,
-// turned about its length to face the window. Its corners are placed in the
-// world, so it clips like any other triangle.
+// A ribbon from `place` down the run in `run`, `place.w` wide either side at
+// the top and spreading as the light scatters on its way down, turned about
+// its length to face the window. Its corners are placed in the world, so it
+// clips like any other triangle.
 @vertex
 fn vs_shaft(
     @builtin(vertex_index) index: u32,
@@ -2577,29 +2535,48 @@ fn vs_shaft(
     );
     let corner = corners[index];
     let top = place.xyz;
-    let side = normalize(cross(run.xyz, g.camera.xyz - top)) * place.w;
-    let at = top + run.xyz * (0.5 - 0.5 * corner.y) + side * corner.x;
+    let down = 0.5 - 0.5 * corner.y;
+    let side = normalize(cross(run.xyz, g.camera.xyz - top)) * place.w * (1.0 + 0.35 * down);
+    let at = top + run.xyz * down + side * corner.x;
     var out: Shaft;
     out.position = project(at);
     out.corner = corner;
+    out.seed = fract(sin(dot(top.xz, vec2<f32>(12.9898, 78.233))) * 43758.547);
     // Melting away as the window passes through it, rather than filling the
     // glass, and hazed by the water like everything else.
     let d = length(at - g.camera.xyz);
     // `tint.w` marks a shaft lit by its own light, as from the lava cave's
     // chimneys, rather than by the sun's.
     let strength = select(g.sun.w, 1.0, tint.w > 0.5);
+    // The water scatters the light mostly onward: a shaft is brightest seen
+    // looking up it toward the light, faintest from the side.
+    let toward = dot(normalize(g.camera.xyz - at), -normalize(run.xyz));
+    let onward = 0.8 + 0.8 * smooth01(-0.2, 0.9, toward);
     // A shaft is light in the water: it shows further than the sight.
-    out.colour = tint.rgb * strength * smooth01(0.35, 1.1, d) * (1.0 - fog_of(d / LIGHT_SIGHT)) * SEA_SCALE;
+    out.colour = tint.rgb * strength * onward * smooth01(0.35, 1.1, d)
+        * (1.0 - fog_of(d / LIGHT_SIGHT)) * SEA_SCALE;
     return out;
 }
 
-// Soft across, brightest just under the surface, fading on its way down.
+// A bundle of thin streaks rather than a bar: the light the surface's
+// ripples focus (the caustic web, read across the shaft and drifting along
+// it as the waves move) under a soft edge; brightest just under the surface,
+// dimming down it as the water takes the light, and gone before its foot.
 @fragment
 fn fs_shaft(in: Shaft) -> @location(0) vec4<f32> {
-    let across = 1.0 - in.corner.x * in.corner.x;
+    let x = in.corner.x;
     let y = in.corner.y;
-    let along = (1.0 - smooth01(0.75, 1.0, y)) * smooth01(-1.0, 0.1, y);
-    return vec4<f32>(in.colour * (across * across * along), 0.0);
+    let edge = 1.0 - x * x;
+    let web = textureSampleLevel(
+        caustic_map,
+        caustic_sampler,
+        vec2<f32>(x * 0.11 + in.seed, in.seed * 3.0 + g.camera.w * (0.006 + 0.004 * in.seed)),
+        0.0,
+    ).r;
+    let streaks = 0.4 + 1.6 * web;
+    let fall = 0.5 + 0.5 * y;
+    let along = smooth01(1.0, 0.82, y) * (0.35 + 0.65 * fall * fall) * smooth01(-1.0, -0.55, y);
+    return vec4<f32>(in.colour * (edge * edge * streaks * along * 1.4), 0.0);
 }
 
 // ---------------------------------------------------------------------------
