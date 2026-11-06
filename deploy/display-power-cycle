@@ -1,0 +1,9 @@
+#!/bin/sh
+# The WaveShare round HDMI display is powered from the Pi 5 USB ports. If it
+# powers up together with the Pi it sometimes never locks onto the HDMI signal.
+# Cutting USB power once the kernel is up gives it a clean start. On a Pi 5 the
+# USB VBUS is only switched off when every root hub port is off.
+OFF_SECONDS=${OFF_SECONDS:-4}
+for hub in 1 2 3 4; do /usr/sbin/uhubctl -l $hub -a off >/dev/null; done
+sleep "$OFF_SECONDS"
+for hub in 4 3 2 1; do /usr/sbin/uhubctl -l $hub -a on >/dev/null; done

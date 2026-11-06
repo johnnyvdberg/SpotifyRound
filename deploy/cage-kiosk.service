@@ -1,43 +1,50 @@
 # Raspberry Pi OS Lite: runs the display full screen in the cage kiosk
-# compositor on its own console, tty7, with nothing else on the screen.
+# compositor on tty1, taking over directly from the Plymouth boot splash, with
+# nothing else on the screen.
 #
 # Install as a system unit in /etc/systemd/system/, together with
 # deploy/cage.pam as /etc/pam.d/cage. Replace `pi` and the path below with
 # your own user name and checkout: current Raspberry Pi OS has no default
-# `pi` user.
+# `pi` user. Disable the login prompt on tty1 with
+# `sudo systemctl disable getty@tty1.service`.
 #
 # PAMName gives the service a real login session, which is what lets cage
 # take over the display and the touch input, and what creates the user's
 # XDG_RUNTIME_DIR.
 [Unit]
 Description=Spotify Round kiosk (cage)
-After=network-online.target systemd-user-sessions.service plymouth-quit-wait.service
+# Start while the splash is still up and close it ourselves (see ExecStartPre),
+# so the screen goes straight from the splash to cage with no console between.
+After=network-online.target systemd-user-sessions.service plymouth-start.service
+Before=plymouth-quit.service plymouth-quit-wait.service
 Wants=network-online.target
 After=dbus.socket systemd-logind.service
 Wants=dbus.socket systemd-logind.service
 # The console belongs to the kiosk, not to a login prompt.
-Conflicts=getty@tty7.service
-After=getty@tty7.service
+Conflicts=getty@tty1.service
+After=getty@tty1.service
 ConditionPathExists=/dev/tty0
 
 [Service]
 Type=simple
 User=pi
 Environment=SPOTIFY_ROUND_LOG=info
-# Bring tty7 to the front, or the screen keeps showing the boot console. The
-# `+` runs this one step as root; tty1 stays reachable with Ctrl+Alt+F1.
-ExecStartPre=+/usr/bin/chvt 7
+# Close the splash but leave its last frame on screen until cage draws. `+`
+# runs it as root, `-` ignores the failure when Plymouth is not running (a
+# restart). Plymouth draws on tty1, which is why the kiosk runs there: switching
+# to another console would replace the splash with an empty black one.
+ExecStartPre=-+/usr/bin/plymouth quit --retain-splash
 ExecStart=/usr/bin/cage -- /home/pi/spotify-round/target/release/spotify-round
 Restart=always
 RestartSec=3
 
 PAMName=cage
-UtmpIdentifier=tty7
+UtmpIdentifier=tty1
 UtmpMode=user
-TTYPath=/dev/tty7
-TTYReset=yes
+TTYPath=/dev/tty1
+# No TTYReset / TTYVTDisallocate: both reset tty1 to text mode and clear it,
+# which wipes the retained splash.
 TTYVHangup=yes
-TTYVTDisallocate=yes
 StandardInput=tty-fail
 StandardOutput=journal
 StandardError=journal

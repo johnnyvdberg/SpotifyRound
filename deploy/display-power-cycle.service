@@ -1,0 +1,16 @@
+# Install as /etc/systemd/system/display-power-cycle.service, with
+# deploy/display-power-cycle as /usr/local/sbin/display-power-cycle. Runs once,
+# early in boot, without holding up the rest of it.
+[Unit]
+Description=Power-cycle the USB-powered display so it locks onto HDMI
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/display-power-cycle
+
+[Install]
+WantedBy=sysinit.target

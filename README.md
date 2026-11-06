@@ -297,14 +297,15 @@ Raspberry Pi OS and cage both run Wayland.) Run with `--windowed` to keep the po
 
 [cage](https://github.com/cage-kiosk/cage) is a Wayland compositor that shows one application full
 screen and nothing else. `deploy/cage-kiosk.service` is a **system** unit that runs the display in it
-on its own console, tty7, which it brings to the screen at start (Ctrl+Alt+F1 still reaches the
-login console), with a login session of its own so cage can take over the screen and the
-touch input:
+on tty1, with a login session of its own so cage can take over the screen and the touch input. It
+takes over directly from the [boot splash](#boot-splash), so tty1's login prompt is switched off
+(SSH still works, and Ctrl+Alt+F2 reaches a login console):
 
 ```bash
 sudo apt install cage
 sudo cp deploy/cage-kiosk.service /etc/systemd/system/
 sudo cp deploy/cage.pam /etc/pam.d/cage
+sudo systemctl disable getty@tty1.service
 sudo systemctl daemon-reload
 sudo systemctl set-default graphical.target
 sudo systemctl enable --now cage-kiosk.service
@@ -356,6 +357,76 @@ hdmi_drive=2
 
 The app requests full screen and draws a 1080×1080 surface; if your panel reports a different mode,
 use `SLINT_SCALE_FACTOR` or the compositor's output scaling.
+
+### Boot splash
+
+Out of the box the Pi shows the rainbow square, then scrolling kernel and systemd logs, then a login
+prompt, before cage takes over. To show a splash from early in boot until the display is up
+instead:
+
+1. **Silence the console.** In `/boot/firmware/cmdline.txt` (one line), change `console=tty1` to
+   `console=tty3` so the logs go to a console nobody looks at, and append:
+
+   ```
+   quiet splash loglevel=3 logo.nologo vt.global_cursor_default=0 plymouth.ignore-serial-consoles
+   ```
+
+   In `/boot/firmware/config.txt`, make sure these are set. The first removes the rainbow square;
+   the second (the default) builds the initramfs that Plymouth starts from:
+
+   ```
+   disable_splash=1
+   auto_initramfs=1
+   ```
+
+2. **Install Plymouth and the theme.** `deploy/plymouth/kiosk` shows "Spotify Round" centred on
+   black. Put a `splash.png` next to the script to show an image instead; it is scaled down to fit
+   the screen. `plymouth-label` provides the text rendering.
+
+   ```bash
+   sudo apt install plymouth plymouth-label
+   sudo cp -r deploy/plymouth/kiosk /usr/share/plymouth/themes/
+   sudo plymouth-set-default-theme -R kiosk   # -R rebuilds the initramfs
+   ```
+
+3. **Hand over to cage.** `deploy/cage-kiosk.service` already does this: it starts while the splash
+   is still up and closes it with `plymouth quit --retain-splash`, so the splash's last frame stays
+   on the screen until cage draws its first frame. That only works on tty1, where Plymouth draws, and
+   with tty1 left uncleared. That is why the unit runs on tty1, has no `TTYReset` or
+   `TTYVTDisallocate`, and the getty on tty1 is disabled.
+
+Reboot. The splash appears about 2.5 s into boot and the display takes over at about 13 s on a
+Pi 5. To see the splash without rebooting (from SSH, with the kiosk stopped):
+
+```bash
+sudo plymouthd && sudo plymouth --show-splash && sleep 5 && sudo plymouth quit
+```
+
+### Display stays black after power-on
+
+A round panel powered from the Pi's USB port (the Waveshare's touch cable carries its power) starts
+up at the same moment as the Pi. About half the time its controller then never locks onto the HDMI
+signal and stays black, even though the Pi is sending a picture. Re-sending the signal does not
+help. Turning the panel's power off and on once HDMI is running always does.
+
+The Pi cannot tell when this has happened. HDMI connect status, the EDID and hotplug events all run
+off the 5 V the Pi puts on the HDMI cable, so they look the same whether the panel is working,
+stuck or switched off. The panel does not answer on CEC either. So every boot power-cycles the panel
+once, early, through the USB ports. On a Pi 5 every port shares one power switch, which only cuts
+power when all of them are off:
+
+```bash
+sudo apt install uhubctl
+sudo install -m 755 deploy/display-power-cycle /usr/local/sbin/
+sudo cp deploy/display-power-cycle.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable display-power-cycle.service
+```
+
+It runs about 2.5 s into boot without holding anything up. Power is off for 4 s and the panel is back
+at about 9 s, well before the app at about 13 s, so boot takes no longer. If the panel still comes
+up black now and then, give it longer off with `OFF_SECONDS` in the script. Every USB device drops
+off the bus for those seconds, so don't use this if you boot from a USB drive.
 
 ---
 
@@ -665,6 +736,11 @@ the port, and must be a loopback IP (`127.0.0.1`), not `localhost`.
 address from the address bar into the login page the display serves, or set `login_host` if the
 detected address is not the one your phone can reach (a VPN, several interfaces, or a name that
 resolves on your network). The page is only reachable while a login is running.
+
+**The round display is black after power-on, but the Pi is running** — the panel missed the HDMI
+signal while it was starting up. See [Display stays black after power-on](#display-stays-black-after-power-on).
+
+**Boot logs or a login prompt show before the display** — see [Boot splash](#boot-splash).
 
 **Window is huge on my laptop** — run with `--windowed` and, if your screen is smaller than 1080 px,
 `SLINT_SCALE_FACTOR=0.6`.

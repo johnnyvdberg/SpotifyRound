@@ -1,0 +1,14 @@
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+# Drop a splash.png in this folder to replace the text, then run:
+#   sudo plymouth-set-default-theme -R kiosk
+img = Image("splash.png");
+if (!img.GetWidth())
+  img = Image.Text("Spotify Round", 1, 1, 1, 1, "Sans 44");
+
+scale = Math.Min(1, Math.Min(Window.GetWidth() / img.GetWidth(), Window.GetHeight() / img.GetHeight()));
+img = img.Scale(img.GetWidth() * scale, img.GetHeight() * scale);
+s = Sprite(img);
+s.SetX(Window.GetX() + Window.GetWidth() / 2 - img.GetWidth() / 2);
+s.SetY(Window.GetY() + Window.GetHeight() / 2 - img.GetHeight() / 2);
