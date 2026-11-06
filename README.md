@@ -379,9 +379,10 @@ instead:
    auto_initramfs=1
    ```
 
-2. **Install Plymouth and the theme.** `deploy/plymouth/kiosk` shows "Spotify Round" centred on
-   black. Put a `splash.png` next to the script to show an image instead; it is scaled down to fit
-   the screen. `plymouth-label` provides the text rendering.
+2. **Install Plymouth and the theme.** `deploy/plymouth/kiosk` shows the Spotify logo
+   (`splash.png`, 250 × 250) centred on black. Replace `splash.png` to show another image; it is
+   scaled down to fit the screen, never up. Without a `splash.png` the theme shows "Spotify Round"
+   as text instead, which is what `plymouth-label` is for.
 
    ```bash
    sudo apt install plymouth plymouth-label
