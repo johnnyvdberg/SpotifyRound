@@ -21,8 +21,12 @@ flock /target/.shaderdb.lock bash -c '
     cp "$(cat /work/.test-binary)" /work/test-binary
 ' >&2 || exit 1
 
-export LD_PRELOAD=/opt/mesa/lib/aarch64-linux-gnu/libv3d_noop_drm_shim.so
-export VK_ICD_FILENAMES=/opt/mesa/share/vulkan/icd.d/broadcom_icd.aarch64.json
+# The image is built for whatever the host is: an arm64 Mac or Pi, or an
+# x86_64 machine. The driver compiles for the V3D either way.
+arch=$(uname -m)
+multiarch=$(gcc -print-multiarch 2>/dev/null || echo "$arch-linux-gnu")
+export LD_PRELOAD=/opt/mesa/lib/$multiarch/libv3d_noop_drm_shim.so
+export VK_ICD_FILENAMES=/opt/mesa/share/vulkan/icd.d/broadcom_icd.$arch.json
 export V3D_DEBUG=shaderdb
 export V3DV_ENABLE_PIPELINE_CACHE=off
 export MESA_SHADER_CACHE_DISABLE=true
@@ -33,7 +37,14 @@ export DIVE3D_PREVIEW_DIR=/tmp/previews
 export DIVE3D_PREVIEW_OFFSETS=0
 mkdir -p "$DIVE3D_PREVIEW_DIR"
 
-echo "== running" >&2
-timeout "${SHADERDB_TIMEOUT:-300}" \
-    /work/test-binary 'dive3d::tests::previews' --ignored --exact --nocapture 2>&1
-echo "== test exit status $?"
+# Each of these builds every pipeline of its scene: the Nautilus' previews,
+# the planet's and the solar tour's benchmarks (which also stream a whole
+# planet, its moons and a sky through every generator pipeline).
+export PLANET_SEED=7
+tests=${SHADERDB_TESTS:-dive3d::tests::previews planet::tests::frame_time solar::tests::frame_time}
+for test in $tests; do
+    echo "== running $test" >&2
+    timeout "${SHADERDB_TIMEOUT:-300}" \
+        /work/test-binary "$test" --ignored --exact --nocapture 2>&1
+    echo "== test $test exit status $?"
+done

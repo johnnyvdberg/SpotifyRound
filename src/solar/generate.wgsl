@@ -32,6 +32,14 @@ const VOLCANIC: i32 = 8;
 const ICY_MOON: i32 = 9;
 const HAZY: i32 = 10;
 const CAPTURED: i32 = 11;
+const CLOUDY: i32 = 12;
+const EYEBALL: i32 = 13;
+const HOT: i32 = 14;
+const JUNGLE: i32 = 15;
+const GEYSER: i32 = 16;
+const TWO_FACED: i32 = 17;
+const NITROGEN: i32 = 18;
+const RUSTY: i32 = 19;
 
 fn kind() -> i32 {
     return i32(gen.size.w + 0.5);
@@ -128,7 +136,7 @@ fn craters(p: vec3<f32>, scale: f32, density: f32, seed: i32) -> vec2<f32> {
 
 fn height(p: vec3<f32>) -> vec4<f32> {
     let k = kind();
-    if (k == GAS || k == ICE_GIANT || k == HAZY) {
+    if (k == GAS || k == ICE_GIANT || k == HAZY || k == HOT || k == CLOUDY) {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let o = gen.offsets;
@@ -170,9 +178,10 @@ fn height(p: vec3<f32>) -> vec4<f32> {
 
     // Airless and icy worlds: little tectonics, a cratered face.
     var pits = 0.0;
-    if (k == BARREN || k == CAPTURED || k == ICY_MOON || k == DESERT || k == VOLCANIC) {
+    if (k == BARREN || k == CAPTURED || k == ICY_MOON || k == DESERT || k == VOLCANIC
+        || k == GEYSER || k == TWO_FACED || k == NITROGEN || k == RUSTY) {
         var amount = 1.0;
-        if (k == ICY_MOON) { amount = 0.25; }
+        if (k == ICY_MOON || k == GEYSER || k == NITROGEN) { amount = 0.25; }
         if (k == DESERT) { amount = 0.4; }
         if (k == VOLCANIC) { amount = 0.0; }
         base *= 0.5;
@@ -286,6 +295,29 @@ fn giant(p: vec3<f32>, k: i32) -> Surface {
     s.bump = vec2<f32>(0.0);
     s.water = 0.0;
     s.night = 0.0;
+    if (k == HOT) {
+        // A hot Jupiter glows dull red from its own heat, brightest in the
+        // hotter bands.
+        s.night = 0.35 + 0.35 * bands + 0.2 * turbulence;
+    }
+    s.cloud = 0.0;
+    return s;
+}
+
+// A deck of sulphuric cloud: soft streaks swept along the latitudes into
+// broad chevrons, as Venus's are in ultraviolet.
+fn cloudy(p: vec3<f32>) -> Surface {
+    let o = gen.offsets;
+    let lon = atan2(p.x, p.z);
+    let chevron = p.y * 3.0 + abs(sin(lon * 0.5)) * 0.9 * sign(p.y);
+    let swirl = fbm(vec3<f32>(p.x * 2.0, p.y * 9.0 + chevron, p.z * 2.0) + o[0].xyz, 6);
+    let tone = smoothstep(-0.35, 0.45, swirl + 0.25 * sin(chevron * 3.0));
+    var s: Surface;
+    s.day = mix(pal(1), pal(2), tone) * (0.95 + 0.1 * fbm(p * 30.0 + o[1].xyz, 3));
+    s.day = mix(s.day, pal(3), smoothstep(0.8, 0.98, abs(p.y)) * 0.3);
+    s.bump = vec2<f32>(0.0);
+    s.water = 0.0;
+    s.night = 0.0;
     s.cloud = 0.0;
     return s;
 }
@@ -294,8 +326,11 @@ fn surface(position: vec2<f32>) -> Surface {
     let k = kind();
     let uv = position / gen.size.xy;
     let p = sphere_at(uv);
-    if (k == GAS || k == ICE_GIANT) {
+    if (k == GAS || k == ICE_GIANT || k == HOT) {
         return giant(p, k);
+    }
+    if (k == CLOUDY) {
+        return cloudy(p);
     }
     let o = gen.offsets;
     let texel = vec2<i32>(position);
@@ -307,14 +342,21 @@ fn surface(position: vec2<f32>) -> Surface {
 
     let east_step = cos_lat * TAU / gen.size.x;
     let north_step = PI / gen.size.y;
-    let floor_at = select(-1.0, 0.0, k == TERRAN || k == OCEAN || k == LAVA || k == ICE);
+    let floor_at = select(-1.0, 0.0, k == TERRAN || k == OCEAN || k == LAVA || k == ICE || k == JUNGLE || k == EYEBALL);
     let de = (max(elevation_at(texel + vec2<i32>(1, 0)), floor_at) - max(elevation_at(texel - vec2<i32>(1, 0)), floor_at)) / (2.0 * east_step);
     let dn = (max(elevation_at(texel - vec2<i32>(0, 1)), floor_at) - max(elevation_at(texel + vec2<i32>(0, 1)), floor_at)) / (2.0 * north_step);
     let bump = clamp(-vec2<f32>(de, dn) * 0.0025 * 22.0, vec2<f32>(-0.45), vec2<f32>(0.45));
     let steep = length(bump);
     let grain = fbm(p * 60.0 + o[1].yxz, 4);
     let wobble = fbm(p * 4.0 + o[3].zyx, 4);
-    let warmth = pow(cos_lat, 0.85) + wobble * 0.10 + gen.flags.w;
+    var warmth = pow(cos_lat, 0.85) + wobble * 0.10 + gen.flags.w;
+    if (k == EYEBALL) {
+        // Locked to its star, which always stands over longitude 0 (+z):
+        // warm under it, frozen past the terminator.
+        warmth = mix(-0.35, 1.2, smoothstep(-0.25, 0.95, p.z)) + wobble * 0.10;
+    } else if (k == JUNGLE) {
+        warmth += 0.08;
+    }
     let temperature = warmth - max(e, 0.0) * 1.5;
 
     var s: Surface;
@@ -323,7 +365,7 @@ fn surface(position: vec2<f32>) -> Surface {
     s.night = 0.0;
     s.cloud = 0.0;
 
-    if (k == TERRAN || k == OCEAN) {
+    if (k == TERRAN || k == OCEAN || k == JUNGLE || k == EYEBALL) {
         let cells = cos(6.0 * lat);
         let degrees = abs(lat) * 57.2958;
         let from_east = select(-1.0, 1.0, degrees < 30.0 || degrees > 62.0);
@@ -342,8 +384,9 @@ fn surface(position: vec2<f32>) -> Surface {
         let near_coast = 1.0 - smoothstep(0.0, 0.12, max(wide(uv, 5.5), 0.0));
         let interior = smoothstep(0.03, 0.25, wide(uv, 7.5));
         let shadow = smoothstep(0.05, 0.3, barrier);
+        let wetter = select(0.0, 0.28, k == JUNGLE);
         let moisture = clamp(
-            0.40 + 0.26 * cells + 0.30 * ocean_upwind + 0.12 * near_coast - 0.18 * interior
+            wetter + 0.40 + 0.26 * cells + 0.30 * ocean_upwind + 0.12 * near_coast - 0.18 * interior
                 - 0.35 * shadow + 0.22 * fbm(p * 6.0 + o[2].yzx, 5),
             0.0,
             1.0,
@@ -388,8 +431,14 @@ fn surface(position: vec2<f32>) -> Surface {
         );
         let sheet = fbm(stretched * 3.5 + cwarp * 0.9 + o[0].xyz, 8);
         let itcz = exp(-pow((lat * 57.2958 - 4.0) / 7.0, 2.0));
-        let more = select(0.0, 0.08, k == OCEAN);
-        let cover = sheet + 0.10 * cells + 0.12 * itcz + 0.16 * (moisture - 0.5) * land - 0.10 + more;
+        var more = select(0.0, 0.08, k == OCEAN) + select(0.0, 0.06, k == JUNGLE);
+        var bands = 0.10 * cells + 0.12 * itcz;
+        if (k == EYEBALL) {
+            // One great storm system boils up under the star; the far side is
+            // too cold for cloud.
+            bands = 0.35 * smoothstep(0.55, 1.0, p.z) - 0.3 * (1.0 - smoothstep(-0.2, 0.3, p.z));
+        }
+        let cover = sheet + bands + 0.16 * (moisture - 0.5) * land - 0.10 + more;
         var cloud = smoothstep(0.0, 0.42, cover);
         cloud *= smoothstep(-0.45, 0.25, fbm(c * 26.0 + o[3].yzx, 4) + cloud * 0.6);
         s.cloud = cloud;
@@ -440,6 +489,33 @@ fn surface(position: vec2<f32>) -> Surface {
         ground = mix(ground, pal(3), smoothstep(0.2, 0.5, fbm(p * 3.0 + o[0].zyx, 3)) * 0.3);
         s.day = ground;
         s.bump = bump * 0.6;
+    } else if (k == GEYSER) {
+        // Bright fresh ice, and blue fissures across the south pole.
+        var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 5.0 + o[0].xyz, 4)));
+        let lon = atan2(p.x, p.z);
+        let stripes = 1.0 - smoothstep(0.0, 0.05, abs(sin(lon * 2.0 + p.y * 3.0 + 0.4 * noise(p * 6.0 + o[1].xyz))));
+        let south = smoothstep(-0.55, -0.8, p.y);
+        ground = mix(ground, pal(1), stripes * south * 0.85);
+        ground = mix(ground, pal(3), cracks(p * 8.0 + o[2].xyz, 0.02) * 0.4 * (1.0 - south));
+        s.day = ground;
+        s.bump = bump * 0.4;
+    } else if (k == TWO_FACED) {
+        // A dark leading hemisphere with a ragged edge, a bright trailing one.
+        let edge = p.z + 0.3 * fbm(p * 3.0 + o[0].xyz, 5);
+        let dark = 1.0 - smoothstep(-0.12, 0.12, edge);
+        var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 8.0 + o[1].xyz, 4)) * 0.5);
+        ground = mix(ground, mix(pal(1), pal(3), smoothstep(-0.3, 0.3, fbm(p * 6.0 + o[2].xyz, 4))), dark);
+        s.day = ground * (0.9 + 0.2 * (grain + 0.5));
+    } else if (k == NITROGEN) {
+        // Cantaloupe terrain: a close mesh of dimples; dark wind streaks; a
+        // bright pinkish polar cap.
+        let cells = craters(p, 28.0, 1.0, 51).x * 28.0;
+        var ground = mix(pal(0), pal(1), smoothstep(-0.2, 0.2, cells + 0.3 * fbm(p * 7.0 + o[0].xyz, 4)) * 0.5);
+        let streak = smoothstep(0.35, 0.6, fbm(vec3<f32>(p.x * 14.0, p.y * 3.0, p.z * 14.0) + o[1].xyz, 4));
+        ground = mix(ground, pal(3), streak * 0.5 * smoothstep(-0.2, 0.3, p.y));
+        ground = mix(ground, pal(2), smoothstep(-0.25, -0.55, p.y + 0.1 * fbm(p * 5.0, 3)));
+        s.day = ground;
+        s.bump = bump * 0.5;
     } else if (k == HAZY) {
         let tone = smoothstep(-0.3, 0.3, fbm(vec3<f32>(p.x, p.y * 2.5, p.z) * 3.0 + o[0].xyz, 5));
         s.day = mix(pal(0), pal(1), tone * 0.35);

@@ -360,7 +360,7 @@ impl Solar {
                     place: f32x4(place, planet.radius),
                     rot: rotation(
                         planet,
-                        t * std::f64::consts::TAU / planet.day,
+                        spin_angle(planet, t, centre),
                         t / planet.day * 0.035,
                     ),
                     look: [
@@ -610,9 +610,9 @@ fn night_mode(kind: Kind) -> f32 {
 
 fn flat_colour(planet: &Planet) -> [f32; 4] {
     match planet.kind {
-        Kind::Terran => [0.06, 0.12, 0.22, 0.0],
+        Kind::Terran | Kind::Jungle | Kind::Eyeball => [0.06, 0.12, 0.22, 0.0],
         Kind::Ocean => [0.04, 0.10, 0.24, 0.0],
-        Kind::GasGiant | Kind::IceGiant => {
+        Kind::GasGiant | Kind::IceGiant | Kind::HotJupiter => {
             let c = planet.palette[0];
             [c[0], c[1], c[2], 0.25]
         }
@@ -621,6 +621,19 @@ fn flat_colour(planet: &Planet) -> [f32; 4] {
             [c[0], c[1], c[2], 0.0]
         }
     }
+}
+
+/// How far `planet` has turned on its axis at `t`. A world locked to its star
+/// keeps its +z (longitude 0, where the generator puts its warm side) facing
+/// the star instead.
+fn spin_angle(planet: &Planet, t: f64, centre: [f64; 3]) -> f64 {
+    if !planet.kind.locked() {
+        return t * std::f64::consts::TAU / planet.day;
+    }
+    let to_star = normalize([-centre[0], -centre[1], -centre[2]]);
+    let ex = equatorial_to_system(planet, [1.0, 0.0, 0.0]);
+    let ez = equatorial_to_system(planet, [0.0, 0.0, 1.0]);
+    dot(to_star, ex).atan2(dot(to_star, ez))
 }
 
 /// Rows taking system directions into a body's turning frame: the planet's
@@ -795,7 +808,8 @@ pub(crate) mod tests {
     }
 
     /// Screenshots at the critical moments of a visit, for each seed in
-    /// `SOLAR_SHOTS_SEEDS` (comma separated, default 5,11,23), written to
+    /// `SOLAR_SHOTS_SEEDS` (comma separated, default 0,1,2,5: between them
+    /// every kind of planet and moon is visited), written to
     /// `SOLAR_SHOTS_DIR` (default `target/solar-shots`): one PNG per moment,
     /// a contact sheet per seed, and the HUD at each moment in `hud.txt`.
     /// `SOLAR_SHOTS=low` keeps only the moments whose names contain `low`.
@@ -806,7 +820,7 @@ pub(crate) mod tests {
     fn screenshots() {
         let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
         let seeds: Vec<u64> = std::env::var("SOLAR_SHOTS_SEEDS")
-            .unwrap_or_else(|_| "5,11,23".into())
+            .unwrap_or_else(|_| "0,1,2,5".into())
             .split(',')
             .filter_map(|s| s.trim().parse().ok())
             .collect();

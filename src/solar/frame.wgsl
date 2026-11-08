@@ -464,7 +464,7 @@ fn fs_body(in: Quad) -> @location(0) vec4<f32> {
         sun_ground *= shade;
         let sky = select(vec3<f32>(0.0), SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun), has_air);
         var albedo = t.day * mix(1.0, 0.8, water);
-        if (kind == 6 || kind == 7) {
+        if (kind == 6 || kind == 7 || kind == 14) {
             // Giants darken toward the limb.
             albedo *= 0.55 + 0.45 * sqrt(mu_view);
         }

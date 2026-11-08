@@ -39,7 +39,7 @@ for line in open(sys.argv[1], errors="replace"):
         for p in pending:
             rows.append((f"{label} #{n}", p))
         pending = []
-    elif line.startswith("== test exit status"):
+    elif line.startswith("== test") and "exit status" in line:
         status = line
 for p in pending:
     # Mesa-internal (meta) shaders and anything compiled without a name after it.

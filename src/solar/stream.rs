@@ -101,7 +101,7 @@ fn params(kind: Kind, seed: u64, palette: [[f32; 3]; 4]) -> GenParams {
         ]
     });
     let warmth = match kind {
-        Kind::Ice | Kind::IcyMoon => -0.3,
+        Kind::Ice | Kind::IcyMoon | Kind::Geyser | Kind::Nitrogen => -0.3,
         Kind::Desert => -0.05,
         Kind::Lava | Kind::Volcanic => 0.6,
         _ => 0.0,

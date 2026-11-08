@@ -44,6 +44,22 @@ pub enum Kind {
     IcyMoon = 9,
     Hazy = 10,
     Captured = 11,
+    /// Wrapped in a bright deck of sulphuric cloud, like Venus.
+    Cloudy = 12,
+    /// Tidally locked to a red dwarf: an ocean under the star, ice behind.
+    Eyeball = 13,
+    /// A gas giant so close to its star that its night side glows.
+    HotJupiter = 14,
+    /// Wetter and greener than any temperate world.
+    Jungle = 15,
+    /// White ice with blue fissures at one pole, like Enceladus.
+    Geyser = 16,
+    /// One hemisphere dark, the other bright, like Iapetus.
+    TwoFaced = 17,
+    /// Pinkish nitrogen ice in cells, like Triton.
+    Nitrogen = 18,
+    /// Red, dusty and cratered.
+    Rusty = 19,
 }
 
 impl Kind {
@@ -61,11 +77,24 @@ impl Kind {
             Kind::IcyMoon => "icy moon",
             Kind::Hazy => "hazy moon",
             Kind::Captured => "captured asteroid",
+            Kind::Cloudy => "cloud-wrapped world",
+            Kind::Eyeball => "eyeball world",
+            Kind::HotJupiter => "hot Jupiter",
+            Kind::Jungle => "jungle world",
+            Kind::Geyser => "geyser moon",
+            Kind::TwoFaced => "two-faced moon",
+            Kind::Nitrogen => "nitrogen-ice moon",
+            Kind::Rusty => "rusty moon",
         }
     }
 
     pub fn is_giant(self) -> bool {
-        matches!(self, Kind::GasGiant | Kind::IceGiant)
+        matches!(self, Kind::GasGiant | Kind::IceGiant | Kind::HotJupiter)
+    }
+
+    /// Whether it keeps one face to its star (and so does not spin).
+    pub fn locked(self) -> bool {
+        matches!(self, Kind::Eyeball)
     }
 
     /// Share of the surface below sea level, for kinds with a sea of
@@ -78,6 +107,9 @@ impl Kind {
             Kind::Ice => 0.55,
             Kind::Lava => 0.22,
             Kind::Barren => 0.20,
+            Kind::Eyeball => 0.62,
+            Kind::Jungle => 0.55,
+            Kind::Rusty => 0.15,
             _ => 0.0,
         }
     }
@@ -94,18 +126,22 @@ impl Kind {
             Kind::GasGiant => [0.030, 0.036, 0.050],
             Kind::IceGiant => [0.020, 0.070, 0.090],
             Kind::Hazy => [0.260, 0.150, 0.050],
+            Kind::Cloudy => [0.090, 0.075, 0.040],
+            Kind::Eyeball => [0.040, 0.085, 0.200],
+            Kind::HotJupiter => [0.060, 0.040, 0.040],
+            Kind::Jungle => [0.050, 0.105, 0.220],
             _ => [0.0, 0.0, 0.0],
         }
     }
 
     /// Whether the night side shows city lights.
     pub fn has_cities(self) -> bool {
-        matches!(self, Kind::Terran | Kind::Ocean)
+        matches!(self, Kind::Terran | Kind::Ocean | Kind::Jungle)
     }
 
     /// Whether the night map glows on both sides: molten rock.
     pub fn glows(self) -> bool {
-        matches!(self, Kind::Lava | Kind::Volcanic)
+        matches!(self, Kind::Lava | Kind::Volcanic | Kind::HotJupiter)
     }
 }
 
@@ -425,7 +461,43 @@ fn palette(kind: Kind, rng: &mut Rng) -> [[f32; 3]; 4] {
             srgb(60, 50, 46),
             srgb(255, 200, 80),
         ],
-        Kind::Terran | Kind::Ocean => [srgb(255, 255, 255); 4],
+        Kind::Cloudy => [
+            srgb(232, 214, 168),
+            srgb(206, 180, 130),
+            srgb(246, 236, 206),
+            srgb(180, 150, 104),
+        ],
+        Kind::HotJupiter => [
+            srgb(70, 46, 40),
+            srgb(40, 26, 26),
+            srgb(110, 70, 52),
+            srgb(255, 110, 50),
+        ],
+        Kind::Geyser => [
+            srgb(242, 244, 246),
+            srgb(110, 170, 210),
+            srgb(250, 252, 255),
+            srgb(200, 210, 220),
+        ],
+        Kind::TwoFaced => [
+            srgb(214, 206, 192),
+            srgb(52, 38, 30),
+            srgb(236, 230, 220),
+            srgb(90, 66, 50),
+        ],
+        Kind::Nitrogen => [
+            srgb(222, 196, 186),
+            srgb(170, 130, 120),
+            srgb(236, 222, 214),
+            srgb(110, 90, 86),
+        ],
+        Kind::Rusty => [
+            srgb(160, 84, 56),
+            srgb(100, 54, 40),
+            srgb(196, 120, 80),
+            srgb(70, 44, 36),
+        ],
+        Kind::Terran | Kind::Ocean | Kind::Eyeball | Kind::Jungle => [srgb(255, 255, 255); 4],
     }
 }
 
@@ -433,7 +505,8 @@ fn moons_for(planet_kind: Kind, radius: f64, rng: &mut Rng) -> Vec<Moon> {
     let count = match planet_kind {
         Kind::GasGiant => rng.int(3, 6),
         Kind::IceGiant => rng.int(2, 4),
-        Kind::Terran | Kind::Ocean => rng.int(0, 2),
+        Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball => rng.int(0, 2),
+        Kind::Cloudy => rng.int(0, 1),
         Kind::Desert => rng.int(0, 2),
         Kind::Ice | Kind::Barren => rng.int(0, 1),
         _ => 0,
@@ -446,8 +519,11 @@ fn moons_for(planet_kind: Kind, radius: f64, rng: &mut Rng) -> Vec<Moon> {
             // one sometimes, small captured rocks at the edge.
             let kind = match (i, rng.unit()) {
                 (0, x) if x < 0.55 => Kind::Volcanic,
-                (_, x) if x < 0.35 => Kind::IcyMoon,
-                (_, x) if x < 0.62 => Kind::Barren,
+                (_, x) if x < 0.20 => Kind::IcyMoon,
+                (_, x) if x < 0.32 => Kind::Geyser,
+                (_, x) if x < 0.48 => Kind::Barren,
+                (_, x) if x < 0.58 => Kind::TwoFaced,
+                (_, x) if x < 0.68 => Kind::Nitrogen,
                 (_, x) if x < 0.80 => Kind::Hazy,
                 _ => Kind::Captured,
             };
@@ -456,9 +532,20 @@ fn moons_for(planet_kind: Kind, radius: f64, rng: &mut Rng) -> Vec<Moon> {
                 _ => rng.range(0.22, 0.44),
             };
             (kind, r)
-        } else if matches!(planet_kind, Kind::Terran | Kind::Ocean) && i == 0 {
-            // A large grey companion, like ours.
-            (Kind::Barren, radius * rng.range(0.2, 0.3))
+        } else if matches!(
+            planet_kind,
+            Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball
+        ) && i == 0
+        {
+            // A large companion, like ours: grey, or now and then red.
+            let kind = if rng.chance(0.75) {
+                Kind::Barren
+            } else {
+                Kind::Rusty
+            };
+            (kind, radius * rng.range(0.2, 0.3))
+        } else if planet_kind == Kind::Desert && rng.chance(0.4) {
+            (Kind::Rusty, rng.range(0.04, 0.09))
         } else {
             (Kind::Captured, rng.range(0.02, 0.05))
         };
@@ -544,11 +631,29 @@ impl System {
         for letter in letters.iter().take(count) {
             let x = distance / habitable;
             let kind = if x < 0.55 {
-                *rng.pick(&[Kind::Lava, Kind::Lava, Kind::Barren])
+                *rng.pick(&[Kind::Lava, Kind::Lava, Kind::Barren, Kind::HotJupiter])
             } else if x < 0.85 {
-                *rng.pick(&[Kind::Desert, Kind::Barren, Kind::Lava])
+                *rng.pick(&[
+                    Kind::Desert,
+                    Kind::Barren,
+                    Kind::Lava,
+                    Kind::Cloudy,
+                    Kind::Cloudy,
+                ])
             } else if x < 1.4 {
-                *rng.pick(&[Kind::Terran, Kind::Terran, Kind::Ocean, Kind::Desert])
+                // Around red dwarfs the habitable zone is close enough for
+                // planets to be locked to their star.
+                if class == 'M' && rng.chance(0.5) {
+                    Kind::Eyeball
+                } else {
+                    *rng.pick(&[
+                        Kind::Terran,
+                        Kind::Terran,
+                        Kind::Ocean,
+                        Kind::Jungle,
+                        Kind::Desert,
+                    ])
+                }
             } else if x < 2.6 {
                 *rng.pick(&[Kind::Desert, Kind::Ice, Kind::Barren])
             } else if x < 9.0 || giants == 0 {
@@ -572,11 +677,16 @@ impl System {
                 Kind::Barren => rng.range(0.3, 0.8),
                 Kind::GasGiant => rng.range(7.5, 12.0),
                 Kind::IceGiant => rng.range(3.5, 4.4),
+                Kind::HotJupiter => rng.range(10.0, 15.0),
+                Kind::Cloudy => rng.range(0.8, 1.1),
+                Kind::Eyeball => rng.range(0.8, 1.4),
+                Kind::Jungle => rng.range(0.9, 1.3),
                 _ => 1.0,
             };
             let mass = match kind {
                 Kind::GasGiant => rng.range(60.0, 400.0),
                 Kind::IceGiant => rng.range(13.0, 20.0),
+                Kind::HotJupiter => rng.range(100.0, 500.0),
                 _ => radius.powf(3.7),
             };
             let name = format!("{} {letter}", star.name);
@@ -649,9 +759,12 @@ impl System {
         let mut chosen: Vec<usize> = Vec::new();
         // One of each broad family if there is one: rocky, giant, other.
         let families: [&dyn Fn(Kind) -> bool; 3] = [
-            &|k| matches!(k, Kind::Terran | Kind::Ocean),
+            &|k| matches!(k, Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball),
             &|k| k.is_giant(),
-            &|k| !matches!(k, Kind::Terran | Kind::Ocean) && !k.is_giant(),
+            &|k| {
+                !matches!(k, Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball)
+                    && !k.is_giant()
+            },
         ];
         for family in families {
             let candidates: Vec<usize> = (0..self.planets.len())
@@ -683,7 +796,7 @@ mod tests {
         assert_eq!(a.planets.len(), b.planets.len());
         assert_eq!(a.star.name, b.star.name);
         let mut kinds = std::collections::HashSet::new();
-        for seed in 0..64 {
+        for seed in 0..256 {
             let system = System::generate(seed);
             assert!((5..=8).contains(&system.planets.len()));
             for planet in &system.planets {
@@ -697,7 +810,7 @@ mod tests {
             assert!(tour.windows(2).all(|w| w[0] < w[1]));
         }
         // Every kind turns up somewhere across the seeds.
-        assert_eq!(kinds.len(), 12, "{kinds:?}");
+        assert_eq!(kinds.len(), 20, "{kinds:?}");
     }
 
     #[test]
