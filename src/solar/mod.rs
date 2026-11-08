@@ -15,6 +15,7 @@
 //! passes: a full-screen background of stars and the galaxy, then one small
 //! quad per body, far to near, so a pixel only pays for the bodies over it.
 
+pub mod scan;
 pub mod stream;
 pub mod system;
 pub mod tour;
@@ -71,15 +72,26 @@ pub struct Hud {
     pub title: String,
     pub labels: String,
     pub values: String,
+    /// The scanner's readings, while orbiting.
+    pub scans: Vec<scan::Scan>,
 }
 
 pub(crate) struct Solar {
-    background: wgpu::RenderPipeline,
-    bodies: wgpu::RenderPipeline,
+    /// The frame's small pipelines, by name: `space`, `warp1`..`warp5`,
+    /// `star`, `flat`, `limb`, `ring`, and per map slot `ground0`, `sea0`,
+    /// `clouds0`, `glow0`, `moon0` (and `…1`).
+    pipelines: std::collections::HashMap<String, wgpu::RenderPipeline>,
+    /// A drive to use for every jump instead of each system's own, for the
+    /// screenshots.
+    drive_override: Option<u32>,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     sampler: wgpu::Sampler,
     bind_group: Option<wgpu::BindGroup>,
+    /// Each ringed planet's ring density by radius, a row per planet, and the
+    /// system it was painted for.
+    rings: wgpu::Texture,
+    rings_for: u64,
     bound: (u64, usize),
     frames: Vec<Frame>,
     streamer: Streamer,
@@ -125,9 +137,11 @@ impl Solar {
                 texture_entry(10, d2),
                 texture_entry(11, array),
                 texture_entry(12, array),
+                texture_entry(13, d2),
             ],
         });
         let mut source = String::from(include_str!("noise.wgsl"));
+        source.push_str(crate::noise3d::WGSL);
         source.push_str(include_str!("frame.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Solar frame"),
@@ -135,10 +149,18 @@ impl Solar {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Solar frame"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&layout), Some(&streamer.noise().layout)],
             immediate_size: 0,
         });
-        let pipeline = |label: &str, vs: &str, fs: &str, blend: Option<wgpu::BlendState>| {
+        let pipeline = |label: &str,
+                        vs: &str,
+                        fs: &str,
+                        blend: Option<wgpu::BlendState>,
+                        constants: &[(&str, f64)]| {
+            let options = wgpu::PipelineCompilationOptions {
+                constants,
+                ..Default::default()
+            };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -146,17 +168,17 @@ impl Solar {
                     module: &shader,
                     entry_point: Some(vs),
                     buffers: &[],
-                    compilation_options: Default::default(),
+                    compilation_options: options.clone(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(fs),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
                         blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
-                    compilation_options: Default::default(),
+                    compilation_options: options,
                 }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
@@ -165,13 +187,83 @@ impl Solar {
                 cache: None,
             })
         };
-        let background = pipeline("Solar background", "vs_background", "fs_background", None);
-        let bodies = pipeline(
-            "Solar bodies",
-            "vs_body",
-            "fs_body",
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let add = Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        });
+        let multiply = Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::Zero,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        });
+        let mut pipelines = std::collections::HashMap::new();
+        pipelines.insert(
+            "space".to_string(),
+            pipeline("Solar space", "vs_background", "fs_space", None, &[]),
         );
+        for (k, name) in tour::DRIVES.iter().enumerate() {
+            let k = k as u32 + 1;
+            pipelines.insert(
+                format!("warp{k}"),
+                pipeline(
+                    &format!("Solar warp {name}"),
+                    "vs_background",
+                    "fs_warp",
+                    None,
+                    &[("WARP", k as f64)],
+                ),
+            );
+        }
+        for (name, entry, blend) in [
+            ("star", "fs_star", over),
+            ("flat", "fs_flat", over),
+            ("limb", "fs_limb", add),
+            ("ring", "fs_ring", over),
+            ("eclipse", "fs_eclipse", multiply),
+            ("ringshadow", "fs_ring_shadow", multiply),
+        ] {
+            pipelines.insert(
+                name.to_string(),
+                pipeline(&format!("Solar {name}"), "vs_body", entry, blend, &[]),
+            );
+        }
+        for slot in 0..2 {
+            for (name, entry, blend) in [
+                ("ground", "fs_ground", over),
+                ("cloudshadow", "fs_cloud_shadow", multiply),
+                ("sea", "fs_sea", add),
+                ("clouds", "fs_clouds", over),
+                ("glow", "fs_glow", add),
+                ("moon", "fs_moon", over),
+            ] {
+                pipelines.insert(
+                    format!("{name}{slot}"),
+                    pipeline(
+                        &format!("Solar {name} {slot}"),
+                        "vs_body",
+                        entry,
+                        blend,
+                        &[("SLOT", slot as f64)],
+                    ),
+                );
+            }
+        }
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Solar uniforms"),
             size: std::mem::size_of::<Params>() as u64,
@@ -204,20 +296,41 @@ impl Solar {
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                         | wgpu::TextureUsages::TEXTURE_BINDING
                         | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
+                    view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
                 });
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                // Drawn through an sRGB view: the passes blend in linear light
+                // and the frame Slint reads is encoded.
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+                    ..Default::default()
+                });
                 Frame { texture, view }
             })
             .collect();
         let tour = Tour::new(system_for(seed, 0), system_for(seed, 1));
+        let rings = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Solar ring profiles"),
+            size: wgpu::Extent3d {
+                width: RING_TEXELS,
+                height: RING_ROWS,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
         Self {
-            background,
-            bodies,
+            pipelines,
+            drive_override: None,
             layout,
             uniforms,
             sampler,
             bind_group: None,
+            rings,
+            rings_for: u64::MAX,
             bound: (u64::MAX, usize::MAX),
             frames,
             streamer,
@@ -276,6 +389,10 @@ impl Solar {
     }
 
     fn bind(&mut self, gpu: &Graphics) {
+        if self.rings_for != self.tour.system.seed {
+            paint_rings(gpu, &self.rings, &self.tour.system);
+            self.rings_for = self.tour.system.seed;
+        }
         let sky = self.streamer.sky_ready(self.tour.system.seed).unwrap_or(0);
         let wanted = (self.streamer.version, sky);
         if self.bind_group.is_some() && self.bound == wanted {
@@ -323,6 +440,11 @@ impl Solar {
                 resource: wgpu::BindingResource::TextureView(view),
             });
         }
+        let rings = full(&self.rings);
+        entries.push(wgpu::BindGroupEntry {
+            binding: 13,
+            resource: wgpu::BindingResource::TextureView(&rings),
+        });
         self.bind_group = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Solar frame"),
             layout: &self.layout,
@@ -331,8 +453,9 @@ impl Solar {
         self.bound = wanted;
     }
 
-    /// The shader's parameters at `t` into the visit, and how many bodies.
-    fn params(&self, t: f64) -> (Params, u32) {
+    /// The shader's parameters at `t` into the visit, and the draws: which
+    /// pipeline over which body, in order.
+    fn params(&self, t: f64) -> (Params, Vec<(u32, String)>) {
         let view = self.tour.view(t);
         let system = &self.tour.system;
         let camera = view.position;
@@ -341,7 +464,7 @@ impl Solar {
 
         let star_rel = rel([0.0; 3]);
         let hidden = view.warp > 0.3;
-        let mut bodies: Vec<(f64, Body)> = Vec::new();
+        let mut bodies: Vec<(f64, Body, Vec<String>)> = Vec::new();
         if !hidden {
             let mut star = Body {
                 place: f32x4(star_rel, system.star.radius),
@@ -350,7 +473,7 @@ impl Solar {
             };
             if let Some(rect) = rect(&view, star_rel, system.star.radius * 1.02) {
                 star.rect = rect;
-                bodies.push((length(star_rel), star));
+                bodies.push((length(star_rel), star, vec!["star".into()]));
             }
             for (index, planet) in system.planets.iter().enumerate() {
                 let centre = planet.position(t);
@@ -378,18 +501,51 @@ impl Solar {
                 };
                 let mut bound = planet.radius * if body.air[0] > 0.0 { 1.08 } else { 1.0 };
                 if let Some(rings) = &planet.rings {
+                    // The ring profile's row is the planet's index.
                     body.ring = [
                         rings.inner as f32,
                         rings.outer as f32,
                         rings.opacity,
-                        rings.seed,
+                        index as f32,
                     ];
                     body.ring_colour = [rings.colour[0], rings.colour[1], rings.colour[2], 1.0];
                     bound = planet.radius * rings.outer;
                 }
                 if let Some(rect) = rect(&view, place, bound) {
                     body.rect = rect;
-                    bodies.push((length(place), body));
+                    let eclipsed = eclipsed(system, t, centre, planet.radius, Some(index));
+                    let mut passes: Vec<String> = match slot {
+                        Some(s) => {
+                            let mut passes = vec![format!("ground{s}")];
+                            if planet.kind.has_clouds() {
+                                passes.push(format!("cloudshadow{s}"));
+                            }
+                            if planet.kind.has_sea() {
+                                passes.push(format!("sea{s}"));
+                            }
+                            if planet.kind.has_clouds() {
+                                passes.push(format!("clouds{s}"));
+                            }
+                            passes
+                        }
+                        None => vec!["flat".into()],
+                    };
+                    if eclipsed {
+                        passes.push("eclipse".into());
+                    }
+                    if planet.rings.is_some() {
+                        passes.push("ringshadow".into());
+                    }
+                    if let Some(s) = slot {
+                        passes.push(format!("glow{s}"));
+                    }
+                    if body.air[0] > 0.0 {
+                        passes.push("limb".into());
+                    }
+                    if planet.rings.is_some() {
+                        passes.push("ring".into());
+                    }
+                    bodies.push((length(place), body, passes));
                 }
                 // Moons, once their planet's maps are in.
                 let Some(slot) = slot else {
@@ -408,6 +564,18 @@ impl Solar {
                     let Some(rect) = rect(&view, place, bound) else {
                         continue;
                     };
+                    let mut passes = vec![format!("moon{slot}")];
+                    let at = [
+                        centre[0] + offset[0],
+                        centre[1] + offset[1],
+                        centre[2] + offset[2],
+                    ];
+                    if eclipsed(system, t, at, moon.radius, None) {
+                        passes.push("eclipse".into());
+                    }
+                    if air[0] > 0.0 {
+                        passes.push("limb".into());
+                    }
                     bodies.push((
                         length(place),
                         Body {
@@ -429,6 +597,7 @@ impl Solar {
                             rect,
                             ..Default::default()
                         },
+                        passes,
                     ));
                 }
             }
@@ -440,8 +609,12 @@ impl Solar {
         }
         let count = bodies.len() as u32;
         let mut list = [Body::default(); MAX_BODIES];
-        for (slot, (_, body)) in list.iter_mut().zip(bodies.iter()) {
+        let mut draws = Vec::new();
+        for (index, (slot, (_, body, passes))) in list.iter_mut().zip(bodies.iter()).enumerate() {
             *slot = *body;
+            for pass in passes {
+                draws.push((index as u32, pass.clone()));
+            }
         }
 
         // How much of the star's disc the bodies leave in view.
@@ -449,7 +622,7 @@ impl Solar {
         let star_dir = normalize(star_rel);
         let star_angle = (system.star.radius / star_distance).min(1.0).asin();
         let mut visible = 1.0;
-        for (distance, body) in &bodies {
+        for (distance, body, _) in &bodies {
             if body.look[0] < 0.0 || *distance > star_distance {
                 continue;
             }
@@ -486,10 +659,15 @@ impl Solar {
                 visible as f32,
             ],
             sky,
-            warp: [view.warp as f32, view.flash as f32, t as f32, 0.0],
+            warp: [
+                view.warp as f32,
+                view.flash as f32,
+                t as f32,
+                (t - (self.tour.total - tour::JUMP)) as f32,
+            ],
             bodies: list,
         };
-        (params, count)
+        (params, draws)
     }
 
     fn draw(&mut self, gpu: &Graphics, t: f64, frame: usize) {
@@ -500,7 +678,12 @@ impl Solar {
             });
         self.streamer.advance(gpu, &mut encoder);
         self.bind(gpu);
-        let (params, count) = self.params(t);
+        let (params, draws) = self.params(t);
+        let background = if params.warp[0] > 0.02 {
+            format!("warp{}", self.drive().0)
+        } else {
+            "space".to_string()
+        };
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&params));
         let Some(group) = &self.bind_group else {
@@ -524,14 +707,23 @@ impl Solar {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, group, &[]);
-            pass.set_pipeline(&self.background);
+            pass.set_bind_group(1, &self.streamer.noise().group, &[]);
+            pass.set_pipeline(&self.pipelines[&background]);
             pass.draw(0..3, 0..1);
-            if count > 0 {
-                pass.set_pipeline(&self.bodies);
-                pass.draw(0..6, 0..count);
+            for (body, name) in &draws {
+                pass.set_pipeline(&self.pipelines[name]);
+                pass.draw(0..6, *body..*body + 1);
             }
         }
         gpu.submit(encoder.finish());
+    }
+
+    /// The drive this visit's jump uses: its number and name.
+    fn drive(&self) -> (u32, &'static str) {
+        match self.drive_override {
+            Some(k) => (k, tour::DRIVES[(k as usize - 1) % tour::DRIVES.len()]),
+            None => self.tour.drive(),
+        }
     }
 
     fn update_hud(&mut self, t: f64) {
@@ -554,6 +746,7 @@ impl Solar {
             title,
             labels,
             values,
+            scans: self.tour.scans(t),
         };
     }
 
@@ -596,6 +789,103 @@ fn length(a: [f64; 3]) -> f64 {
 fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Texels along a ring profile, and rows (one per planet).
+const RING_TEXELS: u32 = 1024;
+const RING_ROWS: u32 = 8;
+
+/// Smooth 1D value noise in [0, 1], for the ring profiles.
+fn noise1(x: f64, seed: u64) -> f64 {
+    let hash = |i: i64| {
+        let mut z = (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ seed;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let i = x.floor();
+    let f = x - i;
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    hash(i as i64) * (1.0 - u) + hash(i as i64 + 1) * u
+}
+
+/// Paint the ring density profiles of `system`'s ringed planets, one row
+/// each: ringlets, gaps and a main division.
+fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &System) {
+    let mut data = vec![0u8; (RING_TEXELS * RING_ROWS) as usize];
+    for (row, planet) in system.planets.iter().enumerate().take(RING_ROWS as usize) {
+        let Some(rings) = &planet.rings else {
+            continue;
+        };
+        let seed = rings.seed.to_bits() as u64;
+        for t in 0..RING_TEXELS as usize {
+            let x = (t as f64 + 0.5) / RING_TEXELS as f64;
+            let n1 = noise1(x * 40.0, seed);
+            let n2 = noise1(x * 160.0, seed ^ 1);
+            let n3 = noise1(x * 9.0, seed ^ 2);
+            let division = 1.0 - (-((x - 0.62) / 0.025).powi(2)).exp() * 0.9;
+            let edges = smoothstep(0.0, 0.04, x) * smoothstep(1.0, 0.9, x);
+            let density = ((0.25 + 0.75 * n3)
+                * (0.45 + 0.55 * n1)
+                * (0.6 + 0.4 * n2)
+                * division
+                * edges
+                * 1.4)
+                .clamp(0.0, 1.0);
+            data[row * RING_TEXELS as usize + t] = (density * 255.0).round() as u8;
+        }
+    }
+    gpu.queue.write_texture(
+        texture.as_image_copy(),
+        &data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(RING_TEXELS),
+            rows_per_image: Some(RING_ROWS),
+        },
+        wgpu::Extent3d {
+            width: RING_TEXELS,
+            height: RING_ROWS,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+/// Whether another body of `system` could pass in front of the star as seen
+/// from a body of `radius` at `at`: only then is its eclipse pass drawn.
+fn eclipsed(system: &System, t: f64, at: [f64; 3], radius: f64, planet: Option<usize>) -> bool {
+    let to_star = normalize([-at[0], -at[1], -at[2]]);
+    let star_distance = length(at);
+    let star_angle = (system.star.radius / star_distance).min(1.0).asin();
+    let check = |centre: [f64; 3], r: f64| {
+        let rel = [centre[0] - at[0], centre[1] - at[1], centre[2] - at[2]];
+        let d = length(rel);
+        if d < 1e-6 || d > star_distance {
+            return false;
+        }
+        let separation = dot(normalize(rel), to_star).clamp(-1.0, 1.0).acos();
+        separation < (r / d).min(1.0).asin() + star_angle + (radius / d).min(1.0).asin()
+    };
+    for (index, other) in system.planets.iter().enumerate() {
+        let centre = other.position(t);
+        if Some(index) != planet && check(centre, other.radius) {
+            return true;
+        }
+        for m in 0..other.moons.len().min(stream::MOONS as usize) {
+            let offset = other.moon_offset(m, t);
+            let c = [
+                centre[0] + offset[0],
+                centre[1] + offset[1],
+                centre[2] + offset[2],
+            ];
+            if length([c[0] - at[0], c[1] - at[1], c[2] - at[2]]) > 1e-6
+                && check(c, other.moons[m].radius)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn night_mode(kind: Kind) -> f32 {
@@ -885,6 +1175,41 @@ pub(crate) mod tests {
                 .expect("a contact sheet");
         }
         std::fs::write(std::path::Path::new(&dir).join("hud.txt"), notes).expect("the HUD notes");
+    }
+
+    /// Every hyperjump drive at a few moments of a jump, to
+    /// `SOLAR_SHOTS_DIR` (default `target/solar-shots`): `warp-<drive>-<n>.png`
+    /// and a sheet of them all, a row per drive.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn warps() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut solar = Solar::with_seed(&gpu, 11);
+        let start = solar.tour.total - tour::JUMP;
+        let moments = [0.03, 0.12, 0.5, 0.85];
+        let mut sheet =
+            image::RgbaImage::new(270 * moments.len() as u32, 270 * tour::DRIVES.len() as u32);
+        for (k, name) in tour::DRIVES.iter().enumerate() {
+            solar.drive_override = Some(k as u32 + 1);
+            for (m, at) in moments.iter().enumerate() {
+                let t = start + tour::JUMP * at;
+                solar.draw(&gpu, t, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                let file = name.to_lowercase().replace(' ', "-");
+                let path = std::path::Path::new(&dir).join(format!("warp-{file}-{m}.png"));
+                image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
+                    .expect("a screenshot");
+                if let Some(image) = image::RgbaImage::from_raw(SIZE, SIZE, pixels) {
+                    let thumb = image::imageops::thumbnail(&image, 270, 270);
+                    image::imageops::overlay(&mut sheet, &thumb, 270 * m as i64, 270 * k as i64);
+                }
+            }
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("warps-sheet.png"))
+            .expect("a sheet");
     }
 
     /// One finished frame and its HUD at the first moment whose name holds

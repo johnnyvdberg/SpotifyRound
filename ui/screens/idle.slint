@@ -132,6 +132,77 @@ export component IdleScreen inherits Rectangle {
         }
     }
 
+    // The scanner, high in the circle: each reading's name, a bar while it
+    // runs, then its result.
+    if Idle.hud-scans.length > 0 : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 118px;
+        width: 640px;
+        height: 30px + Idle.hud-scans.length * 52px;
+        border-radius: 22px;
+        background: #04060cb0;
+        border-width: 1px;
+        border-color: Theme.accent.with-alpha(0.25);
+        opacity: Idle.fade;
+
+        Text {
+            x: 0;
+            y: 8px;
+            width: parent.width;
+            text: "SCANNER";
+            color: Theme.accent;
+            font-family: Theme.font;
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            horizontal-alignment: center;
+        }
+        for scan[i] in Idle.hud-scans : Rectangle {
+            x: 22px;
+            y: 32px + i * 52px;
+            width: parent.width - 44px;
+            height: 48px;
+
+            Text {
+                x: 0;
+                y: 0;
+                width: 170px;
+                text: scan.name;
+                color: Theme.ink.with-alpha(0.7);
+                font-family: Theme.font;
+                font-size: 17px;
+                font-weight: 600;
+            }
+            // The bar, full once the reading is in.
+            Rectangle {
+                x: 170px;
+                y: 6px;
+                width: parent.width - 170px;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.ink.with-alpha(0.12);
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: parent.width * scan.progress;
+                    height: parent.height;
+                    border-radius: 3px;
+                    background: scan.progress >= 1 ? Theme.accent.with-alpha(0.55) : Theme.accent;
+                }
+            }
+            Text {
+                x: 0;
+                y: 22px;
+                width: parent.width;
+                text: scan.value;
+                color: scan.progress >= 1 ? Theme.ink : Theme.ink.with-alpha(0.5);
+                font-family: Theme.font;
+                font-size: 16px;
+                overflow: elide;
+            }
+        }
+    }
+
     // A slow breath at the rim, echoing the ring the player wears; the
     // atmosphere fades out beneath it.
     Rectangle {

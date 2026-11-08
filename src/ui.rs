@@ -325,6 +325,16 @@ impl WindowExt for AppWindow {
         idle.set_hud_title(hud.title.as_str().into());
         idle.set_hud_labels(hud.labels.as_str().into());
         idle.set_hud_values(hud.values.as_str().into());
+        let scans: Vec<ScanRow> = hud
+            .scans
+            .iter()
+            .map(|scan| ScanRow {
+                name: scan.name.as_str().into(),
+                progress: scan.progress,
+                value: scan.value.as_str().into(),
+            })
+            .collect();
+        idle.set_hud_scans(ModelRc::from(Rc::new(VecModel::from(scans))));
     }
 
     fn show_idle_frame(&self, index: usize) {
@@ -800,7 +810,7 @@ mod preview {
         save(&window, &soft, "12-nautilus");
 
         // ---- the solar tour, with its HUD ----
-        let (pixels, hud) = crate::solar::tests::render_once(11, "p4-high-orbit");
+        let (pixels, hud) = crate::solar::tests::render_once(11, "-low-orbit");
         window.set_idle_scene(3, crate::solar::SIZE as f32);
         window.set_idle(true, 1.0);
         window.set_idle_hud(&hud);

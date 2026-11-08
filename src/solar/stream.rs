@@ -42,6 +42,7 @@ const EXTRA: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 const HEIGHT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const PROBE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const SKY: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const CLIMATE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// The generator's parameters, as the shader's `Gen`.
 #[repr(C)]
@@ -112,7 +113,12 @@ fn params(kind: Kind, seed: u64, palette: [[f32; 3]; 4]) -> GenParams {
         plates,
         storms,
         palette: palette.map(|c| [c[0], c[1], c[2], 1.0]),
-        flags: [1.0, if kind.has_cities() { 1.0 } else { 0.0 }, 0.0, warmth],
+        flags: [
+            0.0,
+            if kind.has_cities() { 1.0 } else { 0.0 },
+            if cratered(kind) { 1.0 } else { 0.0 },
+            warmth,
+        ],
     }
 }
 
@@ -146,16 +152,39 @@ pub struct SlotMaps {
     pub moon_relief: wgpu::Texture,
 }
 
+/// Where a pass draws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Target {
+    Terrain,
+    Climate,
+    Relief,
+    Day,
+    Extra,
+    MoonTerrain,
+    MoonClimate,
+    MoonRelief(u32),
+    MoonDay(u32),
+}
+
+/// One pass of a job: a pipeline drawn over a target a band of rows at a
+/// time, and the mip chains to build once it is done.
+#[derive(Clone, Debug)]
+struct Pass {
+    pipeline: &'static str,
+    target: Target,
+    /// Clear the target first, or draw over (blend into) what is there.
+    clear: bool,
+    /// For a moon's pass, which moon (its parameters and its layer).
+    moon: Option<u32>,
+    mips_after: Vec<Target>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Step {
     Probe,
     AwaitProbe,
-    Terrain(u32),
-    TerrainMips,
-    Surface(u32),
-    SurfaceMips,
-    MoonHeight(u32),
-    MoonSurface(u32),
+    /// The pass at this index of the plan, and the next row to draw.
+    Pass(usize, u32),
     Done,
 }
 
@@ -166,6 +195,7 @@ struct Job {
     params: GenParams,
     lowland: f64,
     moons: Vec<Moon>,
+    plan: Vec<Pass>,
     step: Step,
     mapped: Option<Arc<AtomicBool>>,
 }
@@ -191,20 +221,138 @@ pub struct Streamer {
 
     // Shared machinery.
     terrain: wgpu::Texture,
+    climate: wgpu::Texture,
     moon_terrain: wgpu::Texture,
+    moon_climate: wgpu::Texture,
+    /// Bound in place of a map a pass is drawing into.
+    placeholder: wgpu::Texture,
     probe: wgpu::Texture,
     readback: wgpu::Buffer,
     buffers: HashMap<&'static str, wgpu::Buffer>,
     moon_buffers: Vec<wgpu::Buffer>,
     height_layout: wgpu::BindGroupLayout,
     surface_layout: wgpu::BindGroupLayout,
-    probe_pipeline: wgpu::RenderPipeline,
-    height_pipeline: wgpu::RenderPipeline,
-    planet_pipeline: wgpu::RenderPipeline,
-    moon_pipeline: wgpu::RenderPipeline,
-    sky_pipeline: wgpu::RenderPipeline,
+    pipelines: HashMap<&'static str, wgpu::RenderPipeline>,
     terrain_sampler: wgpu::Sampler,
+    noise: crate::noise3d::Noise3d,
     mips: MipChain,
+}
+
+/// Airless and icy worlds, with craters.
+fn cratered(k: Kind) -> bool {
+    matches!(
+        k,
+        Kind::Barren
+            | Kind::Captured
+            | Kind::IcyMoon
+            | Kind::Desert
+            | Kind::Volcanic
+            | Kind::Geyser
+            | Kind::TwoFaced
+            | Kind::Nitrogen
+            | Kind::Rusty
+    )
+}
+
+/// The pipeline that paints `kind`'s day map: one per family of kinds.
+fn day_pipeline(kind: Kind) -> &'static str {
+    match kind {
+        Kind::GasGiant | Kind::IceGiant | Kind::HotJupiter => "day0",
+        Kind::Cloudy => "day1",
+        Kind::Hazy => "day2",
+        Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball => "day3",
+        Kind::Desert => "day4",
+        Kind::Ice => "day5",
+        Kind::Lava => "day6",
+        Kind::Volcanic => "day7",
+        Kind::IcyMoon => "day8",
+        Kind::Geyser => "day9",
+        Kind::TwoFaced => "day10",
+        Kind::Nitrogen => "day11",
+        Kind::Barren | Kind::Captured | Kind::Rusty => "day12",
+    }
+}
+
+/// The passes that paint a planet of `kind` and its `moons`, in order.
+fn plan(kind: Kind, moons: &[Moon]) -> Vec<Pass> {
+    let pass = |pipeline, target, clear| Pass {
+        pipeline,
+        target,
+        clear,
+        moon: None,
+        mips_after: Vec::new(),
+    };
+    let ground = !matches!(
+        kind,
+        Kind::GasGiant | Kind::IceGiant | Kind::HotJupiter | Kind::Hazy | Kind::Cloudy
+    );
+    let mut plan = vec![pass("height", Target::Terrain, true)];
+    if ground {
+        plan.push(pass("erosion", Target::Terrain, false));
+    }
+    if cratered(kind) {
+        for craters in ["craters0", "craters1", "craters2"] {
+            plan.push(pass(craters, Target::Terrain, false));
+        }
+    }
+    if let Some(last) = plan.last_mut() {
+        last.mips_after.push(Target::Terrain);
+    }
+    plan.push(pass("climate", Target::Climate, true));
+    plan.push(pass("relief", Target::Relief, true));
+    plan.push(pass(day_pipeline(kind), Target::Day, true));
+    let lights = match kind {
+        Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball => "lights0",
+        Kind::Lava => "lights1",
+        Kind::HotJupiter => "lights2",
+        _ => "lights3",
+    };
+    plan.push(pass(lights, Target::Extra, true));
+    if kind == Kind::Lava {
+        plan.push(pass("lights4", Target::Extra, false));
+    }
+    if kind.has_cities() {
+        plan.push(pass("towns", Target::Extra, false));
+    }
+    let clouds = match kind {
+        Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball => "clouds0",
+        _ => "clouds1",
+    };
+    let mut clouds = pass(clouds, Target::Extra, false);
+    clouds.mips_after = vec![Target::Day, Target::Relief, Target::Extra];
+    plan.push(clouds);
+
+    for (i, moon) in moons.iter().enumerate() {
+        let i = i as u32;
+        let moon_pass = |pipeline, target, clear| Pass {
+            pipeline,
+            target,
+            clear,
+            moon: Some(i),
+            mips_after: Vec::new(),
+        };
+        let start = plan.len();
+        plan.push(moon_pass("height", Target::MoonTerrain, true));
+        plan.push(moon_pass("erosion", Target::MoonTerrain, false));
+        if cratered(moon.kind) {
+            for craters in ["craters0", "craters1", "craters2"] {
+                plan.push(moon_pass(craters, Target::MoonTerrain, false));
+            }
+        }
+        if let Some(last) = plan.last_mut() {
+            last.mips_after.push(Target::MoonTerrain);
+        }
+        plan.push(moon_pass("climate", Target::MoonClimate, true));
+        plan.push(moon_pass("relief", Target::MoonRelief(i), true));
+        if moon.kind == Kind::Volcanic {
+            plan.push(moon_pass("glow", Target::MoonRelief(i), false));
+        }
+        let mut day = moon_pass(day_pipeline(moon.kind), Target::MoonDay(i), true);
+        day.mips_after = vec![Target::MoonDay(i), Target::MoonRelief(i)];
+        plan.push(day);
+        debug_assert!(plan.len() > start);
+    }
+    plan
 }
 
 fn map_texture(
@@ -351,7 +499,9 @@ impl Streamer {
             )
         };
 
+        let noise = crate::noise3d::Noise3d::new(device, &gpu.queue);
         let mut source = String::from(include_str!("noise.wgsl"));
+        source.push_str(crate::noise3d::WGSL);
         source.push_str(include_str!("generate.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Solar generator"),
@@ -361,33 +511,58 @@ impl Streamer {
             label: Some("Solar height"),
             entries: &[uniform_entry(0)],
         });
+        let d2 = wgpu::TextureViewDimension::D2;
         let surface_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Solar surface"),
             entries: &[
                 uniform_entry(0),
-                texture_entry(1, wgpu::TextureViewDimension::D2),
+                texture_entry(1, d2),
                 sampler_entry(2),
+                texture_entry(3, d2),
+                texture_entry(4, d2),
             ],
         });
+        let add = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let max = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Max,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
         let pipeline = |label: &str,
                         layout: &wgpu::BindGroupLayout,
                         entry: &str,
-                        formats: &[wgpu::TextureFormat]| {
+                        format: wgpu::TextureFormat,
+                        blend: Option<wgpu::BlendState>,
+                        write_mask: wgpu::ColorWrites,
+                        group: i32| {
+            let constants = [("GROUP", group as f64)];
+            let options = wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            };
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
-                bind_group_layouts: &[Some(layout)],
+                bind_group_layouts: &[Some(layout), Some(&noise.layout)],
                 immediate_size: 0,
             });
-            let targets: Vec<_> = formats
-                .iter()
-                .map(|&format| {
-                    Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })
-                })
-                .collect();
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -395,13 +570,17 @@ impl Streamer {
                     module: &shader,
                     entry_point: Some("vs_main"),
                     buffers: &[],
-                    compilation_options: Default::default(),
+                    compilation_options: options.clone(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(entry),
-                    targets: &targets,
-                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask,
+                    })],
+                    compilation_options: options,
                 }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
@@ -410,16 +589,66 @@ impl Streamer {
                 cache: None,
             })
         };
-        let probe_pipeline = pipeline("Solar probe", &height_layout, "fs_height", &[PROBE]);
-        let height_pipeline = pipeline("Solar height", &height_layout, "fs_height", &[HEIGHT]);
-        let planet_pipeline = pipeline(
-            "Solar planet",
-            &surface_layout,
-            "fs_planet",
-            &[DAY, RELIEF, EXTRA],
-        );
-        let moon_pipeline = pipeline("Solar moon", &surface_layout, "fs_moon", &[DAY, RELIEF]);
-        let sky_pipeline = pipeline("Solar sky", &height_layout, "fs_sky", &[SKY]);
+        let all = wgpu::ColorWrites::ALL;
+        let h = &height_layout;
+        let sl = &surface_layout;
+        let mut pipelines = HashMap::new();
+        let red = wgpu::ColorWrites::RED;
+        let green = wgpu::ColorWrites::GREEN;
+        for (name, layout, entry, format, blend, mask, group) in [
+            ("probe", h, "fs_height", PROBE, None, all, 0),
+            ("height", h, "fs_height", HEIGHT, None, all, 0),
+            ("erosion", h, "fs_erosion", HEIGHT, Some(add), all, 0),
+            ("craters0", h, "fs_craters", HEIGHT, Some(add), all, 0),
+            ("craters1", h, "fs_craters", HEIGHT, Some(add), all, 1),
+            ("craters2", h, "fs_craters", HEIGHT, Some(add), all, 2),
+            ("sky", h, "fs_sky", SKY, None, all, 0),
+            ("climate", sl, "fs_climate", CLIMATE, None, all, 0),
+            ("relief", sl, "fs_relief", RELIEF, None, all, 0),
+            ("day0", sl, "fs_day", DAY, None, all, 0),
+            ("day1", sl, "fs_day", DAY, None, all, 1),
+            ("day2", sl, "fs_day", DAY, None, all, 2),
+            ("day3", sl, "fs_day", DAY, None, all, 3),
+            ("day4", sl, "fs_day", DAY, None, all, 4),
+            ("day5", sl, "fs_day", DAY, None, all, 5),
+            ("day6", sl, "fs_day", DAY, None, all, 6),
+            ("day7", sl, "fs_day", DAY, None, all, 7),
+            ("day8", sl, "fs_day", DAY, None, all, 8),
+            ("day9", sl, "fs_day", DAY, None, all, 9),
+            ("day10", sl, "fs_day", DAY, None, all, 10),
+            ("day11", sl, "fs_day", DAY, None, all, 11),
+            ("day12", sl, "fs_day", DAY, None, all, 12),
+            ("lights0", sl, "fs_lights", EXTRA, None, red, 0),
+            ("lights1", sl, "fs_lights", EXTRA, None, red, 1),
+            ("lights2", sl, "fs_lights", EXTRA, None, red, 2),
+            ("lights3", sl, "fs_lights", EXTRA, None, red, 3),
+            ("lights4", sl, "fs_lights", EXTRA, Some(max), red, 4),
+            ("towns", sl, "fs_towns", EXTRA, Some(add), red, 0),
+            ("clouds0", sl, "fs_clouds", EXTRA, None, green, 0),
+            ("clouds1", sl, "fs_clouds", EXTRA, None, green, 1),
+            (
+                "glow",
+                sl,
+                "fs_glow",
+                RELIEF,
+                None,
+                wgpu::ColorWrites::BLUE,
+                0,
+            ),
+        ] {
+            pipelines.insert(
+                name,
+                pipeline(
+                    &format!("Solar {name}"),
+                    layout,
+                    entry,
+                    format,
+                    blend,
+                    mask,
+                    group,
+                ),
+            );
+        }
 
         let buffer = |label: &'static str| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -474,6 +703,15 @@ impl Streamer {
                 HEIGHT,
                 true,
             ),
+            climate: map_texture(
+                device,
+                "Solar climate",
+                MAP_WIDTH,
+                MAP_HEIGHT,
+                1,
+                CLIMATE,
+                false,
+            ),
             moon_terrain: map_texture(
                 device,
                 "Solar moon terrain",
@@ -483,6 +721,16 @@ impl Streamer {
                 HEIGHT,
                 true,
             ),
+            moon_climate: map_texture(
+                device,
+                "Solar moon climate",
+                MOON_WIDTH,
+                MOON_HEIGHT,
+                1,
+                CLIMATE,
+                false,
+            ),
+            placeholder: map_texture(device, "Solar placeholder", 1, 1, 1, CLIMATE, false),
             probe: map_texture(
                 device,
                 "Solar probe",
@@ -497,14 +745,16 @@ impl Streamer {
             moon_buffers,
             height_layout,
             surface_layout,
-            probe_pipeline,
-            height_pipeline,
-            planet_pipeline,
-            moon_pipeline,
-            sky_pipeline,
+            pipelines,
             terrain_sampler,
+            noise,
             mips: MipChain::new(device),
         }
+    }
+
+    /// The noise volume, shared with the frame's shaders.
+    pub fn noise(&self) -> &crate::noise3d::Noise3d {
+        &self.noise
     }
 
     pub fn slot_maps(&self, slot: usize) -> &SlotMaps {
@@ -535,7 +785,6 @@ impl Streamer {
     /// Starts painting the first one missing, overwriting a slot nothing
     /// wants any more.
     pub fn want(&mut self, planets: &[(Key, &Planet)], skies: &[(u64, [f32; 4])]) {
-        // A job for something no longer wanted is dropped.
         if let Some(job) = &self.job
             && !planets.iter().any(|(key, _)| *key == job.key)
         {
@@ -558,17 +807,19 @@ impl Streamer {
                 self.owner[slot] = Some((*key, false));
                 self.version += 1;
                 tracing::debug!(?key, slot, kind = ?planet.kind, "streaming a planet");
+                let moons: Vec<Moon> = planet.moons.iter().take(MOONS as usize).cloned().collect();
                 self.job = Some(Job {
                     slot,
                     key: *key,
                     kind: planet.kind,
                     params: params(planet.kind, planet.seed, planet.palette),
                     lowland: planet.kind.lowland(),
-                    moons: planet.moons.iter().take(MOONS as usize).cloned().collect(),
+                    plan: plan(planet.kind, &moons),
+                    moons,
                     step: if planet.kind.lowland() > 0.0 {
                         Step::Probe
                     } else {
-                        Step::Terrain(0)
+                        Step::Pass(0, 0)
                     },
                     mapped: None,
                 });
@@ -605,6 +856,32 @@ impl Streamer {
         }
     }
 
+    /// The texture behind a target, and the layer it draws into.
+    fn texture_of(&self, slot: usize, target: Target) -> (&wgpu::Texture, u32) {
+        let maps = &self.maps[slot];
+        match target {
+            Target::Terrain => (&self.terrain, 0),
+            Target::Climate => (&self.climate, 0),
+            Target::Relief => (&maps.relief, 0),
+            Target::Day => (&maps.day, 0),
+            Target::Extra => (&maps.extra, 0),
+            Target::MoonTerrain => (&self.moon_terrain, 0),
+            Target::MoonClimate => (&self.moon_climate, 0),
+            Target::MoonRelief(i) => (&maps.moon_relief, i),
+            Target::MoonDay(i) => (&maps.moon_day, i),
+        }
+    }
+
+    fn format_of(target: Target) -> wgpu::TextureFormat {
+        match target {
+            Target::Terrain | Target::MoonTerrain => HEIGHT,
+            Target::Climate | Target::MoonClimate => CLIMATE,
+            Target::Relief | Target::MoonRelief(_) => RELIEF,
+            Target::Day | Target::MoonDay(_) => DAY,
+            Target::Extra => EXTRA,
+        }
+    }
+
     /// Run one frame's share of painting, recorded into `encoder`.
     pub fn advance(&mut self, gpu: &Graphics, encoder: &mut wgpu::CommandEncoder) {
         self.advance_sky(gpu, encoder);
@@ -612,7 +889,6 @@ impl Streamer {
             return;
         };
         let device = &gpu.device;
-        let rows = self.rows;
         match job.step {
             Step::Probe => {
                 let mut p = job.params;
@@ -627,9 +903,10 @@ impl Streamer {
                 let group = self.height_group(device, &self.buffers["probe"]);
                 draw(
                     encoder,
-                    &self.probe_pipeline,
+                    &self.pipelines["probe"],
                     &group,
-                    &[&level_view(&self.probe, 0, 0)],
+                    &self.noise.group,
+                    &level_view(&self.probe, 0, 0),
                     0,
                     PROBE_HEIGHT,
                     PROBE_WIDTH,
@@ -692,133 +969,111 @@ impl Streamer {
                     job.params.size[2] =
                         sea_level(&heights, PROBE_WIDTH, PROBE_HEIGHT, job.lowland);
                     job.mapped = None;
-                    job.step = Step::Terrain(0);
+                    job.step = Step::Pass(0, 0);
                 }
             }
-            Step::Terrain(row) => {
-                let mut p = job.params;
-                p.size[0] = MAP_WIDTH as f32;
-                p.size[1] = MAP_HEIGHT as f32;
-                if job.lowland <= 0.0 {
-                    p.size[2] = -10.0;
-                }
-                job.params = p;
-                gpu.queue
-                    .write_buffer(&self.buffers["planet"], 0, bytemuck::bytes_of(&p));
-                let group = self.height_group(device, &self.buffers["planet"]);
-                let count = rows.min(MAP_HEIGHT - row);
+            Step::Pass(index, row) => {
+                let pass = job.plan[index].clone();
+                // Each pass's parameters: the planet's, or its moon's.
+                let (buffer, width, height) = match pass.moon {
+                    None => {
+                        let mut p = job.params;
+                        p.size[0] = MAP_WIDTH as f32;
+                        p.size[1] = MAP_HEIGHT as f32;
+                        if job.lowland <= 0.0 {
+                            p.size[2] = -10.0;
+                        }
+                        gpu.queue
+                            .write_buffer(&self.buffers["planet"], 0, bytemuck::bytes_of(&p));
+                        (&self.buffers["planet"], MAP_WIDTH, MAP_HEIGHT)
+                    }
+                    Some(i) => {
+                        let moon = &job.moons[i as usize];
+                        let mut p = params(moon.kind, moon.seed, moon.palette);
+                        let sea = if moon.kind == Kind::Barren {
+                            -0.04
+                        } else {
+                            -10.0
+                        };
+                        p.size = [
+                            MOON_WIDTH as f32,
+                            MOON_HEIGHT as f32,
+                            sea,
+                            moon.kind as u32 as f32,
+                        ];
+                        let buffer = &self.moon_buffers[i as usize];
+                        gpu.queue.write_buffer(buffer, 0, bytemuck::bytes_of(&p));
+                        (buffer, MOON_WIDTH, MOON_HEIGHT)
+                    }
+                };
+                let moon = pass.moon.is_some();
+                let terrain = if moon {
+                    &self.moon_terrain
+                } else {
+                    &self.terrain
+                };
+                let climate = if moon {
+                    &self.moon_climate
+                } else {
+                    &self.climate
+                };
+                let relief = match pass.moon {
+                    Some(i) => level_view(&self.maps[job.slot].moon_relief, 0, i),
+                    None => level_view(&self.maps[job.slot].relief, 0, 0),
+                };
+                let placeholder = level_view(&self.placeholder, 0, 0);
+                let group = match pass.target {
+                    Target::Terrain | Target::MoonTerrain => self.height_group(device, buffer),
+                    Target::Climate | Target::MoonClimate => {
+                        self.surface_group(device, buffer, terrain, &placeholder, &placeholder)
+                    }
+                    Target::Relief | Target::MoonRelief(_) => self.surface_group(
+                        device,
+                        buffer,
+                        terrain,
+                        &level_view(climate, 0, 0),
+                        &placeholder,
+                    ),
+                    _ => self.surface_group(
+                        device,
+                        buffer,
+                        terrain,
+                        &level_view(climate, 0, 0),
+                        &relief,
+                    ),
+                };
+                // Moons are small: a whole pass a frame.
+                let count = if moon {
+                    height
+                } else {
+                    self.rows.min(height - row)
+                };
+                let (texture, layer) = self.texture_of(job.slot, pass.target);
                 draw(
                     encoder,
-                    &self.height_pipeline,
+                    &self.pipelines[pass.pipeline],
                     &group,
-                    &[&level_view(&self.terrain, 0, 0)],
+                    &self.noise.group,
+                    &level_view(texture, 0, layer),
                     row,
                     count,
-                    MAP_WIDTH,
-                    row == 0,
+                    width,
+                    row == 0 && pass.clear,
                 );
-                job.step = if row + count >= MAP_HEIGHT {
-                    Step::TerrainMips
-                } else {
-                    Step::Terrain(row + count)
-                };
-            }
-            Step::TerrainMips => {
-                self.mips.build(device, encoder, &self.terrain, 0, HEIGHT);
-                job.step = Step::Surface(0);
-            }
-            Step::Surface(row) => {
-                gpu.queue
-                    .write_buffer(&self.buffers["planet"], 0, bytemuck::bytes_of(&job.params));
-                let group = self.surface_group(device, &self.buffers["planet"], &self.terrain);
-                let maps = &self.maps[job.slot];
-                let count = (rows / 2).max(1).min(MAP_HEIGHT - row);
-                draw(
-                    encoder,
-                    &self.planet_pipeline,
-                    &group,
-                    &[
-                        &level_view(&maps.day, 0, 0),
-                        &level_view(&maps.relief, 0, 0),
-                        &level_view(&maps.extra, 0, 0),
-                    ],
-                    row,
-                    count,
-                    MAP_WIDTH,
-                    row == 0,
-                );
-                job.step = if row + count >= MAP_HEIGHT {
-                    Step::SurfaceMips
-                } else {
-                    Step::Surface(row + count)
-                };
-            }
-            Step::SurfaceMips => {
-                let maps = &self.maps[job.slot];
-                self.mips.build(device, encoder, &maps.day, 0, DAY);
-                self.mips.build(device, encoder, &maps.relief, 0, RELIEF);
-                self.mips.build(device, encoder, &maps.extra, 0, EXTRA);
-                job.step = if job.moons.is_empty() {
-                    Step::Done
-                } else {
-                    Step::MoonHeight(0)
-                };
-            }
-            Step::MoonHeight(i) => {
-                let moon = &job.moons[i as usize];
-                let mut p = params(moon.kind, moon.seed, moon.palette);
-                p.size = [
-                    MOON_WIDTH as f32,
-                    MOON_HEIGHT as f32,
-                    if moon.kind == Kind::Barren {
-                        -0.04
+                if row + count >= height {
+                    for target in &pass.mips_after {
+                        let (texture, layer) = self.texture_of(job.slot, *target);
+                        self.mips
+                            .build(device, encoder, texture, layer, Self::format_of(*target));
+                    }
+                    job.step = if index + 1 < job.plan.len() {
+                        Step::Pass(index + 1, 0)
                     } else {
-                        -10.0
-                    },
-                    moon.kind as u32 as f32,
-                ];
-                let buffer = &self.moon_buffers[i as usize];
-                gpu.queue.write_buffer(buffer, 0, bytemuck::bytes_of(&p));
-                let group = self.height_group(device, buffer);
-                draw(
-                    encoder,
-                    &self.height_pipeline,
-                    &group,
-                    &[&level_view(&self.moon_terrain, 0, 0)],
-                    0,
-                    MOON_HEIGHT,
-                    MOON_WIDTH,
-                    true,
-                );
-                self.mips
-                    .build(device, encoder, &self.moon_terrain, 0, HEIGHT);
-                job.step = Step::MoonSurface(i);
-            }
-            Step::MoonSurface(i) => {
-                let buffer = &self.moon_buffers[i as usize];
-                let group = self.surface_group(device, buffer, &self.moon_terrain);
-                let maps = &self.maps[job.slot];
-                draw(
-                    encoder,
-                    &self.moon_pipeline,
-                    &group,
-                    &[
-                        &level_view(&maps.moon_day, 0, i),
-                        &level_view(&maps.moon_relief, 0, i),
-                    ],
-                    0,
-                    MOON_HEIGHT,
-                    MOON_WIDTH,
-                    true,
-                );
-                self.mips.build(device, encoder, &maps.moon_day, i, DAY);
-                self.mips
-                    .build(device, encoder, &maps.moon_relief, i, RELIEF);
-                job.step = if i + 1 < job.moons.len() as u32 {
-                    Step::MoonHeight(i + 1)
+                        Step::Done
+                    };
                 } else {
-                    Step::Done
-                };
+                    job.step = Step::Pass(index, row + count);
+                }
             }
             Step::Done => {}
         }
@@ -841,9 +1096,10 @@ impl Streamer {
         let count = (self.rows * 2).min(SKY_HEIGHT - job.row);
         draw(
             encoder,
-            &self.sky_pipeline,
+            &self.pipelines["sky"],
             &group,
-            &[&level_view(&self.skies[job.index], 0, 0)],
+            &self.noise.group,
+            &level_view(&self.skies[job.index], 0, 0),
             job.row,
             count,
             SKY_WIDTH,
@@ -876,6 +1132,8 @@ impl Streamer {
         device: &wgpu::Device,
         buffer: &wgpu::Buffer,
         terrain: &wgpu::Texture,
+        climate: &wgpu::TextureView,
+        relief: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         let view = terrain.create_view(&wgpu::TextureViewDescriptor::default());
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -894,6 +1152,14 @@ impl Streamer {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.terrain_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(climate),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(relief),
+                },
             ],
         })
     }
@@ -905,33 +1171,28 @@ fn draw(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
     group: &wgpu::BindGroup,
-    targets: &[&wgpu::TextureView],
+    noise: &wgpu::BindGroup,
+    target: &wgpu::TextureView,
     row: u32,
     count: u32,
     width: u32,
     clear: bool,
 ) {
-    let attachments: Vec<_> = targets
-        .iter()
-        .map(|view| {
-            Some(wgpu::RenderPassColorAttachment {
-                view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: if clear {
-                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
-                    } else {
-                        wgpu::LoadOp::Load
-                    },
-                    store: wgpu::StoreOp::Store,
-                },
-            })
-        })
-        .collect();
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Solar generator pass"),
-        color_attachments: &attachments,
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: if clear {
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                } else {
+                    wgpu::LoadOp::Load
+                },
+                store: wgpu::StoreOp::Store,
+            },
+        })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
         occlusion_query_set: None,
@@ -939,6 +1200,7 @@ fn draw(
     });
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, group, &[]);
+    pass.set_bind_group(1, noise, &[]);
     pass.set_scissor_rect(0, row, width, count);
     pass.draw(0..3, 0..1);
 }

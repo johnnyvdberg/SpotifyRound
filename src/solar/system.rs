@@ -134,6 +134,22 @@ impl Kind {
         }
     }
 
+    /// Whether it has open water to glint.
+    pub fn has_sea(self) -> bool {
+        matches!(
+            self,
+            Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball
+        )
+    }
+
+    /// Whether its maps carry a cloud sheet.
+    pub fn has_clouds(self) -> bool {
+        matches!(
+            self,
+            Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball | Kind::Desert | Kind::Ice
+        )
+    }
+
     /// Whether the night side shows city lights.
     pub fn has_cities(self) -> bool {
         matches!(self, Kind::Terran | Kind::Ocean | Kind::Jungle)
@@ -158,6 +174,14 @@ pub struct Star {
     pub mass: f64,
     /// Colour of its light, linear, normalised to the brightest channel.
     pub colour: [f32; 3],
+}
+
+impl Star {
+    /// Luminosity in suns, from its real radius and temperature.
+    pub fn luminosity(&self) -> f64 {
+        let radius = self.radius / (109.0 * STAR_SCALE);
+        radius * radius * (self.temperature / 5772.0).powi(4)
+    }
 }
 
 /// Rings around a planet, in its equatorial plane.

@@ -21,6 +21,15 @@ pub const LOW: f64 = 28.0;
 pub const CLIMB: f64 = 12.0;
 pub const DEPART: f64 = 20.0;
 pub const JUMP: f64 = 150.0;
+/// The hyperjump drives, each its own look (`fs_warp` in `frame.wgsl`).
+pub const DRIVES: [&str; 5] = [
+    "Lumen Drift",
+    "Tachyon Tunnel",
+    "Fold Drive",
+    "Ion Slipstream",
+    "Graviton Spiral",
+];
+
 /// Field of view, the tangent of half of it.
 const HALF_FOV: f64 = 0.4663; // 50°
 
@@ -276,6 +285,14 @@ impl Tour {
             }
             self.system.planets[p].moons[largest].phase = best.1;
         }
+    }
+
+    /// The drive the jump at the end of this visit uses: its number (from 1)
+    /// and name.
+    pub fn drive(&self) -> (u32, &'static str) {
+        let k = (super::system::Rng::new(self.next.seed ^ 0xd21e).next() % DRIVES.len() as u64)
+            as usize;
+        (k as u32 + 1, DRIVES[k])
     }
 
     /// The segment at `t`, and how far into it.
@@ -539,6 +556,19 @@ impl Tour {
         }
     }
 
+    /// The scanner's readings at `t`: while orbiting a planet, from the moment
+    /// the camera settles into orbit; none otherwise.
+    pub fn scans(&self, t: f64) -> Vec<super::scan::Scan> {
+        let (segment, _) = self.segment(t);
+        match segment.phase {
+            Phase::High(p) | Phase::Descend(p) | Phase::Low(p) | Phase::Climb(p) => {
+                let survey = super::scan::Survey::of(&self.system.planets[p], &self.system.star);
+                survey.at(t - self.arrival(p))
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// The HUD at `t`: a title and lines of label and value.
     pub fn hud(&self, t: f64) -> (String, Vec<(String, String)>) {
         let (segment, local) = self.segment(t);
@@ -633,6 +663,7 @@ impl Tour {
             Phase::Depart(_) => (
                 "DEPARTURE".into(),
                 vec![
+                    ("Drive".into(), format!("{} spooling up", self.drive().1)),
                     (
                         "Destination".into(),
                         format!(
@@ -660,6 +691,7 @@ impl Tour {
                 (
                     "HYPERJUMP".into(),
                     vec![
+                        ("Drive".into(), self.drive().1.to_string()),
                         (
                             "Destination".into(),
                             format!(

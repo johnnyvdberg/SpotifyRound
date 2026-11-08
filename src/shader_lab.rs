@@ -36,7 +36,14 @@ mod tests {
         let Ok(dir) = std::env::var("SHADER_DUMP_DIR") else {
             return;
         };
-        let solar = |file: &str| format!("{}{}", include_str!("solar/noise.wgsl"), file);
+        let solar = |file: &str| {
+            format!(
+                "{}{}{}",
+                include_str!("solar/noise.wgsl"),
+                crate::noise3d::WGSL,
+                file
+            )
+        };
         for (name, source) in [
             ("planet-frame", crate::planet::shader_source()),
             ("planet-generator", crate::planet::generator_source()),
@@ -75,7 +82,7 @@ mod tests {
                 source.lines().take(6).find_map(|l| {
                     l.trim()
                         .strip_prefix(&format!("// {key}:"))
-                        .map(str::to_owned)
+                        .map(|v| v.trim().to_owned())
                 })
             };
             let targets: Vec<_> = header("targets")

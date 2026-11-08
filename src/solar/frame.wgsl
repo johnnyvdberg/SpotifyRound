@@ -1,11 +1,23 @@
-// The solar tour's frame. Prepended with `noise.wgsl` and constants.
+// The solar tour's frame. Prepended with `noise.wgsl` and the noise volume's
+// declarations (`noise3d.rs`).
 //
-// Two passes into one target:
-// - `fs_background` over the whole frame: stars, the galaxy's band, the
-//   star's glare, and the hyperjump's streaks and tunnel.
-// - `fs_body`, one screen-space quad per body, drawn far to near and blended:
-//   only the pixels a body covers pay for it. Each ray traces its body, its
-//   atmosphere and its rings.
+// Many small pipelines, drawn one after another in a single render pass, each
+// within the V3D's four-thread register budget; the tile buffer blends them on
+// chip. They write linear light, premultiplied, through an sRGB view.
+//
+// - The background, full screen: `fs_space` (stars, the galaxy's band, the
+//   star's glare) while cruising, or `fs_warp` during a hyperjump, one
+//   pipeline per drive (`WARP`).
+// - Then the bodies, far to near, each a quad over its own disc (`vs_body`):
+//   `fs_star`; `fs_flat` for a planet whose maps are not in yet; for a planet
+//   with maps `fs_ground`, `fs_sea` (added), `fs_clouds` and `fs_glow` (added);
+//   `fs_moon` for a moon; `fs_limb` (added) for the air past any limb; and
+//   `fs_ring` over a ringed planet. The mapped ones are built per map slot
+//   (`SLOT`), so each reads one set of textures.
+// - Shadows are passes of their own, multiplied into what is drawn:
+//   `fs_cloud_shadow` over the ground before the clouds, then `fs_eclipse`
+//   (only when another body is near the line to the star) and
+//   `fs_ring_shadow` (ringed planets) before the night side's glow.
 
 struct Body {
     // xyz: centre relative to the camera; w: radius.
@@ -40,7 +52,7 @@ struct Params {
     star_colour: vec4<f32>,
     // Rows turning world directions into the sky map's frame.
     sky: array<vec4<f32>, 3>,
-    // x: warp 0..1; y: flash; z: seconds; w: unused.
+    // x: warp 0..1; y: flash; z: seconds; w: seconds into the jump.
     warp: vec4<f32>,
     bodies: array<Body, 16>,
 };
@@ -58,11 +70,18 @@ struct Params {
 @group(0) @binding(10) var b_extra: texture_2d<f32>;
 @group(0) @binding(11) var b_moon_day: texture_2d_array<f32>;
 @group(0) @binding(12) var b_moon_relief: texture_2d_array<f32>;
+// Each ringed planet's ring density by radius, a row per planet (ring.w).
+@group(0) @binding(13) var ring_profile: texture_2d<f32>;
+
+// Which map slot a mapped body's pipeline reads, and which drive a warp
+// pipeline draws.
+override SLOT: i32 = 0;
+override WARP: i32 = 1;
 
 const SKYLIGHT: vec3<f32> = vec3<f32>(0.035, 0.060, 0.110);
 const SCALE_HEIGHT: f32 = 0.011;
 const ATMOSPHERE: f32 = 1.075;
-const BIAS: f32 = 1.37;
+const BIAS: f32 = 0.45;
 
 fn smoothstep01(e0: f32, e1: f32, x: f32) -> f32 {
     let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
@@ -72,14 +91,6 @@ fn smoothstep01(e0: f32, e1: f32, x: f32) -> f32 {
 fn airmass(mu: f32) -> f32 {
     let m = max(mu, -0.02);
     return 1.0 / (m + 0.025 + 0.045 * exp(-m * 30.0));
-}
-
-// A soft shoulder for the brightest values, then gamma.
-fn encode(linear: vec3<f32>) -> vec3<f32> {
-    let l = max(linear, vec3<f32>(0.0));
-    let over = max(l - vec3<f32>(0.8), vec3<f32>(0.0));
-    let shaped = min(l, vec3<f32>(0.8)) + 0.2 * (vec3<f32>(1.0) - exp(-over * 5.0));
-    return pow(shaped, vec3<f32>(1.0 / 2.2));
 }
 
 fn ray_at(position: vec2<f32>) -> vec3<f32> {
@@ -111,8 +122,7 @@ fn vs_background(@builtin(vertex_index) index: u32) -> Full {
 // One layer of stars: a star in some cells of a grid `scale` cells across,
 // each a point a pixel or so wide, coloured by its temperature.
 fn stars(dir: vec3<f32>, scale: f32, density: f32, brightness: f32, seed: i32) -> vec3<f32> {
-    let x = dir * scale;
-    let cell = vec3<i32>(floor(x));
+    let cell = vec3<i32>(floor(dir * scale));
     let h = hash3(cell + vec3<i32>(seed, 0, 0));
     if (h > density) {
         return vec3<f32>(0.0);
@@ -126,13 +136,8 @@ fn stars(dir: vec3<f32>, scale: f32, density: f32, brightness: f32, seed: i32) -
     let size = params.frame.z * 0.75;
     let b = h / density;
     let glow = exp(-angle * angle / (size * size)) * brightness * (0.15 + b * b * 1.6);
-    let t = hash3(cell + vec3<i32>(seed, 4, 0));
-    let tint = mix(vec3<f32>(1.0, 0.72, 0.5), vec3<f32>(0.7, 0.82, 1.0), t);
+    let tint = mix(vec3<f32>(1.0, 0.72, 0.5), vec3<f32>(0.7, 0.82, 1.0), hash3(cell + vec3<i32>(seed, 4, 0)));
     return tint * glow;
-}
-
-fn starfield(dir: vec3<f32>) -> vec3<f32> {
-    return stars(dir, 60.0, 0.30, 1.3, 11) + stars(dir, 170.0, 0.10, 0.6, 23) + stars(dir, 400.0, 0.025, 0.4, 37);
 }
 
 fn sky_at(dir: vec3<f32>) -> vec3<f32> {
@@ -141,54 +146,111 @@ fn sky_at(dir: vec3<f32>) -> vec3<f32> {
     return textureSampleLevel(sky_map, map_sampler, uv, 0.0).rgb;
 }
 
-@fragment
-fn fs_background(in: Full) -> @location(0) vec4<f32> {
-    let dir = ray_at(in.position.xy);
-    let warp = params.warp.x;
-    var colour = vec3<f32>(0.0);
-    if (warp < 0.02) {
-        colour = sky_at(dir) + starfield(dir);
-    } else {
-        // Streaks: the stars smeared along lines out from the heading, longer
-        // the faster, and the galaxy washed toward violet.
-        let forward = params.forward.xyz;
-        let reach = warp * warp * 0.35;
-        // Six taps of the two nearer layers: the faintest stars would only
-        // add grain to the streaks, at half the cost again.
-        var sum = vec3<f32>(0.0);
-        for (var k = 0; k < 6; k++) {
-            let d = normalize(dir - forward * reach * f32(k) / 6.0);
-            sum += stars(d, 60.0, 0.30, 1.3, 11) + stars(d, 170.0, 0.10, 0.6, 23);
-        }
-        sum *= 8.0 / 6.0;
-        let off_axis = length(cross(dir, forward));
-        colour = sum * (0.35 + 1.2 * warp) / 3.0 * (0.6 + off_axis);
-        colour += sky_at(dir) * (1.0 - warp);
-        // The tunnel: bands of light rushing past, brighter toward the rim.
-        let along = dot(dir, forward);
-        let angle = atan2(dot(dir, params.up.xyz), dot(dir, params.right.xyz));
-        // Around the heading by its cosine and sine, so there is no seam;
-        // along it by depth, rushing past.
-        let around = vec2<f32>(cos(angle), sin(angle)) * 7.0;
-        let depth = 1.0 / max(1.0 - along, 0.02) * 0.5 - params.warp.z * 2.5;
-        let lines = noise(vec3<f32>(around * 3.0, depth * 0.35));
-        let streak = 1.0 - smoothstep01(0.0, 0.18, abs(lines));
-        let tunnel = smoothstep01(0.25, 0.95, off_axis) * streak * (0.6 + 0.4 * noise(vec3<f32>(around, depth)));
-        colour += mix(vec3<f32>(0.30, 0.45, 1.0), vec3<f32>(0.65, 0.45, 1.0), off_axis) * tunnel * warp * warp * 0.3;
-        // The heading glows.
-        colour += vec3<f32>(0.7, 0.8, 1.0) * exp(-off_axis * off_axis * 140.0) * warp * 0.6;
-    }
-    // The star's glare: a halo falling off from its disc, only where it is in
-    // view.
+// The star's glare: a halo falling off from its disc, where it is in view.
+fn glare(dir: vec3<f32>) -> vec3<f32> {
     let s = params.star.xyz;
     let distance = length(s);
     let disc = params.star.w / max(distance, 1e-3);
-    let cos_angle = dot(dir, s / max(distance, 1e-3));
-    let angle = max(acos(clamp(cos_angle, -1.0, 1.0)), disc * 0.5);
-    let glare = disc / angle;
-    colour += params.star_colour.rgb * params.star_colour.w * (glare * glare * 0.06 + glare * 0.012) * (1.0 - warp);
-    colour = mix(colour, vec3<f32>(1.0), params.warp.y);
-    return vec4<f32>(encode(colour), 1.0);
+    let angle = max(acos(clamp(dot(dir, s / max(distance, 1e-3)), -1.0, 1.0)), disc * 0.5);
+    let g = disc / angle;
+    return params.star_colour.rgb * params.star_colour.w * (g * g * 0.06 + g * 0.012);
+}
+
+@fragment
+fn fs_space(in: Full) -> @location(0) vec4<f32> {
+    let dir = ray_at(in.position.xy);
+    var colour = sky_at(dir);
+    colour += stars(dir, 60.0, 0.30, 1.3, 11);
+    colour += stars(dir, 170.0, 0.10, 0.6, 23);
+    colour += stars(dir, 400.0, 0.025, 0.4, 37);
+    colour += glare(dir);
+    return vec4<f32>(mix(colour, vec3<f32>(1.0), params.warp.y), 1.0);
+}
+
+// Streaks flying out from the heading: each lives in a cell of the screen's
+// polar coordinates (angle around the heading, log of the distance from it),
+// which scroll outward with time, so one cell lookup draws a moving streak.
+fn streaks(theta: f32, logr: f32, count: f32, speed: f32, length_: f32, seed: i32) -> f32 {
+    let x = vec2<f32>(theta / TAU * count, logr * 6.0 - params.warp.w * speed);
+    let cell = vec2<i32>(floor(x));
+    let h = hash3(vec3<i32>(cell, seed));
+    if (h > 0.35) {
+        return 0.0;
+    }
+    let f = x - vec2<f32>(cell);
+    let along = hash3(vec3<i32>(cell, seed + 1));
+    let across = abs(f.x - 0.5) * 2.0;
+    let t = (f.y - along * (1.0 - length_)) / length_;
+    let line = (1.0 - smoothstep01(0.0, 0.25, across)) * smoothstep01(0.0, 0.15, t) * (1.0 - smoothstep01(0.6, 1.0, t));
+    return line * (0.4 + h * 1.7);
+}
+
+@fragment
+fn fs_warp(in: Full) -> @location(0) vec4<f32> {
+    let half = params.frame.x;
+    let s = vec2<f32>((in.position.x - half) / half, (half - in.position.y) / half);
+    let r = max(length(s), 1e-4);
+    let theta = atan2(s.y, s.x);
+    // Around the heading by cosine and sine, so noise has no seam where the
+    // angle wraps.
+    let around = vec2<f32>(cos(theta), sin(theta));
+    let logr = log(r);
+    let warp = params.warp.x;
+    let t = params.warp.w;
+    var colour = vec3<f32>(0.0);
+    if (WARP == 1) {
+        // Lumen Drift: blue-white streaks, a bright core, and broad sheets of
+        // light fanning out to the sides.
+        colour += vec3<f32>(0.55, 0.78, 1.0) * streaks(theta, logr, 240.0, 9.0, 0.8, 3) * smoothstep01(0.04, 0.35, r);
+        colour += vec3<f32>(0.75, 0.88, 1.0) * streaks(theta, logr, 110.0, 6.5, 0.9, 7) * 0.7 * smoothstep01(0.1, 0.6, r);
+        let sheet = exp(-abs(s.y) * 4.0 / (0.25 + r)) * (0.55 + 0.45 * noise(vec3<f32>(around * 3.0, logr * 2.0 - t * 1.5)));
+        colour += vec3<f32>(0.34, 0.40, 0.90) * sheet * 0.9;
+        colour += vec3<f32>(0.025, 0.035, 0.12) * (0.6 + 0.4 * noise(vec3<f32>(s * 2.0, t * 0.2)));
+        colour += vec3<f32>(0.9, 0.95, 1.0) * exp(-r * 9.0) * 1.4 + vec3<f32>(0.4, 0.55, 1.0) * exp(-r * 3.0) * 0.4;
+    } else if (WARP == 2) {
+        // Tachyon Tunnel: rings rushing past with a twist, cyan and magenta.
+        // Concentric rings flying outward, the tunnel's wall split into
+        // panels that turn slowly as they pass.
+        let rings = smoothstep01(0.8, 1.0, sin(logr * 16.0 - t * 11.0)) * smoothstep01(0.06, 0.45, r);
+        let panels = 0.55 + 0.45 * smoothstep01(-0.2, 0.6, cos(theta * 8.0 + logr * 1.5 - t * 0.6));
+        let hue = 0.5 + 0.5 * sin(logr * 3.0 - t * 2.0);
+        colour += mix(vec3<f32>(0.1, 0.8, 1.0), vec3<f32>(1.0, 0.25, 0.85), hue) * rings * panels * 0.8;
+        colour += vec3<f32>(0.6, 0.9, 1.0) * streaks(theta, logr, 160.0, 12.0, 0.8, 11) * 0.6;
+        colour += vec3<f32>(0.02, 0.03, 0.08) * (1.0 + r) + vec3<f32>(0.8, 0.95, 1.0) * exp(-r * 12.0);
+    } else if (WARP == 3) {
+        // Fold Drive: space folding into a spiral, the sky bent around it.
+        let twist = theta + logr * 2.5 - t * 0.8;
+        let folds = 0.5 + 0.5 * sin(twist * 6.0);
+        let bent = normalize(params.forward.xyz + (params.right.xyz * cos(twist) + params.up.xyz * sin(twist)) * r * params.frame.y);
+        colour += sky_at(bent) * 6.0;
+        colour += mix(vec3<f32>(0.55, 0.25, 0.9), vec3<f32>(1.0, 0.75, 0.3), folds) * smoothstep01(0.6, 1.0, folds) * smoothstep01(0.05, 0.7, r) * 0.45;
+        colour += vec3<f32>(1.0, 0.9, 0.7) * exp(-r * 7.0);
+    } else if (WARP == 4) {
+        // Ion Slipstream: plasma curtains streaming by, teal and green.
+        // Thin filaments where the noise crosses zero, drawn out along the
+        // direction of flight.
+        let flow = noise(vec3<f32>(around * 7.0, logr * 0.9 - t * 1.4));
+        let filament = (1.0 - smoothstep01(0.0, 0.1, abs(flow))) * smoothstep01(0.1, 0.7, r);
+        let glow = (1.0 - smoothstep01(0.0, 0.45, abs(flow))) * smoothstep01(0.1, 0.9, r) * 0.25;
+        let tint = mix(vec3<f32>(0.05, 0.95, 0.6), vec3<f32>(0.2, 0.55, 1.0), 0.5 + 0.5 * noise(vec3<f32>(around * 2.0, t * 0.3)));
+        colour += tint * (filament + glow) * 0.8;
+        colour += vec3<f32>(0.6, 1.0, 0.9) * streaks(theta, logr, 120.0, 8.0, 0.4, 19) * 0.5;
+        colour += vec3<f32>(0.7, 1.0, 0.95) * exp(-r * 10.0) * 0.8;
+    } else {
+        // Graviton Spiral: spiral arms around a dark core, like a disc of
+        // infalling matter.
+        let arm = sin(theta * 2.0 - logr * 5.0 - t * 3.0);
+        let disc = smoothstep01(0.3, 1.0, arm) * smoothstep01(0.12, 0.25, r) * exp(-r * 1.2);
+        let heat = noise(vec3<f32>(around * 4.0, logr * 4.0 - t * 2.0)) * 0.5 + 0.5;
+        colour += mix(vec3<f32>(1.0, 0.35, 0.08), vec3<f32>(1.0, 0.85, 0.5), heat) * disc * 1.2;
+        colour += vec3<f32>(1.0, 0.8, 0.55) * exp(-pow((r - 0.14) / 0.02, 2.0)) * 1.5;
+        colour *= smoothstep01(0.08, 0.13, r);
+        colour += vec3<f32>(1.0, 0.6, 0.4) * streaks(theta, logr, 80.0, 7.0, 0.5, 23) * 0.4 * smoothstep01(0.2, 0.6, r);
+    }
+    // In and out of the jump, the calm sky fades under the drive's light.
+    let dir = ray_at(in.position.xy);
+    let calm = (sky_at(dir) + stars(dir, 60.0, 0.30, 1.3, 11)) * (1.0 - warp);
+    return vec4<f32>(mix(calm + colour * warp, vec3<f32>(1.0), params.warp.y), 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -207,9 +269,8 @@ fn vs_body(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
         vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
         vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
     );
-    let c = corners[vertex];
     var out: Quad;
-    out.position = vec4<f32>(mix(rect.xy, rect.zw, c), 0.0, 1.0);
+    out.position = vec4<f32>(mix(rect.xy, rect.zw, corners[vertex]), 0.0, 1.0);
     out.body = instance;
     return out;
 }
@@ -222,64 +283,56 @@ fn unwrap(g: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(g.x - round(g.x), g.y);
 }
 
-fn to_body(b: Body, v: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(dot(b.rot[0].xyz, v), dot(b.rot[1].xyz, v), dot(b.rot[2].xyz, v));
+// The mip level a map of `size` texels needs at `uv`.
+fn level(uv: vec2<f32>, size: vec2<f32>) -> f32 {
+    let gx = unwrap(dpdx(uv)) * size;
+    let gy = unwrap(dpdy(uv)) * size;
+    return 0.5 * log2(max(max(dot(gx, gx), dot(gy, gy)), 1e-8)) + BIAS;
 }
 
-fn from_body(b: Body, v: vec3<f32>) -> vec3<f32> {
-    return b.rot[0].xyz * v.x + b.rot[1].xyz * v.y + b.rot[2].xyz * v.z;
+fn to_body(i: u32, v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(params.bodies[i].rot[0].xyz, v), dot(params.bodies[i].rot[1].xyz, v), dot(params.bodies[i].rot[2].xyz, v));
 }
 
-struct Texels {
-    day: vec3<f32>,
-    relief: vec4<f32>,
-    // Night glow, cloud.
-    extra: vec2<f32>,
-    cloud_shadow: f32,
-    cloud_side: f32,
+fn from_body(i: u32, v: vec3<f32>) -> vec3<f32> {
+    return params.bodies[i].rot[0].xyz * v.x + params.bodies[i].rot[1].xyz * v.y + params.bodies[i].rot[2].xyz * v.z;
+}
+
+// Bodies are read field by field from the uniform buffer, by index, never
+// copied whole: a copy of a body's forty floats held registers enough to
+// cost every body pipeline two threads.
+
+// Where a pixel's ray meets a body, or comes closest to it.
+struct Hit {
+    dir: vec3<f32>,
+    point: vec3<f32>,
+    // Unit normal at the hit, or toward the closest approach.
+    n: vec3<f32>,
+    // Closest approach to the centre, in radii; whether it hit.
+    closest: f32,
+    hit: bool,
+    distance: f32,
+    // How much of the pixel the body covers.
+    cover: f32,
 };
 
-fn sample_planet(slot: i32, uv: vec2<f32>, cuv: vec2<f32>, shift: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> Texels {
-    var t: Texels;
-    let g = BIAS;
-    if (slot == 0) {
-        t.day = textureSampleGrad(a_day, map_sampler, uv, gx * g, gy * g).rgb;
-        t.relief = textureSampleGrad(a_relief, map_sampler, uv, gx * g * 1.3, gy * g * 1.3);
-        t.extra = vec2<f32>(
-            textureSampleGrad(a_extra, map_sampler, uv, gx * g * 1.5, gy * g * 1.5).r,
-            textureSampleGrad(a_extra, map_sampler, cuv, gx * g, gy * g).g,
-        );
-        t.cloud_shadow = textureSampleGrad(a_extra, map_sampler, uv + shift, gx * g * 2.0, gy * g * 2.0).g;
-        t.cloud_side = textureSampleGrad(a_extra, map_sampler, cuv + shift * 0.35, gx * g, gy * g).g;
-    } else {
-        t.day = textureSampleGrad(b_day, map_sampler, uv, gx * g, gy * g).rgb;
-        t.relief = textureSampleGrad(b_relief, map_sampler, uv, gx * g * 1.3, gy * g * 1.3);
-        t.extra = vec2<f32>(
-            textureSampleGrad(b_extra, map_sampler, uv, gx * g * 1.5, gy * g * 1.5).r,
-            textureSampleGrad(b_extra, map_sampler, cuv, gx * g, gy * g).g,
-        );
-        t.cloud_shadow = textureSampleGrad(b_extra, map_sampler, uv + shift, gx * g * 2.0, gy * g * 2.0).g;
-        t.cloud_side = textureSampleGrad(b_extra, map_sampler, cuv + shift * 0.35, gx * g, gy * g).g;
-    }
-    return t;
-}
-
-fn sample_moon(slot: i32, layer: i32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> Texels {
-    var t: Texels;
-    let g = BIAS;
-    if (slot == 0) {
-        t.day = textureSampleGrad(a_moon_day, map_sampler, uv, layer, gx * g, gy * g).rgb;
-        t.relief = textureSampleGrad(a_moon_relief, map_sampler, uv, layer, gx * g, gy * g);
-    } else {
-        t.day = textureSampleGrad(b_moon_day, map_sampler, uv, layer, gx * g, gy * g).rgb;
-        t.relief = textureSampleGrad(b_moon_relief, map_sampler, uv, layer, gx * g, gy * g);
-    }
-    // A moon's third relief channel is molten glow, not water.
-    t.extra = vec2<f32>(t.relief.b, 0.0);
-    t.relief.b = 0.0;
-    t.cloud_shadow = 0.0;
-    t.cloud_side = 0.0;
-    return t;
+fn trace(i: u32, position: vec2<f32>) -> Hit {
+    var h: Hit;
+    h.dir = ray_at(position);
+    let c = params.bodies[i].place.xyz;
+    let radius = params.bodies[i].place.w;
+    let along = max(dot(c, h.dir), 0.0);
+    let nearest = h.dir * along;
+    h.closest = length(nearest - c) / radius;
+    let inside = 1.0 - h.closest * h.closest;
+    h.hit = inside > 0.0;
+    let t = along - sqrt(max(inside, 0.0)) * radius;
+    h.point = select(nearest, h.dir * t, h.hit);
+    h.n = normalize(h.point - c);
+    h.distance = max(select(along, t, h.hit), 1e-4);
+    let edge = (h.closest - 1.0) * radius / (h.distance * params.frame.z);
+    h.cover = smoothstep01(-0.75, 0.75, -edge);
+    return h;
 }
 
 // How much of the star other bodies hide from a point: eclipses, with a soft
@@ -287,252 +340,401 @@ fn sample_moon(slot: i32, layer: i32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32
 fn eclipse(self_index: u32, point: vec3<f32>, to_star: vec3<f32>) -> f32 {
     var lit = 1.0;
     let count = u32(params.frame.w);
-    for (var i = 0u; i < count; i++) {
-        if (i == self_index) {
+    for (var j = 0u; j < count; j++) {
+        if (j == self_index || params.bodies[j].look.x < 0.0) {
             continue;
         }
-        let other = params.bodies[i];
-        if (other.look.x < 0.0) {
-            continue;
-        }
-        let rel = other.place.xyz - point;
+        let other = params.bodies[j].place;
+        let rel = other.xyz - point;
         let along = dot(rel, to_star);
         if (along <= 0.0) {
             continue;
         }
         let miss = length(rel - to_star * along);
-        let r = other.place.w;
-        // The penumbra widens with distance, as the star's disc allows.
         let spread = along * params.star.w / max(length(params.star.xyz - point), 1.0);
-        lit *= smoothstep01(r - spread, r + spread, miss);
+        lit *= smoothstep01(other.w - spread, other.w + spread, miss);
     }
     return lit;
 }
 
 // Ring density at radius `r` (in planet radii): ringlets, gaps and a main
-// division, from 1D value noise.
-fn ring_density(r: f32, b: Body) -> f32 {
-    let inner = b.ring.x;
-    let outer = b.ring.y;
-    let x = (r - inner) / (outer - inner);
+// division, from the profile row the planet's rings were painted into.
+fn ring_density(r: f32, i: u32) -> f32 {
+    let x = (r - params.bodies[i].ring.x) / (params.bodies[i].ring.y - params.bodies[i].ring.x);
     if (x < 0.0 || x > 1.0) {
         return 0.0;
     }
-    let seed = b.ring.w;
-    let n1 = noise(vec3<f32>(x * 40.0 + seed, 0.5, 0.5)) * 0.5 + 0.5;
-    let n2 = noise(vec3<f32>(x * 160.0 + seed, 1.5, 0.5)) * 0.5 + 0.5;
-    let n3 = noise(vec3<f32>(x * 9.0 + seed, 2.5, 0.5)) * 0.5 + 0.5;
-    let division = 1.0 - exp(-pow((x - 0.62) / 0.025, 2.0)) * 0.9;
-    let edges = smoothstep01(0.0, 0.04, x) * smoothstep01(1.0, 0.9, x);
-    return clamp((0.25 + 0.75 * n3) * (0.45 + 0.55 * n1) * (0.6 + 0.4 * n2) * division * edges * 1.4, 0.0, 1.0);
+    let row = (params.bodies[i].ring.w + 0.5) / f32(textureDimensions(ring_profile, 0).y);
+    return textureSampleLevel(ring_profile, map_sampler, vec2<f32>(x, row), 0.0).r;
 }
 
-struct Hit {
-    colour: vec3<f32>,
-    alpha: f32,
-};
+// The ring's shadow on a planet's point.
+fn ring_shadow(i: u32, point: vec3<f32>, sun: vec3<f32>) -> f32 {
+    if (params.bodies[i].ring.z <= 0.0) {
+        return 1.0;
+    }
+    let axis = params.bodies[i].rot[1].xyz;
+    let denom = dot(sun, axis);
+    if (abs(denom) < 1e-4) {
+        return 1.0;
+    }
+    let s = dot(params.bodies[i].place.xyz - point, axis) / denom;
+    if (s <= 0.0) {
+        return 1.0;
+    }
+    return 1.0 - ring_density(length(point + sun * s - params.bodies[i].place.xyz) / params.bodies[i].place.w, i) * params.bodies[i].ring.z * 0.85;
+}
+
+fn star_light() -> vec3<f32> {
+    return params.star_colour.rgb * 1.25;
+}
+
+fn has_air(i: u32) -> bool {
+    return max(max(params.bodies[i].air.r, params.bodies[i].air.g), params.bodies[i].air.b) > 0.0;
+}
+
+// Sunlight reaching the ground where the star stands at `mu`, through the air.
+fn ground_light(i: u32, mu: f32) -> vec3<f32> {
+    if (has_air(i)) {
+        return star_light() * exp(-params.bodies[i].air.rgb * airmass(mu)) * smoothstep01(-0.035, 0.02, mu);
+    }
+    return star_light() * smoothstep01(-0.03, 0.03, mu);
+}
+
+// The air's transmittance toward the viewer.
+fn through(i: u32, h: Hit) -> vec3<f32> {
+    if (has_air(i)) {
+        return exp(-params.bodies[i].air.rgb * airmass(clamp(dot(h.n, -h.dir), 0.0, 1.0)));
+    }
+    return vec3<f32>(1.0);
+}
+
+fn day_texel(uv: vec2<f32>, lod: f32) -> vec3<f32> {
+    if (SLOT == 0) {
+        return textureSampleLevel(a_day, map_sampler, uv, lod).rgb;
+    }
+    return textureSampleLevel(b_day, map_sampler, uv, lod).rgb;
+}
+
+fn relief_texel(uv: vec2<f32>, lod: f32) -> vec4<f32> {
+    if (SLOT == 0) {
+        return textureSampleLevel(a_relief, map_sampler, uv, lod);
+    }
+    return textureSampleLevel(b_relief, map_sampler, uv, lod);
+}
+
+fn extra_texel(uv: vec2<f32>, lod: f32) -> vec2<f32> {
+    if (SLOT == 0) {
+        return textureSampleLevel(a_extra, map_sampler, uv, lod).rg;
+    }
+    return textureSampleLevel(b_extra, map_sampler, uv, lod).rg;
+}
+
+fn map_size() -> vec2<f32> {
+    if (SLOT == 0) {
+        return vec2<f32>(textureDimensions(a_day, 0));
+    }
+    return vec2<f32>(textureDimensions(b_day, 0));
+}
+
+// The ground's tangent frame in the world, from the body-frame normal.
+fn east_of(i: u32, nb: vec3<f32>) -> vec3<f32> {
+    let cos_lat = sqrt(max(nb.x * nb.x + nb.z * nb.z, 1e-8));
+    return from_body(i, vec3<f32>(nb.z, 0.0, -nb.x) / cos_lat);
+}
+
+// How far the clouds' shadows fall, in map coordinates.
+fn shadow_shift(i: u32, nb: vec3<f32>, n: vec3<f32>, sun: vec3<f32>, mu_sun: f32) -> vec2<f32> {
+    let east = east_of(i, nb);
+    let cos_lat = sqrt(max(nb.x * nb.x + nb.z * nb.z, 1e-8));
+    let reach = 0.006 / max(mu_sun, 0.12);
+    return vec2<f32>(dot(sun, east) * reach / (TAU * max(cos_lat, 0.05)), -dot(sun, cross(n, east)) * reach / PI);
+}
 
 @fragment
-fn fs_body(in: Quad) -> @location(0) vec4<f32> {
-    let index = in.body;
-    let b = params.bodies[index];
-    let dir = ray_at(in.position.xy);
-    let c = b.place.xyz;
-    let radius = b.place.w;
-    let along = max(dot(c, dir), 0.0);
-    let nearest = dir * along;
-    let closest = length(nearest - c) / radius;
-    let hit = 1.0 - closest * closest;
-    let t_ground = (along - sqrt(max(hit, 0.0)) * radius);
-    let point = select(nearest, dir * t_ground, hit > 0.0);
-    let n = normalize(point - c);
-    // Body-frame coordinates and their screen derivatives, before branching.
-    let nb = to_body(b, n);
-    let uv = map_uv(nb);
-    let cuv = vec2<f32>(uv.x + b.rot[0].w, uv.y);
-    let gx = unwrap(dpdx(uv));
-    let gy = unwrap(dpdy(uv));
-
-    let pixel = params.frame.z;
-    let distance = max(select(along, t_ground, hit > 0.0), 1e-4);
-    let edge = (closest - 1.0) * radius / (distance * pixel);
-    let coverage = smoothstep01(-0.75, 0.75, -edge);
-
-    // The star: a bright disc, darker toward its limb, faintly mottled.
-    if (b.look.x < 0.0) {
-        if (coverage <= 0.0) {
-            discard;
-        }
-        let mu = sqrt(max(hit, 0.0));
-        let granules = 0.92 + 0.08 * noise(nb * 60.0 + vec3<f32>(params.warp.z * 0.05));
-        let light = params.star_colour.rgb * 5.0 * (0.4 + 0.6 * mu) * granules;
-        return vec4<f32>(encode(light) * coverage, coverage);
-    }
-
-    let to_star_point = params.star.xyz - point;
-    let sun = normalize(to_star_point);
-    let air = b.air.rgb;
-    let has_air = max(max(air.r, air.g), air.b) > 0.0;
-    let star_light = params.star_colour.rgb * 1.25;
-
-    // Rings: where the ray crosses the equatorial plane.
-    var ring_alpha = 0.0;
-    var ring_colour = vec3<f32>(0.0);
-    var t_ring = 1e30;
-    if (b.ring.z > 0.0) {
-        let axis = b.rot[1].xyz;
-        let denom = dot(dir, axis);
-        if (abs(denom) > 1e-5) {
-            let t = dot(c, axis) / denom;
-            if (t > 0.0) {
-                let p = dir * t - c;
-                let r = length(p) / radius;
-                let density = ring_density(r, b) * b.ring.z;
-                if (density > 0.001) {
-                    t_ring = t;
-                    // The planet's shadow across the rings.
-                    let rel = -p;
-                    let a2 = dot(rel, sun);
-                    let miss = length(rel - sun * a2);
-                    let shadowed = select(1.0, smoothstep01(radius * 0.97, radius * 1.03, miss), a2 > 0.0);
-                    // Lit from either face, a little more when back-lit.
-                    let facing = abs(dot(sun, axis));
-                    let light = star_light * (0.25 + 0.75 * sqrt(facing)) * shadowed;
-                    ring_colour = b.ring_colour.rgb * (light + SKYLIGHT * 0.3);
-                    ring_alpha = density;
-                }
-            }
-        }
-    }
-
-    var result = vec4<f32>(0.0);
-    if (coverage > 0.0) {
-        let mu_sun = dot(n, sun);
-        let mu_view = clamp(dot(n, -dir), 0.0, 1.0);
-        let slot = i32(b.look.y);
-        let layer = i32(b.look.z);
-        let kind = i32(b.look.x);
-
-        // Tangent frame in the body, carried back to the world.
-        let cos_lat = sqrt(max(nb.x * nb.x + nb.z * nb.z, 1e-8));
-        let sin_lon = nb.x / cos_lat;
-        let cos_lon = nb.z / cos_lat;
-        let east = from_body(b, vec3<f32>(cos_lon, 0.0, -sin_lon));
-        let north = from_body(b, vec3<f32>(-nb.y * sin_lon, cos_lat, -nb.y * cos_lon));
-        let reach = 0.006 / max(mu_sun, 0.12);
-        let shift = vec2<f32>(
-            dot(sun, east) * reach / (TAU * max(cos_lat, 0.05)),
-            -dot(sun, north) * reach / PI,
-        );
-
-        var t: Texels;
-        if (slot >= 0 && layer < 0) {
-            t = sample_planet(slot, uv, cuv, shift, gx, gy);
-        } else if (slot >= 0) {
-            t = sample_moon(slot, layer, uv, gx, gy);
-        } else {
-            // No maps: a flat colour, banded on giants.
-            t.day = b.colour.rgb * (1.0 + b.colour.w * sin(nb.y * 23.0 + sin(nb.y * 7.0) * 2.0) * 0.5);
-            t.relief = vec4<f32>(0.5, 0.5, 0.0, 1.0);
-            t.extra = vec2<f32>(0.0);
-            t.cloud_shadow = 0.0;
-            t.cloud_side = 0.0;
-        }
-        let bump = t.relief.rg - vec2<f32>(0.5);
-        let water = t.relief.b;
-        let tilted = normalize(n + (east * bump.x + north * bump.y) * 0.55);
-        let cloud = t.extra.y;
-
-        var shade = eclipse(index, point, sun);
-        // The rings' shadow on the planet.
-        if (b.ring.z > 0.0) {
-            let axis = b.rot[1].xyz;
-            let denom = dot(sun, axis);
-            if (abs(denom) > 1e-4) {
-                let s = dot(c - point, axis) / denom;
-                if (s > 0.0) {
-                    let r = length(point + sun * s - c) / radius;
-                    shade *= 1.0 - ring_density(r, b) * b.ring.z * 0.85;
-                }
-            }
-        }
-
-        var sun_ground = star_light * smoothstep01(-0.03, 0.03, mu_sun);
-        if (has_air) {
-            sun_ground = star_light * exp(-air * airmass(mu_sun)) * smoothstep01(-0.035, 0.02, mu_sun);
-        }
-        sun_ground *= shade;
-        let sky = select(vec3<f32>(0.0), SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun), has_air);
-        var albedo = t.day * mix(1.0, 0.8, water);
-        if (kind == 6 || kind == 7 || kind == 14) {
-            // Giants darken toward the limb.
-            albedo *= 0.55 + 0.45 * sqrt(mu_view);
-        }
-        let direct = sun_ground * max(dot(tilted, sun) + 0.03, 0.0) * (1.0 - 0.6 * t.cloud_shadow);
-        var colour = albedo * (direct + sky);
-
-        let fresnel = 0.02 + 0.98 * pow(1.0 - mu_view, 5.0);
-        let open_sea = water * (1.0 - cloud);
-        if (open_sea > 0.0) {
-            let gloss = normalize(sun - dir);
-            let log_nh = log2(max(dot(n, gloss), 0.0));
-            let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
-            colour += sun_ground * glint * (0.25 + fresnel) * open_sea;
-            colour += SKYLIGHT * 2.0 * fresnel * water * smoothstep01(-0.1, 0.3, mu_sun);
-        }
-
-        var sun_high = star_light * shade;
-        if (has_air) {
-            sun_high = star_light * exp(-air * airmass(mu_sun + 0.04) * 0.55) * shade;
-        }
-        if (cloud > 0.0) {
-            let sun_cloud = sun_high * smoothstep01(-0.08, 0.04, mu_sun);
-            let side = clamp(1.0 - 1.4 * (t.cloud_side - cloud), 0.55, 1.15);
-            let cloud_lit = 0.85 * (sun_cloud * (0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + sky * 1.5);
-            colour = mix(colour, cloud_lit, cloud);
-        }
-
-        let night = t.extra.x;
-        let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
-        if (b.look.w > 0.5 && b.look.w < 1.5 && darkness > 0.002) {
-            let glow = night * night * 2.2;
-            let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
-            colour += tint * glow * darkness * (1.0 - cloud * 0.85);
-        } else if (b.look.w > 1.5) {
-            // Molten rock glows on both sides, more visibly in the dark.
-            let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), night * night);
-            colour += heat * night * (0.15 + 0.55 * darkness);
-        }
-
-        if (has_air) {
-            let through = exp(-air * airmass(mu_view));
-            let sun_air = sun_high * smoothstep01(-0.10, 0.08, mu_sun);
-            colour = colour * through + sun_air * (vec3<f32>(1.0) - through) * 0.45;
-        }
-        result = vec4<f32>(encode(colour) * coverage, coverage);
-    }
-
-    // The air seen edge-on, past the limb.
-    if (has_air && coverage < 1.0 && closest < ATMOSPHERE) {
-        let r = closest;
-        let h = max(r - 1.0, 0.0);
-        let depth = air * sqrt(TAU * r / SCALE_HEIGHT) * exp(-h / SCALE_HEIGHT);
-        let tangent = n;
-        let mu = dot(tangent, sun);
-        let lit = star_light * exp(-air * airmass(mu + 0.08) * 0.6) * smoothstep01(-0.30, 0.05, mu) * eclipse(index, point, sun);
-        let glow = encode(lit * (vec3<f32>(1.0) - exp(-depth)) * 0.9);
-        let a = min(max(max(glow.r, glow.g), glow.b), 1.0) * (1.0 - coverage);
-        result = vec4<f32>(result.rgb + glow * (1.0 - coverage), result.a + a);
-    }
-
-    // Rings in front of the planet, or seen past it.
-    if (ring_alpha > 0.0 && (t_ring < t_ground || hit <= 0.0 || coverage < 1.0)) {
-        let in_front = t_ring < t_ground || hit <= 0.0;
-        let a = ring_alpha * select(1.0 - coverage, 1.0, in_front);
-        result = vec4<f32>(encode(ring_colour) * a + result.rgb * (1.0 - a), a + result.a * (1.0 - a));
-    }
-    if (result.a <= 0.0) {
+fn fs_star(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    if (h.cover <= 0.0) {
         discard;
     }
-    return result;
+    let mu = sqrt(max(1.0 - h.closest * h.closest, 0.0));
+    let granules = 0.92 + 0.08 * noise(to_body(i, h.n) * 60.0 + vec3<f32>(params.warp.z * 0.05));
+    let light = params.star_colour.rgb * 5.0 * (0.4 + 0.6 * mu) * granules;
+    return vec4<f32>(light * h.cover, h.cover);
+}
+
+// A planet whose maps are not in yet: its colour, banded on giants, lit.
+@fragment
+fn fs_flat(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    if (h.cover <= 0.0) {
+        discard;
+    }
+    let nb = to_body(i, h.n);
+    let sun = normalize(params.star.xyz - h.point);
+    let mu = dot(h.n, sun);
+    let albedo = params.bodies[i].colour.rgb * (1.0 + params.bodies[i].colour.w * sin(nb.y * 23.0 + sin(nb.y * 7.0) * 2.0) * 0.5);
+    let light = ground_light(i, mu) * max(mu + 0.03, 0.0);
+    return vec4<f32>(albedo * light * through(i, h) * h.cover, h.cover);
+}
+
+// A mapped planet's ground: its colour, relief and the clouds' shadows, lit
+// through its air, in eclipses and the rings' shadow.
+@fragment
+fn fs_ground(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let nb = to_body(i, h.n);
+    let uv = map_uv(nb);
+    let lod = level(uv, map_size());
+    if (h.cover <= 0.0) {
+        discard;
+    }
+    let n = h.n;
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(n, sun);
+    let east = east_of(i, nb);
+    let relief = relief_texel(uv, lod + 0.4);
+    let tilted = normalize(n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * 0.55);
+    let sky = select(vec3<f32>(0.0), SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
+    var albedo = day_texel(uv, lod) * mix(1.0, 0.8, relief.b);
+    let kind = i32(params.bodies[i].look.x);
+    if (kind == 6 || kind == 7 || kind == 14) {
+        // Giants darken toward the limb.
+        albedo *= 0.55 + 0.45 * sqrt(clamp(dot(n, -h.dir), 0.0, 1.0));
+    }
+    let colour = albedo * (ground_light(i, mu_sun) * max(dot(tilted, sun) + 0.03, 0.0) + sky);
+    return vec4<f32>(colour * through(i, h) * h.cover, h.cover);
+}
+
+// The sea, added: the sun's glint and the sky's reflection.
+@fragment
+fn fs_sea(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let nb = to_body(i, h.n);
+    let uv = map_uv(nb);
+    let lod = level(uv, map_size());
+    let water = relief_texel(uv, lod + 0.4).b * h.cover;
+    if (water <= 0.0) {
+        discard;
+    }
+    let n = h.n;
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(n, sun);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, -h.dir), 0.0, 1.0), 5.0);
+    let cloud = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y), lod).g;
+    let log_nh = log2(max(dot(n, normalize(sun - h.dir)), 0.0));
+    let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
+    let colour = ground_light(i, mu_sun) * glint * (0.25 + fresnel) * (1.0 - cloud)
+        + SKYLIGHT * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun);
+    return vec4<f32>(colour * water * through(i, h), 0.0);
+}
+
+// The cloud deck over a mapped planet.
+@fragment
+fn fs_clouds(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let nb = to_body(i, h.n);
+    let uv = map_uv(nb);
+    let cuv = vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y);
+    let lod = level(cuv, map_size());
+    let cloud = extra_texel(cuv, lod).g;
+    let alpha = cloud * h.cover;
+    if (alpha <= 0.002) {
+        discard;
+    }
+    let n = h.n;
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(n, sun);
+    var side = 1.0;
+    if (mu_sun > -0.05) {
+        let toward = extra_texel(cuv + shadow_shift(i, nb, n, sun, mu_sun) * 0.35, lod).g;
+        side = clamp(1.0 - 1.4 * (toward - cloud), 0.55, 1.15);
+    }
+    var sun_high = star_light();
+    if (has_air(i)) {
+        sun_high = star_light() * exp(-params.bodies[i].air.rgb * airmass(mu_sun + 0.04) * 0.55);
+    }
+    let sky = select(vec3<f32>(0.0), SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
+    let lit = 0.85 * (sun_high * smoothstep01(-0.08, 0.04, mu_sun) * (0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + sky * 1.5);
+    return vec4<f32>(lit * through(i, h) * alpha, alpha);
+}
+
+// Added over a mapped planet: city lights or molten glow, and the blue the
+// air in front of it scatters toward the viewer.
+@fragment
+fn fs_glow(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let nb = to_body(i, h.n);
+    let uv = map_uv(nb);
+    let lod = level(uv, map_size());
+    if (h.cover <= 0.0) {
+        discard;
+    }
+    let n = h.n;
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(n, sun);
+    let air = through(i, h);
+    var colour = vec3<f32>(0.0);
+    let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
+    let night = extra_texel(uv, lod + 0.6).r;
+    if (params.bodies[i].look.w > 0.5 && params.bodies[i].look.w < 1.5 && darkness > 0.002) {
+        let cloud = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y), lod).g;
+        let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
+        colour += tint * night * night * 2.2 * darkness * (1.0 - cloud * 0.85);
+    } else if (params.bodies[i].look.w > 1.5) {
+        // Molten rock glows on both sides, more visibly in the dark.
+        let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), night * night);
+        colour += heat * night * (0.15 + 0.55 * darkness);
+    }
+    colour *= air;
+    if (has_air(i)) {
+        let sun_high = star_light() * exp(-params.bodies[i].air.rgb * airmass(mu_sun + 0.04) * 0.55);
+        colour += sun_high * smoothstep01(-0.10, 0.08, mu_sun) * (vec3<f32>(1.0) - air) * 0.45;
+    }
+    return vec4<f32>(colour * h.cover, 0.0);
+}
+
+// A moon, from its layer of the slot's moon maps: colour, relief, molten glow.
+@fragment
+fn fs_moon(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let nb = to_body(i, h.n);
+    let uv = map_uv(nb);
+    let lod = level(uv, vec2<f32>(512.0, 256.0));
+    if (h.cover <= 0.0) {
+        discard;
+    }
+    let layer = i32(params.bodies[i].look.z);
+    var day: vec3<f32>;
+    var relief: vec4<f32>;
+    if (SLOT == 0) {
+        day = textureSampleLevel(a_moon_day, map_sampler, uv, layer, lod).rgb;
+        relief = textureSampleLevel(a_moon_relief, map_sampler, uv, layer, lod);
+    } else {
+        day = textureSampleLevel(b_moon_day, map_sampler, uv, layer, lod).rgb;
+        relief = textureSampleLevel(b_moon_relief, map_sampler, uv, layer, lod);
+    }
+    let n = h.n;
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(n, sun);
+    let east = east_of(i, nb);
+    let tilted = normalize(n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * 0.55);
+    var colour = day * ground_light(i, mu_sun) * max(dot(tilted, sun) + 0.03, 0.0);
+    // A moon's third relief channel is molten glow.
+    let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
+    colour += mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), relief.b) * relief.b * (0.15 + 0.55 * darkness);
+    return vec4<f32>(colour * through(i, h) * h.cover, h.cover);
+}
+
+// The air seen edge-on past a body's limb, added.
+@fragment
+fn fs_limb(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let r = h.closest;
+    if (r >= ATMOSPHERE || h.cover >= 1.0) {
+        discard;
+    }
+    let air = params.bodies[i].air.rgb;
+    let height = max(r - 1.0, 0.0);
+    let depth = air * sqrt(TAU * r / SCALE_HEIGHT) * exp(-height / SCALE_HEIGHT);
+    let sun = normalize(params.star.xyz - h.point);
+    let mu = dot(h.n, sun);
+    let lit = star_light() * exp(-air * airmass(mu + 0.08) * 0.6) * smoothstep01(-0.30, 0.05, mu) * eclipse(in.body, h.point, sun);
+    let glow = lit * (vec3<f32>(1.0) - exp(-depth)) * 0.9;
+    return vec4<f32>(glow * (1.0 - h.cover), 0.0);
+}
+
+// Rings, over their planet: where the ray crosses the equatorial plane in
+// front of the planet or past it, lit from either face, in the planet's shadow.
+@fragment
+fn fs_ring(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let c = params.bodies[i].place.xyz;
+    let axis = params.bodies[i].rot[1].xyz;
+    let denom = dot(h.dir, axis);
+    if (abs(denom) < 1e-5) {
+        discard;
+    }
+    let t = dot(c, axis) / denom;
+    // Behind the planet's disc, the planet hides it.
+    if (t <= 0.0 || (h.hit && t > h.distance)) {
+        discard;
+    }
+    let p = h.dir * t - c;
+    let density = ring_density(length(p) / params.bodies[i].place.w, i) * params.bodies[i].ring.z;
+    if (density <= 0.001) {
+        discard;
+    }
+    let sun = normalize(params.star.xyz - (c + p));
+    let along = dot(-p, sun);
+    let miss = length(-p - sun * along);
+    let shadowed = select(1.0, smoothstep01(params.bodies[i].place.w * 0.97, params.bodies[i].place.w * 1.03, miss), along > 0.0);
+    let light = star_light() * (0.25 + 0.75 * sqrt(abs(dot(sun, axis)))) * shadowed;
+    let colour = params.bodies[i].ring_colour.rgb * (light + SKYLIGHT * 0.3);
+    return vec4<f32>(colour * density, density);
+}
+
+// How much of a pixel's light comes straight from the star rather than the
+// sky or the body's own glow: where shadows darken it.
+fn sunlit(mu: f32) -> f32 {
+    return smoothstep01(-0.05, 0.12, mu);
+}
+
+// Multiplied into the ground before the clouds are drawn: the clouds'
+// shadows, cast away from the star.
+@fragment
+fn fs_cloud_shadow(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let nb = to_body(i, h.n);
+    let uv = map_uv(nb);
+    let lod = level(uv, map_size());
+    if (h.cover <= 0.0) {
+        discard;
+    }
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(h.n, sun);
+    if (mu_sun <= -0.05) {
+        discard;
+    }
+    let cuv = vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y) + shadow_shift(i, nb, h.n, sun, mu_sun);
+    let shadow = extra_texel(cuv, lod + 1.0).g;
+    let factor = mix(1.0, 1.0 - 0.6 * shadow * sunlit(mu_sun), h.cover);
+    return vec4<f32>(vec3<f32>(factor), 1.0);
+}
+
+// Multiplied into a body: other bodies passing in front of the star.
+@fragment
+fn fs_eclipse(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    if (h.cover <= 0.0) {
+        discard;
+    }
+    let sun = normalize(params.star.xyz - h.point);
+    let lit = eclipse(i, h.point, sun);
+    let factor = mix(1.0, mix(1.0, lit, sunlit(dot(h.n, sun))), h.cover);
+    return vec4<f32>(vec3<f32>(factor), 1.0);
+}
+
+// Multiplied into a ringed planet: its rings' shadow.
+@fragment
+fn fs_ring_shadow(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    if (h.cover <= 0.0) {
+        discard;
+    }
+    let sun = normalize(params.star.xyz - h.point);
+    let factor = mix(1.0, mix(1.0, ring_shadow(i, h.point, sun), sunlit(dot(h.n, sun))), h.cover);
+    return vec4<f32>(vec3<f32>(factor), 1.0);
 }

@@ -20,6 +20,14 @@ export struct QueueItem {
 }
 
 // One Spotify Connect device playback can be moved to.
+// One of a scene's scanner readings: its name, how far along it is, and its
+// result (or what it is doing while it runs).
+export struct ScanRow {
+    name: string,
+    progress: float,
+    value: string,
+}
+
 export struct DeviceItem {
     name: string,
     // Icon kind: "speaker", "computer", "phone", "tv" or "car".
@@ -109,6 +117,7 @@ export global Idle {
     in-out property <string> hud-title: "";
     in-out property <string> hud-labels: "";
     in-out property <string> hud-values: "";
+    in-out property <[ScanRow]> hud-scans: [];
 
     // A tap anywhere on the visuals returns to the player.
     callback dismiss();
