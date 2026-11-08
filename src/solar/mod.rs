@@ -1224,7 +1224,7 @@ pub(crate) mod tests {
                     ));
                     match tour.flyby_at(to) {
                         Some(closest) => {
-                            out.push((format!("transfer-{from}-to-{to}-flyby-near"), closest - 6.0));
+                            out.push((format!("transfer-{from}-to-{to}-flyby-near"), closest - 3.0));
                             out.push((format!("transfer-{from}-to-{to}-flyby"), closest));
                         }
                         None => out.push((format!("transfer-{from}-to-{to}-cruise"), at(0.5))),

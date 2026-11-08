@@ -472,7 +472,7 @@ fn fs_star(in: Quad) -> @location(0) vec4<f32> {
     let granules = 1.0 + style.y * noise(to_body(i, h.n) * style.x + vec3<f32>(params.warp.z * 0.05));
     // Exposed so the disc keeps its colour: a red giant's face is orange and
     // mottled, a white dwarf's searing white.
-    let light = vec3<f32>(1.0) - exp(-params.star_colour.rgb * 2.6 * (1.0 - style.z + style.z * mu) * granules);
+    let light = vec3<f32>(1.0) - exp(-params.star_colour.rgb * 2.2 * (1.0 - style.z + style.z * mu) * granules);
     return vec4<f32>(light * h.cover, h.cover);
 }
 

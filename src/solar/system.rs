@@ -765,7 +765,8 @@ impl System {
             temperature,
             radius: radius * 109.0 * STAR_SCALE,
             mass,
-            colour: tint.map(|c| (0.45 + 0.55 * c) * glare),
+            // Its disc shows its colour: orange for a red dwarf or giant.
+            colour: tint.map(|c| (0.2 + 0.8 * c) * glare),
             // Eyes adapt to their star: its light is tinted, not saturated,
             // but enough that a red dwarf's worlds look lit by one.
             light: tint.map(|c| (0.3 + 0.7 * c) * brightness),

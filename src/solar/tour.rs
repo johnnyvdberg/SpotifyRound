@@ -831,9 +831,9 @@ impl Tour {
                 let mut aim = toward;
                 if let Some((centre, _, _)) = self.flyby_body(k, t) {
                     let near = (u - self.paths[k].closest) / 0.17;
-                    let w = 0.8 * (-near * near).exp();
+                    let w = 0.92 * (-near * near).exp();
                     let at = normalize(sub(centre, position));
-                    let mixed = add(add(scale(toward, 1.0 - w), scale(at, w)), scale(ahead, 0.4 * w));
+                    let mixed = add(add(scale(toward, 1.0 - w), scale(at, w)), scale(ahead, 0.25 * w));
                     aim = if length(mixed) > 0.2 { normalize(mixed) } else { ahead };
                 }
                 let mut forward = normalize(mix(f0, aim, smoothstep(0.0, 0.18, u)));
