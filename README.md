@@ -50,9 +50,15 @@ Spotify **Premium** account.
   ice, lava, barren, gas and ice giants, some ringed) and moons of the kinds ours has (cratered,
   icy, volcanic, hazy, captured rock). It drops out of a hyperjump, orbits three planets high and
   low, and jumps on to the next star, about nine and a half minutes a system, with a HUD of the
-  destination, ETA, distance and real orbital speeds. Planet maps stream in on the GPU a few rows
+  destination, ETA, distance and real orbital speeds. Each jump uses one of five named drives, each
+  with its own look — Lumen Drift, Tachyon Tunnel, Fold Drive, Ion Slipstream and Graviton Spiral
+  ([docs/solar-warps.jpg](docs/solar-warps.jpg)) — and while in orbit a scanner surveys the planet
+  with progress bars and results in real units: atmosphere (pressure and gas mix), gravimetry,
+  climate, magnetic field, surface radiation and a search for biosignatures
+  ([docs/solar-scanner.jpg](docs/solar-scanner.jpg)). Planet maps stream in on the GPU a few rows
   a frame while it travels (`SOLAR_SEED`, `SOLAR_GEN_ROWS`; screenshots of every key moment:
-  `SOLAR_SHOTS_SEEDS=5,11 cargo test --release solar::tests::screenshots -- --ignored`). Swipe down on the player
+  `SOLAR_SHOTS_SEEDS=5,11 cargo test --release solar::tests::screenshots -- --ignored`, and of
+  every drive: `solar::tests::warps`). Swipe down on the player
   to summon the visualiser, swipe left or right on the dive to travel on to the next sea or back,
   and tap anywhere to fade back.
 - **Touch first**: swipes are the only navigation — right for the queue, left for playlists, with the
@@ -376,9 +382,12 @@ src/
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
 ├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
 ├── planet.rs          idle scene: an invented planet, its maps generated on the GPU from a seed, seen whole and from low orbit
+├── noise3d.rs         a 64³ volume of smooth noise and its gradient, which the planet and solar shaders sample
+├── shader_lab.rs      tests that compile WGSL experiments and dump the planet and solar shaders for shader-db
 ├── solar/             idle scene: the grand tour of star systems
 │   ├── system.rs      seeded stars, planets, rings and moons, with real masses and orbital speeds
 │   ├── tour.rs        the timeline: transfers, orbits, departure, hyperjump; camera and HUD at any moment
+│   ├── scan.rs        the orbital survey: what each scan finds about a planet, and when
 │   ├── stream.rs      paints planet, moon and sky maps on the GPU a band of rows per frame, into two slots
 │   ├── generate.wgsl  the map generator for every kind of body
 │   └── frame.wgsl     background (stars, galaxy, glare, warp) and one ray-traced quad per body
@@ -467,6 +476,11 @@ numbers match the Pi's own `V3D_DEBUG=shaderdb` shader for shader. **Run
 `deploy/v3d-shaderdb/check.sh` before committing a shader change**: it fails if any shader runs at
 fewer threads than in `deploy/v3d-shaderdb/baseline.txt` or starts spilling, the cliff a change can
 fall off with no visible difference in the code (`check.sh . --update` accepts a new baseline).
+The baseline covers the dive, the Planet and the Solar tour: every Planet and Solar pipeline
+runs at four threads with no spills. They get there by reading smooth noise from a small 3D
+texture (`src/noise3d.rs`) instead of hashing it, and by splitting each look into many small
+pipelines, specialised with override constants and blended together in one render pass, rather
+than one large shader.
 `spotify-round-tests gpu_cost::videocore_vii --ignored` asserts that the headless adapter really is
 the Pi 5's V3D; run it before trusting a Pi measurement. So:
 
