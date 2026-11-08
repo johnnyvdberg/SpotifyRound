@@ -104,6 +104,11 @@ export global Idle {
     // They are kept as images here so the renderer caches them once, instead of
     // seeing a new image every frame.
     in-out property <[image]> frames;
+    // A scene's heads-up display: a title, and lines of labels and values
+    // (one per line). Empty for scenes without one.
+    in-out property <string> hud-title: "";
+    in-out property <string> hud-labels: "";
+    in-out property <string> hud-values: "";
 
     // A tap anywhere on the visuals returns to the player.
     callback dismiss();

@@ -19,6 +19,7 @@ mod motion;
 mod planet;
 mod ring;
 mod service;
+mod solar;
 mod ui;
 #[cfg(test)]
 mod v3d_perf;

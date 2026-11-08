@@ -45,7 +45,14 @@ Spotify **Premium** account.
   the abyss and the polar ice (see [docs/nautilus.md](docs/nautilus.md)). The **Planet** is an
   invented world generated on the GPU from a random seed — plates, mountains, climate and biomes,
   storms and city lights — seen whole and then from low orbit over its horizon
-  (`PLANET_SEED` picks the world, `PLANET_VIEW=globe` or `horizon` holds one view). Swipe down on the player
+  (`PLANET_SEED` picks the world, `PLANET_VIEW=globe` or `horizon` holds one view). The **Solar tour**
+  is a grand tour of invented star systems: a star, five to eight planets (temperate, ocean, desert,
+  ice, lava, barren, gas and ice giants, some ringed) and moons of the kinds ours has (cratered,
+  icy, volcanic, hazy, captured rock). It drops out of a hyperjump, orbits three planets high and
+  low, and jumps on to the next star, about nine and a half minutes a system, with a HUD of the
+  destination, ETA, distance and real orbital speeds. Planet maps stream in on the GPU a few rows
+  a frame while it travels (`SOLAR_SEED`, `SOLAR_GEN_ROWS`; screenshots of every key moment:
+  `SOLAR_SHOTS_SEEDS=5,11 cargo test --release solar::tests::screenshots -- --ignored`). Swipe down on the player
   to summon the visualiser, swipe left or right on the dive to travel on to the next sea or back,
   and tap anywhere to fade back.
 - **Touch first**: swipes are the only navigation — right for the queue, left for playlists, with the
@@ -369,6 +376,12 @@ src/
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
 ├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
 ├── planet.rs          idle scene: an invented planet, its maps generated on the GPU from a seed, seen whole and from low orbit
+├── solar/             idle scene: the grand tour of star systems
+│   ├── system.rs      seeded stars, planets, rings and moons, with real masses and orbital speeds
+│   ├── tour.rs        the timeline: transfers, orbits, departure, hyperjump; camera and HUD at any moment
+│   ├── stream.rs      paints planet, moon and sky maps on the GPU a band of rows per frame, into two slots
+│   ├── generate.wgsl  the map generator for every kind of body
+│   └── frame.wgsl     background (stars, galaxy, glare, warp) and one ray-traced quad per body
 ├── shaders/           WESL package, linked to WGSL by `build.rs`
 │   ├── common.wesl    shared smoothing, distance and noise functions
 │   ├── scene.wesl     the dive: water, seabed, models, glass and sprites
@@ -481,7 +494,7 @@ the Pi 5's V3D; run it before trusting a Pi measurement. So:
   queues work ahead of the window's frames faster than the GPU finishes it, until every frame on
   screen is late.
 
-`SPOTIFY_ROUND_SCENE=globe` (or `nautilus`, or `planet`) shows that scene from the start, for measuring one with
+`SPOTIFY_ROUND_SCENE=globe` (or `nautilus`, `planet` or `solar`) shows that scene from the start, for measuring one with
 `SPOTIFY_ROUND_FULL_SPEED`, and `WGPU_BACKEND=gl` runs everything on the Pi's OpenGL ES driver
 instead of Vulkan.
 

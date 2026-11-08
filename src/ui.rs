@@ -163,6 +163,8 @@ pub trait WindowExt: Sized {
     /// The visualizer's frames in the last second, the mean time its thread
     /// spent on each and the mean time each took on the GPU, in ms.
     fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32);
+    /// The text a scene lays over its frame; empty strings hide it.
+    fn set_idle_hud(&self, hud: &crate::solar::Hud);
     fn tick(&self, frame: &Frame);
     /// Name, icon kind and presence of the Spotify Connect device playback is
     /// running on.
@@ -316,6 +318,13 @@ impl WindowExt for AppWindow {
             stats.set_scene_ms(ms);
             stats.set_scene_gpu_ms(gpu_ms);
         }
+    }
+
+    fn set_idle_hud(&self, hud: &crate::solar::Hud) {
+        let idle = self.global::<Idle>();
+        idle.set_hud_title(hud.title.as_str().into());
+        idle.set_hud_labels(hud.labels.as_str().into());
+        idle.set_hud_values(hud.values.as_str().into());
     }
 
     fn show_idle_frame(&self, index: usize) {
@@ -789,5 +798,30 @@ mod preview {
             ),
         ));
         save(&window, &soft, "12-nautilus");
+
+        // ---- the solar tour, with its HUD ----
+        let (pixels, hud) = crate::solar::tests::render_once(11, "p4-high-orbit");
+        window.set_idle_scene(3, crate::solar::SIZE as f32);
+        window.set_idle(true, 1.0);
+        window.set_idle_hud(&hud);
+        window.set_idle_frame(slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::clone_from_slice(
+                &pixels,
+                crate::solar::SIZE,
+                crate::solar::SIZE,
+            ),
+        ));
+        save(&window, &soft, "13-solar");
+        let (pixels, hud) = crate::solar::tests::render_once(11, "jump-cruise");
+        window.set_idle_hud(&hud);
+        window.set_idle_frame(slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::clone_from_slice(
+                &pixels,
+                crate::solar::SIZE,
+                crate::solar::SIZE,
+            ),
+        ));
+        save(&window, &soft, "14-solar-jump");
+        window.set_idle_hud(&crate::solar::Hud::default());
     }
 }

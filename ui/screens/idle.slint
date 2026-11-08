@@ -84,6 +84,54 @@ export component IdleScreen inherits Rectangle {
 
     }
 
+    // A scene's heads-up display, low in the circle: the solar tour's
+    // destination, ETA and speeds. Hidden for scenes without one.
+    if Idle.hud-title != "" : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 726px;
+        width: 640px;
+        height: 238px;
+        border-radius: 22px;
+        background: #04060cb0;
+        border-width: 1px;
+        border-color: Theme.accent.with-alpha(0.25);
+        opacity: Idle.fade;
+
+        Text {
+            x: 0;
+            y: 14px;
+            width: parent.width;
+            text: Idle.hud-title;
+            color: Theme.accent;
+            font-family: Theme.font;
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            horizontal-alignment: center;
+        }
+        Text {
+            x: 20px;
+            y: 50px;
+            width: 158px;
+            text: Idle.hud-labels;
+            color: Theme.ink.with-alpha(0.55);
+            font-family: Theme.font;
+            font-size: 21px;
+            horizontal-alignment: right;
+        }
+        Text {
+            x: 194px;
+            y: 50px;
+            width: parent.width - 214px;
+            text: Idle.hud-values;
+            color: Theme.ink;
+            font-family: Theme.font;
+            font-size: 21px;
+            horizontal-alignment: left;
+            overflow: elide;
+        }
+    }
+
     // A slow breath at the rim, echoing the ring the player wears; the
     // atmosphere fades out beneath it.
     Rectangle {
