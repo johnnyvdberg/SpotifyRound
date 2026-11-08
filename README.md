@@ -54,7 +54,8 @@ Spotify **Premium** account.
   clouds. The tour drops out of a hyperjump, orbits three planets high and low (and such a moon
   after its giant), and jumps on to the next star, ten to twelve minutes a system. Crossings swing
   round the star in a close flyby, or past a planet not otherwise visited, slowing to take it in.
-  A minimap of the system shows the orbits, the planets, the route and the ship, beside a HUD of the
+  A minimap of the system shows the orbits, the planets, the route and the ship
+  ([docs/solar-flyby.jpg](docs/solar-flyby.jpg), [docs/solar-moon.jpg](docs/solar-moon.jpg)), beside a HUD of the
   destination, ETA, distance and real orbital speeds. Each jump uses one of five named drives, each
   with its own look — Lumen Drift, Tachyon Tunnel, Fold Drive, Ion Slipstream and Graviton Spiral
   ([docs/solar-warps.jpg](docs/solar-warps.jpg)) — and while in orbit a scanner surveys the planet

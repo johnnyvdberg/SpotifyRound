@@ -962,12 +962,7 @@ impl Tour {
     fn describe(&self, stop: Stop) -> String {
         let p = self.world(stop);
         if stop.moon.is_some() {
-            return format!(
-                "{} · {:.1}× Earth · moon of {}",
-                p.kind.name(),
-                p.radius,
-                self.system.planets[stop.planet].name
-            );
+            return format!("{} · {:.1}× Earth · a giant's moon", p.kind.name(), p.radius);
         }
         let moons = match p.moons.len() {
             0 => String::new(),
@@ -1024,10 +1019,7 @@ impl Tour {
                     let d = length(sub(view.position, centre));
                     let closest = self.paths[k].closest;
                     let value = match self.paths[k].flyby {
-                        Some(Flyby::Star) => format!(
-                            "{name} · {:.1} million km",
-                            d / AU * 149.6
-                        ),
+                        Some(Flyby::Star) => format!("{name} · {:.1} star radii", d / radius),
                         _ => format!("{name} · {} km", thousands((d - radius).max(0.0) * KM)),
                     };
                     let value = if u < closest - 0.18 {
