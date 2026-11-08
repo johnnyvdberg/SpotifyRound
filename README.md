@@ -42,7 +42,10 @@ Spotify **Premium** account.
   rotating Blue Marble with Black Marble city lights, drifting clouds and their shadows, sun glint,
   sunset colour along the terminator and a scattering atmosphere. The **Nautilus** is the view from its salon window on a Jules Verne voyage, drawn as a
   3D scene: fourteen seas from sunlit kelp shallows and a coral reef to a lava cave, a drowned city,
-  the abyss and the polar ice (see [docs/nautilus.md](docs/nautilus.md)). Swipe down on the player
+  the abyss and the polar ice (see [docs/nautilus.md](docs/nautilus.md)). The **Planet** is an
+  invented world generated on the GPU from a random seed — plates, mountains, climate and biomes,
+  storms and city lights — seen whole and then from low orbit over its horizon
+  (`PLANET_SEED` picks the world, `PLANET_VIEW=globe` or `horizon` holds one view). Swipe down on the player
   to summon the visualiser, swipe left or right on the dive to travel on to the next sea or back,
   and tap anywhere to fade back.
 - **Touch first**: swipes are the only navigation — right for the queue, left for playlists, with the
@@ -365,6 +368,7 @@ src/
 ├── motion.rs          Animato: accent tween, reveal, pulse
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
 ├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
+├── planet.rs          idle scene: an invented planet, its maps generated on the GPU from a seed, seen whole and from low orbit
 ├── shaders/           WESL package, linked to WGSL by `build.rs`
 │   ├── common.wesl    shared smoothing, distance and noise functions
 │   ├── scene.wesl     the dive: water, seabed, models, glass and sprites
@@ -477,7 +481,7 @@ the Pi 5's V3D; run it before trusting a Pi measurement. So:
   queues work ahead of the window's frames faster than the GPU finishes it, until every frame on
   screen is late.
 
-`SPOTIFY_ROUND_SCENE=globe` (or `nautilus`) shows that scene from the start, for measuring one with
+`SPOTIFY_ROUND_SCENE=globe` (or `nautilus`, or `planet`) shows that scene from the start, for measuring one with
 `SPOTIFY_ROUND_FULL_SPEED`, and `WGPU_BACKEND=gl` runs everything on the Pi's OpenGL ES driver
 instead of Vulkan.
 

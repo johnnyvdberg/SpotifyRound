@@ -19,6 +19,7 @@ use slint::wgpu_30::wgpu;
 use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
+use crate::planet::Planet;
 use crate::ui::{AppWindow, WindowExt};
 
 /// Render targets per scene. Each scene rotates through this many textures so the
@@ -32,10 +33,13 @@ pub enum Scene {
     Globe,
     /// The Nautilus' voyage, seen through its salon window.
     Nautilus,
+    /// An invented planet, generated from a seed, seen from far away and
+    /// from low orbit.
+    Planet,
 }
 
 impl Scene {
-    pub const ALL: [Scene; 2] = [Scene::Globe, Scene::Nautilus];
+    pub const ALL: [Scene; 3] = [Scene::Globe, Scene::Nautilus, Scene::Planet];
 
     pub fn index(self) -> usize {
         self as usize
@@ -47,6 +51,7 @@ impl Scene {
         match self {
             Scene::Globe => crate::globe::SIZE as f32,
             Scene::Nautilus => crate::dive3d::SIZE as f32,
+            Scene::Planet => crate::planet::SIZE as f32,
         }
     }
 
@@ -54,10 +59,11 @@ impl Scene {
         match self {
             Scene::Globe => Ok(Box::new(Globe::new(gpu)?)),
             Scene::Nautilus => Ok(Box::new(Nautilus::new(gpu)?)),
+            Scene::Planet => Ok(Box::new(Planet::new(gpu)?)),
         }
     }
 
-    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe` or `nautilus`), which
+    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus` or `planet`), which
     /// then shows from the start and stays: a fixed load for measuring one
     /// scene, together with `SPOTIFY_ROUND_FULL_SPEED`.
     pub fn forced() -> Option<Self> {
@@ -70,6 +76,7 @@ impl Scene {
             {
                 "globe" => Some(Scene::Globe),
                 "nautilus" => Some(Scene::Nautilus),
+                "planet" => Some(Scene::Planet),
                 other => {
                     tracing::warn!(scene = other, "SPOTIFY_ROUND_SCENE names no scene");
                     None
@@ -443,6 +450,7 @@ mod tests {
         for _ in 0..64 {
             assert_eq!(Scene::random(0b10), Scene::Nautilus);
             assert_eq!(Scene::random(0b01), Scene::Globe);
+            assert_eq!(Scene::random(0b100), Scene::Planet);
         }
     }
 }

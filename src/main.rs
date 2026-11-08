@@ -16,6 +16,7 @@ mod gpu;
 #[cfg(test)]
 mod gpu_cost;
 mod motion;
+mod planet;
 mod ring;
 mod service;
 mod ui;
