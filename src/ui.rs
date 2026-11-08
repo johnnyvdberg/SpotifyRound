@@ -335,6 +335,24 @@ impl WindowExt for AppWindow {
             })
             .collect();
         idle.set_hud_scans(ModelRc::from(Rc::new(VecModel::from(scans))));
+        let map = hud.map.clone().unwrap_or_default();
+        idle.set_map_orbits(map.orbits.as_str().into());
+        idle.set_map_route(map.route.as_str().into());
+        idle.set_map_ship_x(map.ship[0]);
+        idle.set_map_ship_y(map.ship[1]);
+        let dots: Vec<MapDot> = map
+            .dots
+            .iter()
+            .map(|d| MapDot {
+                x: d.at[0],
+                y: d.at[1],
+                size: d.size,
+                color: slint::Color::from_rgb_u8(d.colour[0], d.colour[1], d.colour[2]),
+                label: d.label.as_str().into(),
+                current: d.current,
+            })
+            .collect();
+        idle.set_map_dots(ModelRc::from(Rc::new(VecModel::from(dots))));
     }
 
     fn show_idle_frame(&self, index: usize) {
@@ -832,6 +850,23 @@ mod preview {
             ),
         ));
         save(&window, &soft, "14-solar-jump");
+        // A star flyby, with the minimap's route, and a moon the size of a
+        // planet in low orbit.
+        for (seed, moment, name) in [
+            (23, "-flyby", "15-solar-flyby"),
+            (14, "m1-low-orbit", "16-solar-moon"),
+        ] {
+            let (pixels, hud) = crate::solar::tests::render_once(seed, moment);
+            window.set_idle_hud(&hud);
+            window.set_idle_frame(slint::Image::from_rgba8(
+                slint::SharedPixelBuffer::clone_from_slice(
+                    &pixels,
+                    crate::solar::SIZE,
+                    crate::solar::SIZE,
+                ),
+            ));
+            save(&window, &soft, name);
+        }
         window.set_idle_hud(&crate::solar::Hud::default());
     }
 }

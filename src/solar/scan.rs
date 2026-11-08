@@ -228,7 +228,7 @@ impl Survey {
             Kind::Hazy => rng.range(5.0, 15.0),
             _ => 0.0,
         };
-        let mean = equilibrium + greenhouse;
+        let mean = equilibrium + greenhouse + planet.heat;
         let spread = if gases.is_empty() { 0.45 } else { 0.12 } * mean;
         let climate = if giant {
             format!(

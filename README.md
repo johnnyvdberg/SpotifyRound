@@ -46,10 +46,15 @@ Spotify **Premium** account.
   invented world generated on the GPU from a random seed — plates, mountains, climate and biomes,
   storms and city lights — seen whole and then from low orbit over its horizon
   (`PLANET_SEED` picks the world, `PLANET_VIEW=globe` or `horizon` holds one view). The **Solar tour**
-  is a grand tour of invented star systems: a star, five to eight planets (temperate, ocean, desert,
-  ice, lava, barren, gas and ice giants, some ringed) and moons of the kinds ours has (cratered,
-  icy, volcanic, hazy, captured rock). It drops out of a hyperjump, orbits three planets high and
-  low, and jumps on to the next star, about nine and a half minutes a system, with a HUD of the
+  is a grand tour of invented star systems: a star — red, orange and yellow dwarfs, white and blue
+  stars, a swollen red giant or a tiny white dwarf, each lighting its worlds in its own colour —
+  five to eight planets (temperate, ocean, desert, ice, lava, barren, gas and ice giants, some
+  ringed) and moons of the kinds ours has (cratered, icy, volcanic, hazy, captured rock). Some
+  giants have a moon as big as a planet, a world of its own mapped in full with air, seas and
+  clouds. The tour drops out of a hyperjump, orbits three planets high and low (and such a moon
+  after its giant), and jumps on to the next star, ten to twelve minutes a system. Crossings swing
+  round the star in a close flyby, or past a planet not otherwise visited, slowing to take it in.
+  A minimap of the system shows the orbits, the planets, the route and the ship, beside a HUD of the
   destination, ETA, distance and real orbital speeds. Each jump uses one of five named drives, each
   with its own look — Lumen Drift, Tachyon Tunnel, Fold Drive, Ion Slipstream and Graviton Spiral
   ([docs/solar-warps.jpg](docs/solar-warps.jpg)) — and while in orbit a scanner surveys the planet

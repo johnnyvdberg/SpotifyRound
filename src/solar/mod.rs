@@ -26,7 +26,7 @@ use slint::wgpu_30::wgpu;
 use crate::gpu::Graphics;
 use crate::visuals::Visual;
 use stream::{Key, Streamer, sampler_entry, texture_entry, uniform_entry};
-use system::{Kind, Planet, System, equatorial_to_system};
+use system::{Kind, Planet, Stop, System, equatorial_to_system};
 use tour::{Phase, Tour, View, normalize};
 
 /// Size of the rendered frame.
@@ -56,6 +56,7 @@ struct Params {
     forward: [f32; 4],
     star: [f32; 4],
     star_colour: [f32; 4],
+    light: [f32; 4],
     sky: [[f32; 4]; 3],
     warp: [f32; 4],
     bodies: [Body; MAX_BODIES],
@@ -74,7 +75,36 @@ pub struct Hud {
     pub values: String,
     /// The scanner's readings, while orbiting.
     pub scans: Vec<scan::Scan>,
+    /// The minimap of the system, while in one.
+    pub map: Option<Minimap>,
 }
+
+/// A small tilted map of the system: its orbits, its planets, the route
+/// being flown and where the ship is, laid out in a `MAP` square.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Minimap {
+    /// Path commands for every orbit.
+    pub orbits: String,
+    /// Path commands for the route still to fly.
+    pub route: String,
+    pub dots: Vec<MapDot>,
+    pub ship: [f32; 2],
+}
+
+/// A planet, or the star, on the minimap.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MapDot {
+    pub at: [f32; 2],
+    pub size: f32,
+    /// sRGB.
+    pub colour: [u8; 3],
+    pub label: String,
+    /// The stop being visited or made for.
+    pub current: bool,
+}
+
+/// The minimap's side, in its own units.
+pub const MAP: f32 = 240.0;
 
 pub(crate) struct Solar {
     /// The frame's small pipelines, by name: `space`, `warp1`..`warp5`,
@@ -362,29 +392,28 @@ impl Solar {
     /// Tell the streamer what to have ready at `t` into the visit.
     fn stream(&mut self, t: f64) {
         let (segment, _) = self.tour.segment(t);
-        let (current, next) = self.tour.wanted(t);
-        let seed = self.tour.system.seed;
-        let next_first = self.tour.next.itinerary()[0];
-        let mut wanted: Vec<(Key, &Planet)> = Vec::new();
-        for planet in [current, next].into_iter().flatten() {
-            wanted.push(((seed, planet), &self.tour.system.planets[planet]));
-        }
-        let leaving = matches!(segment.phase, Phase::Depart(_) | Phase::Jump);
-        if leaving || wanted.len() < 2 {
+        let (current, second) = self.tour.wanted(t);
+        let system = &self.tour.system;
+        let mut wanted: Vec<(Key, Planet)> = [current, second]
+            .into_iter()
+            .flatten()
+            .map(|s| ((system.seed, s.key()), system.world(s)))
+            .collect();
+        let jumping = matches!(segment.phase, Phase::Jump);
+        let departing = matches!(segment.phase, Phase::Depart(_));
+        if jumping || (departing && wanted.len() < 2) {
             if wanted.len() >= 2 {
                 wanted.pop();
             }
-            if leaving {
-                wanted.push((
-                    (self.tour.next.seed, next_first),
-                    &self.tour.next.planets[next_first],
-                ));
-            }
+            let next = &self.tour.next;
+            let first = next.itinerary()[0];
+            wanted.push(((next.seed, first.key()), next.world(first)));
         }
-        let mut skies = vec![(seed, self.tour.system.sky)];
-        if leaving {
+        let mut skies = vec![(system.seed, system.sky)];
+        if jumping || departing {
             skies.push((self.tour.next.seed, self.tour.next.sky));
         }
+        let wanted: Vec<(Key, &Planet)> = wanted.iter().map(|(k, p)| (*k, p)).collect();
         self.streamer.want(&wanted, &skies);
     }
 
@@ -468,7 +497,14 @@ impl Solar {
         if !hidden {
             let mut star = Body {
                 place: f32x4(star_rel, system.star.radius),
-                look: [-1.0, -1.0, -1.0, 0.0],
+                // A star's look: -1, then its surface's cell scale, their
+                // contrast and its limb darkening.
+                look: [
+                    -1.0,
+                    system.star.surface[0],
+                    system.star.surface[1],
+                    system.star.surface[2],
+                ],
                 ..Default::default()
             };
             if let Some(rect) = rect(&view, star_rel, system.star.radius * 1.02) {
@@ -478,7 +514,7 @@ impl Solar {
             for (index, planet) in system.planets.iter().enumerate() {
                 let centre = planet.position(t);
                 let place = rel(centre);
-                let slot = self.streamer.ready((system.seed, index));
+                let slot = self.streamer.ready((system.seed, Stop::planet(index).key()));
                 let mut body = Body {
                     place: f32x4(place, planet.radius),
                     rot: rotation(
@@ -514,79 +550,65 @@ impl Solar {
                 if let Some(rect) = rect(&view, place, bound) {
                     body.rect = rect;
                     let eclipsed = eclipsed(system, t, centre, planet.radius, Some(index));
-                    let mut passes: Vec<String> = match slot {
-                        Some(s) => {
-                            let mut passes = vec![format!("ground{s}")];
-                            if planet.kind.has_clouds() {
-                                passes.push(format!("cloudshadow{s}"));
-                            }
-                            if planet.kind.has_sea() {
-                                passes.push(format!("sea{s}"));
-                            }
-                            if planet.kind.has_clouds() {
-                                passes.push(format!("clouds{s}"));
-                            }
-                            passes
-                        }
-                        None => vec!["flat".into()],
-                    };
-                    if eclipsed {
-                        passes.push("eclipse".into());
-                    }
-                    if planet.rings.is_some() {
-                        passes.push("ringshadow".into());
-                    }
-                    if let Some(s) = slot {
-                        passes.push(format!("glow{s}"));
-                    }
-                    if body.air[0] > 0.0 {
-                        passes.push("limb".into());
-                    }
-                    if planet.rings.is_some() {
-                        passes.push("ring".into());
-                    }
+                    let passes = surface_passes(planet.kind, slot, eclipsed, planet.rings.is_some());
                     bodies.push((length(place), body, passes));
                 }
-                // Moons, once their planet's maps are in.
-                let Some(slot) = slot else {
-                    continue;
-                };
+                // Moons: a moon the size of a planet in full once its own
+                // maps are in, the others once their planet's are.
                 for (m, moon) in planet.moons.iter().enumerate().take(stream::MOONS as usize) {
-                    let offset = planet.moon_offset(m, t);
-                    let place = rel([
-                        centre[0] + offset[0],
-                        centre[1] + offset[1],
-                        centre[2] + offset[2],
-                    ]);
+                    let stop = Stop {
+                        planet: index,
+                        moon: Some(m),
+                    };
+                    let world = if moon.world {
+                        self.streamer.ready((system.seed, stop.key()))
+                    } else {
+                        None
+                    };
+                    if world.is_none() && slot.is_none() {
+                        continue;
+                    }
+                    let at = system.centre(stop, t);
+                    let place = rel(at);
                     let angle = moon.phase + t * std::f64::consts::TAU / moon.period;
                     let air = moon.kind.air();
                     let bound = moon.radius * if air[0] > 0.0 { 1.08 } else { 1.0 };
                     let Some(rect) = rect(&view, place, bound) else {
                         continue;
                     };
-                    let mut passes = vec![format!("moon{slot}")];
-                    let at = [
-                        centre[0] + offset[0],
-                        centre[1] + offset[1],
-                        centre[2] + offset[2],
-                    ];
-                    if eclipsed(system, t, at, moon.radius, None) {
-                        passes.push("eclipse".into());
-                    }
-                    if air[0] > 0.0 {
-                        passes.push("limb".into());
-                    }
+                    let eclipsed = eclipsed(system, t, at, moon.radius, None);
+                    let (look, passes) = match (world, slot) {
+                        (Some(w), _) => (
+                            [moon.kind as u32 as f32, w as f32, -1.0, night_mode(moon.kind)],
+                            surface_passes(moon.kind, Some(w), eclipsed, false),
+                        ),
+                        (None, Some(s)) => {
+                            let mut passes = vec![format!("moon{s}")];
+                            if eclipsed {
+                                passes.push("eclipse".into());
+                            }
+                            if air[0] > 0.0 {
+                                passes.push("limb".into());
+                            }
+                            (
+                                [moon.kind as u32 as f32, s as f32, m as f32, night_mode(moon.kind)],
+                                passes,
+                            )
+                        }
+                        (None, None) => continue,
+                    };
                     bodies.push((
                         length(place),
                         Body {
                             place: f32x4(place, moon.radius),
-                            rot: rotation(planet, angle + std::f64::consts::PI, 0.0),
-                            look: [
-                                moon.kind as u32 as f32,
-                                slot as f32,
-                                m as f32,
-                                night_mode(moon.kind),
-                            ],
+                            // Locked to its planet, one face toward it; the
+                            // clouds of a world drift on their own.
+                            rot: rotation(
+                                planet,
+                                angle + std::f64::consts::PI,
+                                t / moon.period * 0.2,
+                            ),
+                            look,
                             air: [air[0], air[1], air[2], 0.0],
                             colour: [
                                 moon.palette[0][0],
@@ -657,6 +679,12 @@ impl Solar {
                 system.star.colour[1],
                 system.star.colour[2],
                 visible as f32,
+            ],
+            light: [
+                system.star.light[0],
+                system.star.light[1],
+                system.star.light[2],
+                0.0,
             ],
             sky,
             warp: [
@@ -747,7 +775,88 @@ impl Solar {
             labels,
             values,
             scans: self.tour.scans(t),
+            map: self.minimap(t),
         };
+    }
+
+    /// The minimap at `t`: none during the jump, between systems.
+    fn minimap(&self, t: f64) -> Option<Minimap> {
+        let current = self.tour.current(t)?;
+        let system = &self.tour.system;
+        // Distances from the star on a log scale, so close-in planets and
+        // the outermost giant all fit; the plane seen tilted, from above.
+        let inner = system.planets.first().map_or(1.0, |p| p.orbit) * 0.5;
+        let outer = system.planets.last().map_or(1.0, |p| p.orbit);
+        let reach = (MAP as f64) * 0.45;
+        let squash = 0.5;
+        let radius = |r: f64| reach * (1.0 + r / inner).ln() / (1.0 + outer / inner).ln();
+        let centre = MAP as f64 / 2.0;
+        let project = |p: [f64; 3]| -> [f32; 2] {
+            let flat = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let r = radius(flat);
+            let k = if flat > 1e-9 { r / flat } else { 0.0 };
+            [
+                (centre + p[0] * k) as f32,
+                (centre + p[2] * k * squash - p[1] * k * 0.8) as f32,
+            ]
+        };
+        let mut orbits = String::new();
+        for planet in &system.planets {
+            let (rx, ry) = (radius(planet.orbit), radius(planet.orbit) * squash);
+            orbits.push_str(&format!(
+                "M {:.1} {:.1} A {rx:.1} {ry:.1} 0 1 0 {:.1} {:.1} A {rx:.1} {ry:.1} 0 1 0 {:.1} {:.1} ",
+                centre - rx,
+                centre,
+                centre + rx,
+                centre,
+                centre - rx,
+                centre
+            ));
+        }
+        let mut route = String::new();
+        for (i, p) in self.tour.route(t).into_iter().enumerate() {
+            let [x, y] = project(p);
+            route.push_str(&format!("{} {x:.1} {y:.1} ", if i == 0 { "M" } else { "L" }));
+        }
+        let to_srgb = |c: [f32; 3], lift: f32| {
+            c.map(|v| ((v.max(0.0).powf(1.0 / 2.2) * (1.0 - lift) + lift) * 255.0) as u8)
+        };
+        let mut dots = vec![MapDot {
+            at: [centre as f32; 2],
+            size: match system.star.kind {
+                system::StarKind::RedGiant => 14.0,
+                system::StarKind::WhiteDwarf => 5.0,
+                system::StarKind::Main => 9.0,
+            },
+            colour: to_srgb(system.star.light.map(|c| c.min(1.0)), 0.3),
+            label: String::new(),
+            current: false,
+        }];
+        let visited: Vec<usize> = self.tour.itinerary.iter().map(|s| s.planet).collect();
+        for (i, planet) in system.planets.iter().enumerate() {
+            let colour = match planet.kind {
+                Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball => [0.12, 0.3, 0.6],
+                _ => planet.palette[0],
+            };
+            dots.push(MapDot {
+                at: project(planet.position(t)),
+                size: if planet.kind.is_giant() { 8.0 } else { 5.0 },
+                colour: to_srgb(colour, 0.25),
+                // The planet's letter, for the stops.
+                label: if visited.contains(&i) {
+                    planet.name.rsplit(' ').next().unwrap_or("").to_string()
+                } else {
+                    String::new()
+                },
+                current: current.planet == i,
+            });
+        }
+        Some(Minimap {
+            orbits,
+            route,
+            dots,
+            ship: project(self.tour.view(t).position),
+        })
     }
 
     fn render(&mut self, gpu: &Graphics, seconds: f64, frame: usize) -> Result<()> {
@@ -886,6 +995,43 @@ fn eclipsed(system: &System, t: f64, at: [f64; 3], radius: f64, planet: Option<u
         }
     }
     false
+}
+
+/// The passes that draw a planet-sized body of `kind` from map slot `slot`
+/// (or flat, if its maps are not in), in order.
+fn surface_passes(kind: Kind, slot: Option<usize>, eclipsed: bool, rings: bool) -> Vec<String> {
+    let mut passes: Vec<String> = match slot {
+        Some(s) => {
+            let mut passes = vec![format!("ground{s}")];
+            if kind.has_clouds() {
+                passes.push(format!("cloudshadow{s}"));
+            }
+            if kind.has_sea() {
+                passes.push(format!("sea{s}"));
+            }
+            if kind.has_clouds() {
+                passes.push(format!("clouds{s}"));
+            }
+            passes
+        }
+        None => vec!["flat".into()],
+    };
+    if eclipsed {
+        passes.push("eclipse".into());
+    }
+    if rings {
+        passes.push("ringshadow".into());
+    }
+    if let Some(s) = slot {
+        passes.push(format!("glow{s}"));
+    }
+    if kind.air()[0] > 0.0 {
+        passes.push("limb".into());
+    }
+    if rings {
+        passes.push("ring".into());
+    }
+    passes
 }
 
 fn night_mode(kind: Kind) -> f32 {
@@ -1071,18 +1217,24 @@ pub(crate) mod tests {
             let end = segment.start + segment.duration;
             match segment.phase {
                 Phase::Transfer { from, to } => {
-                    let from = from.map_or("dropout".to_string(), |p| format!("p{p}"));
+                    let from = from.map_or("dropout".to_string(), |p| p.to_string());
                     out.push((
-                        format!("transfer-{from}-to-p{to}-start"),
+                        format!("transfer-{from}-to-{to}-start"),
                         segment.start + 0.5,
                     ));
-                    out.push((format!("transfer-{from}-to-p{to}-cruise"), at(0.5)));
-                    out.push((format!("transfer-{from}-to-p{to}-arrival"), end - 1.5));
+                    match tour.flyby_at(to) {
+                        Some(closest) => {
+                            out.push((format!("transfer-{from}-to-{to}-flyby-near"), closest - 6.0));
+                            out.push((format!("transfer-{from}-to-{to}-flyby"), closest));
+                        }
+                        None => out.push((format!("transfer-{from}-to-{to}-cruise"), at(0.5))),
+                    }
+                    out.push((format!("transfer-{from}-to-{to}-arrival"), end - 1.5));
                 }
-                Phase::High(p) => out.push((format!("p{p}-high-orbit"), at(0.5))),
-                Phase::Descend(p) => out.push((format!("p{p}-descend"), at(0.5))),
-                Phase::Low(p) => out.push((format!("p{p}-low-orbit"), at(0.5))),
-                Phase::Climb(p) => out.push((format!("p{p}-climb"), at(0.6))),
+                Phase::High(p) => out.push((format!("{p}-high-orbit"), at(0.5))),
+                Phase::Descend(p) => out.push((format!("{p}-descend"), at(0.5))),
+                Phase::Low(p) => out.push((format!("{p}-low-orbit"), at(0.5))),
+                Phase::Climb(p) => out.push((format!("{p}-climb"), at(0.6))),
                 Phase::Depart(_) => {
                     out.push(("depart-start".into(), segment.start + 1.0));
                     out.push(("depart-spool".into(), end - 1.0));
@@ -1122,8 +1274,8 @@ pub(crate) mod tests {
             let mut solar = Solar::with_seed(&gpu, seed);
             let system = &solar.tour.system;
             notes.push_str(&format!(
-                "seed {seed}: {} ({}-type, {:.0} K), itinerary {:?}\n",
-                system.star.name, system.star.class, system.star.temperature, solar.tour.itinerary
+                "seed {seed}: {} ({}, {:.0} K), itinerary {:?}\n",
+                system.star.name, system.star.title(), system.star.temperature, solar.tour.itinerary
             ));
             for (i, planet) in system.planets.iter().enumerate() {
                 notes.push_str(&format!(
@@ -1219,7 +1371,7 @@ pub(crate) mod tests {
         let mut solar = Solar::with_seed(&gpu, seed);
         let t = moments(&solar.tour)
             .into_iter()
-            .find(|(label, _)| label.contains(moment))
+            .find(|(label, _)| label.ends_with(moment))
             .map_or(60.0, |(_, t)| t);
         settle(&mut solar, &gpu, t);
         solar.draw(&gpu, t, 0);

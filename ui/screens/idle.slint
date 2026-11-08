@@ -203,6 +203,93 @@ export component IdleScreen inherits Rectangle {
         }
     }
 
+    // The minimap, a round inset at the right of the circle: the system
+    // seen tilted from above, its orbits, its planets (the stops lettered,
+    // the current one in the accent), the route still to fly and the ship.
+    if Idle.map-orbits != "" : Rectangle {
+        x: 780px;
+        y: 415px;
+        width: 250px;
+        height: 250px;
+        border-radius: self.width / 2;
+        background: #04060cb0;
+        border-width: 1px;
+        border-color: Theme.accent.with-alpha(0.25);
+        opacity: Idle.fade;
+        clip: true;
+
+        Rectangle {
+            x: 5px;
+            y: 5px;
+            width: 240px;
+            height: 240px;
+
+            Path {
+                x: 0;
+                y: 0;
+                width: 240px;
+                height: 240px;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: 240;
+                viewbox-height: 240;
+                commands: Idle.map-orbits;
+                stroke: Theme.ink.with-alpha(0.28);
+                stroke-width: 1px;
+            }
+            if Idle.map-route != "" : Path {
+                x: 0;
+                y: 0;
+                width: 240px;
+                height: 240px;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: 240;
+                viewbox-height: 240;
+                commands: Idle.map-route;
+                stroke: Theme.accent;
+                stroke-width: 2px;
+            }
+            for dot in Idle.map-dots : Rectangle {
+                x: dot.x - dot.size / 2;
+                y: dot.y - dot.size / 2;
+                width: dot.size;
+                height: dot.size;
+                border-radius: dot.size / 2;
+                background: dot.color;
+                border-width: dot.current ? 2px : 0;
+                border-color: Theme.accent;
+
+                if dot.label != "" : Text {
+                    x: dot.size + 2px;
+                    y: -9px;
+                    text: dot.label;
+                    color: dot.current ? Theme.accent : Theme.ink.with-alpha(0.75);
+                    font-family: Theme.font;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+            }
+            // The ship: a bright point with a halo.
+            Rectangle {
+                x: Idle.map-ship-x - 6px;
+                y: Idle.map-ship-y - 6px;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: Theme.accent.with-alpha(0.3);
+                Rectangle {
+                    x: 3px;
+                    y: 3px;
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: #ffffff;
+                }
+            }
+        }
+    }
+
     // A slow breath at the rim, echoing the ring the player wears; the
     // atmosphere fades out beneath it.
     Rectangle {

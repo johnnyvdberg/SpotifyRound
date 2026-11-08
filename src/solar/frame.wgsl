@@ -48,8 +48,10 @@ struct Params {
     forward: vec4<f32>,
     // The star: centre relative to the camera, and radius.
     star: vec4<f32>,
-    // Its light, and w: how much of its disc is in view.
+    // Its disc's and glare's colour, and w: how much of its disc is in view.
     star_colour: vec4<f32>,
+    // The light it casts on its planets, tinted and scaled by its kind.
+    light: vec4<f32>,
     // Rows turning world directions into the sky map's frame.
     sky: array<vec4<f32>, 3>,
     // x: warp 0..1; y: flash; z: seconds; w: seconds into the jump.
@@ -386,7 +388,12 @@ fn ring_shadow(i: u32, point: vec3<f32>, sun: vec3<f32>) -> f32 {
 }
 
 fn star_light() -> vec3<f32> {
-    return params.star_colour.rgb * 1.25;
+    return params.light.rgb * 1.25;
+}
+
+// The sky's blue, lit by the star: greyer under a red one.
+fn skylight() -> vec3<f32> {
+    return SKYLIGHT * params.light.rgb;
 }
 
 fn has_air(i: u32) -> bool {
@@ -459,8 +466,13 @@ fn fs_star(in: Quad) -> @location(0) vec4<f32> {
         discard;
     }
     let mu = sqrt(max(1.0 - h.closest * h.closest, 0.0));
-    let granules = 0.92 + 0.08 * noise(to_body(i, h.n) * 60.0 + vec3<f32>(params.warp.z * 0.05));
-    let light = params.star_colour.rgb * 5.0 * (0.4 + 0.6 * mu) * granules;
+    // look.yzw: the convection cells' scale and contrast (a red giant's few
+    // huge ones, a red dwarf's spots), and how much the limb darkens.
+    let style = params.bodies[i].look.yzw;
+    let granules = 1.0 + style.y * noise(to_body(i, h.n) * style.x + vec3<f32>(params.warp.z * 0.05));
+    // Exposed so the disc keeps its colour: a red giant's face is orange and
+    // mottled, a white dwarf's searing white.
+    let light = vec3<f32>(1.0) - exp(-params.star_colour.rgb * 2.6 * (1.0 - style.z + style.z * mu) * granules);
     return vec4<f32>(light * h.cover, h.cover);
 }
 
@@ -498,7 +510,7 @@ fn fs_ground(in: Quad) -> @location(0) vec4<f32> {
     let east = east_of(i, nb);
     let relief = relief_texel(uv, lod + 0.4);
     let tilted = normalize(n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * 0.55);
-    let sky = select(vec3<f32>(0.0), SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
+    let sky = select(vec3<f32>(0.0), skylight() * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
     var albedo = day_texel(uv, lod) * mix(1.0, 0.8, relief.b);
     let kind = i32(params.bodies[i].look.x);
     if (kind == 6 || kind == 7 || kind == 14) {
@@ -529,7 +541,7 @@ fn fs_sea(in: Quad) -> @location(0) vec4<f32> {
     let log_nh = log2(max(dot(n, normalize(sun - h.dir)), 0.0));
     let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
     let colour = ground_light(i, mu_sun) * glint * (0.25 + fresnel) * (1.0 - cloud)
-        + SKYLIGHT * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun);
+        + skylight() * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun);
     return vec4<f32>(colour * water * through(i, h), 0.0);
 }
 
@@ -559,7 +571,7 @@ fn fs_clouds(in: Quad) -> @location(0) vec4<f32> {
     if (has_air(i)) {
         sun_high = star_light() * exp(-params.bodies[i].air.rgb * airmass(mu_sun + 0.04) * 0.55);
     }
-    let sky = select(vec3<f32>(0.0), SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
+    let sky = select(vec3<f32>(0.0), skylight() * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
     let lit = 0.85 * (sun_high * smoothstep01(-0.08, 0.04, mu_sun) * (0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + sky * 1.5);
     return vec4<f32>(lit * through(i, h) * alpha, alpha);
 }
@@ -679,7 +691,7 @@ fn fs_ring(in: Quad) -> @location(0) vec4<f32> {
     let miss = length(-p - sun * along);
     let shadowed = select(1.0, smoothstep01(params.bodies[i].place.w * 0.97, params.bodies[i].place.w * 1.03, miss), along > 0.0);
     let light = star_light() * (0.25 + 0.75 * sqrt(abs(dot(sun, axis)))) * shadowed;
-    let colour = params.bodies[i].ring_colour.rgb * (light + SKYLIGHT * 0.3);
+    let colour = params.bodies[i].ring_colour.rgb * (light + skylight() * 0.3);
     return vec4<f32>(colour * density, density);
 }
 

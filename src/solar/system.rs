@@ -161,10 +161,23 @@ impl Kind {
     }
 }
 
+/// What sort of star it is, beyond its spectral class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StarKind {
+    /// On the main sequence, burning hydrogen: classes M to B.
+    Main,
+    /// Swollen at the end of its life: huge, cool and dim per area.
+    RedGiant,
+    /// The bare hot core of a dead star: smaller than the Earth.
+    WhiteDwarf,
+}
+
 /// A star: its spectral class and what follows from it.
 #[derive(Clone, Debug)]
 pub struct Star {
     pub name: String,
+    pub kind: StarKind,
+    /// Spectral class: M, K, G, F, A or B (D for a white dwarf).
     pub class: char,
     /// Surface temperature in kelvin.
     pub temperature: f64,
@@ -172,11 +185,40 @@ pub struct Star {
     pub radius: f64,
     /// Mass in suns.
     pub mass: f64,
-    /// Colour of its light, linear, normalised to the brightest channel.
+    /// Colour of its disc and glare, linear, brightest channel 1, scaled by
+    /// how hard it glares.
     pub colour: [f32; 3],
+    /// The light it casts on its planets: its colour, as an eye adapted to
+    /// it would see it, times how bright it is against a Sun.
+    pub light: [f32; 3],
+    /// How its surface looks: convection cell scale, their contrast, and how
+    /// much it darkens toward the limb.
+    pub surface: [f32; 3],
 }
 
 impl Star {
+    /// What sort of star it is, in words.
+    pub fn describe(&self) -> &'static str {
+        match (self.kind, self.class) {
+            (StarKind::RedGiant, _) => "red giant",
+            (StarKind::WhiteDwarf, _) => "white dwarf",
+            (_, 'M') => "red dwarf",
+            (_, 'K') => "orange dwarf",
+            (_, 'G') => "yellow dwarf",
+            (_, 'F') => "yellow-white star",
+            (_, 'A') => "white star",
+            _ => "blue giant",
+        }
+    }
+
+    /// Its class and sort, for the HUD: "M-type red dwarf".
+    pub fn title(&self) -> String {
+        match self.kind {
+            StarKind::WhiteDwarf => "white dwarf".into(),
+            _ => format!("{}-type {}", self.class, self.describe()),
+        }
+    }
+
     /// Luminosity in suns, from its real radius and temperature.
     pub fn luminosity(&self) -> f64 {
         let radius = self.radius / (109.0 * STAR_SCALE);
@@ -211,6 +253,8 @@ pub struct Moon {
     pub inclination: f64,
     pub palette: [[f32; 3]; 4],
     pub seed: u64,
+    /// As big as a planet, with a planet's kind: visited and mapped in full.
+    pub world: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -225,6 +269,8 @@ pub struct Planet {
     pub orbit: f64,
     /// Angle along its orbit at the start of the visit.
     pub phase: f64,
+    /// Seconds for one turn around the star, as drawn.
+    pub year: f64,
     /// Seconds for one turn on its axis, as drawn.
     pub day: f64,
     /// Axial tilt, radians, and the direction it leans.
@@ -234,14 +280,47 @@ pub struct Planet {
     pub moons: Vec<Moon>,
     pub palette: [[f32; 3]; 4],
     pub seed: u64,
+    /// Warming from tides, kelvin: for moons the size of planets, which
+    /// their giant kneads.
+    pub heat: f64,
+}
+
+/// A place the tour visits: a planet, or one of its moons as big as a planet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Stop {
+    pub planet: usize,
+    pub moon: Option<usize>,
+}
+
+impl std::fmt::Display for Stop {
+    /// p3 for planet 3, p3m1 for its moon 1.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.moon {
+            None => write!(f, "p{}", self.planet),
+            Some(m) => write!(f, "p{}m{m}", self.planet),
+        }
+    }
+}
+
+impl Stop {
+    pub fn planet(planet: usize) -> Self {
+        Self { planet, moon: None }
+    }
+
+    /// A number naming it among a system's bodies, for the streamer.
+    pub fn key(self) -> usize {
+        match self.moon {
+            None => self.planet,
+            Some(m) => 1000 + self.planet * 16 + m,
+        }
+    }
 }
 
 impl Planet {
     /// Its position around the star at `seconds` into the visit. Planets crawl
     /// along their orbits; over a visit they hardly move.
     pub fn position(&self, seconds: f64) -> [f64; 3] {
-        let years = (self.orbit / AU).powf(1.5);
-        let angle = self.phase + seconds * TAU / (years * 7200.0);
+        let angle = self.phase + seconds * TAU / self.year;
         [self.orbit * angle.cos(), 0.0, self.orbit * angle.sin()]
     }
 
@@ -537,8 +616,30 @@ fn moons_for(planet_kind: Kind, radius: f64, rng: &mut Rng) -> Vec<Moon> {
     } as usize;
     let mut moons = Vec::with_capacity(count);
     let mut orbit = radius * if planet_kind.is_giant() { 3.4 } else { 4.0 };
+    // Now and then a giant has a moon as big as a planet, in a wide orbit
+    // outside its rings: a world of its own, with air, seas or ice.
+    let world_at = match planet_kind {
+        Kind::GasGiant if rng.chance(0.7) => Some(1),
+        Kind::IceGiant if rng.chance(0.3) => Some(1),
+        _ => None,
+    };
     for i in 0..count {
-        let (kind, moon_radius) = if planet_kind.is_giant() {
+        let world = world_at == Some(i);
+        let (kind, moon_radius) = if world {
+            let kind = *rng.pick(&[
+                Kind::Terran,
+                Kind::Ocean,
+                Kind::Jungle,
+                Kind::Ice,
+                Kind::Ice,
+                Kind::Desert,
+                Kind::Cloudy,
+                Kind::Lava,
+                Kind::Barren,
+            ]);
+            orbit = orbit.max(radius * 5.5);
+            (kind, rng.range(0.6, 1.15))
+        } else if planet_kind.is_giant() {
             // Giants: volcanic close in, icy and cratered further out, a hazy
             // one sometimes, small captured rocks at the edge.
             let kind = match (i, rng.unit()) {
@@ -584,6 +685,7 @@ fn moons_for(planet_kind: Kind, radius: f64, rng: &mut Rng) -> Vec<Moon> {
             inclination: rng.range(-0.12, 0.12),
             palette: palette(kind, rng),
             seed: rng.next(),
+            world,
         });
         orbit *= rng.range(1.45, 1.8);
     }
@@ -594,61 +696,90 @@ impl System {
     /// The system for `seed`.
     pub fn generate(seed: u64) -> Self {
         let mut rng = Rng::new(seed);
-        // Mostly the common, cooler classes.
+        // Mostly the common, cooler dwarfs; now and then a hot blue star, a
+        // red giant or a white dwarf.
         let roll = rng.unit();
-        let (class, temperature, radius, mass) = if roll < 0.30 {
-            (
-                'M',
-                rng.range(2800.0, 3700.0),
-                rng.range(0.35, 0.6),
-                rng.range(0.2, 0.55),
-            )
-        } else if roll < 0.58 {
-            (
-                'K',
-                rng.range(3900.0, 5200.0),
-                rng.range(0.7, 0.9),
-                rng.range(0.6, 0.85),
-            )
-        } else if roll < 0.85 {
-            (
-                'G',
-                rng.range(5300.0, 6000.0),
-                rng.range(0.9, 1.15),
-                rng.range(0.9, 1.1),
-            )
-        } else if roll < 0.96 {
-            (
-                'F',
-                rng.range(6100.0, 7400.0),
-                rng.range(1.2, 1.5),
-                rng.range(1.15, 1.45),
-            )
+        let (kind, class, temperature, radius, mass) = if roll < 0.26 {
+            let t = rng.range(2800.0, 3700.0);
+            (StarKind::Main, 'M', t, rng.range(0.35, 0.6), rng.range(0.2, 0.55))
+        } else if roll < 0.48 {
+            let t = rng.range(3900.0, 5200.0);
+            (StarKind::Main, 'K', t, rng.range(0.7, 0.9), rng.range(0.6, 0.85))
+        } else if roll < 0.68 {
+            let t = rng.range(5300.0, 6000.0);
+            (StarKind::Main, 'G', t, rng.range(0.9, 1.15), rng.range(0.9, 1.1))
+        } else if roll < 0.78 {
+            let t = rng.range(6100.0, 7400.0);
+            (StarKind::Main, 'F', t, rng.range(1.2, 1.5), rng.range(1.15, 1.45))
+        } else if roll < 0.84 {
+            let t = rng.range(7600.0, 9800.0);
+            (StarKind::Main, 'A', t, rng.range(1.6, 2.2), rng.range(1.6, 2.4))
+        } else if roll < 0.89 {
+            let t = rng.range(12_000.0, 24_000.0);
+            (StarKind::Main, 'B', t, rng.range(3.0, 6.0), rng.range(3.0, 12.0))
+        } else if roll < 0.95 {
+            let t = rng.range(3400.0, 4600.0);
+            let class = if t < 3900.0 { 'M' } else { 'K' };
+            (StarKind::RedGiant, class, t, rng.range(12.0, 30.0), rng.range(0.9, 2.5))
         } else {
-            (
-                'A',
-                rng.range(7600.0, 9800.0),
-                rng.range(1.6, 2.2),
-                rng.range(1.6, 2.4),
-            )
+            let t = rng.range(9000.0, 26_000.0);
+            (StarKind::WhiteDwarf, 'D', t, rng.range(0.009, 0.014), rng.range(0.5, 0.9))
         };
         let luminosity = radius * radius * (temperature / 5772.0).powi(4);
         let catalogue = catalogue_name(&mut rng);
+        let tint = blackbody(temperature);
+        // How bright its light looks once eyes adapt: a little dimmer from a
+        // red dwarf or a giant's cool face, harsher from a hot star.
+        let brightness = match (kind, class) {
+            (StarKind::RedGiant, _) => 0.95,
+            (StarKind::WhiteDwarf, _) => 1.2,
+            (_, 'M') => 0.85,
+            (_, 'K') => 0.95,
+            (_, 'G') => 1.0,
+            (_, 'F') => 1.05,
+            (_, 'A') => 1.1,
+            _ => 1.25,
+        };
+        // A tiny white dwarf glares harder than its disc's size alone says;
+        // a giant's huge cool face less.
+        let glare = match kind {
+            StarKind::WhiteDwarf => 2.5,
+            StarKind::RedGiant => 0.8,
+            StarKind::Main => 1.0,
+        };
+        let surface = match (kind, class) {
+            // A few huge convection cells, and strong limb darkening.
+            (StarKind::RedGiant, _) => [5.0, 0.35, 0.75],
+            // Featureless and searing.
+            (StarKind::WhiteDwarf, _) => [90.0, 0.02, 0.2],
+            // Dark star spots.
+            (_, 'M') => [9.0, 0.3, 0.6],
+            (_, 'K') => [40.0, 0.12, 0.6],
+            (_, 'B') | (_, 'A') => [80.0, 0.04, 0.35],
+            _ => [60.0, 0.08, 0.6],
+        };
         let star = Star {
             name: catalogue.clone(),
+            kind,
             class,
             temperature,
             radius: radius * 109.0 * STAR_SCALE,
             mass,
-            // Eyes adapt to their star: its light is tinted, not saturated.
-            colour: blackbody(temperature).map(|c| 0.45 + 0.55 * c),
+            colour: tint.map(|c| (0.45 + 0.55 * c) * glare),
+            // Eyes adapt to their star: its light is tinted, not saturated,
+            // but enough that a red dwarf's worlds look lit by one.
+            light: tint.map(|c| (0.3 + 0.7 * c) * brightness),
+            surface: surface.map(|c| c as f32),
         };
 
         // Orbits spaced geometrically from just outside the star, kinds by
         // where each lies against the habitable zone.
         let habitable = luminosity.sqrt();
+        let mass_of_star = mass;
         let count = rng.int(5, 8) as usize;
-        let mut distance = habitable * rng.range(0.3, 0.45);
+        // Not too close in, even around a white dwarf, where the planets
+        // would race round their orbits.
+        let mut distance = (habitable * rng.range(0.3, 0.45)).max(0.05 * rng.range(1.0, 1.4));
         let mut planets = Vec::with_capacity(count);
         let letters = ['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
         let mut giants = 0;
@@ -741,6 +872,10 @@ impl System {
                 mass,
                 orbit: distance * AU,
                 phase: rng.range(0.0, TAU),
+                // Kepler's third law, time compressed: an Earth's year is two
+                // hours. Not quicker than 25 minutes, though, or close-in
+                // worlds would swing round during a visit.
+                year: ((distance.powi(3) / mass_of_star).sqrt() * 7200.0).max(1500.0),
                 day: if kind.is_giant() {
                     rng.range(150.0, 260.0)
                 } else {
@@ -752,6 +887,7 @@ impl System {
                 moons,
                 palette,
                 seed: rng.next(),
+                heat: 0.0,
             });
             distance *= rng.range(1.5, 1.95);
         }
@@ -776,11 +912,76 @@ impl System {
         }
     }
 
-    /// The planets to visit, in the order they are visited: three of them, as
-    /// different from each other as the system allows, inner to outer.
-    pub fn itinerary(&self) -> Vec<usize> {
+    /// Where `stop` is at `seconds` into the visit.
+    pub fn centre(&self, stop: Stop, seconds: f64) -> [f64; 3] {
+        let planet = &self.planets[stop.planet];
+        let at = planet.position(seconds);
+        match stop.moon {
+            None => at,
+            Some(m) => {
+                let o = planet.moon_offset(m, seconds);
+                [at[0] + o[0], at[1] + o[1], at[2] + o[2]]
+            }
+        }
+    }
+
+    /// The body at `stop`, as a planet: a moon the size of one takes its
+    /// giant's orbit, tilt and seasons, and turns once per trip round it.
+    /// Its `position` is its giant's; use `centre` for where it is.
+    pub fn world(&self, stop: Stop) -> Planet {
+        let planet = &self.planets[stop.planet];
+        let Some(m) = stop.moon else {
+            return planet.clone();
+        };
+        let moon = &planet.moons[m];
+        // The tides that knead it keep a living or molten moon warm far from
+        // its star; the scanner's temperatures include that heat.
+        let equilibrium = 278.6 * self.star.luminosity().powf(0.25) / (planet.orbit / AU).sqrt();
+        let heat = match moon.kind {
+            Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Desert => {
+                (255.0 - equilibrium).max(0.0)
+            }
+            Kind::Lava => (700.0 - equilibrium).max(0.0),
+            Kind::Cloudy => (150.0 - equilibrium).max(0.0),
+            _ => 0.0,
+        };
+        Planet {
+            name: moon.name.clone(),
+            kind: moon.kind,
+            radius: moon.radius,
+            mass: moon.radius.powf(3.7),
+            orbit: planet.orbit,
+            phase: planet.phase,
+            year: planet.year,
+            day: moon.period,
+            tilt: planet.tilt,
+            lean: planet.lean,
+            rings: None,
+            moons: Vec::new(),
+            palette: moon.palette,
+            seed: moon.seed,
+            heat,
+        }
+    }
+
+    /// The moon of planet `planet` big enough to visit, if it has one.
+    pub fn world_moon(&self, planet: usize) -> Option<usize> {
+        self.planets[planet]
+            .moons
+            .iter()
+            .take(super::stream::MOONS as usize)
+            .position(|m| m.world)
+    }
+
+    /// The stops to visit, in order: three planets, as different from each
+    /// other as the system allows, inner to outer. A giant with a moon the
+    /// size of a planet is always among them, last, and the moon after it.
+    pub fn itinerary(&self) -> Vec<Stop> {
         let mut rng = Rng::new(self.seed ^ 0x1717);
         let mut chosen: Vec<usize> = Vec::new();
+        let with_world: Vec<usize> = (0..self.planets.len())
+            .filter(|&i| self.world_moon(i).is_some())
+            .collect();
         // One of each broad family if there is one: rocky, giant, other.
         let families: [&dyn Fn(Kind) -> bool; 3] = [
             &|k| matches!(k, Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball),
@@ -790,10 +991,14 @@ impl System {
                     && !k.is_giant()
             },
         ];
-        for family in families {
-            let candidates: Vec<usize> = (0..self.planets.len())
-                .filter(|&i| family(self.planets[i].kind) && !chosen.contains(&i))
-                .collect();
+        for (f, family) in families.iter().enumerate() {
+            let candidates: Vec<usize> = if f == 1 && !with_world.is_empty() {
+                with_world.clone()
+            } else {
+                (0..self.planets.len())
+                    .filter(|&i| family(self.planets[i].kind) && !chosen.contains(&i))
+                    .collect()
+            };
             if !candidates.is_empty() {
                 chosen.push(*rng.pick(&candidates));
             }
@@ -805,7 +1010,23 @@ impl System {
             }
         }
         chosen.sort_unstable();
-        chosen
+        let host = chosen
+            .iter()
+            .position(|&i| self.world_moon(i).is_some());
+        if let Some(k) = host {
+            let giant = chosen.remove(k);
+            chosen.push(giant);
+        }
+        let mut stops: Vec<Stop> = chosen.into_iter().map(Stop::planet).collect();
+        if let Some(last) = stops.last().copied()
+            && let Some(m) = self.world_moon(last.planet)
+        {
+            stops.push(Stop {
+                planet: last.planet,
+                moon: Some(m),
+            });
+        }
+        stops
     }
 }
 
@@ -830,11 +1051,37 @@ mod tests {
                 }
             }
             let tour = system.itinerary();
-            assert_eq!(tour.len(), 3);
-            assert!(tour.windows(2).all(|w| w[0] < w[1]));
+            let worlds = tour.iter().filter(|s| s.moon.is_some()).count();
+            assert_eq!(tour.len(), 3 + worlds);
+            assert!(worlds <= 1);
+            if worlds == 1 {
+                // The moon last, straight after its giant.
+                let n = tour.len();
+                assert!(tour[n - 1].moon.is_some());
+                assert_eq!(tour[n - 1].planet, tour[n - 2].planet);
+            }
+            let planets: Vec<usize> = tour.iter().map(|s| s.planet).collect();
+            assert!(planets[..3].iter().all(|p| planets[..3].iter().filter(|q| *q == p).count() == 1));
         }
         // Every kind turns up somewhere across the seeds.
         assert_eq!(kinds.len(), 20, "{kinds:?}");
+    }
+
+    #[test]
+    fn every_sort_of_star_turns_up() {
+        let mut seen = std::collections::BTreeMap::new();
+        for seed in 0..400u64 {
+            let system = System::generate(seed);
+            let worlds = system.itinerary().iter().filter(|s| s.moon.is_some()).count();
+            seen.entry(system.star.describe())
+                .or_insert_with(Vec::new)
+                .push((seed, worlds));
+        }
+        for (sort, seeds) in &seen {
+            let with: Vec<u64> = seeds.iter().filter(|s| s.1 > 0).map(|s| s.0).take(4).collect();
+            println!("{sort}: {} systems, e.g. {:?}, with a big moon {with:?}", seeds.len(), &seeds[..3.min(seeds.len())]);
+        }
+        assert_eq!(seen.len(), 8, "{:?}", seen.keys());
     }
 
     #[test]
@@ -853,6 +1100,8 @@ mod tests {
             moons: Vec::new(),
             palette: [[1.0; 3]; 4],
             seed: 0,
+            heat: 0.0,
+            year: 7200.0,
         };
         // Low Earth orbit, 400 km up: about 7.7 km/s.
         let v = earth.orbital_speed(1.0 + 400.0 / KM);

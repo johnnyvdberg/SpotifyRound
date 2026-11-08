@@ -28,6 +28,16 @@ export struct ScanRow {
     value: string,
 }
 
+// A planet, or the star, on the solar tour's minimap.
+export struct MapDot {
+    x: length,
+    y: length,
+    size: length,
+    color: color,
+    label: string,
+    current: bool,
+}
+
 export struct DeviceItem {
     name: string,
     // Icon kind: "speaker", "computer", "phone", "tv" or "car".
@@ -118,6 +128,13 @@ export global Idle {
     in-out property <string> hud-labels: "";
     in-out property <string> hud-values: "";
     in-out property <[ScanRow]> hud-scans: [];
+    // The minimap: orbits and route as path commands in a 240-unit square,
+    // the planets and the star, and the ship. Hidden while empty.
+    in-out property <string> map-orbits: "";
+    in-out property <string> map-route: "";
+    in-out property <[MapDot]> map-dots: [];
+    in-out property <length> map-ship-x: 0;
+    in-out property <length> map-ship-y: 0;
 
     // A tap anywhere on the visuals returns to the player.
     callback dismiss();
