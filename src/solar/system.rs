@@ -135,6 +135,12 @@ impl Kind {
     }
 
     /// Whether it has open water to glint.
+    /// Whether it has a solid surface to see up close: not the giants or the
+    /// worlds hidden under cloud or haze.
+    pub fn has_ground(self) -> bool {
+        !self.is_giant() && !matches!(self, Kind::Cloudy | Kind::Hazy)
+    }
+
     pub fn has_sea(self) -> bool {
         matches!(
             self,

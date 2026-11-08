@@ -130,6 +130,11 @@ export global Idle {
     in-out property <[ScanRow]> hud-scans: [];
     // The minimap: orbits and route as path commands in a 240-unit square,
     // the planets and the star, and the ship. Hidden while empty.
+    // The manoeuvre panel: what the ship is doing and why, and how far
+    // through a burn or flyby (negative while coasting). Hidden while empty.
+    in-out property <string> man-name: "";
+    in-out property <string> man-text: "";
+    in-out property <float> man-progress: -1;
     in-out property <string> map-orbits: "";
     in-out property <string> map-route: "";
     in-out property <[MapDot]> map-dots: [];

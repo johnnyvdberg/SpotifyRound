@@ -15,6 +15,8 @@
 //! Everything here is a pure function of the time into the visit, so any
 //! moment can be shown on its own (the previews do) and nothing drifts.
 
+use std::f64::consts::{PI, TAU};
+
 use super::system::{AU, KM, Planet, REAL_AU, Stop, System};
 
 /// Seconds each part of the tour takes.
@@ -128,8 +130,47 @@ struct Path {
     time: Vec<f64>,
     length: Vec<f64>,
     flyby: Option<Flyby>,
+    /// The knot at a flyby's closest point.
+    waypoint: Option<usize>,
     /// When, as a share of the transfer, it passes closest.
     closest: f64,
+    /// The orbital mechanics behind it, for the manoeuvre panel.
+    burns: Burns,
+}
+
+/// The numbers of a transfer's manoeuvres, worked out from real masses and
+/// orbits with the patched-conic approximation: km/s and degrees.
+#[derive(Clone, Copy, Debug, Default)]
+struct Burns {
+    /// Leaving the first orbit onto the transfer: escape plus the excess
+    /// speed the transfer needs.
+    depart: f64,
+    /// Being caught into the orbit reached.
+    capture: f64,
+    /// Degrees swept round the star.
+    sweep: f64,
+    /// Real distances from the star, AU, at the start and end.
+    from_au: f64,
+    to_au: f64,
+    /// A gravity assist: speed relative to the planet, how far its gravity
+    /// bends the path, and the speed gained (negative: shed).
+    assist_vinf: f64,
+    assist_turn: f64,
+    assist_dv: f64,
+    /// An Oberth manoeuvre: the burn, the speed at perihelion, and the burn
+    /// far from the star that would give the same energy.
+    oberth_burn: f64,
+    oberth_speed: f64,
+    oberth_equal: f64,
+}
+
+/// What the ship is doing at one moment, and why, for the manoeuvre panel.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Manoeuvre {
+    pub name: String,
+    pub text: String,
+    /// How far through a burn or flyby, 0..1; negative while coasting.
+    pub progress: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -266,10 +307,12 @@ impl Path {
         }
         self.time = time;
         self.length = length;
-        self.closest = if self.knots.len() > 2 {
-            unsmootherstep(self.time[SAMPLES / 2])
-        } else {
-            0.5
+        self.closest = match self.waypoint {
+            Some(w) => {
+                let j = (w * SAMPLES) / (self.knots.len() - 1);
+                unsmootherstep(self.time[j.min(SAMPLES)])
+            }
+            None => 0.5,
         };
     }
 
@@ -293,6 +336,76 @@ impl Path {
 
 fn length_of(a: [f64; 3]) -> f64 {
     length(a)
+}
+
+/// Distance from the star in the plane of the system.
+fn flat_radius(a: [f64; 3]) -> f64 {
+    (a[0] * a[0] + a[2] * a[2]).sqrt()
+}
+
+/// The angle from `a` to `b` round the star the way the planets go (radians,
+/// 0..2π).
+fn prograde(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (b[2].atan2(b[0]) - a[2].atan2(a[0])).rem_euclid(TAU)
+}
+
+/// A point on a transfer arc round the star from `a` to `b`, a share `s` of
+/// the way: the angle sweeps prograde evenly while the distance from the star
+/// eases from one orbit to the other, level at both ends as on a Hohmann
+/// ellipse, where the ship leaves and meets each orbit tangentially. An arc
+/// that would go nearly all the way round goes the short way back instead.
+fn arc(a: [f64; 3], b: [f64; 3], s: f64) -> [f64; 3] {
+    let (ra, rb) = (flat_radius(a), flat_radius(b));
+    let mut sweep = prograde(a, b);
+    if sweep > 1.6 * PI {
+        sweep -= TAU;
+    }
+    let ease = 0.5 - 0.5 * (PI * s).cos();
+    let r = ra + (rb - ra) * ease;
+    let angle = a[2].atan2(a[0]) + sweep * s;
+    [r * angle.cos(), a[1] + (b[1] - a[1]) * ease, r * angle.sin()]
+}
+
+/// `n + 1` knots along the arc from `a` to `b`, crowded toward its end or
+/// start for a tight bend there.
+fn arc_knots(a: [f64; 3], b: [f64; 3], n: usize, dense_end: bool, dense_start: bool) -> Vec<[f64; 3]> {
+    (0..=n)
+        .map(|k| {
+            let mut s = k as f64 / n as f64;
+            if dense_end {
+                s = 1.0 - (1.0 - s) * (1.0 - s);
+            }
+            if dense_start {
+                s *= s;
+            }
+            match k {
+                0 => a,
+                _ if k == n => b,
+                _ => arc(a, b, s),
+            }
+        })
+        .collect()
+}
+
+/// Tangents through every knot, Catmull-Rom style.
+fn catmull_rom(knots: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    let n = knots.len();
+    (0..n)
+        .map(|k| match k {
+            0 => sub(knots[1], knots[0]),
+            _ if k == n - 1 => sub(knots[n - 1], knots[n - 2]),
+            _ => scale(sub(knots[k + 1], knots[k - 1]), 0.5),
+        })
+        .collect()
+}
+
+/// Anchors for `n` knots: the ends move with their stops, the rest stay put
+/// round the star.
+fn anchors(n: usize, first: (Anchor, f64), last: (Anchor, f64)) -> Vec<(Anchor, f64)> {
+    let mut anchors = vec![(Anchor::Fixed, 0.0); n];
+    anchors[0] = first;
+    anchors[n - 1] = last;
+    anchors
 }
 
 impl Tour {
@@ -392,53 +505,94 @@ impl Tour {
         tour
     }
 
-    /// Which transfers swing past something on the way: the star, when the
-    /// stops lie at different angles around it, or a planet not otherwise
-    /// visited that lies near the way. At least one passes the star.
+    /// The rough times of each transfer, `(leaves, arrives)`, for flyby
+    /// choices `flybys` (none yet: every transfer the plain length).
+    fn rough_times(itinerary: &[Stop], flybys: &[Option<Flyby>]) -> Vec<(f64, f64)> {
+        let mut t = 0.0;
+        itinerary
+            .iter()
+            .enumerate()
+            .map(|(k, stop)| {
+                let duration = if stop.moon.is_some() {
+                    HOP
+                } else if flybys.get(k).copied().flatten().is_some() {
+                    FLYBY
+                } else {
+                    TRANSFER
+                };
+                let times = (t, t + duration);
+                t += duration + HIGH + DESCEND + LOW + CLIMB;
+                times
+            })
+            .collect()
+    }
+
+    /// How each transfer gets there, as a real mission would plan it:
+    ///
+    /// - a **gravity assist** when another planet (a giant, ideally)
+    ///   lies along the way round the star: its pull bends the path and
+    ///   trades speed for free;
+    /// - an **Oberth manoeuvre** when the target lies most of the way round
+    ///   the star, or now and then for the spectacle: dive to perihelion and
+    ///   burn there, where thrust is worth most;
+    /// - otherwise a plain **transfer ellipse** round the star, a Hohmann
+    ///   transfer when it sweeps about half way round.
+    ///
+    /// Every system has at least one Oberth dive past its star.
     fn choose_flybys(
         system: &System,
         itinerary: &[Stop],
         entry: [f64; 3],
         rng: &mut super::system::Rng,
     ) -> Vec<Option<Flyby>> {
-        let visited: Vec<usize> = itinerary.iter().map(|s| s.planet).collect();
-        let mut angles = Vec::new();
-        let mut flybys: Vec<Option<Flyby>> = itinerary
-            .iter()
-            .enumerate()
-            .map(|(k, stop)| {
+        let rolls: Vec<f64> = itinerary.iter().map(|_| rng.unit()).collect();
+        let mut flybys: Vec<Option<Flyby>> = vec![None; itinerary.len()];
+        let mut sweeps = vec![-1.0; itinerary.len()];
+        // Twice: the second time with the lengths the first choice gives.
+        for _ in 0..2 {
+            let times = Self::rough_times(itinerary, &flybys);
+            for (k, stop) in itinerary.iter().enumerate() {
+                if stop.moon.is_some() {
+                    flybys[k] = None;
+                    continue;
+                }
+                let (t0, t1) = times[k];
                 let a = if k == 0 {
                     entry
                 } else {
-                    system.centre(itinerary[k - 1], 0.0)
+                    system.centre(itinerary[k - 1], t0)
                 };
-                let b = system.centre(*stop, 0.0);
-                let angle = dot(normalize(a), normalize(b)).clamp(-1.0, 1.0).acos();
-                if stop.moon.is_some() {
-                    angles.push(-1.0);
-                    return None;
-                }
-                angles.push(angle);
-                let chord = length(sub(b, a));
-                let near = (0..system.planets.len())
-                    .filter(|i| !visited.contains(i))
-                    .map(|i| {
-                        let c = system.planets[i].position(0.0);
-                        (i, (length(sub(c, a)) + length(sub(b, c))) / chord)
+                let b = system.centre(*stop, t1);
+                let sweep = prograde(a, b);
+                sweeps[k] = sweep;
+                let (ra, rb) = (flat_radius(a), flat_radius(b));
+                // Any planet along the way but the two ends will do.
+                let ends = [k.checked_sub(1).map(|j| itinerary[j].planet), Some(stop.planet)];
+                let assist = (0..system.planets.len())
+                    .filter(|i| !ends.contains(&Some(*i)))
+                    .filter_map(|i| {
+                        let planet = &system.planets[i];
+                        let c = planet.position(0.5 * (t0 + t1));
+                        let into = prograde(a, c);
+                        let rc = flat_radius(c);
+                        let between = into > 0.08 * sweep && into < 0.92 * sweep;
+                        let near = rc > ra.min(rb) * 0.45 && rc < ra.max(rb) * 2.0;
+                        (between && near).then_some((i, planet.mass))
                     })
-                    .min_by(|x, y| x.1.total_cmp(&y.1));
-                let roll = rng.unit();
-                match near {
-                    Some((i, detour)) if detour < 1.4 && roll < 0.45 => Some(Flyby::Planet(i)),
-                    _ if roll < 0.85 && angle > 0.7 => Some(Flyby::Star),
+                    .max_by(|x, y| x.1.total_cmp(&y.1));
+                let roll = rolls[k];
+                flybys[k] = match assist {
+                    Some((i, _)) if sweep < 1.4 * PI && roll < 0.75 => Some(Flyby::Planet(i)),
+                    _ if sweep > 1.3 * PI => Some(Flyby::Star),
+                    _ if roll > 0.78 => Some(Flyby::Star),
                     _ => None,
-                }
-            })
-            .collect();
+                };
+            }
+        }
         if !flybys.contains(&Some(Flyby::Star))
-            && let Some(k) = (0..angles.len())
-                .filter(|&k| angles[k] >= 0.0)
-                .max_by(|&a, &b| angles[a].total_cmp(&angles[b]))
+            && let Some(k) = (0..sweeps.len())
+                .filter(|&k| sweeps[k] >= 0.0 && flybys[k].is_none())
+                .max_by(|&a, &b| sweeps[a].total_cmp(&sweeps[b]))
         {
             flybys[k] = Some(Flyby::Star);
         }
@@ -472,15 +626,6 @@ impl Tour {
         let into = normalize(sub(self.system.centre(to, t1), p1));
         let start_anchor = (from.map_or(Anchor::Fixed, Anchor::Stop), t0);
         let end_anchor = (Anchor::Stop(to), t1);
-        let ends = |knots: &[[f64; 3]]| {
-            let n = knots.len();
-            let first = sub(knots[1], knots[0]);
-            let last = sub(knots[n - 1], knots[n - 2]);
-            (
-                add(scale(first, 0.5), scale(away, length(first) * 0.4)),
-                add(scale(last, 0.5), scale(into, length(last) * 0.25)),
-            )
-        };
         let mut path = Path {
             knots: vec![p0, p1],
             tangents: Vec::new(),
@@ -488,39 +633,69 @@ impl Tour {
             time: Vec::new(),
             length: Vec::new(),
             flyby,
+            waypoint: None,
             closest: 0.5,
+            burns: Burns::default(),
         };
-        // Through the closest point of a flyby: round the far side of the
-        // star from where the stops lie, or past the planet on the side
-        // toward the straight way.
         let lift = rng.range(0.1, 0.3) * if rng.chance(0.5) { 1.0 } else { -1.0 };
-        let waypoint = |when: f64| -> ([f64; 3], [f64; 3], f64, Anchor) {
+        let reach_star = (self.system.star.radius * rng_reach(self.system.seed)).max(8.0);
+
+        if to.moon.is_some() {
+            // A hop across a giant's moons: a short arc round the giant.
+            let span = length(sub(p1, p0));
+            let chord = normalize(sub(p1, p0));
+            path.tangents = vec![
+                add(scale(chord, span * 0.5), scale(away, span * 0.4)),
+                add(scale(chord, span * 0.5), scale(into, span * 0.25)),
+            ];
+            path.time(None);
+        } else {
             match flyby {
+                None => {
+                    // A transfer ellipse round the star, prograde.
+                    path.knots = arc_knots(p0, p1, 12, false, false);
+                    path.anchors = anchors(path.knots.len(), start_anchor, end_anchor);
+                    path.tangents = catmull_rom(&path.knots);
+                    path.time(None);
+                }
                 Some(Flyby::Planet(i)) => {
+                    // Two arcs meeting at the closest point past the planet,
+                    // their knots crowding in on it so the bend is tight.
                     let planet = &self.system.planets[i];
-                    let c = planet.position(when);
-                    let chord = sub(p1, p0);
-                    let along = (dot(sub(c, p0), chord) / dot(chord, chord)).clamp(0.0, 1.0);
-                    let q = add(p0, scale(chord, along));
-                    let mut side = sub(q, c);
-                    if length(side) < 1e-6 {
-                        side = cross(chord, [0.0, 1.0, 0.0]);
-                    }
-                    let side = normalize(add(normalize(side), [0.0, lift, 0.0]));
                     let reach = planet.radius
                         * match &planet.rings {
                             Some(r) => (r.outer * 1.25).max(3.0),
                             None if planet.kind.is_giant() => 3.0,
                             None => 3.2,
                         };
-                    (
-                        add(c, scale(side, reach)),
-                        c,
-                        reach,
-                        Anchor::Stop(Stop::planet(i)),
-                    )
+                    let mut when = 0.5 * (t0 + t1);
+                    for _ in 0..3 {
+                        let c = planet.position(when);
+                        // Pass behind it (on its trailing side) to be pulled
+                        // along with it, or in front of it to be slowed.
+                        let ahead = normalize([-c[2], 0.0, c[0]]);
+                        let outward = normalize([c[0], 0.0, c[2]]);
+                        let gain = flat_radius(p1) > flat_radius(p0);
+                        let side = if gain { -1.0 } else { 1.0 };
+                        let dir = normalize(add(
+                            add(scale(ahead, side), scale(outward, 0.4 * side)),
+                            [0.0, lift, 0.0],
+                        ));
+                        let w = add(c, scale(dir, reach));
+                        let mut knots = arc_knots(p0, w, 9, true, false);
+                        knots.extend(arc_knots(w, p1, 9, false, true).into_iter().skip(1));
+                        let n = knots.len();
+                        path.anchors = anchors(n, start_anchor, end_anchor);
+                        path.anchors[9] = (Anchor::Stop(Stop::planet(i)), when);
+                        path.knots = knots;
+                        path.waypoint = Some(9);
+                        path.tangents = catmull_rom(&path.knots);
+                        path.time(Some((c, reach)));
+                        when = t0 + path.closest * (t1 - t0);
+                    }
                 }
-                _ => {
+                Some(Flyby::Star) => {
+                    // A dive to perihelion round the far side of the star.
                     let (a, b) = (normalize(p0), normalize(p1));
                     let middle = add(a, b);
                     let dir = if length(middle) < 0.3 {
@@ -529,36 +704,106 @@ impl Tour {
                         scale(normalize(middle), -1.0)
                     };
                     let dir = normalize(add(dir, [0.0, lift, 0.0]));
-                    let reach = (self.system.star.radius * rng_reach(self.system.seed)).max(8.0);
-                    (scale(dir, reach), [0.0; 3], reach, Anchor::Fixed)
+                    let w = scale(dir, reach_star);
+                    path.knots = vec![p0, w, p1];
+                    path.anchors = vec![start_anchor, (Anchor::Fixed, t0), end_anchor];
+                    let first = sub(w, p0);
+                    let last = sub(p1, w);
+                    let m0 = add(scale(first, 0.5), scale(away, length(first) * 0.4));
+                    let m2 = add(scale(last, 0.5), scale(into, length(last) * 0.25));
+                    let through = add(normalize(first), normalize(last));
+                    let mut tangent = sub(through, scale(dir, dot(through, dir)));
+                    if length(tangent) < 1e-6 {
+                        tangent = cross(dir, [0.0, 1.0, 0.0]);
+                    }
+                    let arm = length(first).min(length(last));
+                    path.tangents = vec![m0, scale(normalize(tangent), arm * 0.8), m2];
+                    path.waypoint = Some(1);
+                    path.time(Some(([0.0; 3], reach_star)));
                 }
-            }
-        };
-        let mut when = 0.5 * (t0 + t1);
-        let iterations = if flyby.is_some() { 3 } else { 1 };
-        for _ in 0..iterations {
-            if flyby.is_some() {
-                let (w, centre, reach, anchor) = waypoint(when);
-                path.knots = vec![p0, w, p1];
-                path.anchors = vec![start_anchor, (anchor, when), end_anchor];
-                let (m0, m2) = ends(&path.knots);
-                let radial = normalize(sub(w, centre));
-                let through = add(normalize(sub(w, p0)), normalize(sub(p1, w)));
-                let mut tangent = sub(through, scale(radial, dot(through, radial)));
-                if length(tangent) < 1e-6 {
-                    tangent = cross(radial, [0.0, 1.0, 0.0]);
-                }
-                let arm = length(sub(w, p0)).min(length(sub(p1, w)));
-                path.tangents = vec![m0, scale(normalize(tangent), arm * 0.8), m2];
-                path.time(Some((centre, reach)));
-                when = t0 + path.closest * (t1 - t0);
-            } else {
-                let (m0, m1) = ends(&path.knots);
-                path.tangents = vec![m0, m1];
-                path.time(None);
             }
         }
+        path.burns = self.burns(&path, from, to, t0, t1);
         path
+    }
+
+    /// The numbers behind a transfer's manoeuvres. Distances drawn are
+    /// turned back into real ones (orbits ten times further, the HUD's AU),
+    /// and speeds come from the vis-viva equation and patched conics.
+    fn burns(&self, path: &Path, from: Option<Stop>, to: Stop, t0: f64, t1: f64) -> Burns {
+        let star = &self.system.star;
+        let gm_star = super::system::GM_SUN * star.mass;
+        let km = |units: f64| (units / AU).max(0.002) * REAL_AU * KM;
+        let a = path.knots[0];
+        let b = *path.knots.last().expect("a path has knots");
+        let (r0, r1) = (km(length(a)), km(length(b)));
+        let semi = 0.5 * (r0 + r1);
+        let transfer = |r: f64| (gm_star * (2.0 / r - 1.0 / semi)).max(0.0).sqrt();
+        let circular = |r: f64| (gm_star / r).sqrt();
+        // Leaving and being caught: the excess speed over a circular orbit,
+        // added in quadrature to the planet's escape speed at the high orbit,
+        // less the speed in that orbit.
+        let at_planet = |stop: Stop, vinf: f64, t: f64, camera: [f64; 3]| {
+            let world = self.world(stop);
+            let mu = super::system::GM_EARTH * world.mass;
+            let r = length(sub(camera, self.system.centre(stop, t))).max(world.radius) * KM;
+            ((vinf * vinf + 2.0 * mu / r).sqrt() - (mu / r).sqrt()).max(0.1)
+        };
+        let mut burns = Burns {
+            sweep: prograde(a, b).to_degrees(),
+            from_au: length(a) / AU,
+            to_au: length(b) / AU,
+            ..Default::default()
+        };
+        if to.moon.is_some() {
+            let giant = &self.system.planets[to.planet];
+            let mu = super::system::GM_EARTH * giant.mass;
+            let g = giant.position(t0);
+            let (ra, rb) = (length(sub(a, g)) * KM, length(sub(b, g)) * KM);
+            // A Hohmann hop between the two orbits round the giant.
+            let semi = 0.5 * (ra + rb);
+            let v = |r: f64| (mu * (2.0 / r - 1.0 / semi)).max(0.0).sqrt();
+            burns.depart = (v(ra) - (mu / ra).sqrt()).abs();
+            burns.capture = ((mu / rb).sqrt() - v(rb)).abs() + 0.2;
+            return burns;
+        }
+        burns.depart = match from {
+            Some(f) => at_planet(f, (transfer(r0) - circular(r0)).abs(), t0, a),
+            None => 0.0,
+        };
+        burns.capture = at_planet(to, (transfer(r1) - circular(r1)).abs(), t1, b);
+        match path.flyby {
+            Some(Flyby::Planet(i)) => {
+                let planet = &self.system.planets[i];
+                let w = path.knots[path.waypoint.unwrap_or(0)];
+                let c = planet.position(t0 + path.closest * (t1 - t0));
+                let rc = km(length(c));
+                let vinf = (transfer(rc) - circular(rc)).abs().max(3.0);
+                let mu = super::system::GM_EARTH * planet.mass;
+                let rp = length(sub(w, c)) * KM;
+                // The turn of a hyperbolic flyby, and the speed it trades.
+                let turn = 2.0 * (1.0 / (1.0 + rp * vinf * vinf / mu)).asin();
+                let dv = 2.0 * vinf * (turn / 2.0).sin();
+                let gain = flat_radius(b) > flat_radius(a);
+                burns.assist_vinf = vinf;
+                burns.assist_turn = turn.to_degrees();
+                burns.assist_dv = if gain { dv } else { -dv };
+            }
+            Some(Flyby::Star) => {
+                let w = path.knots[path.waypoint.unwrap_or(0)];
+                let rp = km(length(w));
+                let semi = 0.5 * (rp + r1.max(r0));
+                let vp = (gm_star * (2.0 / rp - 1.0 / semi)).max(0.0).sqrt();
+                let burn = 1.5 + (self.system.seed % 7) as f64 * 0.35;
+                // The energy a burn adds is v·dv + dv²/2: at perihelion v is
+                // large, so a small burn there equals a big one far out.
+                burns.oberth_burn = burn;
+                burns.oberth_speed = vp;
+                burns.oberth_equal = (2.0 * vp * burn + burn * burn).sqrt();
+            }
+            None => {}
+        }
+        burns
     }
 
     /// Turn each visited planet's largest moon to where the camera will see
@@ -945,6 +1190,212 @@ impl Tour {
         }
     }
 
+    /// The manoeuvre under way at `t`, named and explained: the burns that
+    /// leave and enter orbits, the coast along a transfer ellipse, a gravity
+    /// assist or an Oberth dive past the star, and the escape before a jump.
+    /// None while the scanner has the panel (in orbit) or during the jump.
+    pub fn manoeuvre(&self, t: f64) -> Option<Manoeuvre> {
+        let (segment, local) = self.segment(t);
+        let u = local / segment.duration;
+        let star = &self.system.star.name;
+        let make = |name: &str, text: String, progress: f64| {
+            Some(Manoeuvre {
+                name: name.into(),
+                text,
+                progress: progress as f32,
+            })
+        };
+        match segment.phase {
+            Phase::Transfer { from, to } => {
+                let k = self.index_of(to);
+                let path = &self.paths[k];
+                let burns = &path.burns;
+                let dest = &self.world(to).name;
+                let origin = from.map(|f| self.world(f).name.clone());
+                if to.moon.is_some() {
+                    let giant = &self.system.planets[to.planet].name;
+                    return if u < 0.15 {
+                        make(
+                            "TRANSFER BURN",
+                            format!(
+                                "Burning {:.2} km/s prograde to raise our orbit round {giant} out toward {dest}'s.",
+                                burns.depart
+                            ),
+                            u / 0.15,
+                        )
+                    } else if u > 0.85 {
+                        make(
+                            "ORBIT MATCH",
+                            format!(
+                                "Burning {:.2} km/s to match {dest}'s pace round {giant} and fall into orbit about it.",
+                                burns.capture
+                            ),
+                            (u - 0.85) / 0.15,
+                        )
+                    } else {
+                        make(
+                            "MOON TRANSFER",
+                            format!(
+                                "Coasting on a Hohmann ellipse across {giant}'s moon system: half an orbit round the giant, from our orbit out to {dest}'s."
+                            ),
+                            -1.0,
+                        )
+                    };
+                }
+                let window = 0.15;
+                if let Some(origin) = &origin
+                    && u < 0.12
+                {
+                    return make(
+                        "DEPARTURE BURN",
+                        format!(
+                            "Burning {:.1} km/s prograde: enough to break free of {origin} and leave it on a transfer orbit round {star}.",
+                            burns.depart
+                        ),
+                        u / 0.12,
+                    );
+                }
+                if origin.is_none() && u < 0.1 {
+                    return make(
+                        "DROP-OUT",
+                        format!("Out of the jump and falling sunward toward {dest}, engines quiet."),
+                        -1.0,
+                    );
+                }
+                if u > 0.88 {
+                    return make(
+                        "CAPTURE BURN",
+                        format!(
+                            "Burning {:.1} km/s retrograde as we swing in close: {dest}'s gravity catches us into orbit.",
+                            burns.capture
+                        ),
+                        (u - 0.88) / 0.12,
+                    );
+                }
+                let near = u - path.closest;
+                match path.flyby {
+                    Some(Flyby::Planet(i)) => {
+                        let name = &self.system.planets[i].name;
+                        let (verb, why) = if burns.assist_dv >= 0.0 {
+                            ("gains", "flung outward")
+                        } else {
+                            ("sheds", "dropped inward")
+                        };
+                        if near.abs() < window {
+                            make(
+                                "GRAVITY ASSIST",
+                                format!(
+                                    "Slingshot past {name} at {:.1} km/s: its gravity bends our course {:.0}° and the ship {verb} {:.1} km/s round {star}, free, {why} toward {dest}.",
+                                    burns.assist_vinf,
+                                    burns.assist_turn,
+                                    burns.assist_dv.abs()
+                                ),
+                                (near + window) / (2.0 * window),
+                            )
+                        } else if near < 0.0 {
+                            make(
+                                "ASSIST APPROACH",
+                                if burns.assist_dv >= 0.0 {
+                                    format!(
+                                        "Aiming just behind {name}, on its trailing side: its gravity will pull us along and turn us toward {dest} without a burn."
+                                    )
+                                } else {
+                                    format!(
+                                        "Aiming just ahead of {name}: its gravity will brake us and turn us inward toward {dest} without a burn."
+                                    )
+                                },
+                                -1.0,
+                            )
+                        } else {
+                            make(
+                                "COAST",
+                                format!(
+                                    "Coasting on to {dest} with the {:.1} km/s {name} {} us.",
+                                    burns.assist_dv.abs(),
+                                    if burns.assist_dv >= 0.0 { "lent" } else { "took from" }
+                                ),
+                                -1.0,
+                            )
+                        }
+                    }
+                    Some(Flyby::Star) => {
+                        if near.abs() < window {
+                            make(
+                                "OBERTH MANOEUVRE",
+                                format!(
+                                    "Burning {:.1} km/s at perihelion, moving at {:.0} km/s: thrust adds most energy where we move fastest, as much as a {:.0} km/s burn far from {star}.",
+                                    burns.oberth_burn, burns.oberth_speed, burns.oberth_equal
+                                ),
+                                (near + window) / (2.0 * window),
+                            )
+                        } else if near < 0.0 {
+                            make(
+                                "SUNDIVER",
+                                format!(
+                                    "Falling toward {star} to pass it close, where a burn counts for most (the Oberth effect), then on to {dest}."
+                                ),
+                                -1.0,
+                            )
+                        } else {
+                            make(
+                                "COAST",
+                                format!(
+                                    "Climbing away from {star}, the perihelion burn's energy carrying us out to {dest}."
+                                ),
+                                -1.0,
+                            )
+                        }
+                    }
+                    None => {
+                        let (r0, r1) = (burns.from_au, burns.to_au);
+                        let hohmann = (burns.sweep - 180.0).abs() < 35.0;
+                        if origin.is_none() {
+                            make(
+                                "APPROACH",
+                                format!(
+                                    "Falling in from {r0:.2} AU toward {dest}'s orbit at {r1:.2} AU, {star}'s gravity doing the work."
+                                ),
+                                -1.0,
+                            )
+                        } else if hohmann {
+                            make(
+                                "HOHMANN TRANSFER",
+                                format!(
+                                    "Coasting on half an ellipse round {star}, from {r0:.2} AU out to {r1:.2} AU, meeting {dest}'s orbit tangentially: the cheapest way between two orbits."
+                                ),
+                                -1.0,
+                            )
+                        } else {
+                            make(
+                                "TRANSFER ORBIT",
+                                format!(
+                                    "Engines off, coasting {:.0}° round {star} on an ellipse from {r0:.2} AU to {dest}'s orbit at {r1:.2} AU.",
+                                    burns.sweep
+                                ),
+                                -1.0,
+                            )
+                        }
+                    }
+                }
+            }
+            Phase::Depart(p) => {
+                let world = self.world(p);
+                let mu = super::system::GM_EARTH * world.mass;
+                let r = length(sub(self.view(t).position, self.system.centre(p, t))).max(world.radius) * KM;
+                make(
+                    "ESCAPE BURN",
+                    format!(
+                        "Burning prograde past {}'s escape velocity, {:.1} km/s here, to climb clear of its gravity well before the jump.",
+                        world.name,
+                        (2.0 * mu / r).sqrt()
+                    ),
+                    u,
+                )
+            }
+            _ => None,
+        }
+    }
+
     /// The scanner's readings at `t`: while orbiting a stop, from the moment
     /// the camera settles into orbit; none otherwise.
     pub fn scans(&self, t: f64) -> Vec<super::scan::Scan> {
@@ -1047,8 +1498,8 @@ impl Tour {
                 let speed = planet.orbital_speed(distance);
                 let title = match segment.phase {
                     Phase::Low(_) => "LOW ORBIT",
-                    Phase::Descend(_) => "DESCENDING",
-                    Phase::Climb(_) => "CLIMBING",
+                    Phase::Descend(_) => "DEORBIT BURN",
+                    Phase::Climb(_) => "ORBIT RAISING",
                     _ => "ORBIT",
                 };
                 let departs = self
@@ -1265,5 +1716,48 @@ mod flyby_tests {
         }
         assert!(worlds >= 8, "{worlds}");
         assert!(planet_flybys >= 3, "{planet_flybys}");
+    }
+}
+
+#[cfg(test)]
+mod manoeuvre_tests {
+    use super::*;
+
+    #[test]
+    fn transfers_explain_their_manoeuvres() {
+        let mut names = std::collections::BTreeSet::new();
+        for seed in 0..40 {
+            let tour = Tour::new(System::generate(seed), System::generate(seed + 1));
+            let mut t = 0.0;
+            while t < tour.total {
+                let (segment, _) = tour.segment(t);
+                let m = tour.manoeuvre(t);
+                match segment.phase {
+                    Phase::Transfer { .. } | Phase::Depart(_) => {
+                        let m = m.expect("a manoeuvre while travelling");
+                        if std::env::var("SOLAR_PRINT").is_ok_and(|v| v == seed.to_string())
+                            && names.insert(format!("{seed}{}{}", m.name, m.text))
+                        {
+                            println!("{t:6.1} {}: {}", m.name, m.text);
+                        }
+                        assert!(!m.text.is_empty() && !m.text.contains("NaN"), "{m:?}");
+                        names.insert(m.name);
+                    }
+                    _ => assert!(m.is_none()),
+                }
+                t += 0.5;
+            }
+        }
+        for name in [
+            "DEPARTURE BURN",
+            "CAPTURE BURN",
+            "GRAVITY ASSIST",
+            "OBERTH MANOEUVRE",
+            "HOHMANN TRANSFER",
+            "MOON TRANSFER",
+            "ESCAPE BURN",
+        ] {
+            assert!(names.contains(name), "{name} never happens: {names:?}");
+        }
     }
 }

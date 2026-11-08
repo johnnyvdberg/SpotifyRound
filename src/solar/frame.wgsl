@@ -522,6 +522,39 @@ fn fs_ground(in: Quad) -> @location(0) vec4<f32> {
     return vec4<f32>(colour * through(i, h) * h.cover, h.cover);
 }
 
+// Close-up detail over a mapped world's ground, multiplied in (as half the
+// factor: the blend doubles it): grain finer than the map's texels and the
+// light their slopes catch, from two fetches of the noise volume. It fades in
+// where a pixel covers less than a texel of the map, so only low orbits pay.
+@fragment
+fn fs_detail(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    if (h.cover < 0.999) {
+        discard;
+    }
+    let footprint = length(h.point) * params.frame.z;
+    let texel = params.bodies[i].place.w * TAU / map_size().x;
+    let close = smoothstep01(texel * 1.5, texel * 0.2, footprint);
+    if (close <= 0.0) {
+        discard;
+    }
+    let nb = to_body(i, h.n);
+    let water = relief_texel(map_uv(nb), 0.0).b;
+    let a = noised(nb * 1400.0);
+    let b = noised(nb.zxy * 3700.0);
+    // The gradient in the body frame: b's input is swizzled, so is its slope.
+    let slope = from_body(i, a.yzw * (1400.0 * 0.6) + b.zwy * (3700.0 * 0.4));
+    let n = h.n;
+    let sun = normalize(params.star.xyz - h.point);
+    let mu = dot(n, sun);
+    let dry = close * (1.0 - water);
+    let tilted = dot(normalize(n - (slope - n * dot(slope, n)) * 0.00022 * dry), sun);
+    let shading = clamp((max(tilted, 0.0) + 0.03) / (max(mu, 0.0) + 0.03), 0.6, 1.6);
+    let grain = 1.0 + (a.x * 0.6 + b.x * 0.4) * close * mix(0.28, 0.06, water);
+    return vec4<f32>(vec3<f32>(0.5 * grain * mix(1.0, shading, smoothstep01(-0.05, 0.1, mu))), 1.0);
+}
+
 // The sea, added: the sun's glint and the sky's reflection.
 @fragment
 fn fs_sea(in: Quad) -> @location(0) vec4<f32> {

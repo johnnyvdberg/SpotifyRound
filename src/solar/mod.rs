@@ -77,6 +77,8 @@ pub struct Hud {
     pub scans: Vec<scan::Scan>,
     /// The minimap of the system, while in one.
     pub map: Option<Minimap>,
+    /// The manoeuvre under way and why, while not orbiting.
+    pub manoeuvre: Option<tour::Manoeuvre>,
 }
 
 /// A small tilted map of the system: its orbits, its planets, the route
@@ -242,6 +244,21 @@ impl Solar {
                 operation: wgpu::BlendOperation::Add,
             },
         });
+        // Twice the product: the shader outputs half the factor, so the 8-bit
+        // target's clamp to 1 still lets it brighten (up to 2x) as well as
+        // darken.
+        let double_multiply = Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::Src,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        });
         let mut pipelines = std::collections::HashMap::new();
         pipelines.insert(
             "space".to_string(),
@@ -276,6 +293,7 @@ impl Solar {
         for slot in 0..2 {
             for (name, entry, blend) in [
                 ("ground", "fs_ground", over),
+                ("detail", "fs_detail", double_multiply),
                 ("cloudshadow", "fs_cloud_shadow", multiply),
                 ("sea", "fs_sea", add),
                 ("clouds", "fs_clouds", over),
@@ -550,7 +568,9 @@ impl Solar {
                 if let Some(rect) = rect(&view, place, bound) {
                     body.rect = rect;
                     let eclipsed = eclipsed(system, t, centre, planet.radius, Some(index));
-                    let passes = surface_passes(planet.kind, slot, eclipsed, planet.rings.is_some());
+                    let close = length(place) < planet.radius * 1.6;
+                    let passes =
+                        surface_passes(planet.kind, slot, eclipsed, planet.rings.is_some(), close);
                     bodies.push((length(place), body, passes));
                 }
                 // Moons: a moon the size of a planet in full once its own
@@ -580,7 +600,13 @@ impl Solar {
                     let (look, passes) = match (world, slot) {
                         (Some(w), _) => (
                             [moon.kind as u32 as f32, w as f32, -1.0, night_mode(moon.kind)],
-                            surface_passes(moon.kind, Some(w), eclipsed, false),
+                            surface_passes(
+                                moon.kind,
+                                Some(w),
+                                eclipsed,
+                                false,
+                                length(place) < moon.radius * 1.6,
+                            ),
                         ),
                         (None, Some(s)) => {
                             let mut passes = vec![format!("moon{s}")];
@@ -776,6 +802,7 @@ impl Solar {
             values,
             scans: self.tour.scans(t),
             map: self.minimap(t),
+            manoeuvre: self.tour.manoeuvre(t),
         };
     }
 
@@ -999,10 +1026,21 @@ fn eclipsed(system: &System, t: f64, at: [f64; 3], radius: f64, planet: Option<u
 
 /// The passes that draw a planet-sized body of `kind` from map slot `slot`
 /// (or flat, if its maps are not in), in order.
-fn surface_passes(kind: Kind, slot: Option<usize>, eclipsed: bool, rings: bool) -> Vec<String> {
+fn surface_passes(
+    kind: Kind,
+    slot: Option<usize>,
+    eclipsed: bool,
+    rings: bool,
+    close: bool,
+) -> Vec<String> {
     let mut passes: Vec<String> = match slot {
         Some(s) => {
             let mut passes = vec![format!("ground{s}")];
+            // Close-up detail, only near the ground of a world with one: the
+            // pass costs a frame's worth of pixels, so it is skipped higher up.
+            if close && kind.has_ground() {
+                passes.push(format!("detail{s}"));
+            }
             if kind.has_clouds() {
                 passes.push(format!("cloudshadow{s}"));
             }
