@@ -126,6 +126,8 @@ struct Uniforms {
     spin: [f32; 4],
     /// The sun's direction in the planet's frame.
     sun: [f32; 4],
+    /// The planet's disc on screen, in clip space: min x, min y, max x, max y.
+    disk: [f32; 4],
 }
 
 /// The generator's parameters, from the seed.
@@ -144,7 +146,10 @@ struct GenParams {
 
 /// Everything needed to draw one frame of the planet.
 pub(crate) struct Planet {
-    pipeline: wgpu::RenderPipeline,
+    /// The frame's passes, for the far view and for low orbit.
+    pipelines: [[wgpu::RenderPipeline; PASSES]; 2],
+    /// The noise volume the frame's shaders read.
+    noise: crate::noise3d::Noise3d,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     frames: Vec<Frame>,
@@ -173,7 +178,8 @@ impl Planet {
     pub(crate) fn with_seed(gpu: &Graphics, seed: u64) -> Result<Self> {
         let device = &gpu.device;
         let started = std::time::Instant::now();
-        let maps = generate(gpu, seed)?;
+        let noise = crate::noise3d::Noise3d::new(device, &gpu.queue);
+        let maps = generate(gpu, seed, &noise)?;
         let generated = started.elapsed();
         tracing::info!(
             seed,
@@ -253,33 +259,87 @@ impl Planet {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Planet pipeline layout"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&layout), Some(&noise.layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Planet pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
+        // Four small pipelines drawn in order (see the shader), for the far
+        // view and again for low orbit (`NEAR` in the shader).
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let multiply = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::Zero,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let passes: [(&str, &str, &str, Option<wgpu::BlendState>); PASSES] = [
+            ("background", "vs_main", "fs_background", None),
+            (
+                "ground",
+                "vs_disk",
+                "fs_ground",
+                Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            ),
+            ("detail", "vs_disk", "fs_detail", Some(multiply)),
+            ("sea", "vs_disk", "fs_sea", Some(additive)),
+            (
+                "clouds",
+                "vs_disk",
+                "fs_clouds",
+                Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            ),
+            ("glow", "vs_disk", "fs_glow", Some(additive)),
+        ];
+        let pipelines = [0.0, 1.0].map(|near| {
+            passes.map(|(name, vertex, fragment, blend)| {
+                let constants = [("NEAR", near)];
+                let options = wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                };
+                let label = format!("Planet {} {name}", if near > 0.0 { "near" } else { "far" });
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(&label),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some(vertex),
+                        buffers: &[],
+                        compilation_options: options.clone(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(fragment),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                            blend,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: options,
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
         });
 
         let frames = (0..SLOTS)
@@ -298,15 +358,21 @@ impl Planet {
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                         | wgpu::TextureUsages::TEXTURE_BINDING
                         | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
+                    view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
                 });
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                // Drawn through an sRGB view, so the passes blend in linear
+                // light and the frame Slint reads is encoded.
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+                    ..Default::default()
+                });
                 Frame { texture, view }
             })
             .collect();
 
         Ok(Self {
-            pipeline,
+            pipelines,
+            noise,
             uniforms,
             bind_group,
             frames,
@@ -361,9 +427,21 @@ impl Planet {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(1, &self.noise.group, &[]);
+            let close = near > 0.001;
+            let [background, ground, detail, sea, clouds, glow] =
+                &self.pipelines[usize::from(close)];
+            pass.set_pipeline(background);
             pass.draw(0..3, 0..1);
+            for pipeline in [ground, detail, sea, clouds, glow] {
+                // The detail only exists in low orbit.
+                if std::ptr::eq(pipeline, detail) && !close {
+                    continue;
+                }
+                pass.set_pipeline(pipeline);
+                pass.draw(0..6, 0..1);
+            }
         }
         gpu.submit(encoder.finish());
     }
@@ -381,6 +459,9 @@ impl Planet {
 }
 
 const SLOTS: usize = crate::visuals::SLOTS;
+/// The frame's pipelines, drawn in order: background, ground, close-up
+/// detail (low orbit only), sea, clouds, glow.
+const PASSES: usize = 6;
 
 /// How far into low orbit the camera is at `seconds`: 0 for the whole disc,
 /// 1 for the horizon. `PLANET_VIEW=globe` or `horizon` holds one of them.
@@ -470,7 +551,65 @@ fn uniforms_at(seconds: f64, near: f32, spin: f64) -> Uniforms {
             0.0,
         ],
         sun: v4(sun),
+        disk: disk(position, right, up, forward, half),
     }
+}
+
+/// The planet's disc on screen, in clip space, from the camera: the
+/// silhouette's circle projected, with a few pixels to spare, or the whole
+/// frame when the planet surrounds the view.
+fn disk(
+    position: [f32; 3],
+    right: [f32; 3],
+    up: [f32; 3],
+    forward: [f32; 3],
+    half: f32,
+) -> [f32; 4] {
+    let full = [-1.0, -1.0, 1.0, 1.0];
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let centre = position.map(|v| -v);
+    let distance = dot(centre, centre).sqrt();
+    if distance <= 1.0001 || dot(centre, forward) <= 1.0 {
+        return full;
+    }
+    let axis = centre.map(|v| v / distance);
+    let helper = if axis[1].abs() < 0.9 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let e1 = cross(axis, helper);
+    let l = dot(e1, e1).sqrt();
+    let e1 = e1.map(|v| v / l);
+    let e2 = cross(axis, e1);
+    let spread = distance * (1.0 / distance).asin().tan() / (PI / 16.0).cos();
+    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for k in 0..16 {
+        let a = k as f32 / 16.0 * TAU;
+        let p = [0, 1, 2].map(|i| centre[i] + spread * (a.cos() * e1[i] + a.sin() * e2[i]));
+        let z = dot(p, forward);
+        if z <= 1e-5 {
+            return full;
+        }
+        let x = dot(p, right) / z / half;
+        let y = dot(p, up) / z / half;
+        lo = [lo[0].min(x), lo[1].min(y)];
+        hi = [hi[0].max(x), hi[1].max(y)];
+    }
+    let margin = 3.0 / (SIZE as f32 / 2.0);
+    [
+        (lo[0] - margin).max(-1.0),
+        (lo[1] - margin).max(-1.0),
+        (hi[0] + margin).min(1.0),
+        (hi[1] + margin).min(1.0),
+    ]
 }
 
 fn sun_at(seconds: f64) -> [f32; 3] {
@@ -512,7 +651,7 @@ fn rotate(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
@@ -654,7 +793,7 @@ fn sea_level(heights: &[f32], width: u32, height: u32, share: f64) -> f32 {
 }
 
 /// Paint the five maps for `seed` on the GPU.
-fn generate(gpu: &Graphics, seed: u64) -> Result<Maps> {
+fn generate(gpu: &Graphics, seed: u64, noise: &crate::noise3d::Noise3d) -> Result<Maps> {
     let device = &gpu.device;
     let mut params = gen_params(seed);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -681,45 +820,48 @@ fn generate(gpu: &Graphics, seed: u64) -> Result<Maps> {
             resource: buffer.as_entire_binding(),
         }],
     });
-    let pipeline =
-        |label, layout: &wgpu::BindGroupLayout, entry, formats: &[wgpu::TextureFormat]| {
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(label),
-                bind_group_layouts: &[Some(layout)],
-                immediate_size: 0,
-            });
-            let targets: Vec<_> = formats
-                .iter()
-                .map(|&format| {
-                    Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })
+    let pipeline = |label,
+                    layout: &wgpu::BindGroupLayout,
+                    entry,
+                    formats: &[wgpu::TextureFormat],
+                    blend: Option<wgpu::BlendState>| {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some(label),
+            bind_group_layouts: &[Some(layout), Some(&noise.layout)],
+            immediate_size: 0,
+        });
+        let targets: Vec<_> = formats
+            .iter()
+            .map(|&format| {
+                Some(wgpu::ColorTargetState {
+                    format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
                 })
-                .collect();
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(entry),
-                    targets: &targets,
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
             })
-        };
+            .collect();
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some(entry),
+                targets: &targets,
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
 
     // 1. A small probe of the heights, read back to choose the sea level.
     let probe_pipeline = pipeline(
@@ -727,6 +869,7 @@ fn generate(gpu: &Graphics, seed: u64) -> Result<Maps> {
         &height_layout,
         "fs_height",
         &[wgpu::TextureFormat::Rgba32Float],
+        None,
     );
     let probe = target(
         device,
@@ -739,13 +882,16 @@ fn generate(gpu: &Graphics, seed: u64) -> Result<Maps> {
     params.size = [PROBE_WIDTH as f32, PROBE_HEIGHT as f32, 0.0, 0.0];
     gpu.queue
         .write_buffer(&buffer, 0, bytemuck::bytes_of(&params));
+    // The probe leaves out the eroded detail, too small to move the sea.
     paint(
         gpu,
         &probe_pipeline,
         &height_group,
+        &noise.group,
         &[&view_of(&probe, 0)],
         PROBE_WIDTH,
         PROBE_HEIGHT,
+        true,
     );
     let bytes = read_texture(gpu, &probe, PROBE_WIDTH, PROBE_HEIGHT, 16);
     let heights: Vec<f32> = bytes
@@ -763,6 +909,26 @@ fn generate(gpu: &Graphics, seed: u64) -> Result<Maps> {
         &height_layout,
         "fs_height",
         &[terrain_format],
+        None,
+    );
+    let add = wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+    };
+    let erosion_pipeline = pipeline(
+        "Planet erosion",
+        &height_layout,
+        "fs_erosion",
+        &[terrain_format],
+        Some(add),
     );
     let terrain = target(
         device,
@@ -775,14 +941,18 @@ fn generate(gpu: &Graphics, seed: u64) -> Result<Maps> {
     params.size = [MAP_WIDTH as f32, MAP_HEIGHT as f32, sea, 0.0];
     gpu.queue
         .write_buffer(&buffer, 0, bytemuck::bytes_of(&params));
-    paint(
-        gpu,
-        &terrain_pipeline,
-        &height_group,
-        &[&view_of(&terrain, 0)],
-        MAP_WIDTH,
-        MAP_HEIGHT,
-    );
+    for (pipeline, clear) in [(&terrain_pipeline, true), (&erosion_pipeline, false)] {
+        paint(
+            gpu,
+            pipeline,
+            &height_group,
+            &noise.group,
+            &[&view_of(&terrain, 0)],
+            MAP_WIDTH,
+            MAP_HEIGHT,
+            clear,
+        );
+    }
     mips.build(gpu, &terrain, levels, terrain_format);
 
     // 3. Everything else, from the heights.
@@ -833,7 +1003,115 @@ fn generate(gpu: &Graphics, seed: u64) -> Result<Maps> {
         wgpu::TextureFormat::R8Unorm,
         wgpu::TextureFormat::R8Unorm,
     ];
-    let surface_pipeline = pipeline("Planet surface", &surface_layout, "fs_surface", &formats);
+    // The climate first, into a scratch map the other surface passes read.
+    let climate_format = wgpu::TextureFormat::Rgba8Unorm;
+    let climate_pipeline = pipeline(
+        "Planet climate",
+        &surface_layout,
+        "fs_climate",
+        &[climate_format],
+        None,
+    );
+    let climate = target(
+        device,
+        "Planet climate",
+        MAP_WIDTH,
+        MAP_HEIGHT,
+        1,
+        climate_format,
+    );
+    paint(
+        gpu,
+        &climate_pipeline,
+        &surface_group,
+        &noise.group,
+        &[&view_of(&climate, 0)],
+        MAP_WIDTH,
+        MAP_HEIGHT,
+        true,
+    );
+    let read_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Planet surface with climate"),
+        entries: &[
+            uniform_entry(0),
+            texture(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            texture(3),
+        ],
+    });
+    let climate_view = view_of(&climate, 0);
+    let read_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Planet surface with climate"),
+        layout: &read_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&terrain_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&terrain_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&climate_view),
+            },
+        ],
+    });
+    let relief_pipeline = pipeline(
+        "Planet relief",
+        &read_layout,
+        "fs_relief",
+        &formats[1..2],
+        None,
+    );
+    let clouds_pipeline = pipeline(
+        "Planet clouds",
+        &read_layout,
+        "fs_clouds",
+        &formats[3..],
+        None,
+    );
+    // The passes after the relief read it too.
+    let late_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Planet surface with relief"),
+        entries: &[
+            uniform_entry(0),
+            texture(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            texture(3),
+            texture(4),
+        ],
+    });
+    let day_pipeline = pipeline("Planet day", &late_layout, "fs_day", &formats[..1], None);
+    let lights_pipeline = pipeline(
+        "Planet lights",
+        &late_layout,
+        "fs_lights",
+        &formats[2..3],
+        None,
+    );
+    let towns_pipeline = pipeline(
+        "Planet towns",
+        &late_layout,
+        "fs_towns",
+        &formats[2..3],
+        Some(add),
+    );
     let names = [
         "Planet day",
         "Planet relief",
@@ -846,14 +1124,61 @@ fn generate(gpu: &Graphics, seed: u64) -> Result<Maps> {
         .map(|(name, format)| target(device, name, MAP_WIDTH, MAP_HEIGHT, levels, format))
         .collect();
     let views: Vec<wgpu::TextureView> = maps.iter().map(|map| view_of(map, 0)).collect();
-    paint(
-        gpu,
-        &surface_pipeline,
-        &surface_group,
-        &views.iter().collect::<Vec<_>>(),
-        MAP_WIDTH,
-        MAP_HEIGHT,
-    );
+    for (pipeline, target) in [(&relief_pipeline, &views[1]), (&clouds_pipeline, &views[3])] {
+        paint(
+            gpu,
+            pipeline,
+            &read_group,
+            &noise.group,
+            &[target],
+            MAP_WIDTH,
+            MAP_HEIGHT,
+            true,
+        );
+    }
+    let relief_view = view_of(&maps[1], 0);
+    let late_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Planet surface with relief"),
+        layout: &late_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&terrain_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&terrain_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&climate_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(&relief_view),
+            },
+        ],
+    });
+    for (pipeline, target, clear) in [
+        (&day_pipeline, &views[0], true),
+        (&lights_pipeline, &views[2], true),
+        (&towns_pipeline, &views[2], false),
+    ] {
+        paint(
+            gpu,
+            pipeline,
+            &late_group,
+            &noise.group,
+            &[target],
+            MAP_WIDTH,
+            MAP_HEIGHT,
+            clear,
+        );
+    }
     for (map, format) in maps.iter().zip(formats) {
         mips.build(gpu, map, levels, format);
     }
@@ -910,9 +1235,11 @@ fn paint(
     gpu: &Graphics,
     pipeline: &wgpu::RenderPipeline,
     group: &wgpu::BindGroup,
+    noise_group: &wgpu::BindGroup,
     targets: &[&wgpu::TextureView],
     width: u32,
     height: u32,
+    clear: bool,
 ) {
     let mut row = 0;
     while row < height {
@@ -931,7 +1258,7 @@ fn paint(
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: if row == 0 {
+                            load: if row == 0 && clear {
                                 wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
                             } else {
                                 wgpu::LoadOp::Load
@@ -951,6 +1278,7 @@ fn paint(
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, group, &[]);
+            pass.set_bind_group(1, noise_group, &[]);
             pass.set_scissor_rect(0, row, width, rows);
             pass.draw(0..3, 0..1);
         }
@@ -1210,42 +1538,6 @@ fn hash3(c: vec3<i32>) -> f32 {
     return f32(h >> 8u) * (1.0 / 16777216.0);
 }
 
-// Value noise in [-1, 1] and its gradient (Quilez), quintic between lattice
-// points so the gradient is continuous too.
-fn noised(x: vec3<f32>) -> vec4<f32> {
-    let i = vec3<i32>(floor(x));
-    let w = fract(x);
-    let u = w * w * w * (w * (w * 6.0 - 15.0) + 10.0);
-    let du = 30.0 * w * w * (w * (w - 2.0) + 1.0);
-    let a = hash3(i + vec3<i32>(0, 0, 0)) * 2.0 - 1.0;
-    let b = hash3(i + vec3<i32>(1, 0, 0)) * 2.0 - 1.0;
-    let c = hash3(i + vec3<i32>(0, 1, 0)) * 2.0 - 1.0;
-    let d = hash3(i + vec3<i32>(1, 1, 0)) * 2.0 - 1.0;
-    let e = hash3(i + vec3<i32>(0, 0, 1)) * 2.0 - 1.0;
-    let f = hash3(i + vec3<i32>(1, 0, 1)) * 2.0 - 1.0;
-    let g = hash3(i + vec3<i32>(0, 1, 1)) * 2.0 - 1.0;
-    let h = hash3(i + vec3<i32>(1, 1, 1)) * 2.0 - 1.0;
-    let k1 = b - a;
-    let k2 = c - a;
-    let k3 = e - a;
-    let k4 = a - b - c + d;
-    let k5 = a - c - e + g;
-    let k6 = a - b - e + f;
-    let k7 = -a + b + c - d + e - f - g + h;
-    let value = a + k1 * u.x + k2 * u.y + k3 * u.z + k4 * u.x * u.y + k5 * u.y * u.z
-        + k6 * u.z * u.x + k7 * u.x * u.y * u.z;
-    let gradient = du * vec3<f32>(
-        k1 + k4 * u.y + k6 * u.z + k7 * u.y * u.z,
-        k2 + k5 * u.z + k4 * u.x + k7 * u.z * u.x,
-        k3 + k6 * u.x + k5 * u.y + k7 * u.x * u.y,
-    );
-    return vec4<f32>(value, gradient);
-}
-
-fn noise(x: vec3<f32>) -> f32 {
-    return noised(x).x;
-}
-
 // Turns each octave so the lattice never lines up from one to the next.
 const OCTAVE: mat3x3<f32> = mat3x3<f32>(
     vec3<f32>(0.00, 0.80, 0.60),
@@ -1266,10 +1558,11 @@ fn fbm(p: vec3<f32>, octaves: i32) -> f32 {
 }
 "#;
 
-/// The generator: heights first (`fs_height`), then everything else from
-/// them (`fs_surface`).
-fn generator_source() -> String {
+/// The generator: heights first (`fs_height`, then `fs_erosion` added), then
+/// the surface maps from them (`fs_day`, `fs_lights`, `fs_clouds`).
+pub(crate) fn generator_source() -> String {
     let mut source = String::from(NOISE);
+    source.push_str(crate::noise3d::WGSL);
     source.push_str(GENERATOR);
     source
 }
@@ -1334,31 +1627,43 @@ fn eroded(p: vec3<f32>, octaves: i32) -> f32 {
     var amplitude = 0.5;
     var slope = vec3<f32>(0.0);
     var frequency = 1.0;
-    var turn = mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0));
     for (var i = 0; i < octaves; i++) {
         let n = noised(q);
-        // The gradient back in the sphere's own space.
-        slope += (transpose(turn) * n.yzw) * frequency * amplitude;
+        // The slope so far, kept in this octave's frame: the octave turn is
+        // orthonormal, so its length is the same as in the sphere's own, and
+        // no matrix of turns has to be carried along.
+        slope += n.yzw * frequency * amplitude;
         sum += amplitude * n.x / (1.0 + dot(slope, slope) * 0.35);
         q = OCTAVE * q * 2.01;
-        turn = OCTAVE * turn;
+        slope = OCTAVE * slope;
         frequency *= 2.01;
         amplitude *= 0.5;
     }
     return sum;
 }
 
-// Raw elevation (sea level not yet taken off), the mountain belts, the plates'
-// continental bias, and 1.
-fn height(p: vec3<f32>) -> vec4<f32> {
+// The generator runs as several small pipelines rather than two large ones,
+// so each keeps the V3D's four threads: the large shapes, then the eroded
+// detail added on top; then the day colour with the relief, the city lights
+// and the clouds, each from the same climate.
+
+// The planet's large shapes at `p`: the point warped, the plates' blend and
+// the nearest boundary, and the base elevation.
+struct Shape {
+    q: vec3<f32>,
+    boundary: f32,
+    base: f32,
+};
+
+fn shape(p: vec3<f32>) -> Shape {
     let o = gen.offsets;
     let warp = vec3<f32>(
         fbm(p * 1.4 + o[0].xyz, 4),
         fbm(p * 1.4 + o[1].xyz, 4),
         fbm(p * 1.4 + o[2].xyz, 4),
     );
-    let q = normalize(p + warp * 0.32);
-
+    var out: Shape;
+    out.q = normalize(p + warp * 0.32);
     // Plates: a soft blend of their biases, and how close the nearest
     // boundary is.
     var weights = 0.0;
@@ -1367,7 +1672,7 @@ fn height(p: vec3<f32>) -> vec4<f32> {
     var d2 = 9.0;
     for (var i = 0; i < 12; i++) {
         let plate = gen.plates[i];
-        let d = distance(q, plate.xyz);
+        let d = distance(out.q, plate.xyz);
         let w = exp(-d * d * 14.0);
         weights += w;
         bias += w * plate.w;
@@ -1378,40 +1683,41 @@ fn height(p: vec3<f32>) -> vec4<f32> {
             d2 = d;
         }
     }
-    let plates = bias / max(weights, 1e-5);
-    let boundary = d2 - d1;
-
-    let shapes = fbm(q * 2.2 + o[3].xyz, 6);
-    let base = 0.42 * plates + 0.55 * shapes;
-    let landish = smoothstep(-0.15, 0.25, base);
-
-    // Mountain chains along the plate boundaries, mostly on land; lower
-    // ranges scattered inland.
-    let belt = exp(-boundary * boundary / (0.07 * 0.07));
-    let ridges = ridged(q * 5.5 + o[0].zxy, 6);
-    let scattered = smoothstep(0.15, 0.55, fbm(q * 3.0 + o[1].zxy, 3));
-    let mountains = ridges * (belt * (0.35 + 0.65 * landish) * 0.42 + scattered * 0.12 * landish);
-
-    let detail = eroded(q * 9.0 + o[2].zxy, 7) * (0.05 + 0.10 * landish);
-    let elevation = base + mountains + detail;
-    return vec4<f32>(elevation, mountains, base, 1.0);
+    out.boundary = d2 - d1;
+    out.base = 0.42 * bias / max(weights, 1e-5) + 0.55 * fbm(out.q * 2.2 + o[3].xyz, 6);
+    return out;
 }
 
+// Raw elevation without the eroded detail (sea level not yet taken off),
+// the mountain belts, the base, and 1.
 @fragment
 fn fs_height(in: Varying) -> @location(0) vec4<f32> {
-    return height(sphere_at(in.position.xy / gen.size.xy));
+    let p = sphere_at(in.position.xy / gen.size.xy);
+    let o = gen.offsets;
+    let s = shape(p);
+    let landish = smoothstep(-0.15, 0.25, s.base);
+    // Mountain chains along the plate boundaries, mostly on land; lower
+    // ranges scattered inland.
+    let belt = exp(-s.boundary * s.boundary / (0.07 * 0.07));
+    let ridges = ridged(s.q * 5.5 + o[0].zxy, 6);
+    let scattered = smoothstep(0.15, 0.55, fbm(s.q * 3.0 + o[1].zxy, 3));
+    let mountains = ridges * (belt * (0.35 + 0.65 * landish) * 0.42 + scattered * 0.12 * landish);
+    return vec4<f32>(s.base + mountains, mountains, s.base, 1.0);
+}
+
+// The eroded detail, added to the elevation by blending.
+@fragment
+fn fs_erosion(in: Varying) -> @location(0) vec4<f32> {
+    let p = sphere_at(in.position.xy / gen.size.xy);
+    let s = shape(p);
+    let landish = smoothstep(-0.15, 0.25, s.base);
+    let detail = eroded(s.q * 9.0 + gen.offsets[2].zxy, 7) * (0.05 + 0.10 * landish);
+    return vec4<f32>(detail, 0.0, 0.0, 0.0);
 }
 
 fn srgb(r: f32, g: f32, b: f32) -> vec3<f32> {
     return pow(vec3<f32>(r, g, b) / 255.0, vec3<f32>(2.2));
 }
-
-struct Surface {
-    @location(0) day: vec4<f32>,
-    @location(1) relief: vec4<f32>,
-    @location(2) night: vec4<f32>,
-    @location(3) clouds: vec4<f32>,
-};
 
 // Elevation above sea level, wide-looking: the height map's mip `level`.
 fn wide(uv: vec2<f32>, level: f32) -> f32 {
@@ -1419,9 +1725,13 @@ fn wide(uv: vec2<f32>, level: f32) -> f32 {
 }
 
 fn elevation_at(texel: vec2<i32>) -> f32 {
+    // Wrapped across the date line by compare and select: the V3D has no
+    // integer divide, and the emulated modulo held registers enough to cost
+    // the relief pass two threads.
     let w = i32(gen.size.x);
-    let h = i32(gen.size.y);
-    let t = vec2<i32>((texel.x + w) % w, clamp(texel.y, 0, h - 1));
+    var x = select(texel.x, texel.x + w, texel.x < 0);
+    x = select(x, x - w, x >= w);
+    let t = vec2<i32>(x, clamp(texel.y, 0, i32(gen.size.y) - 1));
     return textureLoad(terrain, t, 0).r - gen.size.z;
 }
 
@@ -1459,116 +1769,185 @@ fn turn_about(v: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
     return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0 - c);
 }
 
+// What every surface pass needs to know about a texel.
+struct Climate {
+    p: vec3<f32>,
+    uv: vec2<f32>,
+    lat: f32,
+    // Elevation above sea level, and whether it is land.
+    e: f32,
+    land: f32,
+    warmth: f32,
+    temperature: f32,
+    moisture: f32,
+    near_coast: f32,
+};
+
+// The climate, worked out once into a scratch map by `fs_climate` and read
+// back by the passes after it.
+@group(0) @binding(3) var climate_map: texture_2d<f32>;
+
+fn climate(position: vec2<f32>) -> Climate {
+    var c: Climate;
+    c.uv = position / gen.size.xy;
+    c.p = sphere_at(c.uv);
+    c.e = textureLoad(terrain, vec2<i32>(position), 0).r - gen.size.z;
+    c.land = smoothstep(-0.0015, 0.0015, c.e);
+    c.lat = asin(clamp(c.p.y, -1.0, 1.0));
+    let stored = textureLoad(climate_map, vec2<i32>(position), 0);
+    c.temperature = stored.r * 2.0 - 0.5;
+    c.moisture = stored.g;
+    c.near_coast = stored.b;
+    c.warmth = stored.a * 2.0 - 0.5;
+    return c;
+}
+
+// Temperature, moisture, the coast's nearness and warmth, encoded for an
+// 8-bit map (temperatures from -0.5 to 1.5).
 @fragment
-fn fs_surface(in: Varying) -> Surface {
-    let uv = in.position.xy / gen.size.xy;
-    let p = sphere_at(uv);
+fn fs_climate(in: Varying) -> @location(0) vec4<f32> {
+    let c = work_out_climate(in.position.xy);
+    return vec4<f32>((c.temperature + 0.5) * 0.5, c.moisture, c.near_coast, (c.warmth + 0.5) * 0.5);
+}
+
+fn work_out_climate(position: vec2<f32>) -> Climate {
+    var c: Climate;
+    c.uv = position / gen.size.xy;
+    c.p = sphere_at(c.uv);
     let o = gen.offsets;
-    let texel = vec2<i32>(in.position.xy);
-    let here = textureLoad(terrain, texel, 0);
-    let e = here.r - gen.size.z;
-    let lat = asin(clamp(p.y, -1.0, 1.0));
-    let cos_lat = max(cos(lat), 0.02);
-    let wet_sea = 1.0 - smoothstep(-0.0015, 0.0015, e);
-    let land = 1.0 - wet_sea;
-
-    // Slopes, toward the east and the north, in planet radii: one unit of
-    // elevation stands for about 16 km, 0.0025 radii, exaggerated tenfold.
-    let east_step = cos_lat * TAU / gen.size.x;
-    let north_step = PI / gen.size.y;
-    let de = (max(elevation_at(texel + vec2<i32>(1, 0)), 0.0) - max(elevation_at(texel - vec2<i32>(1, 0)), 0.0)) / (2.0 * east_step);
-    let dn = (max(elevation_at(texel - vec2<i32>(0, 1)), 0.0) - max(elevation_at(texel + vec2<i32>(0, 1)), 0.0)) / (2.0 * north_step);
-    let bump = clamp(-vec2<f32>(de, dn) * 0.0025 * 25.0, vec2<f32>(-0.45), vec2<f32>(0.45));
-    let steep = length(bump);
-
+    c.e = textureLoad(terrain, vec2<i32>(position), 0).r - gen.size.z;
+    c.land = smoothstep(-0.0015, 0.0015, c.e);
+    c.lat = asin(clamp(c.p.y, -1.0, 1.0));
+    let cos_lat = max(cos(c.lat), 0.02);
     // Temperature: latitude, height, a little noise.
-    let wobble = fbm(p * 4.0 + o[3].zyx, 4);
-    let warmth = pow(cos_lat, 0.85) + wobble * 0.10;
-    let temperature = warmth - max(e, 0.0) * 1.5;
-
+    c.warmth = pow(cos_lat, 0.85) + fbm(c.p * 4.0 + o[3].zyx, 4) * 0.10;
+    c.temperature = c.warmth - max(c.e, 0.0) * 1.5;
     // Moisture: the circulation cells, then the air's path from the sea along
-    // the prevailing wind, which mountains upwind wring dry.
-    let cells = cos(6.0 * lat);
-    let degrees = abs(lat) * 57.2958;
-    // Trade winds and polar easterlies come from the east; the westerlies of
-    // the mid-latitudes from the west.
+    // the prevailing wind, which mountains upwind wring dry. Trade winds and
+    // polar easterlies come from the east; the westerlies from the west.
+    let degrees = abs(c.lat) * 57.2958;
     let from_east = select(-1.0, 1.0, degrees < 30.0 || degrees > 62.0);
     var ocean_upwind = 0.0;
     var barrier = 0.0;
-    var weights = 0.0;
     for (var k = 1; k <= 5; k++) {
-        let reach = f32(k) * 0.0105 / cos_lat;
-        let up = wide(uv + vec2<f32>(from_east * reach, 0.0), 4.5);
-        let w = 1.0 / f32(k);
-        ocean_upwind += w * (1.0 - smoothstep(-0.02, 0.03, up));
-        barrier = max(barrier, up - max(e, 0.0));
-        weights += w;
+        let up = wide(c.uv + vec2<f32>(from_east * f32(k) * 0.0105 / cos_lat, 0.0), 4.5);
+        ocean_upwind += (1.0 - smoothstep(-0.02, 0.03, up)) / f32(k);
+        barrier = max(barrier, up - max(c.e, 0.0));
     }
-    ocean_upwind /= weights;
-    let near_coast = 1.0 - smoothstep(0.0, 0.12, max(wide(uv, 5.5), 0.0));
-    let interior = smoothstep(0.03, 0.25, wide(uv, 7.5));
-    let shadow = smoothstep(0.05, 0.3, barrier);
-    let moisture = clamp(
-        0.40 + 0.26 * cells + 0.30 * ocean_upwind + 0.12 * near_coast - 0.18 * interior
-            - 0.35 * shadow + 0.22 * fbm(p * 6.0 + o[2].yzx, 5),
+    // The weights 1/k for k = 1..5 add up to 137/60.
+    ocean_upwind *= 60.0 / 137.0;
+    c.near_coast = 1.0 - smoothstep(0.0, 0.12, max(wide(c.uv, 5.5), 0.0));
+    let interior = smoothstep(0.03, 0.25, wide(c.uv, 7.5));
+    c.moisture = clamp(
+        0.40 + 0.26 * cos(6.0 * c.lat) + 0.30 * ocean_upwind + 0.12 * c.near_coast - 0.18 * interior
+            - 0.35 * smoothstep(0.05, 0.3, barrier) + 0.22 * fbm(c.p * 6.0 + o[2].yzx, 5),
         0.0,
         1.0,
     );
+    return c;
+}
 
+// The relief's slopes toward the east and the north, as the normal map
+// stores them: one unit of elevation stands for about 16 km, 0.0025 radii,
+// exaggerated.
+fn slopes(position: vec2<f32>, lat: f32) -> vec2<f32> {
+    let texel = vec2<i32>(position);
+    let east_step = max(cos(lat), 0.02) * TAU / gen.size.x;
+    let north_step = PI / gen.size.y;
+    let de = (max(elevation_at(texel + vec2<i32>(1, 0)), 0.0) - max(elevation_at(texel - vec2<i32>(1, 0)), 0.0)) / (2.0 * east_step);
+    let dn = (max(elevation_at(texel - vec2<i32>(0, 1)), 0.0) - max(elevation_at(texel + vec2<i32>(0, 1)), 0.0)) / (2.0 * north_step);
+    return clamp(-vec2<f32>(de, dn) * 0.0025 * 25.0, vec2<f32>(-0.45), vec2<f32>(0.45));
+}
+
+// The relief with the water mask, before the day map, which reads it.
+@fragment
+fn fs_relief(in: Varying) -> @location(0) vec4<f32> {
+    let uv = in.position.xy / gen.size.xy;
+    let lat = (0.5 - uv.y) * PI;
+    let land = smoothstep(-0.0015, 0.0015, textureLoad(terrain, vec2<i32>(in.position.xy), 0).r - gen.size.z);
+    return vec4<f32>(vec2<f32>(0.5) + slopes(in.position.xy, lat) * land, 1.0 - land, 1.0);
+}
+
+// The finished relief, for the passes after `fs_relief`.
+@group(0) @binding(4) var relief_map: texture_2d<f32>;
+
+fn steepness(position: vec2<f32>) -> f32 {
+    return length(textureLoad(relief_map, vec2<i32>(position), 0).rg - vec2<f32>(0.5));
+}
+
+// The day map.
+@fragment
+fn fs_day(in: Varying) -> @location(0) vec4<f32> {
+    let c = climate(in.position.xy);
+    let o = gen.offsets;
+    let p = c.p;
+    let steep = steepness(in.position.xy);
+    let moisture = c.moisture;
+    let temperature = c.temperature;
     // Land colour: a blend of biomes across temperature and moisture, from
     // colours read off Blue Marble imagery.
-    let grain = fbm(p * 60.0 + o[1].yxz, 4);
     let sand = mix(srgb(218.0, 184.0, 136.0), srgb(170.0, 118.0, 78.0), 0.45 * smoothstep(-0.2, 0.3, fbm(p * 14.0 + o[0].yxz, 4)));
-    let steppe = srgb(150.0, 136.0, 94.0);
-    let savanna = srgb(122.0, 114.0, 66.0);
-    let tropical = srgb(26.0, 54.0, 20.0);
-    let temperate = srgb(48.0, 70.0, 32.0);
-    let boreal = srgb(32.0, 48.0, 34.0);
-    let tundra = srgb(108.0, 102.0, 88.0);
-    let rock = srgb(100.0, 88.0, 76.0);
-    let snow = srgb(236.0, 240.0, 245.0);
-
-    let dry = mix(sand, steppe, smoothstep(0.10, 0.32, moisture));
-    let warm_green = mix(savanna, tropical, smoothstep(0.48, 0.80, moisture));
-    let green = mix(boreal, mix(temperate, warm_green, smoothstep(0.62, 0.85, temperature)), smoothstep(0.42, 0.58, temperature));
+    let dry = mix(sand, srgb(150.0, 136.0, 94.0), smoothstep(0.10, 0.32, moisture));
+    let warm_green = mix(srgb(122.0, 114.0, 66.0), srgb(26.0, 54.0, 20.0), smoothstep(0.48, 0.80, moisture));
+    let green = mix(srgb(32.0, 48.0, 34.0), mix(srgb(48.0, 70.0, 32.0), warm_green, smoothstep(0.62, 0.85, temperature)), smoothstep(0.42, 0.58, temperature));
     var ground = mix(dry, green, smoothstep(0.25, 0.62, moisture));
-    ground = mix(ground, tundra, smoothstep(0.46, 0.34, temperature));
-    ground = mix(ground, rock, max(smoothstep(0.12, 0.40, steep) * 0.75, smoothstep(0.16, 0.34, e) * 0.55));
-    ground = mix(ground, snow, smoothstep(0.26, 0.15, temperature));
-    ground *= 0.86 + 0.28 * (grain + 0.5);
-
+    ground = mix(ground, srgb(108.0, 102.0, 88.0), smoothstep(0.46, 0.34, temperature));
+    ground = mix(ground, srgb(100.0, 88.0, 76.0), max(smoothstep(0.12, 0.40, steep) * 0.75, smoothstep(0.16, 0.34, c.e) * 0.55));
+    ground = mix(ground, srgb(236.0, 240.0, 245.0), smoothstep(0.26, 0.15, temperature));
+    ground *= 0.86 + 0.28 * (fbm(p * 60.0 + o[1].yxz, 4) + 0.5);
     // The sea: turquoise over the shelves, darkening into the deep, frozen
     // where it is cold enough.
-    let depth = max(-e, 0.0);
+    let depth = max(-c.e, 0.0);
     var sea = mix(srgb(30.0, 82.0, 112.0), srgb(10.0, 28.0, 66.0), smoothstep(0.0, 0.035, depth));
     sea = mix(sea, srgb(5.0, 13.0, 40.0), smoothstep(0.035, 0.22, depth));
-    let sea_temperature = warmth + 0.04;
-    let ice = smoothstep(0.17, 0.10, sea_temperature + 0.04 * fbm(p * 20.0, 3));
+    let ice = smoothstep(0.17, 0.10, c.warmth + 0.04 + 0.04 * fbm(p * 20.0, 3));
     sea = mix(sea, srgb(218.0, 226.0, 236.0), ice);
-    let day = mix(ground, sea, wet_sea);
+    return vec4<f32>(mix(sea, ground, c.land), 1.0);
+}
 
-    // City lights where people would live: temperate, watered, low land,
-    // nearer the coast.
-    let liveable = land
-        * smoothstep(0.30, 0.52, temperature) * (1.0 - smoothstep(0.30, 0.50, e))
-        * smoothstep(0.10, 0.35, moisture) * (0.45 + 0.9 * near_coast)
-        * smoothstep(-0.25, 0.20, fbm(p * 3.0 + o[3].xzy, 3));
+// How likely people are to live here: temperate, watered, low land, nearer
+// the coast, not on steep slopes.
+fn liveable(position: vec2<f32>) -> f32 {
+    let c = climate(position);
+    return c.land
+        * smoothstep(0.30, 0.52, c.temperature) * (1.0 - smoothstep(0.30, 0.50, c.e))
+        * smoothstep(0.10, 0.35, c.moisture) * (0.45 + 0.9 * c.near_coast)
+        * smoothstep(-0.25, 0.20, fbm(c.p * 3.0 + gen.offsets[3].xzy, 3))
+        * (1.0 - smoothstep(0.08, 0.25, steepness(position)));
+}
+
+// City lights: the cities, then (`fs_towns`, added) the towns between them.
+@fragment
+fn fs_lights(in: Varying) -> @location(0) vec4<f32> {
+    let live = liveable(in.position.xy);
     var lights = 0.0;
-    if (liveable > 0.01) {
-        let cities = settlements(p, 120.0, 0.7, 11);
-        let towns = settlements(p, 420.0, 0.6, 29);
-        lights = liveable * (cities * 1.8 + towns * 0.7);
-        lights *= 1.0 - smoothstep(0.08, 0.25, steep);
+    if (live > 0.01) {
+        lights = live * settlements(sphere_at(in.position.xy / gen.size.xy), 120.0, 0.7, 11) * 1.8;
     }
+    return vec4<f32>(clamp(lights, 0.0, 1.0), 0.0, 0.0, 1.0);
+}
 
-    // Clouds: wound into the storms, stretched along the latitudes, banded
-    // like the circulation cells, thinner over dry land.
-    var c = p;
+@fragment
+fn fs_towns(in: Varying) -> @location(0) vec4<f32> {
+    let live = liveable(in.position.xy);
+    var lights = 0.0;
+    if (live > 0.01) {
+        lights = live * settlements(sphere_at(in.position.xy / gen.size.xy), 420.0, 0.6, 29) * 0.7;
+    }
+    return vec4<f32>(clamp(lights, 0.0, 1.0), 0.0, 0.0, 0.0);
+}
+
+// Clouds: wound into the storms, stretched along the latitudes, banded like
+// the circulation cells, thinner over dry land.
+@fragment
+fn fs_clouds(in: Varying) -> @location(0) vec4<f32> {
+    let cl = climate(in.position.xy);
+    let o = gen.offsets;
+    var c = cl.p;
     for (var i = 0; i < 12; i++) {
         let storm = gen.storms[i];
         let d = distance(c, storm.xyz);
-        let angle = storm.w * exp(-d * d / (0.22 * 0.22));
-        c = turn_about(c, storm.xyz, angle);
+        c = turn_about(c, storm.xyz, storm.w * exp(-d * d / (0.22 * 0.22)));
     }
     let stretched = vec3<f32>(c.x, c.y * 1.9, c.z);
     let cwarp = vec3<f32>(
@@ -1577,24 +1956,19 @@ fn fs_surface(in: Varying) -> Surface {
         fbm(stretched * 2.0 + o[3].xyz, 3),
     );
     let sheet = fbm(stretched * 3.5 + cwarp * 0.9 + o[0].xyz, 9);
-    let itcz = exp(-pow((lat * 57.2958 - 4.0) / 7.0, 2.0));
-    let cover = sheet + 0.10 * cells + 0.12 * itcz + 0.16 * (moisture - 0.5) * land - 0.10;
+    let itcz = exp(-pow((cl.lat * 57.2958 - 4.0) / 7.0, 2.0));
+    let cover = sheet + 0.10 * cos(6.0 * cl.lat) + 0.12 * itcz + 0.16 * (cl.moisture - 0.5) * cl.land - 0.10;
     var cloud = smoothstep(0.0, 0.42, cover);
     // Finer breakup at the edges.
     cloud *= smoothstep(-0.45, 0.25, fbm(c * 26.0 + o[3].yzx, 4) + cloud * 0.6);
-
-    var out: Surface;
-    out.day = vec4<f32>(day, 1.0);
-    out.relief = vec4<f32>(vec2<f32>(0.5) + bump * land, wet_sea, 1.0);
-    out.night = vec4<f32>(clamp(lights, 0.0, 1.0), 0.0, 0.0, 1.0);
-    out.clouds = vec4<f32>(clamp(cloud, 0.0, 1.0), 0.0, 0.0, 1.0);
-    return out;
+    return vec4<f32>(clamp(cloud, 0.0, 1.0), 0.0, 0.0, 1.0);
 }
 "#;
 
 /// The frame shader, with the fixed lighting numbers folded in.
-fn shader_source() -> String {
+pub(crate) fn shader_source() -> String {
     let mut source = String::from(NOISE);
+    source.push_str(crate::noise3d::WGSL);
     let constants = format!(
         "const RELIEF: f32 = {relief};\n\
          const NIGHT_GAIN: f32 = {night_gain};\n\
@@ -1627,6 +2001,23 @@ fn shader_source() -> String {
 }
 
 const FRAME_SHADER: &str = r#"
+// The frame is drawn in four small pipelines, one after another in a single
+// render pass, rather than one large one: each stays within the V3D's
+// four-thread register budget, and the tile buffer blends them on chip.
+// They write linear light, premultiplied, through an sRGB view of the
+// frame, which encodes on the way out.
+//
+// - `fs_background`, full screen: space behind the planet and the air seen
+//   edge-on past its limb.
+// - `fs_ground`, over the planet's disc: the lit ground, its relief, the
+//   clouds' shadows, the sea's glint, dimmed by the air in front of it.
+// - `fs_clouds`, blended over it: the cloud deck.
+// - `fs_glow`, added: city lights and earthshine on the night side, and the
+//   blue the air in front of the planet scatters toward the viewer.
+//
+// `NEAR` builds the low-orbit versions of the ground and the clouds, with
+// close-up detail where a map texel covers several pixels.
+
 struct Uniforms {
     frame: vec4<f32>,
     camera: vec4<f32>,
@@ -1635,6 +2026,8 @@ struct Uniforms {
     forward: vec4<f32>,
     spin: vec4<f32>,
     sun: vec4<f32>,
+    // The planet's disc on screen, in clip space: min x, min y, max x, max y.
+    disk: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Uniforms;
@@ -1644,9 +2037,12 @@ struct Uniforms {
 @group(0) @binding(4) var relief_map: texture_2d<f32>;
 @group(0) @binding(5) var map_sampler: sampler;
 
-// `Theme.bg` (#07070a), the window colour behind the planet.
-const BACKGROUND: vec3<f32> = vec3<f32>(0.0275, 0.0275, 0.0392);
+override NEAR: bool = false;
+
+// `Theme.bg` (#07070a), the window colour behind the planet, in linear light.
+const BACKGROUND: vec3<f32> = vec3<f32>(0.0024, 0.0024, 0.0033);
 const SKYLIGHT: vec3<f32> = vec3<f32>(0.035, 0.060, 0.110);
+const ATMOSPHERE: f32 = 1.075;
 
 fn smoothstep01(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
@@ -1660,15 +2056,6 @@ fn airmass(mu: f32) -> f32 {
 
 fn sunlight(mu: f32) -> vec3<f32> {
     return SUNLIGHT * exp(-AIR * airmass(mu)) * smoothstep01(-0.035, 0.02, mu);
-}
-
-fn encode(linear: vec3<f32>, alpha: f32) -> vec4<f32> {
-    if (max(max(linear.r, linear.g), linear.b) <= 0.8) {
-        return vec4<f32>(pow(max(linear, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)), alpha);
-    }
-    let over = max(linear - vec3<f32>(0.8), vec3<f32>(0.0));
-    let shaped = min(linear, vec3<f32>(0.8)) + 0.2 * (vec3<f32>(1.0) - exp(-over * 5.0));
-    return vec4<f32>(pow(shaped, vec3<f32>(1.0 / 2.2)), alpha);
 }
 
 struct Varying {
@@ -1687,45 +2074,16 @@ fn vs_main(@builtin(vertex_index) index: u32) -> Varying {
     return out;
 }
 
-// The air seen edge-on, where a ray passes `r` planet radii from the centre at
-// its closest, in the direction `tangent`: as the globe's limb.
-fn limb(r: f32, tangent: vec3<f32>, screen: f32) -> vec4<f32> {
-    let h = max(r - 1.0, 0.0);
-    let depth = AIR * sqrt(TAU * r / SCALE_HEIGHT) * exp(-h / SCALE_HEIGHT);
-    let mu = dot(tangent, params.sun.xyz);
-    let lit = SUNLIGHT * exp(-AIR * airmass(mu + 0.08) * 0.6) * smoothstep01(-0.30, 0.05, mu);
-    var glow = lit * (vec3<f32>(1.0) - exp(-depth)) * 0.9;
-    let night = 1.0 - smoothstep01(-0.25, 0.05, mu);
-    let band = (h - SCALE_HEIGHT * 1.4) / (SCALE_HEIGHT * 0.35);
-    glow += vec3<f32>(0.10, 0.32, 0.12) * exp(-band * band) * night * 0.10;
-    // In the far view, faded out before the square frame can cut it off.
-    let guard = mix(1.0 - smoothstep01(FRAME_EDGE * 0.92, FRAME_EDGE, screen), 1.0, params.frame.w);
-    let out = pow(glow, vec3<f32>(1.0 / 2.2)) * guard;
-    return vec4<f32>(out, min(max(max(out.r, out.g), out.b), 1.0));
-}
-
-fn space(position: vec2<f32>) -> vec3<f32> {
-    let centre = vec2<f32>(params.frame.x);
-    let d = length(position - centre);
-    let t = d / length(centre);
-    let inner = vec4<f32>(vec3<f32>(0.2941, 0.5255, 0.8471) * 0.0784, 0.0784);
-    let middle = vec4<f32>(vec3<f32>(0.1412, 0.2902, 0.4902) * 0.0627, 0.0627);
-    var air = select(
-        mix(middle, vec4<f32>(0.0), clamp((t - 0.52) / 0.24, 0.0, 1.0)),
-        mix(inner, middle, t / 0.52),
-        t < 0.52,
+// A quad over the planet's disc, so the planet's pipelines shade nothing else.
+@vertex
+fn vs_disk(@builtin(vertex_index) index: u32) -> Varying {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
     );
-    air *= step(d, centre.x) * (1.0 - params.frame.w);
-    return air.rgb + BACKGROUND * (1.0 - air.a);
-}
-
-fn map_uv(n: vec3<f32>, turns: f32) -> vec2<f32> {
-    return vec2<f32>(0.5 + atan2(n.x, n.z) / TAU + turns, 0.5 - asin(clamp(n.y, -1.0, 1.0)) / PI);
-}
-
-// A screen derivative of map coordinates, across the date line's wrap.
-fn unwrap(g: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>(g.x - round(g.x), g.y);
+    var out: Varying;
+    out.position = vec4<f32>(mix(params.disk.xy, params.disk.zw, corners[index]), 0.0, 1.0);
+    return out;
 }
 
 struct Ray {
@@ -1762,135 +2120,256 @@ fn trace(position: vec2<f32>) -> Ray {
     return ray;
 }
 
-// Close-up detail where a map texel covers several pixels: value noise and
-// its slope, fading in as the footprint shrinks.
-fn detail(n: vec3<f32>) -> vec4<f32> {
-    let a = noised(n * 1500.0);
-    let b = noised(OCTAVE * n * 3100.0);
-    let c = noised(n.zxy * 6300.0);
-    let value = a.x * 0.5 + b.x * 0.25 + c.x * 0.125;
-    let slope = a.yzw * 1500.0 * 0.5 + (transpose(OCTAVE) * b.yzw) * 3100.0 * 0.25 + c.yzw.yzx * 6300.0 * 0.125;
-    return vec4<f32>(value, slope);
+// How much of the pixel the planet covers: a pixel either side of the limb.
+fn coverage(ray: Ray) -> f32 {
+    let edge = (ray.closest - 1.0) / max(ray.distance * params.frame.z, 1e-6);
+    return smoothstep01(-0.75, 0.75, -edge);
+}
+
+fn map_uv(n: vec3<f32>, turns: f32) -> vec2<f32> {
+    return vec2<f32>(0.5 + atan2(n.x, n.z) / TAU + turns, 0.5 - asin(clamp(n.y, -1.0, 1.0)) / PI);
+}
+
+// A screen derivative of map coordinates, across the date line's wrap.
+fn unwrap(g: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(g.x - round(g.x), g.y);
+}
+
+// The mip level the maps need where their coordinates change by these per
+// pixel: one level per sample instead of two gradients.
+fn level(uv: vec2<f32>) -> f32 {
+    let size = vec2<f32>(textureDimensions(day_map, 0));
+    let gx = unwrap(dpdx(uv)) * size;
+    let gy = unwrap(dpdy(uv)) * size;
+    return 0.5 * log2(max(max(dot(gx, gx), dot(gy, gy)), 1e-8)) + BIAS;
+}
+
+// The ground's tangent frame at `n`.
+fn east_of(n: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(n.z, 0.0, -n.x) / sqrt(max(n.x * n.x + n.z * n.z, 1e-8));
+}
+
+// How far the clouds' shadows fall, in map coordinates, from where the sun
+// stands over `n`.
+fn shadow_shift(n: vec3<f32>, mu_sun: f32) -> vec2<f32> {
+    let sun = params.sun.xyz;
+    let east = east_of(n);
+    let cos_lat = sqrt(max(n.x * n.x + n.z * n.z, 1e-8));
+    let reach = CLOUD_HEIGHT / max(mu_sun, 0.12);
+    return vec2<f32>(dot(sun, east) * reach / (TAU * max(cos_lat, 0.05)), -dot(sun, cross(n, east)) * reach / PI);
+}
+
+// The air's transmittance toward the viewer from the ground at `mu_view`.
+fn through(ray: Ray) -> vec3<f32> {
+    return exp(-AIR * airmass(clamp(dot(ray.n, -ray.dir), 0.0, 1.0)));
+}
+
+// ---------------------------------------------------------------------------
+
+fn space(position: vec2<f32>) -> vec3<f32> {
+    let centre = vec2<f32>(params.frame.x);
+    let d = length(position - centre);
+    let t = d / length(centre);
+    let inner = vec4<f32>(vec3<f32>(0.2941, 0.5255, 0.8471) * 0.0784, 0.0784);
+    let middle = vec4<f32>(vec3<f32>(0.1412, 0.2902, 0.4902) * 0.0627, 0.0627);
+    var air = select(
+        mix(middle, vec4<f32>(0.0), clamp((t - 0.52) / 0.24, 0.0, 1.0)),
+        mix(inner, middle, t / 0.52),
+        t < 0.52,
+    );
+    air *= step(d, centre.x) * (1.0 - params.frame.w);
+    // The gradient was a Slint one, laid in sRGB: back to linear.
+    return pow(air.rgb + vec3<f32>(0.0275, 0.0275, 0.0392) * (1.0 - air.a), vec3<f32>(2.2));
 }
 
 @fragment
-fn fs_main(in: Varying) -> @location(0) vec4<f32> {
+fn fs_background(in: Varying) -> @location(0) vec4<f32> {
     let ray = trace(in.position.xy);
-    let uv = map_uv(ray.n, params.spin.x);
-    let cuv = map_uv(ray.nc, params.spin.y);
-    // Derivatives before any branch, unwrapped across the date line, so the
-    // mip level never jumps there.
-    let gx = unwrap(dpdx(uv));
-    let gy = unwrap(dpdy(uv));
-    let cgx = unwrap(dpdx(cuv));
-    let cgy = unwrap(dpdy(cuv));
-
-    let half = params.frame.x;
-    let screen = length(in.position.xy - vec2<f32>(half)) / (half * 0.93);
-    let globe = shade(ray, uv, cuv, gx, gy, cgx, cgy, screen);
-    if (globe.a >= 1.0) {
-        return vec4<f32>(globe.rgb, 1.0);
+    var colour = space(in.position.xy);
+    let r = ray.closest;
+    if (r < ATMOSPHERE) {
+        // The air edge-on: a glow where the sun lights it, thinning out with
+        // height; on the night side only the faint green airglow.
+        let h = max(r - 1.0, 0.0);
+        let depth = AIR * sqrt(TAU * r / SCALE_HEIGHT) * exp(-h / SCALE_HEIGHT);
+        let mu = dot(ray.n, params.sun.xyz);
+        let lit = SUNLIGHT * exp(-AIR * airmass(mu + 0.08) * 0.6) * smoothstep01(-0.30, 0.05, mu);
+        var glow = lit * (vec3<f32>(1.0) - exp(-depth)) * 0.9;
+        let night = 1.0 - smoothstep01(-0.25, 0.05, mu);
+        let band = (h - SCALE_HEIGHT * 1.4) / (SCALE_HEIGHT * 0.35);
+        glow += vec3<f32>(0.10, 0.32, 0.12) * exp(-band * band) * night * 0.03;
+        // In the far view, faded out before the square frame can cut it off.
+        let half = params.frame.x;
+        let screen = length(in.position.xy - vec2<f32>(half)) / (half * 0.93);
+        let guard = mix(1.0 - smoothstep01(FRAME_EDGE * 0.92, FRAME_EDGE, screen), 1.0, params.frame.w);
+        colour += glow * guard;
     }
-    return vec4<f32>(globe.rgb * globe.a + space(in.position.xy) * (1.0 - globe.a), 1.0);
+    return vec4<f32>(colour, 1.0);
 }
 
-fn shade(ray: Ray, uv: vec2<f32>, cuv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>, cgx: vec2<f32>, cgy: vec2<f32>, screen: f32) -> vec4<f32> {
-    let n = ray.n;
-    let pixel = params.frame.z;
-    // Anti-aliasing at the limb: a pixel either side of the edge.
-    let edge = (ray.closest - 1.0) / max(ray.distance * pixel, 1e-6);
-    let coverage = smoothstep01(-0.75, 0.75, -edge);
-    if (coverage <= 0.0) {
-        return limb(ray.closest, n, screen);
+// Close-up detail where a map texel covers several pixels: three octaves of
+// value noise and their slope, fading in as the footprint shrinks.
+fn detail(n: vec3<f32>) -> vec4<f32> {
+    var sum = noised(n * 1500.0) * vec4<f32>(0.5, vec3<f32>(1500.0 * 0.5));
+    let b = noised(OCTAVE * n * 3100.0);
+    sum += vec4<f32>(b.x * 0.25, (transpose(OCTAVE) * b.yzw) * 3100.0 * 0.25);
+    let c = noised(n.zxy * 6300.0);
+    sum += vec4<f32>(c.x * 0.125, c.yzw.yzx * 6300.0 * 0.125);
+    return sum;
+}
+
+// How much close-up detail a ray's ground point gets.
+fn closeness(ray: Ray) -> f32 {
+    return smoothstep01(MAP_TEXEL * 1.5, MAP_TEXEL * 0.25, ray.distance * params.frame.z);
+}
+
+@fragment
+fn fs_ground(in: Varying) -> @location(0) vec4<f32> {
+    let ray = trace(in.position.xy);
+    let uv = map_uv(ray.n, params.spin.x);
+    let lod = level(uv);
+    let cover = coverage(ray);
+    if (cover <= 0.0) {
+        discard;
     }
-
-    let bias = exp2(BIAS);
-    let cos_lat = sqrt(max(n.x * n.x + n.z * n.z, 1e-8));
-    let sin_lon = n.x / cos_lat;
-    let cos_lon = n.z / cos_lat;
-    let east = vec3<f32>(cos_lon, 0.0, -sin_lon);
-    let north = vec3<f32>(-n.y * sin_lon, cos_lat, -n.y * cos_lon);
-    let relief = textureSampleGrad(relief_map, map_sampler, uv, gx * bias * 1.3, gy * bias * 1.3);
-    let bump = relief.rg - vec2<f32>(0.5);
-    let water = relief.b;
-    var tilted = normalize(n + (east * bump.x + north * bump.y) * RELIEF);
-
+    let n = ray.n;
     let sun = params.sun.xyz;
     let mu_sun = dot(n, sun);
-    let mu_view = clamp(dot(n, -ray.dir), 0.0, 1.0);
-
-    // Close up, where the maps run out of texels.
-    let footprint = ray.distance * pixel;
-    let close = smoothstep01(MAP_TEXEL * 1.5, MAP_TEXEL * 0.25, footprint) * step(0.001, params.frame.w);
-    var grain = 0.0;
-    if (close > 0.0) {
-        let d = detail(n);
-        grain = d.x * close;
-        let slope = d.yzw - n * dot(d.yzw, n);
-        tilted = normalize(tilted - slope * 0.00022 * close * (1.0 - water));
-    }
-
-    var cloud = textureSampleGrad(cloud_map, map_sampler, cuv, cgx * bias, cgy * bias).r;
-    if (close > 0.0) {
-        let wisp = noise(ray.nc * 380.0) * 0.6 + noise(OCTAVE * ray.nc * 820.0) * 0.3;
-        cloud = clamp(cloud + wisp * close * cloud * (1.0 - cloud) * 1.4, 0.0, 1.0);
-    }
-    let reach = CLOUD_HEIGHT / max(mu_sun, 0.12);
-    let shift = vec2<f32>(
-        dot(sun, east) * reach / (TAU * max(cos_lat, 0.05)),
-        -dot(sun, north) * reach / 3.141592653,
-    );
+    let east = east_of(n);
+    let relief = textureSampleLevel(relief_map, map_sampler, uv, lod + 0.4);
+    let water = relief.b;
+    let bumped = n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * RELIEF;
     var shadow = 0.0;
-    var toward_sun = cloud;
     if (mu_sun > -0.05) {
-        // The ground's shadow: cloud seen from the ground toward the sun.
-        let ground_cloud_uv = vec2<f32>(uv.x + params.spin.y - params.spin.x, uv.y);
-        shadow = textureSampleGrad(cloud_map, map_sampler, ground_cloud_uv + shift, gx * bias * 2.0, gy * bias * 2.0).r;
-        // A little of the deck itself toward the sun, to shade its far sides.
-        toward_sun = textureSampleGrad(cloud_map, map_sampler, cuv + shift * 0.35, cgx * bias, cgy * bias).r;
+        let cloud_uv = vec2<f32>(uv.x + params.spin.y - params.spin.x, uv.y) + shadow_shift(n, mu_sun);
+        shadow = textureSampleLevel(cloud_map, map_sampler, cloud_uv, lod + 1.0).r;
     }
-
-    var albedo = textureSampleGrad(day_map, map_sampler, uv, gx * bias, gy * bias).rgb * mix(1.0, 0.8, water);
-    albedo *= 1.0 + grain * mix(0.3, 0.08, water);
     let sun_ground = sunlight(mu_sun);
-    let direct = sun_ground * max(dot(tilted, sun) + 0.03, 0.0) * (1.0 - 0.6 * shadow);
     let sky = SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun);
-    var colour = albedo * (direct + sky);
+    let day = textureSampleLevel(day_map, map_sampler, uv, lod).rgb;
+    let colour = day * mix(1.0, 0.8, water)
+        * (sun_ground * max(dot(normalize(bumped), sun) + 0.03, 0.0) * (1.0 - 0.6 * shadow) + sky);
+    return vec4<f32>(colour * through(ray) * cover, cover);
+}
 
-    let fresnel = 0.02 + 0.98 * pow(1.0 - mu_view, 5.0);
-    let open_sea = water * (1.0 - cloud);
-    if (open_sea > 0.0) {
-        let gloss = normalize(sun - ray.dir);
-        let log_nh = log2(max(dot(n, gloss), 0.0));
-        let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
-        colour += sun_ground * glint * (0.25 + fresnel) * open_sea;
+// Low orbit only, multiplied into the ground: where a map texel covers
+// several pixels, value noise breaks up its colour and tilts its light.
+// Drawn as its own pass, so the ground keeps four threads.
+@fragment
+fn fs_detail(in: Varying) -> @location(0) vec4<f32> {
+    let ray = trace(in.position.xy);
+    let close = closeness(ray) * step(0.0, coverage(ray) - 0.999);
+    if (close <= 0.0) {
+        discard;
     }
-    colour += SKYLIGHT * 2.0 * fresnel * water * smoothstep01(-0.1, 0.3, mu_sun);
+    let n = ray.n;
+    let uv = map_uv(n, params.spin.x);
+    let water = textureSampleLevel(relief_map, map_sampler, uv, 0.0).b;
+    let d = detail(n);
+    let sun = params.sun.xyz;
+    // The light the detail's slope adds or takes, against the smooth ground.
+    let mu = dot(n, sun);
+    let tilted = dot(normalize(n - (d.yzw - n * dot(d.yzw, n)) * 0.00022 * close * (1.0 - water)), sun);
+    let shading = clamp((max(tilted, 0.0) + 0.03) / (max(mu, 0.0) + 0.03), 0.6, 1.6);
+    let grain = 1.0 + d.x * close * mix(0.3, 0.08, water);
+    return vec4<f32>(vec3<f32>(grain * mix(1.0, shading, smoothstep01(-0.05, 0.1, mu))), 1.0);
+}
 
+// The sea, added to the ground: a calm sea mirrors the sun, a tight glint
+// and a broad sheen, both stronger at a grazing angle and hidden under
+// cloud, and the sky's reflection.
+@fragment
+fn fs_sea(in: Varying) -> @location(0) vec4<f32> {
+    let ray = trace(in.position.xy);
+    let uv = map_uv(ray.n, params.spin.x);
+    let lod = level(uv);
+    let cover = coverage(ray);
+    let water = textureSampleLevel(relief_map, map_sampler, uv, lod + 0.4).b * cover;
+    if (water <= 0.0) {
+        discard;
+    }
+    let n = ray.n;
+    let sun = params.sun.xyz;
+    let mu_sun = dot(n, sun);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, -ray.dir), 0.0, 1.0), 5.0);
+    let cloud = textureSampleLevel(cloud_map, map_sampler, map_uv(ray.nc, params.spin.y), lod).r;
+    let log_nh = log2(max(dot(n, normalize(sun - ray.dir)), 0.0));
+    let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
+    let colour = sunlight(mu_sun) * glint * (0.25 + fresnel) * (1.0 - cloud)
+        + SKYLIGHT * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun);
+    return vec4<f32>(colour * water * through(ray), 0.0);
+}
+
+@fragment
+fn fs_clouds(in: Varying) -> @location(0) vec4<f32> {
+    let ray = trace(in.position.xy);
+    let cuv = map_uv(ray.nc, params.spin.y);
+    let lod = level(cuv);
+    // Everything that needs the whole ray, first, so only the two points
+    // stay live past here.
+    let cover = coverage(ray);
+    let air = through(ray);
+    let n = ray.n;
+    let nc = ray.nc;
+    var wisp = 0.0;
+    if (NEAR) {
+        let close = closeness(ray);
+        if (close > 0.0) {
+            // One fetch (a second would cost the pass two threads).
+            wisp = noise(nc * 520.0) * 0.9 * close * 1.4;
+        }
+    }
+    var cloud = textureSampleLevel(cloud_map, map_sampler, cuv, lod).r;
+    cloud = clamp(cloud + wisp * cloud * (1.0 - cloud), 0.0, 1.0);
+    let alpha = cloud * cover;
+    if (alpha <= 0.002) {
+        discard;
+    }
+    let mu_sun = dot(n, params.sun.xyz);
+    // The deck a little toward the sun shades the clouds' far sides.
+    var side = 1.0;
+    if (mu_sun > -0.05) {
+        let toward = textureSampleLevel(cloud_map, map_sampler, cuv + shadow_shift(n, mu_sun) * 0.35, lod).r;
+        side = clamp(1.0 - 1.4 * (toward - cloud), 0.55, 1.15);
+    }
+    // The cloud tops stand above most of the air, so they keep the light and
+    // its sunset colour a little longer than the ground.
     let sun_high = SUNLIGHT * exp(-AIR * airmass(mu_sun + 0.04) * 0.55);
-    let sun_cloud = sun_high * smoothstep01(-0.08, 0.04, mu_sun);
-    let relief_shade = clamp(1.0 - 1.4 * (toward_sun - cloud), 0.55, 1.15);
-    let cloud_lit = CLOUD_ALBEDO * (sun_cloud * (0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * relief_shade + sky * 1.5);
-    colour = mix(colour, cloud_lit, cloud);
+    let sky = SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun);
+    let lit = CLOUD_ALBEDO * (sun_high * smoothstep01(-0.08, 0.04, mu_sun) * (0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + sky * 1.5);
+    return vec4<f32>(lit * air * alpha, alpha);
+}
 
+@fragment
+fn fs_glow(in: Varying) -> @location(0) vec4<f32> {
+    let ray = trace(in.position.xy);
+    let uv = map_uv(ray.n, params.spin.x);
+    let lod = level(uv);
+    let cover = coverage(ray);
+    if (cover <= 0.0) {
+        discard;
+    }
+    let n = ray.n;
+    let mu_sun = dot(n, params.sun.xyz);
+    let air = through(ray);
+    var colour = vec3<f32>(0.0);
+    // The night side: city lights, warm where faint and whiter where dense,
+    // dimmed by cloud, and a faint bluish earthshine.
     let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
     if (darkness > 0.002) {
-        let city = textureSampleGrad(night_map, map_sampler, uv, gx * bias * 1.5, gy * bias * 1.5).r;
-        let glow = city * city * NIGHT_GAIN;
+        let city = textureSampleLevel(night_map, map_sampler, uv, lod + 0.6).r;
+        let cloud = textureSampleLevel(cloud_map, map_sampler, map_uv(ray.nc, params.spin.y), lod).r;
         let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, city));
-        colour += tint * glow * darkness * (1.0 - cloud * 0.85);
-        colour += vec3<f32>(0.004, 0.006, 0.012) * (albedo + cloud) * darkness;
+        colour += tint * (city * city * NIGHT_GAIN * (1.0 - cloud * 0.85));
+        let day = textureSampleLevel(day_map, map_sampler, uv, lod + 2.0).rgb;
+        colour += vec3<f32>(0.004, 0.006, 0.012) * (day + cloud);
+        colour *= darkness * air;
     }
-
-    let through = exp(-AIR * airmass(mu_view));
-    let sun_air = sun_high * smoothstep01(-0.10, 0.08, mu_sun);
-    colour = colour * through + sun_air * (vec3<f32>(1.0) - through) * 0.45;
-
-    let planet = encode(colour, 1.0);
-    if (coverage >= 1.0) {
-        return planet;
-    }
-    return mix(limb(ray.closest, n, screen), planet, coverage);
+    // The air in front of the ground adds its own blue, thickening toward
+    // the limb.
+    let sun_high = SUNLIGHT * exp(-AIR * airmass(mu_sun + 0.04) * 0.55);
+    colour += sun_high * smoothstep01(-0.10, 0.08, mu_sun) * (vec3<f32>(1.0) - air) * 0.45;
+    return vec4<f32>(colour * cover, 0.0);
 }
 "#;
 

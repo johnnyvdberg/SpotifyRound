@@ -16,9 +16,11 @@ mod gpu;
 #[cfg(test)]
 mod gpu_cost;
 mod motion;
+mod noise3d;
 mod planet;
 mod ring;
 mod service;
+mod shader_lab;
 mod solar;
 mod ui;
 #[cfg(test)]
