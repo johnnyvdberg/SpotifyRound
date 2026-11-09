@@ -299,12 +299,12 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
         // toward the edges as space shifts their light, and a faint ring of
         // bent light marks where space folds.
         let fold = 0.08 * exp(-sq((r - 0.3) / 0.06));
-        var smear = vec3<f32>(0.0);
-        for (var k = 0; k < 3; k++) {
-            let rr = (r + fold) * (0.35 + 0.18 * f32(k));
-            smear += sky_at(normalize(params.forward.xyz + (params.right.xyz * around.x + params.up.xyz * around.y) * rr * params.frame.y));
-        }
-        colour += smear * 0.9;
+        // Two looks, written out: the V3D does not unroll a loop and waits on
+        // each read in turn, and three held twice the registers.
+        let side = (params.right.xyz * around.x + params.up.xyz * around.y) * (r + fold) * params.frame.y;
+        let smear = sky_at(normalize(params.forward.xyz + side * 0.38))
+            + sky_at(normalize(params.forward.xyz + side * 0.66));
+        colour += smear * 1.35;
         let shift = mix(vec3<f32>(0.85, 0.92, 1.0), vec3<f32>(1.0, 0.62, 0.42), smoothstep01(0.2, 1.1, r));
         colour += shift * streaks(theta, logr, 300.0, 9.0, 0.6, 31) * smoothstep01(0.03, 0.3, r);
         colour += shift * streaks(theta, logr, 140.0, 6.0, 0.75, 37) * 0.8 * smoothstep01(0.05, 0.4, r);
@@ -352,8 +352,12 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
         colour += vec3<f32>(0.85, 0.92, 1.0) * exp(-r * 12.0) * 0.8;
     }
     // In and out of the jump, the calm sky fades under the drive's light.
-    let dir = ray_at(in.position.xy);
-    let calm = (sky_at(dir) + stars(dir, 60.0, 0.30, 1.3, 11, params.frame.z * 0.75)) * (1.0 - warp);
+    // At full speed none of it shows: a branch the whole frame takes alike.
+    var calm = vec3<f32>(0.0);
+    if (warp < 0.999) {
+        let dir = ray_at(in.position.xy);
+        calm = (sky_at(dir) + stars(dir, 60.0, 0.30, 1.3, 11, params.frame.z * 0.75)) * (1.0 - warp);
+    }
     return vec4<f32>(mix(calm + colour * warp, vec3<f32>(1.0), params.warp.y), 1.0);
 }
 
@@ -368,7 +372,7 @@ struct Quad {
 
 // Each body is drawn as a fan of triangles round its silhouette, so pixels
 // past its disc are not shaded at all: the circle where the cone of rays
-// touching it (`air.w` round its centre: its air or rings included) meets the
+// touching it (its disc and air) meets the
 // plane through its centre, as a polygon just outside it, projected. Close to
 // the camera, where that polygon could reach behind it, the CPU's rectangle
 // instead (the first two triangles; the rest collapse). At its depth rank
@@ -382,11 +386,17 @@ fn project(p: vec3<f32>) -> vec2<f32> {
 
 @vertex
 fn vs_body(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Quad {
+    let air = params.bodies[instance].air;
+    let disc = params.bodies[instance].place.w * select(1.0, 1.08, max(max(air.r, air.g), air.b) > 0.0);
+    return body_vertex(vertex, instance, min(disc, air.w));
+}
+
+// The polygon round everything within `bound` of the body's centre.
+fn body_vertex(vertex: u32, instance: u32, bound: f32) -> Quad {
     var out: Quad;
     out.body = instance;
     let depth = params.bodies[instance].ring_colour.w;
     let c = params.bodies[instance].place.xyz;
-    let bound = params.bodies[instance].air.w;
     let distance = length(c);
     let ahead = dot(c, params.forward.xyz);
     let angle = asin(clamp(bound / max(distance, 1e-6), 0.0, 1.0));
@@ -413,6 +423,46 @@ fn vs_body(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
         p = project(c + (e1 * cos(a) + e2 * sin(a)) * spread);
     }
     out.position = vec4<f32>(p, depth, 1.0);
+    return out;
+}
+
+// The rings drawn as what they are, an annulus in their plane: a polygon
+// just outside the outer edge with one just inside the inner edge cut out,
+// so the pixels between the rings and the planet's poles cost nothing. Edge
+// on, or where the annulus could reach behind the camera, the polygon round
+// all of it (`air.w`) instead, the vertices past it collapsed.
+const RING_SIDES: u32 = 32u;
+
+@vertex
+fn vs_ring(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Quad {
+    let c = params.bodies[instance].place.xyz;
+    let radius = params.bodies[instance].place.w;
+    let axis = params.bodies[instance].rot[1].xyz;
+    let distance = length(c);
+    let outer = radius * params.bodies[instance].ring.y * 1.01 / cos(PI / f32(RING_SIDES));
+    let f = params.forward.xyz;
+    let nearest = dot(c, f) - outer * length(f - axis * dot(f, axis));
+    if (abs(dot(c, axis)) < distance * 0.02 || nearest < distance * 0.02) {
+        if (vertex < 48u) {
+            return body_vertex(vertex, instance, params.bodies[instance].air.w);
+        }
+        var out: Quad;
+        out.body = instance;
+        out.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return out;
+    }
+    let side = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(axis.y) < 0.9);
+    let e1 = normalize(cross(axis, side));
+    let e2 = cross(axis, e1);
+    // Each side a quad: outer, outer next, inner; inner, outer next, inner next.
+    let corner = vertex % 6u;
+    let k = vertex / 6u + select(0u, 1u, corner == 1u || corner == 4u || corner == 5u);
+    let inside = corner == 2u || corner == 3u || corner == 5u;
+    let r = select(outer, radius * params.bodies[instance].ring.x * 0.99, inside);
+    let a = f32(k) * TAU / f32(RING_SIDES);
+    var out: Quad;
+    out.body = instance;
+    out.position = vec4<f32>(project(c + (e1 * cos(a) + e2 * sin(a)) * r), params.bodies[instance].ring_colour.w, 1.0);
     return out;
 }
 
@@ -1038,6 +1088,116 @@ fn fs_ring_shadow(in: Quad) -> @location(0) vec4<f32> {
     }
     discard;
     return vec4<f32>(0.0);
+}
+
+// ---------------------------------------------------------------------------
+// A mapped world seen from afar, in one pipeline: the ground, the cloud deck
+// and its shadows and the added light, composited as the passes above blend
+// them (`fs_ground`, `fs_clouds`, `fs_glow`). The ray, the map coordinates
+// and their level are worked out once, and the cloud and relief texels the
+// passes each read are read once. Eclipses, the rings' shadow and the limb
+// stay passes of their own, drawn only where there are any. Close up the
+// passes are drawn apart, with the close-up detail between.
+// ---------------------------------------------------------------------------
+
+override CLOUDS: bool = false;
+
+@fragment
+fn fs_surface(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let nb = to_body(i, h.n);
+    let uv = map_uv(nb);
+    // Derivatives first, while every pixel of the quad still runs.
+    let lod = level(uv, map_size());
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(h.n, sun);
+    var rgb = vec3<f32>(0.0);
+    var alpha = 0.0;
+    // A branch, not a discard: the V3D skips the work for 16-pixel groups
+    // that all leave it, but runs on through a discard.
+    if (!(h.cover <= 0.0)) {
+        let n = h.n;
+        let air = through(i, h);
+        let relief = relief_texel(uv, lod + 0.4);
+        let cloud = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y), lod).g;
+
+        // The ground.
+        var albedo = day_texel(uv, lod) * mix(1.0, 0.8, relief.b);
+        let east = east_of(i, nb);
+        let tilted = normalize(n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * 0.55);
+        let sky = select(vec3<f32>(0.0), skylight() * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
+        let kind = i32(params.bodies[i].look.x);
+        if (kind == 6 || kind == 7 || kind == 14) {
+            // Giants darken toward the limb.
+            albedo *= 0.55 + 0.45 * sqrt(clamp(dot(n, -h.dir), 0.0, 1.0));
+        }
+        let ground = albedo * (ground_light(i, mu_sun) * max(dot(tilted, sun) + 0.03, 0.0) + sky) * air * h.cover;
+
+        // The cloud deck over it, and its shadows on the ground.
+        var deck = vec3<f32>(0.0);
+        var covered = 0.0;
+        if (CLOUDS) {
+            var toward = 0.0;
+            if (mu_sun > -0.05) {
+                toward = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y) + shadow_shift(i, nb, n, sun, mu_sun), lod + 1.0).g;
+            }
+            let shadow = 0.6 * toward * sunlit(mu_sun) * h.cover;
+            covered = shadow;
+            if (cloud * h.cover > 0.002) {
+                var side = 1.0;
+                if (mu_sun > -0.05) {
+                    side = clamp(1.0 - 2.0 * (toward - cloud), 0.4, 1.3);
+                }
+                var sun_high = star_light();
+                if (has_air(i)) {
+                    sun_high = star_light() * exp(-params.bodies[i].air.rgb * airmass(mu_sun + 0.04) * 0.55);
+                }
+                let toward_star = max(dot(h.dir, sun), 0.0);
+                let lobe = toward_star * toward_star * toward_star * toward_star;
+                let glow = (1.0 - cloud) * (0.2 + 1.2 * lobe * lobe);
+                let lit = 0.85 * (sun_high * smoothstep01(-0.08, 0.04, mu_sun) * ((0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + glow) + sky * 1.5);
+                let thick = min(cloud * (2.2 - 1.2 * clamp(dot(n, -h.dir), 0.0, 1.0)), 1.0) * h.cover;
+                deck = lit * air * thick;
+                covered = 1.0 - (1.0 - thick) * (1.0 - shadow);
+            }
+        }
+
+        // The added light: the sea's glint and sheen, the night side's
+        // lights or molten glow, the air in front.
+        var added = vec3<f32>(0.0);
+        let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
+        if (SEA) {
+            let water = relief.b * (1.0 - cloud);
+            if (water > 0.0) {
+                let fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, -h.dir), 0.0, 1.0), 5.0);
+                let log_nh = log2(max(dot(n, normalize(sun - h.dir)), 0.0));
+                let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
+                added = (ground_light(i, mu_sun) * glint * (0.25 + fresnel)
+                    + skylight() * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun)) * water;
+            }
+        }
+        if (params.bodies[i].look.w > 0.5 && params.bodies[i].look.w < 1.5 && darkness > 0.002) {
+            let night = extra_texel(uv, lod + 0.6).r;
+            let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
+            added += tint * night * night * 2.2 * darkness * (1.0 - cloud * 0.85);
+        } else if (params.bodies[i].look.w > 1.5) {
+            let night = extra_texel(uv, lod + 0.6).r;
+            let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), night * night);
+            added += heat * night * (0.15 + 0.55 * darkness);
+        }
+        added *= air;
+        if (has_air(i)) {
+            let sun_high = star_light() * exp(-params.bodies[i].air.rgb * airmass(mu_sun + 0.04) * 0.55);
+            added += sun_high * smoothstep01(-0.10, 0.08, mu_sun) * (vec3<f32>(1.0) - air) * 0.45;
+        }
+
+        // Ground under the deck, then the added light: what lies behind
+        // keeps (1 - cover) of itself under the deck.
+        rgb = deck + ground * (1.0 - covered) + added * h.cover;
+        alpha = 1.0 - (1.0 - h.cover) * (1.0 - covered);
+    }
+    return vec4<f32>(rgb, alpha);
 }
 
 // ---------------------------------------------------------------------------

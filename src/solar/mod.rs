@@ -90,6 +90,8 @@ const STARFIELD_HEIGHT: u32 = 2048;
 const STARFIELD_ROWS: u32 = 16;
 /// Vertices of a body's draw: a fan of 16 triangles round its silhouette.
 const BODY_VERTICES: u32 = 48;
+/// The ring's draw: `RING_SIDES` quads in `frame.wgsl`.
+const RING_VERTICES: u32 = 32 * 6;
 
 struct Frame {
     texture: wgpu::Texture,
@@ -174,6 +176,9 @@ pub(crate) struct Solar {
     /// the visit time that was worked out for.
     dust: [f64; 3],
     dust_at: Option<f64>,
+    /// The last frame's background and draws, for the benchmarks.
+    #[cfg(test)]
+    drawn: std::cell::RefCell<String>,
 }
 
 fn system_for(base: u64, visit: u64) -> System {
@@ -387,7 +392,6 @@ impl Solar {
         for (name, entry, blend) in [
             ("star", "fs_star", over),
             ("flat", "fs_flat", over),
-            ("ring", "fs_ring", over),
             ("eclipse", "fs_eclipse", multiply),
             ("ringshadow", "fs_ring_shadow", multiply),
         ] {
@@ -396,12 +400,43 @@ impl Solar {
                 pipeline(&format!("Solar {name}"), "vs_body", entry, blend, &[]),
             );
         }
+        // The rings, drawn as an annulus (`vs_ring`).
+        pipelines.insert(
+            "ring".to_string(),
+            pipeline("Solar ring", "vs_ring", "fs_ring", over, &[]),
+        );
         // The limb, off its own disc only (a strict depth test).
         pipelines.insert(
             "limb".to_string(),
             make("Solar limb", "vs_body", "fs_limb", add, &[], Some(false), wgpu::ColorWrites::ALL, true),
         );
         for slot in 0..2 {
+            // A mapped world from afar, in one pipeline (`fs_surface`): with
+            // and without a sea and clouds.
+            for (sea, clouds) in [(false, false), (false, true), (true, false), (true, true)] {
+                pipelines.insert(
+                    format!(
+                        "surface{slot}{}{}",
+                        if sea { "s" } else { "" },
+                        if clouds { "c" } else { "" }
+                    ),
+                    pipeline(
+                        &format!(
+                            "Solar surface {slot}{}{}",
+                            if sea { " sea" } else { "" },
+                            if clouds { " clouds" } else { "" }
+                        ),
+                        "vs_body",
+                        "fs_surface",
+                        over,
+                        &[
+                            ("SLOT", slot as f64),
+                            ("SEA", f64::from(u8::from(sea))),
+                            ("CLOUDS", f64::from(u8::from(clouds))),
+                        ],
+                    ),
+                );
+            }
             // The ground close up, its magnified map lookups made crisp.
             pipelines.insert(
                 format!("grounddetail{slot}"),
@@ -571,6 +606,8 @@ impl Solar {
             hud_at: f64::NEG_INFINITY,
             dust: [0.0; 3],
             dust_at: None,
+            #[cfg(test)]
+            drawn: Default::default(),
         }
     }
 
@@ -787,6 +824,8 @@ impl Solar {
                 view.forward,
                 add(scale(right, shake(31.0, 47.0) * amount), scale(view.up, shake(37.0, 53.0) * amount)),
             ));
+            // Square again, or rays and projections part (by a few pixels).
+            view.up = normalize(cross(normalize(cross(view.forward, view.up)), view.forward));
         }
         let system = &self.tour.system;
         let camera = view.position;
@@ -1074,6 +1113,17 @@ impl Solar {
         } else {
             "space".to_string()
         };
+        #[cfg(test)]
+        {
+            *self.drawn.borrow_mut() = format!(
+                "{background} {}",
+                draws
+                    .iter()
+                    .map(|(b, n)| format!("{b}:{n}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&params));
         let Some(group) = &self.bind_group else {
@@ -1154,7 +1204,12 @@ impl Solar {
                 }
                 let (label, pipeline) = &self.pipelines[name];
                 pass.set_pipeline(pipeline);
-                crate::gpu::counted_draw(&mut pass, label, 0, 0..BODY_VERTICES, *body..*body + 1);
+                let vertices = if name == "ring" {
+                    RING_VERTICES
+                } else {
+                    BODY_VERTICES
+                };
+                crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, *body..*body + 1);
                 if scissor.is_some() {
                     pass.set_scissor_rect(0, 0, SIZE, SIZE);
                 }
@@ -1581,6 +1636,29 @@ fn surface_passes(
     rings: bool,
     close: bool,
 ) -> Vec<String> {
+    if let Some(s) = slot
+        && !close
+    {
+        // From afar, the ground, clouds and added light in one pass.
+        let mut passes = vec![format!(
+            "surface{s}{}{}",
+            if kind.has_sea() { "s" } else { "" },
+            if kind.has_clouds() { "c" } else { "" }
+        )];
+        if eclipsed {
+            passes.push("eclipse".into());
+        }
+        if rings {
+            passes.push("ringshadow".into());
+        }
+        if kind.air()[0] > 0.0 {
+            passes.push("limb".into());
+        }
+        if rings {
+            passes.push("ring".into());
+        }
+        return passes;
+    }
     let mut passes: Vec<String> = match slot {
         Some(s) => {
             // Close up, the ground with its detail (one pass); higher up the
@@ -1708,9 +1786,10 @@ fn close_rect(view: &View, centre: [f64; 3], radius: f64) -> Option<[f32; 4]> {
         for gx in 0..=CELLS {
             let x = gx as f64 / CELLS as f64 * 2.0 - 1.0;
             let y = gy as f64 / CELLS as f64 * 2.0 - 1.0;
-            let dir = normalize([0, 1, 2].map(|i| {
-                view.forward[i] + (right[i] * x + view.up[i] * y) * view.half_fov
-            }));
+            let dir = normalize(
+                [0, 1, 2]
+                    .map(|i| view.forward[i] + (right[i] * x + view.up[i] * y) * view.half_fov),
+            );
             let along = dot(centre, dir);
             let miss = length([0, 1, 2].map(|i| centre[i] - dir[i] * along));
             if inside || (along > 0.0 && miss <= radius) {
@@ -2062,6 +2141,46 @@ pub(crate) mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/pi-estimate");
         std::fs::create_dir_all(&dir).expect("an output directory");
         std::fs::write(dir.join("solar.tsv"), out).expect("the counts");
+    }
+
+    /// Frame times through a whole visit, a frame every `SWEEP_STEP`
+    /// seconds (default 4) from `SWEEP_FROM` to `SWEEP_TO` (default the
+    /// whole tour) of seed `SWEEP_SEED` (default 11), each with its phase,
+    /// background and draws: where the time goes.
+    #[test]
+    #[ignore = "a benchmark; needs a working GPU adapter"]
+    fn frame_sweep() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let seed = std::env::var("SWEEP_SEED")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(11);
+        let mut solar = Solar::with_seed(&gpu, seed);
+        let var = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(d)
+        };
+        let end = var("SWEEP_TO", solar.tour.total);
+        let step = var("SWEEP_STEP", 4.0);
+        let mut t = var("SWEEP_FROM", 1.0);
+        while t < end {
+            settle(&mut solar, &gpu, t);
+            let n = 10;
+            let started = std::time::Instant::now();
+            for i in 0..n {
+                solar.draw(&gpu, t + i as f64 * 0.05, i % SLOTS);
+            }
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+            println!(
+                "sweep t={t:.0} {:.2} ms {:?} {}",
+                started.elapsed().as_secs_f64() * 1e3 / n as f64,
+                solar.tour.segment(t).0.phase,
+                solar.drawn.borrow()
+            );
+            t += step;
+        }
     }
 
     /// Frame times in the heaviest views, and how long streaming a planet
