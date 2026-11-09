@@ -384,6 +384,17 @@ impl Solar {
             make("Solar limb", "vs_body", "fs_limb", add, &[], Some(false), wgpu::ColorWrites::ALL, true),
         );
         for slot in 0..2 {
+            // The ground close up, its magnified map lookups made crisp.
+            pipelines.insert(
+                format!("grounddetail{slot}"),
+                pipeline(
+                    &format!("Solar ground detail {slot}"),
+                    "vs_body",
+                    "fs_ground",
+                    over,
+                    &[("SLOT", slot as f64), ("DETAIL", 1.0)],
+                ),
+            );
             // The added light with the sea's glint, for worlds with seas.
             pipelines.insert(
                 format!("glowsea{slot}"),
@@ -1489,9 +1500,15 @@ fn surface_passes(
 ) -> Vec<String> {
     let mut passes: Vec<String> = match slot {
         Some(s) => {
-            let mut passes = vec![format!("ground{s}")];
-            // Close-up detail, only near the ground of a world with one: the
-            // pass costs a frame's worth of pixels, so it is skipped higher up.
+            // Close up, the ground with its detail (one pass); higher up the
+            // map alone is fine enough.
+            // Close up, the ground with its lookups made crisp, then the
+            // detail the map is too coarse for; higher up the map alone.
+            let mut passes = vec![if close && kind.has_ground() {
+                format!("grounddetail{s}")
+            } else {
+                format!("ground{s}")
+            }];
             if close && kind.has_ground() {
                 passes.push(format!("detail{s}"));
             }

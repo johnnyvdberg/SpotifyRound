@@ -605,8 +605,29 @@ fn fs_flat(in: Quad) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-// A mapped planet's ground: its colour, relief and the clouds' shadows, lit
-// through its air, in eclipses and the rings' shadow.
+// Close up (`DETAIL`, low orbit and the dive to it), the map's lookups are
+// made crisp: where it is magnified dozens of times, each texel's blend into
+// the next is narrowed and its edge bent into a wavy line (a few sines of
+// the texel coordinates: arithmetic, no fetch; the noise volume as a third
+// fetch halved the threads), so coastlines, ridges and snow lines are sharp
+// edges instead of a smear. The detail pass adds the fine slope and grain.
+override DETAIL: bool = false;
+
+fn crisp_uv(uv: vec2<f32>, size: vec2<f32>, close: f32) -> vec2<f32> {
+    let t = uv * size - 0.5;
+    let cell = floor(t);
+    let f = t - cell;
+    let wobble = vec2<f32>(
+        sin(t.y * 2.7 + sin(t.x * 1.9 + t.y * 0.7) * 1.3),
+        sin(t.x * 2.3 + sin(t.y * 1.7 - t.x * 0.6) * 1.1),
+    );
+    let edge = vec2<f32>(0.5) + wobble * 0.28;
+    let crisp = smoothstep(edge - vec2<f32>(0.3), edge + vec2<f32>(0.3), f);
+    // Not all the way: fully crisp, the texel grid shows in its steps.
+    return (cell + mix(f, crisp, close * 0.75) + 0.5) / size;
+}
+
+// A mapped planet's ground: its colour and relief, lit through its air.
 @fragment
 fn fs_ground(in: Quad) -> @location(0) vec4<f32> {
     let i = in.body;
@@ -617,14 +638,20 @@ fn fs_ground(in: Quad) -> @location(0) vec4<f32> {
     // A branch, not a discard: the V3D skips the work for 16-pixel groups
     // that all leave it, but runs on through a discard.
     if (!(h.cover <= 0.0)) {
+        // The maps first, so little is live across their reads. Crisp by how
+        // far the map is magnified (its level, below the bias).
+        var at = uv;
+        if (DETAIL) {
+            at = crisp_uv(uv, map_size(), smoothstep01(BIAS - 0.5, BIAS - 2.5, lod));
+        }
+        let relief = relief_texel(at, lod + 0.4);
+        var albedo = day_texel(at, lod) * mix(1.0, 0.8, relief.b);
         let n = h.n;
         let sun = normalize(params.star.xyz - h.point);
         let mu_sun = dot(n, sun);
         let east = east_of(i, nb);
-        let relief = relief_texel(uv, lod + 0.4);
         let tilted = normalize(n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * 0.55);
         let sky = select(vec3<f32>(0.0), skylight() * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
-        var albedo = day_texel(uv, lod) * mix(1.0, 0.8, relief.b);
         let kind = i32(params.bodies[i].look.x);
         if (kind == 6 || kind == 7 || kind == 14) {
             // Giants darken toward the limb.
@@ -644,38 +671,6 @@ fn closeness(i: u32, h: Hit) -> f32 {
     let texel = params.bodies[i].place.w * TAU / map_size().x;
     return smoothstep01(texel * 1.5, texel * 0.2, footprint) * step(0.999, h.cover);
 }
-
-// Close-up detail over a mapped world's ground, multiplied in (as half the
-// factor: the blend doubles it): the light that slopes finer than the map's
-// texels catch, and a grain. One fetch of the noise volume: a second (a finer
-// octave, or the sea's mask) would halve the threads it runs with.
-@fragment
-fn fs_detail(in: Quad) -> @location(0) vec4<f32> {
-    let i = in.body;
-    let h = trace(i, in.position.xy);
-    let close = closeness(i, h);
-    // A branch, not a discard: the V3D skips the work for 16-pixel groups
-    // that all leave it, but runs on through a discard.
-    if (!(close <= 0.0)) {
-        // All in the body's frame, so nothing turns back to the world's. No mask
-        // for the sea: a second fetch halves the threads, and under the sea the
-        // ground is near black, its glint and the sky's sheen added after this.
-        let nb = to_body(i, h.n);
-        let a = noised(nb * 1400.0);
-        // The star is far enough that its direction from the body's centre does
-        // for every point: no need to keep the hit point.
-        let sun = to_body(i, normalize(params.star.xyz - params.bodies[i].place.xyz));
-        let mu = dot(nb, sun);
-        // The sun's height over the ground tilted by the slope, to first order.
-        let tilted = mu - 0.42 * close * (dot(a.yzw, sun) - dot(a.yzw, nb) * mu);
-        let shading = clamp((max(tilted, 0.0) + 0.03) / (max(mu, 0.0) + 0.03), 0.6, 1.6);
-        let grain = 1.0 + a.x * 0.168 * close;
-        return vec4<f32>(vec3<f32>(0.5 * grain * mix(1.0, shading, smoothstep01(-0.05, 0.1, mu))), 1.0);
-    }
-    discard;
-    return vec4<f32>(0.0);
-}
-
 
 // The cloud deck over a mapped world, and the shadows it casts on the ground
 // below, in one pass. One look at the map a little toward the sun serves
@@ -762,6 +757,37 @@ fn fs_cloud_layer(in: Quad) -> @location(0) vec4<f32> {
             * (0.35 + 0.65 * sqrt(max(mu_sun + 0.05, 0.0))) * (0.92 + 0.08 * f32(LAYER))
             + skylight() * 1.2 * smoothstep01(-0.15, 0.4, mu_sun);
         return vec4<f32>(lit * through(i, h) * alpha, alpha);
+    }
+    discard;
+    return vec4<f32>(0.0);
+}
+
+// Close-up detail over a mapped world's ground, multiplied in (as half the
+// factor: the blend doubles it): the light that slopes finer than the map's
+// texels catch, and a grain. One fetch of the noise volume: a second (a finer
+// octave, or the sea's mask) would halve the threads it runs with.
+@fragment
+fn fs_detail(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let h = trace(i, in.position.xy);
+    let close = closeness(i, h);
+    // A branch, not a discard: the V3D skips the work for 16-pixel groups
+    // that all leave it, but runs on through a discard.
+    if (!(close <= 0.0)) {
+        // All in the body's frame, so nothing turns back to the world's. No mask
+        // for the sea: a second fetch halves the threads, and under the sea the
+        // ground is near black, its glint and the sky's sheen added after this.
+        let nb = to_body(i, h.n);
+        let a = noised(nb * 1400.0);
+        // The star is far enough that its direction from the body's centre does
+        // for every point: no need to keep the hit point.
+        let sun = to_body(i, normalize(params.star.xyz - params.bodies[i].place.xyz));
+        let mu = dot(nb, sun);
+        // The sun's height over the ground tilted by the slope, to first order.
+        let tilted = mu - 0.42 * close * (dot(a.yzw, sun) - dot(a.yzw, nb) * mu);
+        let shading = clamp((max(tilted, 0.0) + 0.03) / (max(mu, 0.0) + 0.03), 0.6, 1.6);
+        let grain = 1.0 + a.x * 0.168 * close;
+        return vec4<f32>(vec3<f32>(0.5 * grain * mix(1.0, shading, smoothstep01(-0.05, 0.1, mu))), 1.0);
     }
     discard;
     return vec4<f32>(0.0);
