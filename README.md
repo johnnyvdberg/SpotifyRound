@@ -498,6 +498,15 @@ runs at four threads with no spills. They get there by reading smooth noise from
 texture (`src/noise3d.rs`) instead of hashing it, and by splitting each look into many small
 pipelines, specialised with override constants and blended together in one render pass, rather
 than one large shader.
+**Estimating a frame's GPU time without a Pi**: `deploy/pi-estimate.sh` counts every draw's pixels
+at each key moment of the Planet scene and the solar tour on this machine's driver (pipeline
+statistics queries; Mesa's lavapipe has them), then costs them with the Pi compiler's numbers from
+`deploy/v3d-shaderdb/baseline.txt`: milliseconds a frame per moment, the heaviest passes, and what
+streaming maps adds. It prints a floor beside each estimate: on the V3D a `discard` does not stop the
+shader (the pixel is masked and the rest runs), but work inside an `if` is skipped for 16-pixel
+groups that all leave it, so a shader that branches instead of discarding approaches the floor. The
+scale comes from `--ms-per-inst` (0.025, from `gpu_cost` on the Pi); one real measurement of a
+moment calibrates it.
 `spotify-round-tests gpu_cost::videocore_vii --ignored` asserts that the headless adapter really is
 the Pi 5's V3D; run it before trusting a Pi measurement. So:
 
