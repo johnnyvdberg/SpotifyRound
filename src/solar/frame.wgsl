@@ -110,6 +110,17 @@ fn airmass(mu: f32) -> f32 {
     return 1.0 / (m + 0.025 + 0.045 * exp(-m * 30.0));
 }
 
+// x squared: `pow(x, 2.0)` is undefined for negative x in WGSL.
+fn sq(x: f32) -> f32 {
+    return x * x;
+}
+
+// A smooth bump: 1 at 0, falling to 0 at |x| = 2.
+fn bump(x: f32) -> f32 {
+    let a = clamp(1.0 - x * x * 0.25, 0.0, 1.0);
+    return a * a;
+}
+
 fn ray_at(position: vec2<f32>) -> vec3<f32> {
     let half = params.frame.x;
     let s = vec2<f32>((position.x - half) / half, (half - position.y) / half);
@@ -217,7 +228,10 @@ fn fs_space_baked(in: Full) -> @location(0) vec4<f32> {
 // polar coordinates (angle around the heading, log of the distance from it),
 // which scroll outward with time, so one cell lookup draws a moving streak.
 fn streaks(theta: f32, logr: f32, count: f32, speed: f32, length_: f32, seed: i32) -> f32 {
-    let x = vec2<f32>(theta / TAU * count, logr * 6.0 - params.warp.w * speed);
+    var x = vec2<f32>(theta / TAU * count, logr * 6.0 - params.warp.w * speed);
+    // Each column of cells shifted along by its own amount, so the streaks
+    // do not line up into rings.
+    x.y += hash3(vec3<i32>(i32(floor(x.x)), seed, 5)) * 7.0;
     let cell = vec2<i32>(floor(x));
     let h = hash3(vec3<i32>(cell, seed));
     if (h > 0.35) {
@@ -245,14 +259,22 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
     let t = params.warp.w;
     var colour = vec3<f32>(0.0);
     if (WARP == 1) {
-        // Lumen Drift: blue-white streaks, a bright core, and broad sheets of
-        // light fanning out to the sides.
-        colour += vec3<f32>(0.55, 0.78, 1.0) * streaks(theta, logr, 240.0, 9.0, 0.8, 3) * smoothstep01(0.04, 0.35, r);
-        colour += vec3<f32>(0.75, 0.88, 1.0) * streaks(theta, logr, 110.0, 6.5, 0.9, 7) * 0.7 * smoothstep01(0.1, 0.6, r);
-        let sheet = exp(-abs(s.y) * 4.0 / (0.25 + r)) * (0.55 + 0.45 * noise(vec3<f32>(around * 3.0, logr * 2.0 - t * 1.5)));
-        colour += vec3<f32>(0.34, 0.40, 0.90) * sheet * 0.9;
-        colour += vec3<f32>(0.025, 0.035, 0.12) * (0.6 + 0.4 * noise(vec3<f32>(s * 2.0, t * 0.2)));
-        colour += vec3<f32>(0.9, 0.95, 1.0) * exp(-r * 9.0) * 1.4 + vec3<f32>(0.4, 0.55, 1.0) * exp(-r * 3.0) * 0.4;
+        // Lumen Drift: a blue-white blaze. Fine rays of light from a white
+        // core fill the frame (two octaves of noise round the heading, so
+        // they shimmer and never repeat), fast streaks fly out along them,
+        // and soft sheets of light fan out flat to the sides.
+        let fine = noise(vec3<f32>(around * 26.0, logr * 0.35 - t * 0.25));
+        let broad = noise(vec3<f32>(around * 9.0, logr * 0.2 - t * 0.12));
+        let rays = smoothstep01(0.05, 0.75, fine) * 0.7 + smoothstep01(-0.1, 0.8, broad) * 0.5;
+        let falloff = exp(-r * 1.3);
+        colour += vec3<f32>(0.10, 0.55, 0.95) * rays * falloff * 1.1;
+        colour += vec3<f32>(0.70, 0.90, 1.0) * streaks(theta, logr, 260.0, 10.0, 0.85, 3) * smoothstep01(0.05, 0.4, r);
+        colour += vec3<f32>(0.85, 0.95, 1.0) * streaks(theta, logr, 120.0, 7.0, 0.9, 7) * 0.6 * smoothstep01(0.1, 0.6, r);
+        let sheet = exp(-abs(s.y) * 5.0 / (0.2 + r)) * (0.6 + 0.4 * broad);
+        colour += vec3<f32>(0.40, 0.75, 1.0) * sheet * 0.6;
+        // The deep blue the rays shine through, lighter toward the core.
+        colour += mix(vec3<f32>(0.03, 0.22, 0.38), vec3<f32>(0.01, 0.06, 0.14), smoothstep01(0.0, 1.2, r));
+        colour += vec3<f32>(0.95, 0.98, 1.0) * exp(-r * 10.0) * 1.6 + vec3<f32>(0.35, 0.7, 1.0) * exp(-r * 3.5) * 0.5;
     } else if (WARP == 2) {
         // Tachyon Tunnel: rings rushing past with a twist, cyan and magenta.
         // Concentric rings flying outward, the tunnel's wall split into
@@ -264,13 +286,24 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
         colour += vec3<f32>(0.6, 0.9, 1.0) * streaks(theta, logr, 160.0, 12.0, 0.8, 11) * 0.6;
         colour += vec3<f32>(0.02, 0.03, 0.08) * (1.0 + r) + vec3<f32>(0.8, 0.95, 1.0) * exp(-r * 12.0);
     } else if (WARP == 3) {
-        // Fold Drive: space folding into a spiral, the sky bent around it.
-        let twist = theta + logr * 2.5 - t * 0.8;
-        let folds = 0.5 + 0.5 * sin(twist * 6.0);
-        let bent = normalize(params.forward.xyz + (params.right.xyz * cos(twist) + params.up.xyz * sin(twist)) * r * params.frame.y);
-        colour += sky_at(bent) * 6.0;
-        colour += mix(vec3<f32>(0.55, 0.25, 0.9), vec3<f32>(1.0, 0.75, 0.3), folds) * smoothstep01(0.6, 1.0, folds) * smoothstep01(0.05, 0.7, r) * 0.45;
-        colour += vec3<f32>(1.0, 0.9, 0.7) * exp(-r * 7.0);
+        // Fold Drive: space itself warped. The sky ahead is drawn in toward
+        // the heading and smeared outward (three looks along the radius),
+        // stars stretch into streaks, white near the heading and redder
+        // toward the edges as space shifts their light, and a faint ring of
+        // bent light marks where space folds.
+        let fold = 0.08 * exp(-sq((r - 0.3) / 0.06));
+        var smear = vec3<f32>(0.0);
+        for (var k = 0; k < 3; k++) {
+            let rr = (r + fold) * (0.35 + 0.18 * f32(k));
+            smear += sky_at(normalize(params.forward.xyz + (params.right.xyz * around.x + params.up.xyz * around.y) * rr * params.frame.y));
+        }
+        colour += smear * 0.9;
+        let shift = mix(vec3<f32>(0.85, 0.92, 1.0), vec3<f32>(1.0, 0.62, 0.42), smoothstep01(0.2, 1.1, r));
+        colour += shift * streaks(theta, logr, 300.0, 9.0, 0.6, 31) * smoothstep01(0.03, 0.3, r);
+        colour += shift * streaks(theta, logr, 140.0, 6.0, 0.75, 37) * 0.8 * smoothstep01(0.05, 0.4, r);
+        colour += vec3<f32>(1.0, 0.95, 0.9) * streaks(theta, logr, 90.0, 4.0, 0.85, 41) * 1.1 * smoothstep01(0.1, 0.5, r);
+        colour += vec3<f32>(0.45, 0.6, 1.0) * fold * 1.2;
+        colour += vec3<f32>(1.0, 0.97, 0.92) * exp(-r * 14.0);
     } else if (WARP == 4) {
         // Ion Slipstream: plasma curtains streaming by, teal and green.
         // Thin filaments where the noise crosses zero, drawn out along the
@@ -283,15 +316,33 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
         colour += vec3<f32>(0.6, 1.0, 0.9) * streaks(theta, logr, 120.0, 8.0, 0.4, 19) * 0.5;
         colour += vec3<f32>(0.7, 1.0, 0.95) * exp(-r * 10.0) * 0.8;
     } else {
-        // Graviton Spiral: spiral arms around a dark core, like a disc of
-        // infalling matter.
-        let arm = sin(theta * 2.0 - logr * 5.0 - t * 3.0);
-        let disc = smoothstep01(0.3, 1.0, arm) * smoothstep01(0.12, 0.25, r) * exp(-r * 1.2);
-        let heat = noise(vec3<f32>(around * 4.0, logr * 4.0 - t * 2.0)) * 0.5 + 0.5;
-        colour += mix(vec3<f32>(1.0, 0.35, 0.08), vec3<f32>(1.0, 0.85, 0.5), heat) * disc * 1.2;
-        colour += vec3<f32>(1.0, 0.8, 0.55) * exp(-pow((r - 0.14) / 0.02, 2.0)) * 1.5;
-        colour *= smoothstep01(0.08, 0.13, r);
-        colour += vec3<f32>(1.0, 0.6, 0.4) * streaks(theta, logr, 80.0, 7.0, 0.5, 23) * 0.4 * smoothstep01(0.2, 0.6, r);
+        // Bubble Drive: the ship rides in a bubble of warped space. Its shell
+        // is a shimmering ring, split into colour at its edge; inside it the
+        // stars ahead are bunched toward the heading and bluer, outside it
+        // space is stretched and redder.
+        // The shell's wobble and ripples from sines, not the noise volume:
+        // its fetches beside the sky's held twice the registers.
+        let wobble = 0.012 * sin(theta * 3.0 + t * 0.7) * sin(theta * 5.0 - t * 0.4);
+        let shell = 0.78 + wobble;
+        let inside = 1.0 - smoothstep01(shell - 0.02, shell + 0.02, r);
+        // The shell's light: one ring per colour, a little apart, and ripples
+        // running round it. Smooth bumps, not exponentials: four of those
+        // beside the rest held twice the registers.
+        let ripple = 0.75 + 0.25 * sin(theta * 12.0 - t * 2.3) * sin(theta * 7.0 + t * 1.1);
+        let d = (r - shell) / 0.012;
+        let ring = vec3<f32>(bump(d - 1.0), bump(d), bump(d + 1.0));
+        let shell_light = (ring * 1.3 + vec3<f32>(0.3, 0.45, 0.9) * bump(d * 0.3) * 0.3) * ripple;
+        // Inside, look out through the bubble at space squeezed toward the
+        // heading; outside, at space stretched away from it.
+        let bend = mix(r * 1.45, r * 0.55, inside);
+        let dir_out = normalize(params.forward.xyz + (params.right.xyz * around.x + params.up.xyz * around.y) * bend * params.frame.y);
+        let tint = mix(vec3<f32>(1.0, 0.55, 0.4), vec3<f32>(0.6, 0.8, 1.0), inside);
+        // The stars and the galaxy from the baked starfield: one read (worked
+        // out per pixel beside the streaks, they held twice the registers).
+        let uv = vec2<f32>(0.5 + atan2(dir_out.x, dir_out.z) / TAU, 0.5 - asin(clamp(dir_out.y, -1.0, 1.0)) / PI);
+        colour += textureSampleLevel(starfield, map_sampler, uv, 0.0).rgb * 1.6 * tint * mix(0.6, 1.0, inside);
+        colour += shell_light;
+        colour += vec3<f32>(0.85, 0.92, 1.0) * exp(-r * 12.0) * 0.8;
     }
     // In and out of the jump, the calm sky fades under the drive's light.
     let dir = ray_at(in.position.xy);

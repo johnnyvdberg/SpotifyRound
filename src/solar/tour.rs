@@ -37,7 +37,7 @@ pub const DRIVES: [&str; 5] = [
     "Tachyon Tunnel",
     "Fold Drive",
     "Ion Slipstream",
-    "Graviton Spiral",
+    "Bubble Drive",
 ];
 
 /// Field of view, the tangent of half of it.

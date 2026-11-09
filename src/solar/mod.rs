@@ -1887,6 +1887,8 @@ pub(crate) mod tests {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut solar = Solar::with_seed(&gpu, 11);
         let start = solar.tour.total - tour::JUMP;
+        // The system's starfield baked, as it is long before any jump.
+        settle(&mut solar, &gpu, start);
         let moments = [0.03, 0.12, 0.5, 0.85];
         let mut sheet =
             image::RgbaImage::new(270 * moments.len() as u32, 270 * tour::DRIVES.len() as u32);

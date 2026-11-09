@@ -68,8 +68,8 @@ Spotify **Premium** account.
   A minimap of the system shows the orbits, the planets, the route and the ship
   ([docs/solar-flyby.jpg](docs/solar-flyby.jpg), [docs/solar-moon.jpg](docs/solar-moon.jpg)), beside a HUD of the
   destination, ETA, distance and real orbital speeds. Each jump uses one of five named drives, each
-  with its own look — Lumen Drift, Tachyon Tunnel, Fold Drive, Ion Slipstream and Graviton Spiral
-  ([docs/solar-warps.jpg](docs/solar-warps.jpg)) — and while in orbit a scanner surveys the planet
+  with its own look — Lumen Drift, Tachyon Tunnel, Fold Drive, Ion Slipstream and Bubble Drive
+  ([docs/solar-warps.jpg](docs/solar-warps.jpg): Lumen Drift a blaze of blue rays, Fold Drive a starfield streaming past warped space, Bubble Drive a lensing bubble round the ship) — and while in orbit a scanner surveys the planet
   with progress bars and results in real units: atmosphere (pressure and gas mix), gravimetry,
   climate, magnetic field, surface radiation and a search for biosignatures
   ([docs/solar-scanner.jpg](docs/solar-scanner.jpg)). Planet maps stream in on the GPU a few rows

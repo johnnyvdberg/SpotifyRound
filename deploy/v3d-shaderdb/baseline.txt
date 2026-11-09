@@ -701,21 +701,21 @@ Solar space baked #0             vs_background  VS-bin    34   4     0   23     
 Solar space #0                   fs_space       FS       640   4     0  138    32        0:0    4   52
 Solar space #0                   vs_background  VS        35   4     0   23     6        0:0    0    1
 Solar space #0                   vs_background  VS-bin    34   4     0   23     6        0:0    0    0
-Solar warp Lumen Drift #0        fs_warp        FS       682   4     0  264    32        0:0    2   63
+Solar warp Lumen Drift #0        fs_warp        FS       704   4     0  258    32        0:0    2   54
 Solar warp Lumen Drift #0        vs_background  VS        35   4     0   23     6        0:0    0    1
 Solar warp Lumen Drift #0        vs_background  VS-bin    34   4     0   23     6        0:0    0    0
-Solar warp Tachyon Tunnel #0     fs_warp        FS       534   4     0  143    32        0:0    1   62
+Solar warp Tachyon Tunnel #0     fs_warp        FS       550   4     0  144    32        0:0    1   65
 Solar warp Tachyon Tunnel #0     vs_background  VS        35   4     0   23     6        0:0    0    1
 Solar warp Tachyon Tunnel #0     vs_background  VS-bin    34   4     0   23     6        0:0    0    0
-Solar warp Fold Drive #0         fs_warp        FS       481   4     0  114    31        0:0    0   32
+Solar warp Fold Drive #0         fs_warp        FS       961   4     1  254    32        0:0    4  118
 Solar warp Fold Drive #0         vs_background  VS        35   4     0   23     6        0:0    0    1
 Solar warp Fold Drive #0         vs_background  VS-bin    34   4     0   23     6        0:0    0    0
-Solar warp Ion Slipstream #0     fs_warp        FS       580   4     0  142    32        0:0    2   61
+Solar warp Ion Slipstream #0     fs_warp        FS       588   4     0  150    31        0:0    1   61
 Solar warp Ion Slipstream #0     vs_background  VS        35   4     0   23     6        0:0    0    1
 Solar warp Ion Slipstream #0     vs_background  VS-bin    34   4     0   23     6        0:0    0    0
-Solar warp Graviton Spiral #0    fs_warp        FS       564   4     0  145    32        0:0    1   61
-Solar warp Graviton Spiral #0    vs_background  VS        35   4     0   23     6        0:0    0    1
-Solar warp Graviton Spiral #0    vs_background  VS-bin    34   4     0   23     6        0:0    0    0
+Solar warp Bubble Drive #0       fs_warp        FS       569   4     0  141    32        0:0    1   54
+Solar warp Bubble Drive #0       vs_background  VS        35   4     0   23     6        0:0    0    1
+Solar warp Bubble Drive #0       vs_background  VS-bin    34   4     0   23     6        0:0    0    0
 Solar star #0                    fs_star        FS       243   4     0   62    19        0:0    3   11
 Solar star #0                    vs_body        VS       273   4     0  117    25        0:0    2   10
 Solar star #0                    vs_body        VS-bin   265   4     0  107    25        0:0    2    9
