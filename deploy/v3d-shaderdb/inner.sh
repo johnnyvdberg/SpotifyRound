@@ -39,11 +39,10 @@ mkdir -p "$DIVE3D_PREVIEW_DIR"
 
 # Each of these builds every pipeline of its scene: the globe's (the noop
 # shim draws nothing, so its assertions fail, but every pipeline has compiled
-# by then), the Nautilus' previews, the planet's and the solar tour's
-# benchmarks (which also stream a whole planet, its moons and a sky through
-# every generator pipeline).
-export PLANET_SEED=7
-tests=${SHADERDB_TESTS:-globe::tests::the_frame_is_round dive3d::tests::previews planet::tests::frame_time solar::tests::frame_time}
+# by then), the Nautilus' previews and the solar tour's benchmark (which also
+# streams a whole planet, its moons and a sky through every generator
+# pipeline).
+tests=${SHADERDB_TESTS:-globe::tests::the_frame_is_round dive3d::tests::previews solar::tests::frame_time}
 for test in $tests; do
     echo "== running $test" >&2
     timeout "${SHADERDB_TIMEOUT:-300}" \

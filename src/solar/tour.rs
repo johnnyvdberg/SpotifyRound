@@ -2,9 +2,10 @@
 //! the HUD says at any moment of it.
 //!
 //! A visit drops out of the previous hyperjump outside the system, crosses to
-//! the first planet on the itinerary, and for each planet settles into a high
-//! orbit with its moons and rings in view, dives to a low orbit over the
-//! horizon, climbs back out and crosses to the next. A giant with a moon the
+//! the first planet on the itinerary, and for each planet settles into an
+//! orbit with its moons and rings in view while the scanner surveys it, then
+//! crosses to the next, never stopping: transfers leave and enter the orbits
+//! at their speeds, the way they run. A giant with a moon the
 //! size of a planet is visited last, and the moon after it, a short hop out.
 //! Crossings are not straight: each follows a spline through the closest
 //! point of a flyby, swinging round the star or past a planet not otherwise
@@ -25,10 +26,8 @@ pub const TRANSFER: f64 = 45.0;
 pub const FLYBY: f64 = 64.0;
 /// The short hop from a giant out to its moon.
 pub const HOP: f64 = 32.0;
-pub const HIGH: f64 = 35.0;
-pub const DESCEND: f64 = 12.0;
-pub const LOW: f64 = 28.0;
-pub const CLIMB: f64 = 12.0;
+/// Long enough for the scanner's whole survey (see `scan::SCHEDULE`).
+pub const HIGH: f64 = 70.0;
 pub const DEPART: f64 = 20.0;
 pub const JUMP: f64 = 150.0;
 /// The hyperjump drives, each its own look (`fs_warp` in `frame.wgsl`).
@@ -53,9 +52,6 @@ pub enum Phase {
         to: Stop,
     },
     High(Stop),
-    Descend(Stop),
-    Low(Stop),
-    Climb(Stop),
     Depart(Stop),
     Jump,
 }
@@ -529,9 +525,6 @@ impl Tour {
             };
             push(Phase::Transfer { from, to: stop }, duration, &mut t);
             push(Phase::High(stop), HIGH, &mut t);
-            push(Phase::Descend(stop), DESCEND, &mut t);
-            push(Phase::Low(stop), LOW, &mut t);
-            push(Phase::Climb(stop), CLIMB, &mut t);
             from = Some(stop);
         }
         let last = *itinerary.last().expect("a tour has stops");
@@ -551,8 +544,8 @@ impl Tour {
                 let u = normalize(cross(n, [0.0, 0.0, 1.0]));
                 let _ = rng.range(0.0, std::f64::consts::TAU);
                 // Angles are measured from the sun's direction (see
-                // `orbiting`): arrive over the night side, cross sunrise
-                // high up, and run the low orbit through the morning.
+                // `orbiting`): arrive over the night side if the transfer
+                // allows (see `new`), and cross sunrise in orbit.
                 Orbit { u, n, angle: -2.2 }
             })
             .collect();
@@ -650,7 +643,7 @@ impl Tour {
                     TRANSFER
                 };
                 let times = (t, t + duration);
-                t += duration + HIGH + DESCEND + LOW + CLIMB;
+                t += duration + HIGH;
                 times
             })
             .collect()
@@ -940,13 +933,6 @@ impl Tour {
         (u, cross(orbit.n, u))
     }
 
-    /// How well transfer `k`'s last stretch already heads the way its orbit
-    /// runs, relative to the body: 1 along it, -1 against it.
-    #[cfg(test)]
-    fn approach(&self, k: usize) -> f64 {
-        dot(self.heading_in(k), self.orbit_motion(self.itinerary[k], self.arrival_time(k)))
-    }
-
     /// The transfer segment that reaches `stop`.
     fn transfer_to(&self, stop: Stop) -> Segment {
         self.segments
@@ -1128,47 +1114,17 @@ impl Tour {
             .map_or(0.0, |s| s.start)
     }
 
-    /// 0 in high orbit, 1 in low orbit, for `stop` at time `t`.
-    fn lowness(&self, stop: Stop, t: f64) -> f64 {
-        let (segment, local) = self.segment(t);
-        match segment.phase {
-            Phase::Descend(p) if p == stop => smootherstep(local / segment.duration),
-            Phase::Low(p) if p == stop => 1.0,
-            Phase::Climb(p) if p == stop => 1.0 - smootherstep(local / segment.duration),
-            _ => 0.0,
-        }
+
+    /// The orbit's distance from the body's centre.
+    fn height(planet: &Planet) -> f64 {
+        planet.radius * if planet.kind.is_giant() { 3.7 } else { 3.0 }
     }
 
-    /// High and low orbit distances from the planet's centre.
-    fn heights(planet: &Planet) -> (f64, f64) {
-        let high = planet.radius * if planet.kind.is_giant() { 3.7 } else { 3.0 };
-        let low = planet.radius * if planet.kind.is_giant() { 1.22 } else { 1.10 };
-        (high, low)
-    }
-
-    /// Angle along the orbit `seconds` after arriving: quicker high up,
-    /// slower near the ground so the land does not race past. The rate eases
-    /// with the height, integrated numerically.
+    /// Angle along the orbit at `t`, a turn every 150 seconds from the
+    /// arrival (and before it, on the transfer's last stretch, so the
+    /// hand-over is smooth).
     fn orbit_angle(&self, stop: Stop, t: f64) -> f64 {
-        let start = self.arrival(stop);
-        let orbit = self.orbit_of(stop);
-        let span = (t - start).max(0.0);
-        let steps = 48;
-        let dt = span / steps as f64;
-        let rate = |tt: f64| {
-            let a = self.lowness(stop, tt);
-            std::f64::consts::TAU * (1.0 / 150.0 + (1.0 / 900.0 - 1.0 / 150.0) * a)
-        };
-        let mut sum = 0.0;
-        for i in 0..steps {
-            sum += rate(start + (i as f64 + 0.5) * dt) * dt;
-        }
-        // Before arrival (on the transfer's last stretch) keep moving at the
-        // high rate so the hand-over is smooth.
-        if t < start {
-            sum = -(start - t) * std::f64::consts::TAU / 150.0;
-        }
-        orbit.angle + sum
+        self.orbit_of(stop).angle + (t - self.arrival(stop)) * std::f64::consts::TAU / 150.0
     }
 
     /// Camera position, forward and up while orbiting `stop` at `t`.
@@ -1176,9 +1132,7 @@ impl Tour {
         let body = self.world(stop);
         let centre = self.system.centre(stop, t);
         let orbit = self.orbit_of(stop);
-        let a = self.lowness(stop, t);
-        let (high, low) = Self::heights(body);
-        let distance = high + (low - high) * a;
+        let distance = Self::height(body);
         let angle = self.orbit_angle(stop, t);
         let (s, c) = angle.sin_cos();
         // The plane's axes follow the sun, which an inner planet's own orbit
@@ -1187,18 +1141,9 @@ impl Tour {
         let radial = add(scale(u, c), scale(v, s));
         let prograde = add(scale(u, -s), scale(v, c));
         let position = add(centre, scale(radial, distance));
-        // High up: the planet a little off centre. Low down: along the orbit,
-        // just below the horizon so it crosses the upper part of the panel.
-        let f_high = normalize(add(scale(radial, -0.97), scale(prograde, 0.24)));
-        let dip = (body.radius / distance).clamp(-1.0, 1.0).acos();
-        let below = dip + 0.32 * HALF_FOV.atan();
-        let f_low = normalize(add(
-            scale(prograde, below.cos()),
-            scale(radial, -below.sin()),
-        ));
-        let forward = normalize(mix(f_high, f_low, smoothstep(0.25, 1.0, a)));
-        let up = normalize(mix(orbit.n, radial, a));
-        (position, forward, up)
+        // The planet a little off centre.
+        let forward = normalize(add(scale(radial, -0.97), scale(prograde, 0.24)));
+        (position, forward, orbit.n)
     }
 
     /// Everything a transfer path can bump into: planets, moons and the
@@ -1305,7 +1250,7 @@ impl Tour {
         let mut warp = 0.0;
         let mut flash = 0.0;
         let (position, forward, up) = match segment.phase {
-            Phase::High(p) | Phase::Descend(p) | Phase::Low(p) | Phase::Climb(p) => {
+            Phase::High(p) => {
                 self.orbiting(p, t)
             }
             Phase::Transfer { from, to } => {
@@ -1390,7 +1335,7 @@ impl Tour {
         };
         match segment.phase {
             Phase::Transfer { to, .. } => (Some(to), second(to)),
-            Phase::High(p) | Phase::Descend(p) | Phase::Low(p) | Phase::Climb(p) => {
+            Phase::High(p) => {
                 (Some(p), second(p))
             }
             Phase::Depart(p) => (
@@ -1434,7 +1379,7 @@ impl Tour {
     pub fn current(&self, t: f64) -> Option<Stop> {
         match self.segment(t).0.phase {
             Phase::Transfer { to, .. } => Some(to),
-            Phase::High(p) | Phase::Descend(p) | Phase::Low(p) | Phase::Climb(p) | Phase::Depart(p) => Some(p),
+            Phase::High(p) | Phase::Depart(p) => Some(p),
             Phase::Jump => None,
         }
     }
@@ -1639,7 +1584,7 @@ impl Tour {
                 let mu = super::system::GM_EARTH * world.mass;
                 let r = length(sub(self.view(t).position, self.system.centre(p, t))).max(world.radius) * KM;
                 // From orbital speed to escape speed, at the orbit left.
-                let r0 = Self::heights(world).0 * KM;
+                let r0 = Self::height(world) * KM;
                 fire(
                     "ESCAPE BURN",
                     format!(
@@ -1660,7 +1605,7 @@ impl Tour {
     pub fn scans(&self, t: f64) -> Vec<super::scan::Scan> {
         let (segment, _) = self.segment(t);
         match segment.phase {
-            Phase::High(p) | Phase::Descend(p) | Phase::Low(p) | Phase::Climb(p) => {
+            Phase::High(p) => {
                 let survey = super::scan::Survey::of(self.world(p), &self.system.star);
                 survey.at(t - self.arrival(p))
             }
@@ -1750,17 +1695,12 @@ impl Tour {
                 }
                 (title, lines)
             }
-            Phase::High(p) | Phase::Descend(p) | Phase::Low(p) | Phase::Climb(p) => {
+            Phase::High(p) => {
                 let planet = self.world(p);
                 let distance = length(sub(view.position, self.system.centre(p, t)));
                 let altitude = (distance - planet.radius) * KM;
                 let speed = planet.orbital_speed(distance);
-                let title = match segment.phase {
-                    Phase::Low(_) => "LOW ORBIT",
-                    Phase::Descend(_) => "DEORBIT BURN",
-                    Phase::Climb(_) => "ORBIT RAISING",
-                    _ => "ORBIT",
-                };
+                let title = "ORBIT";
                 let departs = self
                     .segments
                     .iter()

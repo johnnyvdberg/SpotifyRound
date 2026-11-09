@@ -45,8 +45,6 @@ mod tests {
             )
         };
         for (name, source) in [
-            ("planet-frame", crate::planet::shader_source()),
-            ("planet-generator", crate::planet::generator_source()),
             ("solar-generate", solar(include_str!("solar/generate.wgsl"))),
             ("solar-frame", solar(include_str!("solar/frame.wgsl"))),
         ] {

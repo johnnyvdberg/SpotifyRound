@@ -18,7 +18,6 @@ mod gpu;
 mod gpu_cost;
 mod motion;
 mod noise3d;
-mod planet;
 mod ring;
 mod service;
 mod shader_lab;

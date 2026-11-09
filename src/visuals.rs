@@ -20,7 +20,6 @@ use slint::wgpu_30::wgpu;
 use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
-use crate::planet::Planet;
 use crate::solar::{Hud, Solar};
 use crate::ui::{AppWindow, WindowExt};
 
@@ -106,15 +105,12 @@ pub enum Scene {
     Globe,
     /// The Nautilus' voyage, seen through its salon window.
     Nautilus,
-    /// An invented planet, generated from a seed, seen from far away and
-    /// from low orbit.
-    Planet,
     /// A grand tour of invented star systems, with hyperjumps between them.
     Solar,
 }
 
 impl Scene {
-    pub const ALL: [Scene; 4] = [Scene::Globe, Scene::Nautilus, Scene::Planet, Scene::Solar];
+    pub const ALL: [Scene; 3] = [Scene::Globe, Scene::Nautilus, Scene::Solar];
 
     pub fn index(self) -> usize {
         self as usize
@@ -126,7 +122,6 @@ impl Scene {
         match self {
             Scene::Globe => crate::globe::SIZE as f32,
             Scene::Nautilus => crate::dive3d::SIZE as f32,
-            Scene::Planet => crate::planet::SIZE as f32,
             Scene::Solar => crate::solar::SIZE as f32,
         }
     }
@@ -135,12 +130,11 @@ impl Scene {
         match self {
             Scene::Globe => Ok(Box::new(Globe::new(gpu)?)),
             Scene::Nautilus => Ok(Box::new(Nautilus::new(gpu)?)),
-            Scene::Planet => Ok(Box::new(Planet::new(gpu)?)),
             Scene::Solar => Ok(Box::new(Solar::new(gpu)?)),
         }
     }
 
-    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus`, `planet` or `solar`), which
+    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus` or `solar`), which
     /// then shows from the start and stays: a fixed load for measuring one
     /// scene, together with `SPOTIFY_ROUND_FULL_SPEED`.
     pub fn forced() -> Option<Self> {
@@ -153,7 +147,6 @@ impl Scene {
             {
                 "globe" => Some(Scene::Globe),
                 "nautilus" => Some(Scene::Nautilus),
-                "planet" => Some(Scene::Planet),
                 "solar" => Some(Scene::Solar),
                 other => {
                     tracing::warn!(scene = other, "SPOTIFY_ROUND_SCENE names no scene");
@@ -694,8 +687,7 @@ mod tests {
         for _ in 0..64 {
             assert_eq!(Scene::random(0b10), Scene::Nautilus);
             assert_eq!(Scene::random(0b01), Scene::Globe);
-            assert_eq!(Scene::random(0b100), Scene::Planet);
-            assert_eq!(Scene::random(0b1000), Scene::Solar);
+            assert_eq!(Scene::random(0b100), Scene::Solar);
         }
     }
 }

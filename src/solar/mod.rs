@@ -1864,9 +1864,6 @@ pub(crate) mod tests {
                     out.push((format!("transfer-{from}-to-{to}-arrival"), end - 1.5));
                 }
                 Phase::High(p) => out.push((format!("{p}-high-orbit"), at(0.5))),
-                Phase::Descend(p) => out.push((format!("{p}-descend"), at(0.5))),
-                Phase::Low(p) => out.push((format!("{p}-low-orbit"), at(0.5))),
-                Phase::Climb(p) => out.push((format!("{p}-climb"), at(0.6))),
                 Phase::Depart(_) => {
                     out.push(("depart-start".into(), segment.start + 1.0));
                     out.push(("depart-spool".into(), end - 1.0));

@@ -918,7 +918,7 @@ mod preview {
         window.global::<App>().set_choosing(false);
 
         // ---- the solar tour, with its HUD ----
-        let (pixels, hud) = crate::solar::tests::render_once(11, "-low-orbit");
+        let (pixels, hud) = crate::solar::tests::render_once(11, "-high-orbit");
         window.set_idle_scene(3, crate::solar::SIZE as f32);
         window.set_idle(true, 1.0);
         window.set_idle_hud(&hud);
@@ -940,14 +940,13 @@ mod preview {
             ),
         ));
         save(&window, &soft, "16-solar-jump");
-        // A star flyby, with the minimap's route, and a moon the size of a
-        // planet in low orbit.
+        // A star flyby, with the minimap's route, a moon the size of a
+        // planet in orbit, a gravity assist and an engine burn.
         for (seed, moment, name) in [
             (23, "-flyby", "17-solar-flyby"),
-            (14, "m1-low-orbit", "18-solar-moon"),
+            (14, "m1-high-orbit", "18-solar-moon"),
             (13, "-flyby", "19-solar-assist"),
-            (5, "p1-low-orbit", "20-solar-low-detail"),
-            (11, "capture-burn", "21-solar-burn"),
+            (11, "capture-burn", "20-solar-burn"),
         ] {
             let (pixels, hud) = crate::solar::tests::render_once(seed, moment);
             window.set_idle_hud(&hud);
