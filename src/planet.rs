@@ -305,6 +305,7 @@ impl Planet {
                 Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             ),
             ("glow", "vs_disk", "fs_glow", Some(additive)),
+            ("frame", "vs_circle", "fs_planet", None),
         ];
         let pipelines = [0.0, 1.0].map(|near| {
             passes.map(|(name, vertex, fragment, blend)| {
@@ -400,6 +401,12 @@ impl Planet {
     /// Draw one frame for `seconds`, `near` of the way into low orbit, with the
     /// ground turned `spin` turns.
     fn draw(&self, gpu: &Graphics, seconds: f64, near: f32, spin: f64, frame: usize) {
+        self.draw_passes(gpu, seconds, near, spin, frame, 1 << 6);
+    }
+
+    /// `draw`, with only the passes whose bits are set in `passes` (bit `i`
+    /// for the `i`th of the `PASSES`), for timing them one by one.
+    fn draw_passes(&self, gpu: &Graphics, seconds: f64, near: f32, spin: f64, frame: usize, passes: u8) {
         gpu.queue.write_buffer(
             &self.uniforms,
             0,
@@ -430,7 +437,7 @@ impl Planet {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_bind_group(1, &self.noise.group, &[]);
             let close = near > 0.001;
-            let [background, ground, detail, sea, clouds, glow] =
+            let [background, ground, detail, sea, clouds, glow, fused] =
                 &self.pipelines[usize::from(close)];
             // Labels as made in `new`, and the pixels each covers, for the Pi
             // estimate's fragment counts.
@@ -438,17 +445,26 @@ impl Planet {
             let full = (SIZE * SIZE) as u64;
             let d = uniforms_at(seconds, near, spin).disk;
             let covered = ((d[2] - d[0]).abs() * (d[3] - d[1]).abs() / 4.0 * full as f32) as u64;
-            pass.set_pipeline(background);
-            crate::gpu::counted_draw(&mut pass, &label("background"), full, 0..3, 0..1);
-            for (pipeline, name) in [
+            if passes & (1 << 6) != 0 {
+                pass.set_pipeline(fused);
+                crate::gpu::counted_draw(&mut pass, &label("frame"), full, 0..64 * 3, 0..1);
+            }
+            if passes & 1 != 0 {
+                pass.set_pipeline(background);
+                crate::gpu::counted_draw(&mut pass, &label("background"), full, 0..3, 0..1);
+            }
+            for (i, (pipeline, name)) in [
                 (ground, "ground"),
                 (detail, "detail"),
                 (sea, "sea"),
                 (clouds, "clouds"),
                 (glow, "glow"),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 // The detail only exists in low orbit.
-                if std::ptr::eq(pipeline, detail) && !close {
+                if passes & (2 << i) == 0 || std::ptr::eq(pipeline, detail) && !close {
                     continue;
                 }
                 pass.set_pipeline(pipeline);
@@ -472,8 +488,8 @@ impl Planet {
 
 const SLOTS: usize = crate::visuals::SLOTS;
 /// The frame's pipelines, drawn in order: background, ground, close-up
-/// detail (low orbit only), sea, clouds, glow.
-const PASSES: usize = 6;
+/// detail (low orbit only), sea, clouds, glow; and all of them in one.
+const PASSES: usize = 7;
 
 /// How far into low orbit the camera is at `seconds`: 0 for the whole disc,
 /// 1 for the horizon. `PLANET_VIEW=globe` or `horizon` holds one of them.
@@ -2029,6 +2045,11 @@ const FRAME_SHADER: &str = r#"
 //
 // `NEAR` builds the low-orbit versions of the ground and the clouds, with
 // close-up detail where a map texel covers several pixels.
+//
+// The frame is drawn with `fs_planet` (at the end), which does all of these
+// in one pipeline: on the Pi that costs a third of the passes apart, whose
+// shared ray, map coordinates and mip levels each pass worked out again.
+// The passes stay as the reference `fused_matches_passes` checks it against.
 
 struct Uniforms {
     frame: vec4<f32>,
@@ -2196,8 +2217,11 @@ fn space(position: vec2<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_background(in: Varying) -> @location(0) vec4<f32> {
-    let ray = trace(in.position.xy);
-    var colour = space(in.position.xy);
+    return vec4<f32>(background(in.position.xy, trace(in.position.xy)), 1.0);
+}
+
+fn background(position: vec2<f32>, ray: Ray) -> vec3<f32> {
+    var colour = space(position);
     let r = ray.closest;
     if (r < ATMOSPHERE) {
         // The air edge-on: a glow where the sun lights it, thinning out with
@@ -2212,21 +2236,36 @@ fn fs_background(in: Varying) -> @location(0) vec4<f32> {
         glow += vec3<f32>(0.10, 0.32, 0.12) * exp(-band * band) * night * 0.03;
         // In the far view, faded out before the square frame can cut it off.
         let half = params.frame.x;
-        let screen = length(in.position.xy - vec2<f32>(half)) / (half * 0.93);
+        let screen = length(position - vec2<f32>(half)) / (half * 0.93);
         let guard = mix(1.0 - smoothstep01(FRAME_EDGE * 0.92, FRAME_EDGE, screen), 1.0, params.frame.w);
         colour += glow * guard;
     }
-    return vec4<f32>(colour, 1.0);
+    return colour;
+}
+
+// How much of an octave with `frequency` cells per radius to keep where a
+// pixel covers `footprint` radii of ground: all of it while a cell spans two
+// pixels, none once it shrinks to one. Finer cells would only alias, and
+// their fetches land so far apart that they miss the texture cache.
+fn octave_weight(frequency: f32, footprint: f32) -> f32 {
+    return smoothstep01(1.0, 0.5, footprint * frequency);
 }
 
 // Close-up detail where a map texel covers several pixels: three octaves of
-// value noise and their slope, fading in as the footprint shrinks.
-fn detail(n: vec3<f32>) -> vec4<f32> {
-    var sum = noised(n * 1500.0) * vec4<f32>(0.5, vec3<f32>(1500.0 * 0.5));
-    let b = noised(OCTAVE * n * 3100.0);
-    sum += vec4<f32>(b.x * 0.25, (transpose(OCTAVE) * b.yzw) * 3100.0 * 0.25);
-    let c = noised(n.zxy * 6300.0);
-    sum += vec4<f32>(c.x * 0.125, c.yzw.yzx * 6300.0 * 0.125);
+// value noise and their slope, fading in as the footprint shrinks. Octaves
+// finer than the pixels are skipped, fetch and all.
+fn detail(n: vec3<f32>, footprint: f32) -> vec4<f32> {
+    var sum = noised(n * 1500.0) * vec4<f32>(0.5, vec3<f32>(1500.0 * 0.5)) * octave_weight(1500.0, footprint);
+    let wb = octave_weight(3100.0, footprint);
+    if (wb > 0.0) {
+        let b = noised(OCTAVE * n * 3100.0);
+        sum += vec4<f32>(b.x * 0.25, (transpose(OCTAVE) * b.yzw) * 3100.0 * 0.25) * wb;
+    }
+    let wc = octave_weight(6300.0, footprint);
+    if (wc > 0.0) {
+        let c = noised(n.zxy * 6300.0);
+        sum += vec4<f32>(c.x * 0.125, c.yzw.yzx * 6300.0 * 0.125) * wc;
+    }
     return sum;
 }
 
@@ -2277,7 +2316,10 @@ fn fs_detail(in: Varying) -> @location(0) vec4<f32> {
     let n = ray.n;
     let uv = map_uv(n, params.spin.x);
     let water = textureSampleLevel(relief_map, map_sampler, uv, 0.0).b;
-    let d = detail(n);
+    // The ground a pixel covers, along its longer side: stretched by the
+    // slant of the view.
+    let footprint = ray.distance * params.frame.z / max(dot(n, -ray.dir), 0.2);
+    let d = detail(n, footprint);
     let sun = params.sun.xyz;
     // The light the detail's slope adds or takes, against the smooth ground.
     let mu = dot(n, sun);
@@ -2382,6 +2424,129 @@ fn fs_glow(in: Varying) -> @location(0) vec4<f32> {
     let sun_high = SUNLIGHT * exp(-AIR * airmass(mu_sun + 0.04) * 0.55);
     colour += sun_high * smoothstep01(-0.10, 0.08, mu_sun) * (vec3<f32>(1.0) - air) * 0.45;
     return vec4<f32>(colour * cover, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// The whole frame in one pipeline: every pass above, composited as the
+// render pass would blend them, so the ray, its map coordinates and their mip
+// level are worked out once instead of six times, and one cloud fetch serves
+// the sea, the clouds and the night side.
+
+// Sides of the polygon the fused frame is drawn over: just enough to cover
+// the round panel, so the square's corners shade nothing.
+const SIDES: u32 = 64u;
+
+@vertex
+fn vs_circle(@builtin(vertex_index) index: u32) -> Varying {
+    let corner = index % 3u;
+    var p = vec2<f32>(0.0);
+    if (corner != 0u) {
+        let a = f32(index / 3u + corner - 1u) * TAU / f32(SIDES);
+        p = vec2<f32>(cos(a), sin(a)) / cos(PI / f32(SIDES));
+    }
+    var out: Varying;
+    out.position = vec4<f32>(p, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_planet(in: Varying) -> @location(0) vec4<f32> {
+    let ray = trace(in.position.xy);
+    // Derivatives first, while every pixel of the quad still runs.
+    let uv = map_uv(ray.n, params.spin.x);
+    let cuv = map_uv(ray.nc, params.spin.y);
+    let lod = level(uv);
+    let cover = coverage(ray);
+    // Space and the air edge-on, only where the planet leaves them showing.
+    var colour = vec3<f32>(0.0);
+    if (cover < 1.0) {
+        colour = background(in.position.xy, ray);
+    }
+    if (cover > 0.0) {
+        let n = ray.n;
+        let sun = params.sun.xyz;
+        let mu_sun = dot(n, sun);
+        let air = through(ray);
+        let relief = textureSampleLevel(relief_map, map_sampler, uv, lod + 0.4);
+        let water = relief.b;
+        let cloud_map_here = textureSampleLevel(cloud_map, map_sampler, cuv, lod).r;
+
+        // The ground (`fs_ground`).
+        let east = east_of(n);
+        let bumped = n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * RELIEF;
+        var shadow = 0.0;
+        if (mu_sun > -0.05) {
+            let cloud_uv = vec2<f32>(uv.x + params.spin.y - params.spin.x, uv.y) + shadow_shift(n, mu_sun);
+            shadow = textureSampleLevel(cloud_map, map_sampler, cloud_uv, lod + 1.0).r;
+        }
+        let sky = SKYLIGHT * smoothstep01(-0.15, 0.4, mu_sun);
+        let day = textureSampleLevel(day_map, map_sampler, uv, lod).rgb;
+        var ground = day * mix(1.0, 0.8, water)
+            * (sunlight(mu_sun) * max(dot(normalize(bumped), sun) + 0.03, 0.0) * (1.0 - 0.6 * shadow) + sky);
+
+        // Close-up detail (`fs_detail`), multiplied into the ground.
+        var close = 0.0;
+        if (NEAR) {
+            close = closeness(ray);
+            if (close > 0.0 && cover >= 0.999) {
+                let footprint = ray.distance * params.frame.z / max(dot(n, -ray.dir), 0.2);
+                let d = detail(n, footprint);
+                let tilted = dot(normalize(n - (d.yzw - n * dot(d.yzw, n)) * 0.00022 * close * (1.0 - water)), sun);
+                let shading = clamp((max(tilted, 0.0) + 0.03) / (max(mu_sun, 0.0) + 0.03), 0.6, 1.6);
+                let grain = 1.0 + d.x * close * mix(0.3, 0.08, water);
+                ground *= grain * mix(1.0, shading, smoothstep01(-0.05, 0.1, mu_sun));
+            }
+        }
+
+        // The sea (`fs_sea`), added to it.
+        if (water > 0.0) {
+            let fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, -ray.dir), 0.0, 1.0), 5.0);
+            let log_nh = log2(max(dot(n, normalize(sun - ray.dir)), 0.0));
+            let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
+            ground += (sunlight(mu_sun) * glint * (0.25 + fresnel) * (1.0 - cloud_map_here)
+                + SKYLIGHT * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun)) * water;
+        }
+        ground *= air * cover;
+
+        // The cloud deck (`fs_clouds`), over it.
+        var wisp = 0.0;
+        if (NEAR) {
+            if (close > 0.0) {
+                wisp = noise(ray.nc * 520.0) * 0.9 * close * 1.4;
+            }
+        }
+        let cloud = clamp(cloud_map_here + wisp * cloud_map_here * (1.0 - cloud_map_here), 0.0, 1.0);
+        let alpha = cloud * cover;
+        var deck = vec3<f32>(0.0);
+        let sun_high = SUNLIGHT * exp(-AIR * airmass(mu_sun + 0.04) * 0.55);
+        if (alpha > 0.002) {
+            var side = 1.0;
+            if (mu_sun > -0.05) {
+                let toward = textureSampleLevel(cloud_map, map_sampler, cuv + shadow_shift(n, mu_sun) * 0.35, lod).r;
+                side = clamp(1.0 - 1.4 * (toward - cloud), 0.55, 1.15);
+            }
+            let lit = CLOUD_ALBEDO * (sun_high * smoothstep01(-0.08, 0.04, mu_sun) * (0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + sky * 1.5);
+            deck = lit * air * alpha;
+        }
+
+        // The night side and the air in front (`fs_glow`), added.
+        var glow = vec3<f32>(0.0);
+        let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
+        if (darkness > 0.002) {
+            let city = textureSampleLevel(night_map, map_sampler, uv, lod + 0.6).r;
+            let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, city));
+            glow += tint * (city * city * NIGHT_GAIN * (1.0 - cloud_map_here * 0.85));
+            glow += vec3<f32>(0.004, 0.006, 0.012) * (day + cloud_map_here);
+            glow *= darkness * air;
+        }
+        glow += sun_high * smoothstep01(-0.10, 0.08, mu_sun) * (vec3<f32>(1.0) - air) * 0.45;
+
+        // Composited as the blends would: ground over the background, the
+        // deck over that, the glow added.
+        let planet = glow * cover + deck + ground * (1.0 - alpha);
+        colour = planet + colour * (1.0 - alpha) * (1.0 - cover);
+    }
+    return vec4<f32>(colour, 1.0);
 }
 "#;
 
@@ -2495,6 +2660,51 @@ mod tests {
         std::fs::write(dir.join("planet.tsv"), out).expect("the counts");
     }
 
+    /// The fused frame against the six passes it replaces, inside the
+    /// round panel: the mean and largest difference per channel.
+    #[test]
+    #[ignore = "needs a working GPU adapter"]
+    fn fused_matches_passes() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let planet = Planet::with_seed(&gpu, 7).expect("a planet");
+        for (label, near) in [("globe", 0.0f32), ("dive", 0.55), ("horizon", 1.0)] {
+            let mut frames = Vec::new();
+            for passes in [0b11_1111, 1 << 6] {
+                planet.draw_passes(&gpu, 400.0, near, 0.3, 0, passes);
+                frames.push(read_texture(&gpu, &planet.frames[0].texture, SIZE, SIZE, 4));
+            }
+            let (mut sum, mut max, mut count) = (0u64, 0u8, 0u64);
+            let half = SIZE as f32 / 2.0;
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    if ((x as f32 + 0.5 - half).powi(2) + (y as f32 + 0.5 - half).powi(2)).sqrt() > half - 1.0 {
+                        continue;
+                    }
+                    let i = ((y * SIZE + x) * 4) as usize;
+                    for c in 0..3 {
+                        let d = frames[0][i + c].abs_diff(frames[1][i + c]);
+                        sum += d as u64;
+                        max = max.max(d);
+                        count += 1;
+                    }
+                }
+            }
+            println!("planet {label} fused vs passes: mean {:.3} max {max}", sum as f64 / count as f64);
+            if let Ok(dir) = std::env::var("PLANET_PREVIEW_DIR") {
+                for (frame, name) in frames.iter().zip(["passes", "fused"]) {
+                    image::save_buffer(
+                        format!("{dir}/{label}-{name}.png"),
+                        frame,
+                        SIZE,
+                        SIZE,
+                        image::ExtendedColorType::Rgba8,
+                    )
+                    .expect("a preview");
+                }
+            }
+        }
+    }
+
     /// Time the generator and the frames in both views.
     #[test]
     #[ignore = "a benchmark; needs a working GPU adapter"]
@@ -2519,6 +2729,19 @@ mod tests {
             gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
             let mean = started.elapsed().as_secs_f64() / frames as f64;
             println!("planet {label} frame, back to back: {:.3} ms", mean * 1e3);
+            // Each pass over the background alone, and the background alone.
+            let names = ["background", "ground", "detail", "sea", "clouds", "glow", "fused"];
+            for (i, name) in names.iter().enumerate() {
+                let passes = if i == 6 { 1 << 6 } else { 1u8 | (1 << i) };
+                let started = std::time::Instant::now();
+                for i in 0..frames {
+                    let seconds = i as f64 * SUN_PERIOD as f64 / frames as f64;
+                    planet.draw_passes(&gpu, seconds, near, seconds / REVOLUTION as f64, i % SLOTS, passes);
+                }
+                gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                let mean = started.elapsed().as_secs_f64() / frames as f64;
+                println!("planet {label} background+{name}: {:.3} ms", mean * 1e3);
+            }
         }
     }
 }
