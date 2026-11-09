@@ -34,6 +34,14 @@ import collections
 import sys
 
 THREAD_FACTOR = {4: 1.0, 2: 2.0, 1: 4.0}
+# Entry points that branch instead of discarding (`if (visible) { ... }`):
+# their work after the branch runs only for 16-pixel groups with something to
+# draw. Their cost: the prefix (the ray's hit and map lookups, about
+# `--prefix` instructions) for every pixel reached, the rest for the pixels
+# kept, rounded up to whole groups by `--groups`.
+BRANCHED = {"fs_star", "fs_flat", "fs_ground", "fs_detail", "fs_sea", "fs_clouds",
+            "fs_cloud_layer", "fs_glow", "fs_moon", "fs_limb", "fs_ring",
+            "fs_cloud_shadow", "fs_eclipse", "fs_ring_shadow"}
 FULL = 1080 * 1080
 
 
@@ -74,19 +82,28 @@ def main():
     parser.add_argument("--ms-per-inst", type=float, default=0.025)
     parser.add_argument("--fixed", type=float, default=0.5)
     parser.add_argument("--top", type=int, default=5)
+    parser.add_argument("--prefix", type=int, default=140)
+    parser.add_argument("--groups", type=float, default=1.25)
+    parser.add_argument("--no-branches", action="store_true",
+                        help="cost every shader as if it discarded (the code before branching)")
     args = parser.parse_args()
 
     shaders = load_table(args.table)
     per_pixel = args.ms_per_inst / FULL
     missing = set()
 
-    def cost(label, pixels):
+    def cost(label, pixels, kept=None):
         shader = shaders.get(label)
         if shader is None:
             missing.add(label)
             return 0.0
-        _, inst, threads = shader
-        return pixels * inst * THREAD_FACTOR.get(threads, 4.0) * per_pixel
+        entry, inst, threads = shader
+        factor = THREAD_FACTOR.get(threads, 4.0) * per_pixel
+        if kept is not None and entry in BRANCHED and not args.no_branches:
+            prefix = min(inst, args.prefix)
+            busy = min(pixels, kept * args.groups)
+            return (pixels * prefix + busy * (inst - prefix)) * factor
+        return pixels * inst * factor
 
     frames = collections.OrderedDict()
     for scene, moment, frame, label, covered, kept in load_counts(args.counts):
@@ -96,15 +113,15 @@ def main():
     streaming = collections.defaultdict(list)
     print(f"{'moment':48} {'est ms':>7} {'floor':>6} {'fps':>5}   heaviest draws (ms)")
     for (scene, moment, frame), draws in frames.items():
-        total = args.fixed + sum(cost(l, c) for l, c, _ in draws)
+        total = args.fixed + sum(cost(l, c, k) for l, c, k in draws)
         floor = args.fixed + sum(cost(l, k) for l, _, k in draws)
         if moment.endswith("streaming"):
             painting = sum(cost(l, c) for l, c, _ in draws if not is_frame(l))
             streaming[(scene, moment)].append(painting)
             continue
         by_label = collections.defaultdict(float)
-        for l, c, _ in draws:
-            by_label[short(l)] += cost(l, c)
+        for l, c, k in draws:
+            by_label[short(l)] += cost(l, c, k)
         heavy = sorted(by_label.items(), key=lambda x: -x[1])[: args.top]
         heavy = ", ".join(f"{name} {ms:.1f}" for name, ms in heavy)
         print(f"{scene + ' ' + moment:48.48} {total:7.1f} {floor:6.1f} {1000 / total:5.0f}   {heavy}")

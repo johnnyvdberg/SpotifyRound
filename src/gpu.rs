@@ -576,6 +576,27 @@ pub fn start_counting(device: &wgpu::Device) -> bool {
     true
 }
 
+/// Whether this thread is counting draws, for the Pi estimate.
+pub fn counting() -> bool {
+    COUNTER.with(|c| c.borrow().is_some())
+}
+
+/// The label of a probe draw: a pipeline that shades nothing, drawn just
+/// before a real draw with the same geometry and depth test. Its count is
+/// the pixels the real draw's shader runs for on the Pi (depth-rejected
+/// ones excluded, discarded ones included), and becomes that draw's
+/// `covered`.
+const PROBE: &str = "\0probe";
+
+/// Draw a probe (see [`PROBE`]) when counting.
+pub fn probe_draw(
+    pass: &mut wgpu::RenderPass<'_>,
+    vertices: std::ops::Range<u32>,
+    instances: std::ops::Range<u32>,
+) {
+    counted_draw(pass, PROBE, 0, vertices, instances);
+}
+
 /// Draw, counting the fragments it shades under `label` (the pipeline's
 /// label) when counting is on. `covered` is how many pixels the draw covers:
 /// the driver here counts only the fragments that survive a discard, but the
@@ -642,10 +663,15 @@ pub fn take_counts(gpu: &Graphics) -> Vec<(String, u64, u64)> {
             Err(_) => vec![0; n as usize],
         };
         let labels = std::mem::take(&mut counter.labels);
-        labels
-            .into_iter()
-            .zip(values)
-            .map(|((label, covered), kept)| (label, covered, kept))
-            .collect()
+        let mut out = Vec::new();
+        let mut probed = None;
+        for ((label, covered), kept) in labels.into_iter().zip(values) {
+            if label == PROBE {
+                probed = Some(kept);
+                continue;
+            }
+            out.push((label, probed.take().unwrap_or(covered), kept));
+        }
+        out
     })
 }

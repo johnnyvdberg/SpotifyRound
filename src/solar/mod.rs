@@ -65,6 +65,17 @@ struct Params {
     bodies: [Body; MAX_BODIES],
 }
 
+/// The depth mask's format: ranks of up to 17 bodies need few bits.
+const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth16Unorm;
+/// The baked starfield: a texel about 1.8 of the frame's pixels, so stars
+/// stay small; 32 MB each, two of them.
+const STARFIELD_WIDTH: u32 = 4096;
+const STARFIELD_HEIGHT: u32 = 2048;
+/// Rows of it baked a frame: about a millisecond on the Pi.
+const STARFIELD_ROWS: u32 = 16;
+/// Vertices of a body's draw: a fan of 16 triangles round its silhouette.
+const BODY_VERTICES: u32 = 48;
+
 struct Frame {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -128,8 +139,15 @@ pub(crate) struct Solar {
     /// system it was painted for.
     rings: wgpu::Texture,
     rings_for: u64,
-    bound: (u64, usize),
+    bound: (u64, usize, usize),
+    /// The baked starfields (galaxy and stars, equirectangular), for this
+    /// system and the next, and whose they are: seed and rows done.
+    starfields: [wgpu::Texture; 2],
+    starfield_owner: [Option<(u64, u32)>; 2],
     frames: Vec<Frame>,
+    /// The depth mask: each body's distance rank over its solid disc, so the
+    /// GPU skips shading whatever a nearer body hides (early depth test).
+    depth: wgpu::TextureView,
     streamer: Streamer,
     base_seed: u64,
     visit: u64,
@@ -174,6 +192,7 @@ impl Solar {
                 texture_entry(11, array),
                 texture_entry(12, array),
                 texture_entry(13, d2),
+                texture_entry(14, d2),
             ],
         });
         let mut source = String::from(include_str!("noise.wgsl"));
@@ -188,11 +207,15 @@ impl Solar {
             bind_group_layouts: &[Some(&layout), Some(&streamer.noise().layout)],
             immediate_size: 0,
         });
-        let pipeline = |label: &str,
-                        vs: &str,
-                        fs: &str,
-                        blend: Option<wgpu::BlendState>,
-                        constants: &[(&str, f64)]| {
+        // Every frame pipeline tests the depth mask (see `draw`); the mask's
+        // own pipeline writes it and nothing else.
+        let make = |label: &str,
+                    vs: &str,
+                    fs: &str,
+                    blend: Option<wgpu::BlendState>,
+                    constants: &[(&str, f64)],
+                    write_depth: Option<bool>,
+                    writes: wgpu::ColorWrites| {
             let options = wgpu::PipelineCompilationOptions {
                 constants,
                 ..Default::default()
@@ -212,17 +235,31 @@ impl Solar {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8UnormSrgb,
                         blend,
-                        write_mask: wgpu::ColorWrites::ALL,
+                        write_mask: writes,
                     })],
                     compilation_options: options,
                 }),
                 primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
+                // None: drawn outside the frame's pass (the starfield bake).
+                depth_stencil: write_depth.map(|write| wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(write),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
                 cache: None,
             });
             (label.to_string(), made)
+        };
+        let pipeline = |label: &str,
+                        vs: &str,
+                        fs: &str,
+                        blend: Option<wgpu::BlendState>,
+                        constants: &[(&str, f64)]| {
+            make(label, vs, fs, blend, constants, Some(false), wgpu::ColorWrites::ALL)
         };
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let add = Some(wgpu::BlendState {
@@ -265,6 +302,30 @@ impl Solar {
             },
         });
         let mut pipelines = std::collections::HashMap::new();
+        // The depth mask: each body's solid disc, at its distance rank.
+        let none = wgpu::ColorWrites::empty();
+        pipelines.insert(
+            "mask".to_string(),
+            make("Solar mask", "vs_body", "fs_mask", None, &[], Some(true), none),
+        );
+        // For the Pi estimate only: what survives the mask, shaded by nothing.
+        pipelines.insert(
+            "probe".to_string(),
+            make("Solar probe", "vs_body", "fs_probe", None, &[], Some(false), none),
+        );
+        pipelines.insert(
+            "probefull".to_string(),
+            make("Solar probe full", "vs_background", "fs_probe_full", None, &[], Some(false), none),
+        );
+        // The starfield, baked once a system, and the background reading it.
+        pipelines.insert(
+            "bake".to_string(),
+            make("Solar starfield bake", "vs_background", "fs_bake_stars", None, &[], None, wgpu::ColorWrites::ALL),
+        );
+        pipelines.insert(
+            "spacebaked".to_string(),
+            pipeline("Solar space baked", "vs_background", "fs_space_baked", None, &[]),
+        );
         pipelines.insert(
             "space".to_string(),
             pipeline("Solar space", "vs_background", "fs_space", None, &[]),
@@ -375,6 +436,22 @@ impl Solar {
                 Frame { texture, view }
             })
             .collect();
+        let depth = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Solar depth mask"),
+                size: wgpu::Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let tour = Tour::new(system_for(seed, 0), system_for(seed, 1));
         let rings = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Solar ring profiles"),
@@ -399,8 +476,27 @@ impl Solar {
             bind_group: None,
             rings,
             rings_for: u64::MAX,
-            bound: (u64::MAX, usize::MAX),
+            bound: (u64::MAX, usize::MAX, usize::MAX),
+            starfields: [0, 1].map(|_| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Solar starfield"),
+                    size: wgpu::Extent3d {
+                        width: STARFIELD_WIDTH,
+                        height: STARFIELD_HEIGHT,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+                })
+            }),
+            starfield_owner: [None, None],
             frames,
+            depth,
             streamer,
             base_seed: seed,
             visit: 0,
@@ -461,10 +557,18 @@ impl Solar {
             self.rings_for = self.tour.system.seed;
         }
         let sky = self.streamer.sky_ready(self.tour.system.seed).unwrap_or(0);
-        let wanted = (self.streamer.version, sky);
+        let stars = self.starfield_slot(self.tour.system.seed).unwrap_or(0);
+        let wanted = (self.streamer.version, sky, stars);
         if self.bind_group.is_some() && self.bound == wanted {
             return;
         }
+        self.bind_group = Some(self.group(gpu, sky, stars));
+        self.bound = wanted;
+    }
+
+    /// The frame's bind group, with galaxy sky `sky` and baked starfield
+    /// `stars`.
+    fn group(&self, gpu: &Graphics, sky: usize, stars: usize) -> wgpu::BindGroup {
         let full = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
         let array = |t: &wgpu::Texture| {
             t.create_view(&wgpu::TextureViewDescriptor {
@@ -512,12 +616,94 @@ impl Solar {
             binding: 13,
             resource: wgpu::BindingResource::TextureView(&rings),
         });
-        self.bind_group = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        // Read back through the sRGB view it was written through.
+        let starfield = self.starfields[stars].create_view(&wgpu::TextureViewDescriptor {
+            format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            ..Default::default()
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 14,
+            resource: wgpu::BindingResource::TextureView(&starfield),
+        });
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Solar frame"),
             layout: &self.layout,
             entries: &entries,
-        }));
-        self.bound = wanted;
+        })
+    }
+
+    /// The starfield slot finished for the system of `seed`, if any.
+    fn starfield_slot(&self, seed: u64) -> Option<usize> {
+        (0..2).find(|&k| self.starfield_owner[k] == Some((seed, STARFIELD_HEIGHT)))
+    }
+
+    /// Bake a band of the starfield of the system that needs one: the
+    /// current one, or the next once its galaxy is in (during the jump).
+    /// Into a slot neither system has finished, reading the galaxy map the
+    /// streamer painted and drawing the stars a texel wide, so the frame's
+    /// background is one texture read instead of three layers of hashed
+    /// stars a pixel.
+    fn bake_stars(&mut self, gpu: &Graphics, encoder: &mut wgpu::CommandEncoder) {
+        let seeds = [self.tour.system.seed, self.tour.next.seed];
+        let Some((seed, sky)) = seeds.iter().find_map(|&seed| {
+            let done = self.starfield_slot(seed).is_some();
+            let sky = self.streamer.sky_ready(seed)?;
+            (!done).then_some((seed, sky))
+        }) else {
+            return;
+        };
+        let slot = match (0..2).find(|&k| self.starfield_owner[k].map(|o| o.0) == Some(seed)) {
+            Some(k) => k,
+            None => {
+                // Not one either system still needs.
+                let free = (0..2).find(|&k| match self.starfield_owner[k] {
+                    None => true,
+                    Some((s, _)) => !seeds.contains(&s),
+                });
+                let Some(k) = free else {
+                    return;
+                };
+                self.starfield_owner[k] = Some((seed, 0));
+                k
+            }
+        };
+        let row = self.starfield_owner[slot].map_or(0, |o| o.1);
+        let rows = STARFIELD_ROWS.min(STARFIELD_HEIGHT - row);
+        // The other slot's texture at binding 14: this one is the target.
+        let group = self.group(gpu, sky, 1 - slot);
+        let view = self.starfields[slot].create_view(&wgpu::TextureViewDescriptor {
+            format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            ..Default::default()
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Solar starfield bake"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if row == 0 {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let (label, pipeline) = &self.pipelines["bake"];
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.set_bind_group(1, &self.streamer.noise().group, &[]);
+            pass.set_scissor_rect(0, row, STARFIELD_WIDTH, rows);
+            crate::gpu::counted_draw(&mut pass, label, (STARFIELD_WIDTH * rows) as u64, 0..3, 0..1);
+        }
+        self.starfield_owner[slot] = Some((seed, row + rows));
     }
 
     /// The shader's parameters at `t` into the visit, and the draws: which
@@ -547,6 +733,8 @@ impl Solar {
             };
             if let Some(rect) = rect(&view, star_rel, system.star.radius * 1.02) {
                 star.rect = rect;
+                // air.w: how far round the centre the body's draws reach.
+                star.air[3] = (system.star.radius * 1.02) as f32;
                 bodies.push((length(star_rel), star, vec!["star".into()]));
             }
             for (index, planet) in system.planets.iter().enumerate() {
@@ -587,6 +775,7 @@ impl Solar {
                 }
                 if let Some(rect) = rect(&view, place, bound) {
                     body.rect = rect;
+                    body.air[3] = bound as f32;
                     let eclipsed = eclipsed(system, t, centre, planet.radius, Some(index));
                     let close = length(place) < planet.radius * 1.6;
                     let passes =
@@ -655,7 +844,7 @@ impl Solar {
                                 t / moon.period * 0.2,
                             ),
                             look,
-                            air: [air[0], air[1], air[2], 0.0],
+                            air: [air[0], air[1], air[2], bound as f32],
                             colour: [
                                 moon.palette[0][0],
                                 moon.palette[0][1],
@@ -680,6 +869,8 @@ impl Solar {
         let mut draws = Vec::new();
         for (index, (slot, (_, body, passes))) in list.iter_mut().zip(bodies.iter()).enumerate() {
             *slot = *body;
+            // The depth mask's value: nearer bodies (later, far to near) lower.
+            slot.ring_colour[3] = 1.0 - (index as f32 + 1.0) / (count as f32 + 1.0);
             for pass in passes {
                 draws.push((index as u32, pass.clone()));
             }
@@ -751,10 +942,15 @@ impl Solar {
                 label: Some("Solar encoder"),
             });
         self.streamer.advance(gpu, &mut encoder);
+        self.bake_stars(gpu, &mut encoder);
         self.bind(gpu);
         let (params, draws) = self.params(t);
         let background = if params.warp[0] > 0.02 {
             format!("warp{}", self.drive().0)
+        } else if self.starfield_slot(self.tour.system.seed).is_some()
+            && std::env::var_os("SOLAR_PROCEDURAL_STARS").is_none()
+        {
+            "spacebaked".to_string()
         } else {
             "space".to_string()
         };
@@ -775,23 +971,57 @@ impl Solar {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                // Lives in the tile buffer only: never written to memory.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_bind_group(0, group, &[]);
             pass.set_bind_group(1, &self.streamer.noise().group, &[]);
+            // First the depth mask: every body's solid disc at its rank, so
+            // nothing a nearer body hides is shaded, the background included.
+            let mut masked = Vec::new();
+            for (body, _) in &draws {
+                if !masked.contains(body) {
+                    masked.push(*body);
+                }
+            }
+            // When counting for the Pi estimate, a probe before each draw
+            // counts the pixels that pass the mask: what the Pi shades.
+            let counting = crate::gpu::counting();
+            for body in &masked {
+                if counting {
+                    pass.set_pipeline(&self.pipelines["probe"].1);
+                    crate::gpu::probe_draw(&mut pass, 0..BODY_VERTICES, *body..*body + 1);
+                }
+                let (label, mask) = &self.pipelines["mask"];
+                pass.set_pipeline(mask);
+                crate::gpu::counted_draw(&mut pass, label, 0, 0..BODY_VERTICES, *body..*body + 1);
+            }
+            let full = (SIZE * SIZE) as u64;
+            if counting {
+                pass.set_pipeline(&self.pipelines["probefull"].1);
+                crate::gpu::probe_draw(&mut pass, 0..3, 0..1);
+            }
             let (label, pipeline) = &self.pipelines[&background];
             pass.set_pipeline(pipeline);
-            let full = (SIZE * SIZE) as u64;
             crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
             for (body, name) in &draws {
+                if counting {
+                    pass.set_pipeline(&self.pipelines["probe"].1);
+                    crate::gpu::probe_draw(&mut pass, 0..BODY_VERTICES, *body..*body + 1);
+                }
                 let (label, pipeline) = &self.pipelines[name];
                 pass.set_pipeline(pipeline);
-                let r = params.bodies[*body as usize].rect;
-                let covered = ((r[2] - r[0]).max(0.0) * (r[3] - r[1]).max(0.0) / 4.0 * full as f32) as u64;
-                crate::gpu::counted_draw(&mut pass, label, covered, 0..6, *body..*body + 1);
+                crate::gpu::counted_draw(&mut pass, label, 0, 0..BODY_VERTICES, *body..*body + 1);
             }
         }
         gpu.submit(encoder.finish());
@@ -1269,7 +1499,8 @@ pub(crate) mod tests {
             solar.stream(t);
             solar.draw(gpu, t, 0);
             gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-            if !solar.streamer.busy() {
+            let baked = solar.starfield_slot(solar.tour.system.seed).is_some();
+            if !solar.streamer.busy() && baked {
                 break;
             }
         }
