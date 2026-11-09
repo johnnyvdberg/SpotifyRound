@@ -48,6 +48,9 @@ struct Body {
     ring: [f32; 4],
     ring_colour: [f32; 4],
     rect: [f32; 4],
+    /// Up to four bodies that can cast a shadow on this one, by index (-1:
+    /// none).
+    shade: [f32; 4],
 }
 
 #[repr(C)]
@@ -215,7 +218,8 @@ impl Solar {
                     blend: Option<wgpu::BlendState>,
                     constants: &[(&str, f64)],
                     write_depth: Option<bool>,
-                    writes: wgpu::ColorWrites| {
+                    writes: wgpu::ColorWrites,
+                    strict: bool| {
             let options = wgpu::PipelineCompilationOptions {
                 constants,
                 ..Default::default()
@@ -244,7 +248,13 @@ impl Solar {
                 depth_stencil: write_depth.map(|write| wgpu::DepthStencilState {
                     format: DEPTH,
                     depth_write_enabled: Some(write),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    // Strictly in front for passes that draw only off their
+                    // own disc (the limb): its mask then rejects the disc.
+                    depth_compare: Some(if strict {
+                        wgpu::CompareFunction::Less
+                    } else {
+                        wgpu::CompareFunction::LessEqual
+                    }),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -259,7 +269,7 @@ impl Solar {
                         fs: &str,
                         blend: Option<wgpu::BlendState>,
                         constants: &[(&str, f64)]| {
-            make(label, vs, fs, blend, constants, Some(false), wgpu::ColorWrites::ALL)
+            make(label, vs, fs, blend, constants, Some(false), wgpu::ColorWrites::ALL, false)
         };
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let add = Some(wgpu::BlendState {
@@ -306,21 +316,34 @@ impl Solar {
         let none = wgpu::ColorWrites::empty();
         pipelines.insert(
             "mask".to_string(),
-            make("Solar mask", "vs_body", "fs_mask", None, &[], Some(true), none),
+            make("Solar mask", "vs_body", "fs_mask", None, &[], Some(true), none, false),
         );
         // For the Pi estimate only: what survives the mask, shaded by nothing.
         pipelines.insert(
             "probe".to_string(),
-            make("Solar probe", "vs_body", "fs_probe", None, &[], Some(false), none),
+            make("Solar probe", "vs_body", "fs_probe", None, &[], Some(false), none, false),
+        );
+        pipelines.insert(
+            "probestrict".to_string(),
+            make("Solar probe strict", "vs_body", "fs_probe", None, &[], Some(false), none, true),
         );
         pipelines.insert(
             "probefull".to_string(),
-            make("Solar probe full", "vs_background", "fs_probe_full", None, &[], Some(false), none),
+            make("Solar probe full", "vs_background", "fs_probe_full", None, &[], Some(false), none, false),
         );
         // The starfield, baked once a system, and the background reading it.
         pipelines.insert(
             "bake".to_string(),
-            make("Solar starfield bake", "vs_background", "fs_bake_stars", None, &[], None, wgpu::ColorWrites::ALL),
+            make(
+                "Solar starfield bake",
+                "vs_background",
+                "fs_bake_stars",
+                None,
+                &[],
+                None,
+                wgpu::ColorWrites::ALL,
+                false,
+            ),
         );
         pipelines.insert(
             "spacebaked".to_string(),
@@ -346,7 +369,6 @@ impl Solar {
         for (name, entry, blend) in [
             ("star", "fs_star", over),
             ("flat", "fs_flat", over),
-            ("limb", "fs_limb", add),
             ("ring", "fs_ring", over),
             ("eclipse", "fs_eclipse", multiply),
             ("ringshadow", "fs_ring_shadow", multiply),
@@ -356,12 +378,26 @@ impl Solar {
                 pipeline(&format!("Solar {name}"), "vs_body", entry, blend, &[]),
             );
         }
+        // The limb, off its own disc only (a strict depth test).
+        pipelines.insert(
+            "limb".to_string(),
+            make("Solar limb", "vs_body", "fs_limb", add, &[], Some(false), wgpu::ColorWrites::ALL, true),
+        );
         for slot in 0..2 {
+            // The added light with the sea's glint, for worlds with seas.
+            pipelines.insert(
+                format!("glowsea{slot}"),
+                pipeline(
+                    &format!("Solar glow sea {slot}"),
+                    "vs_body",
+                    "fs_glow",
+                    add,
+                    &[("SLOT", slot as f64), ("SEA", 1.0)],
+                ),
+            );
             for (name, entry, blend) in [
                 ("ground", "fs_ground", over),
                 ("detail", "fs_detail", double_multiply),
-                ("cloudshadow", "fs_cloud_shadow", multiply),
-                ("sea", "fs_sea", add),
                 ("clouds", "fs_clouds", over),
                 ("glow", "fs_glow", add),
                 ("moon", "fs_moon", over),
@@ -871,6 +907,7 @@ impl Solar {
             *slot = *body;
             // The depth mask's value: nearer bodies (later, far to near) lower.
             slot.ring_colour[3] = 1.0 - (index as f32 + 1.0) / (count as f32 + 1.0);
+            slot.shade = shadowers(&bodies, index, star_rel, system.star.radius);
             for pass in passes {
                 draws.push((index as u32, pass.clone()));
             }
@@ -1015,13 +1052,29 @@ impl Solar {
             pass.set_pipeline(pipeline);
             crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
             for (body, name) in &draws {
+                // An eclipse only over where the shadows fall, if any does.
+                let scissor = if name == "eclipse" {
+                    match shadow_scissor(&params, *body as usize) {
+                        Some(r) => Some(r),
+                        None => continue,
+                    }
+                } else {
+                    None
+                };
+                if let Some([x, y, w, h]) = scissor {
+                    pass.set_scissor_rect(x, y, w, h);
+                }
                 if counting {
-                    pass.set_pipeline(&self.pipelines["probe"].1);
+                    let probe = if name == "limb" { "probestrict" } else { "probe" };
+                    pass.set_pipeline(&self.pipelines[probe].1);
                     crate::gpu::probe_draw(&mut pass, 0..BODY_VERTICES, *body..*body + 1);
                 }
                 let (label, pipeline) = &self.pipelines[name];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..BODY_VERTICES, *body..*body + 1);
+                if scissor.is_some() {
+                    pass.set_scissor_rect(0, 0, SIZE, SIZE);
+                }
             }
         }
         gpu.submit(encoder.finish());
@@ -1279,6 +1332,152 @@ fn eclipsed(system: &System, t: f64, at: [f64; 3], radius: f64, planet: Option<u
     false
 }
 
+/// The part of the frame, as a scissor rectangle in pixels, where the shadows
+/// of body `r`'s shadowers (`shade`) can fall on it and be seen: for each,
+/// where the line from the star through it meets body `r`, widened by its
+/// size and its penumbra. None if no shadow falls on the side in view, so the
+/// eclipse pass is skipped.
+fn shadow_scissor(params: &Params, r: usize) -> Option<[u32; 4]> {
+    let v3 = |a: [f32; 4]| [a[0] as f64, a[1] as f64, a[2] as f64];
+    let body = &params.bodies[r];
+    let centre = v3(body.place);
+    let radius = body.place[3] as f64;
+    let star = v3(params.star);
+    let (right, up, forward) = (v3(params.right), v3(params.up), v3(params.forward));
+    let tan_half = params.frame[1] as f64;
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    let mut any = false;
+    for k in 0..4 {
+        let j = body.shade[k];
+        if j < 0.0 {
+            break;
+        }
+        let other = &params.bodies[j as usize];
+        let o = v3(other.place);
+        let d = normalize([o[0] - star[0], o[1] - star[1], o[2] - star[2]]);
+        // The point on the body nearest the shadow's axis.
+        let rel = [centre[0] - o[0], centre[1] - o[1], centre[2] - o[2]];
+        let along = dot(rel, d).max(0.0);
+        let axis_point = [o[0] + d[0] * along, o[1] + d[1] * along, o[2] + d[2] * along];
+        let towards = normalize([
+            axis_point[0] - centre[0],
+            axis_point[1] - centre[1],
+            axis_point[2] - centre[2],
+        ]);
+        let p = [
+            centre[0] + towards[0] * radius,
+            centre[1] + towards[1] * radius,
+            centre[2] + towards[2] * radius,
+        ];
+        // The shadow's reach on the surface: the shadower's size and its
+        // penumbra, as an angle round the body's centre.
+        let star_distance = length([p[0] - star[0], p[1] - star[1], p[2] - star[2]]).max(1.0);
+        let reach = other.place[3] as f64 + along * params.star[3] as f64 / star_distance;
+        let miss = length([
+            axis_point[0] - centre[0],
+            axis_point[1] - centre[1],
+            axis_point[2] - centre[2],
+        ]);
+        if miss > radius + reach {
+            continue;
+        }
+        let spread = (reach / radius).min(std::f64::consts::PI);
+        let e1 = normalize(cross(towards, if towards[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] }));
+        let e2 = cross(towards, e1);
+        for n in 0..=12 {
+            let (a, b) = if n == 12 {
+                (0.0, 0.0)
+            } else {
+                let angle = n as f64 / 12.0 * std::f64::consts::TAU;
+                (spread.min(1.5) * angle.cos(), spread.min(1.5) * angle.sin())
+            };
+            // A point of the shadow's footprint, round the sphere.
+            let dir = normalize([
+                towards[0] + e1[0] * a + e2[0] * b,
+                towards[1] + e1[1] * a + e2[1] * b,
+                towards[2] + e1[2] * a + e2[2] * b,
+            ]);
+            let q = [
+                centre[0] + dir[0] * radius,
+                centre[1] + dir[1] * radius,
+                centre[2] + dir[2] * radius,
+            ];
+            // Only the side facing the camera can show it.
+            if dot(dir, q) > radius * 0.05 && spread < 1.5 {
+                continue;
+            }
+            let z = dot(q, forward);
+            if z <= 1e-6 {
+                return Some([0, 0, SIZE, SIZE]);
+            }
+            let x = dot(q, right) / z / tan_half;
+            let y = dot(q, up) / z / tan_half;
+            lo = [lo[0].min(x), lo[1].min(y)];
+            hi = [hi[0].max(x), hi[1].max(y)];
+            any = true;
+        }
+        if spread >= 1.5 {
+            // A shadower as big as the body (or a giant's shadow): all of it.
+            return Some([0, 0, SIZE, SIZE]);
+        }
+    }
+    if !any {
+        return None;
+    }
+    let half = SIZE as f64 / 2.0;
+    let px = |v: f64| ((v * half + half).clamp(0.0, SIZE as f64)) as u32;
+    let margin = 6;
+    let x0 = px(lo[0]).saturating_sub(margin);
+    let x1 = (px(hi[0]) + margin).min(SIZE);
+    // Clip space y is up; the frame's rows go down.
+    let y0 = (SIZE - px(hi[1])).saturating_sub(margin);
+    let y1 = (SIZE - px(lo[1]) + margin).min(SIZE);
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
+}
+
+/// Which of `bodies` (camera-relative, far to near) can cast a shadow on body
+/// `index`: those whose disc, seen from it, comes near the star's. Up to four,
+/// as indices; -1 for the rest.
+fn shadowers(
+    bodies: &[(f64, Body, Vec<String>)],
+    index: usize,
+    star: [f64; 3],
+    star_radius: f64,
+) -> [f32; 4] {
+    let mut out = [-1.0f32; 4];
+    let place = bodies[index].1.place;
+    let at = [place[0] as f64, place[1] as f64, place[2] as f64];
+    let radius = place[3] as f64;
+    let to_star = [star[0] - at[0], star[1] - at[1], star[2] - at[2]];
+    let star_distance = length(to_star);
+    let to_star = normalize(to_star);
+    let star_angle = (star_radius / star_distance).min(1.0).asin();
+    let mut n = 0;
+    for (j, (_, other, _)) in bodies.iter().enumerate() {
+        if j == index || other.look[0] < 0.0 || n == 4 {
+            continue;
+        }
+        let rel = [
+            other.place[0] as f64 - at[0],
+            other.place[1] as f64 - at[1],
+            other.place[2] as f64 - at[2],
+        ];
+        let d = length(rel);
+        if d < 1e-6 || d > star_distance {
+            continue;
+        }
+        let separation = dot(normalize(rel), to_star).clamp(-1.0, 1.0).acos();
+        let reach = (other.place[3] as f64 / d).min(1.0).asin()
+            + star_angle
+            + (radius / d).min(1.0).asin();
+        if separation < reach {
+            out[n] = j as f32;
+            n += 1;
+        }
+    }
+    out
+}
+
 /// The passes that draw a planet-sized body of `kind` from map slot `slot`
 /// (or flat, if its maps are not in), in order.
 fn surface_passes(
@@ -1295,12 +1494,6 @@ fn surface_passes(
             // pass costs a frame's worth of pixels, so it is skipped higher up.
             if close && kind.has_ground() {
                 passes.push(format!("detail{s}"));
-            }
-            if kind.has_clouds() {
-                passes.push(format!("cloudshadow{s}"));
-            }
-            if kind.has_sea() {
-                passes.push(format!("sea{s}"));
             }
             if kind.has_clouds() {
                 passes.push(format!("clouds{s}"));
@@ -1322,7 +1515,12 @@ fn surface_passes(
         passes.push("ringshadow".into());
     }
     if let Some(s) = slot {
-        passes.push(format!("glow{s}"));
+        // The added light: night lights, the sea's glint, the air's sheen.
+        passes.push(if kind.has_sea() {
+            format!("glowsea{s}")
+        } else {
+            format!("glow{s}")
+        });
     }
     if kind.air()[0] > 0.0 {
         passes.push("limb".into());
@@ -1396,16 +1594,48 @@ fn sky_rotation(_sky: [f32; 4]) -> [[f32; 4]; 3] {
     ]
 }
 
+/// For a sphere around or close beside the camera, whose outline reaches
+/// behind it: the part of the frame whose rays hit it, from a grid of rays,
+/// a cell wider all round. In low orbit that leaves out the sky above the
+/// horizon, which every pass over the planet would otherwise trace for
+/// nothing. None if no ray hits it.
+fn close_rect(view: &View, centre: [f64; 3], radius: f64) -> Option<[f32; 4]> {
+    const CELLS: usize = 32;
+    let right = cross(view.forward, view.up);
+    let inside = length(centre) <= radius;
+    let (mut lo, mut hi) = ([usize::MAX; 2], [0usize; 2]);
+    for gy in 0..=CELLS {
+        for gx in 0..=CELLS {
+            let x = gx as f64 / CELLS as f64 * 2.0 - 1.0;
+            let y = gy as f64 / CELLS as f64 * 2.0 - 1.0;
+            let dir = normalize([0, 1, 2].map(|i| {
+                view.forward[i] + (right[i] * x + view.up[i] * y) * view.half_fov
+            }));
+            let along = dot(centre, dir);
+            let miss = length([0, 1, 2].map(|i| centre[i] - dir[i] * along));
+            if inside || (along > 0.0 && miss <= radius) {
+                lo = [lo[0].min(gx), lo[1].min(gy)];
+                hi = [hi[0].max(gx), hi[1].max(gy)];
+            }
+        }
+    }
+    if lo[0] == usize::MAX {
+        return None;
+    }
+    let edge = |g: usize, grow: i64| {
+        ((g as i64 + grow).clamp(0, CELLS as i64) as f64 / CELLS as f64 * 2.0 - 1.0) as f32
+    };
+    Some([edge(lo[0], -1), edge(lo[1], -1), edge(hi[0], 1), edge(hi[1], 1)])
+}
+
 /// The quad covering a sphere of `radius` at `centre` (camera-relative), in
 /// clip space, or none if it is out of view.
 fn rect(view: &View, centre: [f64; 3], radius: f64) -> Option<[f32; 4]> {
-    let full = Some([-1.0, -1.0, 1.0, 1.0]);
     let distance = length(centre);
     let ahead = dot(centre, view.forward);
     if distance <= radius * 1.02 || ahead <= radius {
-        // Around or beside the camera: the whole frame, if any of it can be
-        // in view.
-        return if ahead > -radius { full } else { None };
+        // Around or beside the camera: what of the frame its rays hit.
+        return close_rect(view, centre, radius);
     }
     let right = cross(view.forward, view.up);
     // The silhouette: a circle around the centre, perpendicular to the line
@@ -1430,7 +1660,7 @@ fn rect(view: &View, centre: [f64; 3], radius: f64) -> Option<[f32; 4]> {
         });
         let z = dot(p, view.forward);
         if z <= 1e-6 {
-            return full;
+            return close_rect(view, centre, radius);
         }
         let x = dot(p, right) / z / view.half_fov;
         let y = dot(p, view.up) / z / view.half_fov;

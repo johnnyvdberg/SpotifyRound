@@ -39,9 +39,9 @@ THREAD_FACTOR = {4: 1.0, 2: 2.0, 1: 4.0}
 # draw. Their cost: the prefix (the ray's hit and map lookups, about
 # `--prefix` instructions) for every pixel reached, the rest for the pixels
 # kept, rounded up to whole groups by `--groups`.
-BRANCHED = {"fs_star", "fs_flat", "fs_ground", "fs_detail", "fs_sea", "fs_clouds",
+BRANCHED = {"fs_star", "fs_flat", "fs_ground", "fs_detail", "fs_clouds",
             "fs_cloud_layer", "fs_glow", "fs_moon", "fs_limb", "fs_ring",
-            "fs_cloud_shadow", "fs_eclipse", "fs_ring_shadow"}
+            "fs_eclipse", "fs_ring_shadow"}
 FULL = 1080 * 1080
 
 

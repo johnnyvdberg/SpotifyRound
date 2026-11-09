@@ -16,12 +16,13 @@
 //   silhouette (`vs_body`), shaders branching rather than discarding so the
 //   V3D skips their work for pixel groups with nothing to draw:
 //   `fs_star`; `fs_flat` for a planet whose maps are not in yet; for a planet
-//   with maps `fs_ground`, `fs_sea` (added), `fs_clouds` and `fs_glow` (added);
+//   with maps `fs_ground`, `fs_clouds` and `fs_glow` (added, with the sea's
+//   glint where it has seas);
 //   `fs_moon` for a moon; `fs_limb` (added) for the air past any limb; and
 //   `fs_ring` over a ringed planet. The mapped ones are built per map slot
 //   (`SLOT`), so each reads one set of textures.
 // - Shadows are passes of their own, multiplied into what is drawn:
-//   `fs_cloud_shadow` over the ground before the clouds, then `fs_eclipse`
+//   `fs_eclipse`
 //   (only when another body is near the line to the star) and
 //   `fs_ring_shadow` (ringed planets) before the night side's glow.
 
@@ -43,6 +44,9 @@ struct Body {
     ring_colour: vec4<f32>,
     // The quad, in clip space: min x, min y, max x, max y.
     rect: vec4<f32>,
+    // The bodies that can cast a shadow on this one (their indices; -1 for
+    // none), from the CPU, so eclipses loop over those, not every body.
+    shade: vec4<f32>,
 };
 
 struct Params {
@@ -443,12 +447,12 @@ fn trace_shell(i: u32, position: vec2<f32>, radius: f32) -> Hit {
 // penumbra.
 fn eclipse(self_index: u32, point: vec3<f32>, to_star: vec3<f32>) -> f32 {
     var lit = 1.0;
-    let count = u32(params.frame.w);
-    for (var j = 0u; j < count; j++) {
-        if (j == self_index || params.bodies[j].look.x < 0.0) {
-            continue;
+    for (var k = 0u; k < 4u; k++) {
+        let index = params.bodies[self_index].shade[k];
+        if (index < 0.0) {
+            break;
         }
-        let other = params.bodies[j].place;
+        let other = params.bodies[u32(index)].place;
         let rel = other.xyz - point;
         let along = dot(rel, to_star);
         if (along <= 0.0) {
@@ -672,37 +676,15 @@ fn fs_detail(in: Quad) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-// The sea, added: the sun's glint and the sky's reflection.
-@fragment
-fn fs_sea(in: Quad) -> @location(0) vec4<f32> {
-    let i = in.body;
-    let h = trace(i, in.position.xy);
-    let nb = to_body(i, h.n);
-    let uv = map_uv(nb);
-    let lod = level(uv, map_size());
-    let water = relief_texel(uv, lod + 0.4).b * h.cover;
-    // A branch, not a discard: the V3D skips the work for 16-pixel groups
-    // that all leave it, but runs on through a discard.
-    if (!(water <= 0.0)) {
-        let n = h.n;
-        let sun = normalize(params.star.xyz - h.point);
-        let mu_sun = dot(n, sun);
-        let fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, -h.dir), 0.0, 1.0), 5.0);
-        let cloud = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y), lod).g;
-        let log_nh = log2(max(dot(n, normalize(sun - h.dir)), 0.0));
-        let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
-        let colour = ground_light(i, mu_sun) * glint * (0.25 + fresnel) * (1.0 - cloud)
-            + skylight() * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun);
-        return vec4<f32>(colour * water * through(i, h), 0.0);
-    }
-    discard;
-    return vec4<f32>(0.0);
-}
 
-// The cloud deck over a mapped planet, shaded as a layer with depth: each
-// cloud's slope toward the sun (from a second look at the map a little that
-// way) lit or left grey, thin edges glowing when the star is behind them,
-// and more opaque toward the limb, where the view crosses more of it.
+// The cloud deck over a mapped world, and the shadows it casts on the ground
+// below, in one pass. One look at the map a little toward the sun serves
+// both: the cloud there shades this cloud's far side (tops facing the sun
+// bright, towers' far sides grey) and casts its shadow on the ground here.
+// The shadow rides in the alpha: blended over, the ground below keeps
+// (1 - cloud) x (1 - shadow) of itself. Thin edges glow when the star is
+// behind them, and the deck is more opaque toward the limb, where the view
+// crosses more of it.
 @fragment
 fn fs_clouds(in: Quad) -> @location(0) vec4<f32> {
     let i = in.body;
@@ -712,17 +694,23 @@ fn fs_clouds(in: Quad) -> @location(0) vec4<f32> {
     let cuv = vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y);
     let lod = level(cuv, map_size());
     let cloud = extra_texel(cuv, lod).g;
-    let alpha = cloud * h.cover;
+    let n = h.n;
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(n, sun);
+    var toward = 0.0;
+    if (mu_sun > -0.05) {
+        toward = extra_texel(cuv + shadow_shift(i, nb, n, sun, mu_sun), lod + 1.0).g;
+    }
+    let shadow = 0.6 * toward * sunlit(mu_sun) * h.cover;
     // A branch, not a discard: the V3D skips the work for 16-pixel groups
     // that all leave it, but runs on through a discard.
-    if (!(alpha <= 0.002)) {
-        let n = h.n;
-        let sun = normalize(params.star.xyz - h.point);
-        let mu_sun = dot(n, sun);
+    if (!(cloud * h.cover <= 0.002 && shadow <= 0.002)) {
+        if (cloud * h.cover <= 0.002) {
+            // Clear sky with a cloud's shadow on the ground below.
+            return vec4<f32>(0.0, 0.0, 0.0, shadow);
+        }
         var side = 1.0;
         if (mu_sun > -0.05) {
-            let toward = extra_texel(cuv + shadow_shift(i, nb, n, sun, mu_sun) * 0.35, lod).g;
-            // Tops facing the sun bright, the far sides of towers grey.
             side = clamp(1.0 - 2.0 * (toward - cloud), 0.4, 1.3);
         }
         var sun_high = star_light();
@@ -738,7 +726,7 @@ fn fs_clouds(in: Quad) -> @location(0) vec4<f32> {
         let lit = 0.85 * (sun_high * smoothstep01(-0.08, 0.04, mu_sun) * ((0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + glow) + sky * 1.5);
         // Toward the limb the view crosses more of the layer: more opaque.
         let thick = min(cloud * (2.2 - 1.2 * clamp(dot(n, -h.dir), 0.0, 1.0)), 1.0) * h.cover;
-        return vec4<f32>(lit * through(i, h) * thick, thick);
+        return vec4<f32>(lit * through(i, h) * thick, 1.0 - (1.0 - thick) * (1.0 - shadow));
     }
     discard;
     return vec4<f32>(0.0);
@@ -779,8 +767,12 @@ fn fs_cloud_layer(in: Quad) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-// Added over a mapped planet: city lights or molten glow, and the blue the
-// air in front of it scatters toward the viewer.
+// Added over a mapped world: city lights or molten glow, the sea's glint
+// and the sky's sheen on it (`SEA`), and the blue the air in front scatters
+// toward the viewer. One pass for all the added light, after the clouds,
+// so it shares one trace: the sea's light is held back under cloud itself.
+override SEA: bool = false;
+
 @fragment
 fn fs_glow(in: Quad) -> @location(0) vec4<f32> {
     let i = in.body;
@@ -794,19 +786,34 @@ fn fs_glow(in: Quad) -> @location(0) vec4<f32> {
         let n = h.n;
         let sun = normalize(params.star.xyz - h.point);
         let mu_sun = dot(n, sun);
-        let air = through(i, h);
         var colour = vec3<f32>(0.0);
         let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
-        let night = extra_texel(uv, lod + 0.6).r;
+        // The cloud over the point, read once: it holds back both the city
+        // lights and the sea's light. The sea first, the air's transmittance
+        // last, so few values are live at once (the other order halved the
+        // threads).
+        let cloud = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y), lod).g;
+        if (SEA) {
+            let water = relief_texel(uv, lod + 0.4).b * (1.0 - cloud);
+            if (water > 0.0) {
+                let fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, -h.dir), 0.0, 1.0), 5.0);
+                let log_nh = log2(max(dot(n, normalize(sun - h.dir)), 0.0));
+                let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
+                colour = (ground_light(i, mu_sun) * glint * (0.25 + fresnel)
+                    + skylight() * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun)) * water;
+            }
+        }
         if (params.bodies[i].look.w > 0.5 && params.bodies[i].look.w < 1.5 && darkness > 0.002) {
-            let cloud = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y), lod).g;
+            let night = extra_texel(uv, lod + 0.6).r;
             let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
             colour += tint * night * night * 2.2 * darkness * (1.0 - cloud * 0.85);
         } else if (params.bodies[i].look.w > 1.5) {
             // Molten rock glows on both sides, more visibly in the dark.
+            let night = extra_texel(uv, lod + 0.6).r;
             let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), night * night);
             colour += heat * night * (0.15 + 0.55 * darkness);
         }
+        let air = through(i, h);
         colour *= air;
         if (has_air(i)) {
             let sun_high = star_light() * exp(-params.bodies[i].air.rgb * airmass(mu_sun + 0.04) * 0.55);
@@ -914,32 +921,6 @@ fn fs_ring(in: Quad) -> @location(0) vec4<f32> {
 // sky or the body's own glow: where shadows darken it.
 fn sunlit(mu: f32) -> f32 {
     return smoothstep01(-0.05, 0.12, mu);
-}
-
-// Multiplied into the ground before the clouds are drawn: the clouds'
-// shadows, cast away from the star.
-@fragment
-fn fs_cloud_shadow(in: Quad) -> @location(0) vec4<f32> {
-    let i = in.body;
-    let h = trace(i, in.position.xy);
-    let nb = to_body(i, h.n);
-    let uv = map_uv(nb);
-    let lod = level(uv, map_size());
-    // A branch, not a discard: the V3D skips the work for 16-pixel groups
-    // that all leave it, but runs on through a discard.
-    if (!(h.cover <= 0.0)) {
-        let sun = normalize(params.star.xyz - h.point);
-        let mu_sun = dot(h.n, sun);
-        if (mu_sun <= -0.05) {
-            discard;
-        }
-        let cuv = vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y) + shadow_shift(i, nb, h.n, sun, mu_sun);
-        let shadow = extra_texel(cuv, lod + 1.0).g;
-        let factor = mix(1.0, 1.0 - 0.6 * shadow * sunlit(mu_sun), h.cover);
-        return vec4<f32>(vec3<f32>(factor), 1.0);
-    }
-    discard;
-    return vec4<f32>(0.0);
 }
 
 // Multiplied into a body: other bodies passing in front of the star.
