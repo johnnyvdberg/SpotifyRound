@@ -506,7 +506,12 @@ streaming maps adds. It prints a floor beside each estimate: on the V3D a `disca
 shader (the pixel is masked and the rest runs), but work inside an `if` is skipped for 16-pixel
 groups that all leave it, so a shader that branches instead of discarding approaches the floor. The
 scale comes from `--ms-per-inst` (0.025, from `gpu_cost` on the Pi); one real measurement of a
-moment calibrates it.
+moment calibrates it. What it showed for the solar tour, and what was done about it (all four cut
+the estimate by about a third to a half): a depth mask of each body's solid disc drawn first, so the
+GPU skips shading anything a nearer body hides, the background included; bodies drawn as a fan of
+triangles round their silhouette instead of a rectangle; body shaders that branch instead of
+discarding; and the galaxy and stars baked into a 4096 × 2048 map once a system (16 rows a frame,
+64 MB for this system and the next) instead of three layers of stars worked out per pixel.
 `spotify-round-tests gpu_cost::videocore_vii --ignored` asserts that the headless adapter really is
 the Pi 5's V3D; run it before trusting a Pi measurement. So:
 
