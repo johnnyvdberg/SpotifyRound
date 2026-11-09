@@ -279,27 +279,44 @@ impl Path {
         )
     }
 
-    /// Work out the timing: how much of the transfer each stretch takes,
-    /// slower near `slow` (a point and a radius) if there is one.
-    fn time(&mut self, slow: Option<([f64; 3], f64)>) {
+    /// Work out the timing: how much of the transfer each stretch takes.
+    /// Near what it flies past (`slow`: a point, how near the path comes,
+    /// how wide the slow stretch is in those, and the share of the time it
+    /// gets), the camera lingers: the flyby gets that share of the crossing
+    /// however long the crossing is, so a slingshot past a small planet is
+    /// seen for seconds, not a blink.
+    fn time(&mut self, slow: Option<([f64; 3], f64, f64, f64)>) {
         let span = (self.knots.len() - 1) as f64;
-        let mut time = vec![0.0];
-        let mut length = vec![0.0];
+        let mut ds = Vec::with_capacity(SAMPLES);
+        let mut near = Vec::with_capacity(SAMPLES);
         let mut last = self.spline(0.0);
         for j in 1..=SAMPLES {
             let p = self.spline(span * j as f64 / SAMPLES as f64);
-            let ds = length_of(sub(p, last));
-            let mid = mix(p, last, 0.5);
-            let weight = match slow {
-                Some((centre, r)) => {
-                    let d = length_of(sub(mid, centre)) / (r * 2.5);
-                    1.0 + 4.0 * (-d * d).exp()
+            ds.push(length_of(sub(p, last)));
+            near.push(match slow {
+                Some((centre, reach, width, _)) => {
+                    let d = length_of(sub(mix(p, last, 0.5), centre)) / (reach * width);
+                    (-d * d).exp()
                 }
-                None => 1.0,
-            };
-            time.push(time[j - 1] + ds * weight);
-            length.push(length[j - 1] + ds);
+                None => 0.0,
+            });
             last = p;
+        }
+        // Weight 1 + boost near the flyby, the boost chosen so the near
+        // stretch takes its share of the time.
+        let base: f64 = ds.iter().sum();
+        let close: f64 = ds.iter().zip(&near).map(|(d, g)| d * g).sum();
+        let boost = match slow {
+            Some((_, _, _, share)) if close > 1e-9 => {
+                (share / (1.0 - share) * (base - close) / close - 1.0).max(0.0)
+            }
+            _ => 0.0,
+        };
+        let mut time = vec![0.0];
+        let mut length = vec![0.0];
+        for j in 0..SAMPLES {
+            time.push(time[j] + ds[j] * (1.0 + boost * near[j]));
+            length.push(length[j] + ds[j]);
         }
         let total = time[SAMPLES].max(1e-9);
         for t in &mut time {
@@ -690,7 +707,7 @@ impl Tour {
                         path.knots = knots;
                         path.waypoint = Some(9);
                         path.tangents = catmull_rom(&path.knots);
-                        path.time(Some((c, reach)));
+                        path.time(Some((c, reach, 12.0, 0.3)));
                         when = t0 + path.closest * (t1 - t0);
                     }
                 }
@@ -719,7 +736,7 @@ impl Tour {
                     let arm = length(first).min(length(last));
                     path.tangents = vec![m0, scale(normalize(tangent), arm * 0.8), m2];
                     path.waypoint = Some(1);
-                    path.time(Some(([0.0; 3], reach_star)));
+                    path.time(Some(([0.0; 3], reach_star, 3.0, 0.25)));
                 }
             }
         }
