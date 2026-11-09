@@ -115,7 +115,8 @@ pub(crate) struct Solar {
     /// The frame's small pipelines, by name: `space`, `warp1`..`warp5`,
     /// `star`, `flat`, `limb`, `ring`, and per map slot `ground0`, `sea0`,
     /// `clouds0`, `glow0`, `moon0` (and `…1`).
-    pipelines: std::collections::HashMap<String, wgpu::RenderPipeline>,
+    /// Each with its label, which the Pi estimate matches to the shader-db.
+    pipelines: std::collections::HashMap<String, (String, wgpu::RenderPipeline)>,
     /// A drive to use for every jump instead of each system's own, for the
     /// screenshots.
     drive_override: Option<u32>,
@@ -196,7 +197,7 @@ impl Solar {
                 constants,
                 ..Default::default()
             };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -220,7 +221,8 @@ impl Solar {
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
                 cache: None,
-            })
+            });
+            (label.to_string(), made)
         };
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let add = Some(wgpu::BlendState {
@@ -780,11 +782,16 @@ impl Solar {
             });
             pass.set_bind_group(0, group, &[]);
             pass.set_bind_group(1, &self.streamer.noise().group, &[]);
-            pass.set_pipeline(&self.pipelines[&background]);
-            pass.draw(0..3, 0..1);
+            let (label, pipeline) = &self.pipelines[&background];
+            pass.set_pipeline(pipeline);
+            let full = (SIZE * SIZE) as u64;
+            crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
             for (body, name) in &draws {
-                pass.set_pipeline(&self.pipelines[name]);
-                pass.draw(0..6, *body..*body + 1);
+                let (label, pipeline) = &self.pipelines[name];
+                pass.set_pipeline(pipeline);
+                let r = params.bodies[*body as usize].rect;
+                let covered = ((r[2] - r[0]).max(0.0) * (r[3] - r[1]).max(0.0) / 4.0 * full as f32) as u64;
+                crate::gpu::counted_draw(&mut pass, label, covered, 0..6, *body..*body + 1);
             }
         }
         gpu.submit(encoder.finish());
@@ -1443,6 +1450,56 @@ pub(crate) mod tests {
             read_texture(&gpu, &solar.frames[0].texture),
             solar.hud.clone(),
         )
+    }
+
+    /// Fragment counts for the Pi estimate: every draw of one frame at each
+    /// key moment of a visit, for each seed in `PI_ESTIMATE_SEEDS` (default
+    /// 5,23), and every draw of each frame while the first planet streams in.
+    /// Written to `target/pi-estimate/solar.tsv`; `deploy/pi-estimate.sh`
+    /// turns them into milliseconds on the Pi.
+    #[test]
+    #[ignore = "counts fragments for the Pi estimate; needs a GPU adapter with pipeline statistics"]
+    fn pi_estimate() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        assert!(
+            crate::gpu::start_counting(&gpu.device),
+            "this adapter cannot count fragments ({})",
+            gpu.adapter
+        );
+        let seeds: Vec<u64> = std::env::var("PI_ESTIMATE_SEEDS")
+            .unwrap_or_else(|_| "5,23".into())
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        let mut out = String::from("scene\tmoment\tframe\tlabel\tcovered\tkept\n");
+        let mut push = |moment: &str, frame: usize, counts: Vec<(String, u64, u64)>| {
+            for (label, covered, kept) in counts {
+                out.push_str(&format!("solar\t{moment}\t{frame}\t{label}\t{covered}\t{kept}\n"));
+            }
+        };
+        for seed in seeds {
+            let mut solar = Solar::with_seed(&gpu, seed);
+            // Streaming the first planet in: every frame's draws.
+            let mut frame = 0;
+            loop {
+                solar.stream(1.0);
+                solar.draw(&gpu, 1.0, frame % SLOTS);
+                push(&format!("seed{seed} streaming"), frame, crate::gpu::take_counts(&gpu));
+                frame += 1;
+                if !solar.streamer.busy() || frame > 4000 {
+                    break;
+                }
+            }
+            for (label, t) in moments(&solar.tour) {
+                settle(&mut solar, &gpu, t);
+                crate::gpu::take_counts(&gpu);
+                solar.draw(&gpu, t, 0);
+                push(&format!("seed{seed} {label}"), 0, crate::gpu::take_counts(&gpu));
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/pi-estimate");
+        std::fs::create_dir_all(&dir).expect("an output directory");
+        std::fs::write(dir.join("solar.tsv"), out).expect("the counts");
     }
 
     /// Frame times in the heaviest views, and how long streaming a planet

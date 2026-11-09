@@ -233,6 +233,8 @@ pub struct Streamer {
     height_layout: wgpu::BindGroupLayout,
     surface_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<&'static str, wgpu::RenderPipeline>,
+    /// Each pipeline's label, for the Pi estimate's fragment counts.
+    labels: HashMap<&'static str, String>,
     terrain_sampler: wgpu::Sampler,
     noise: crate::noise3d::Noise3d,
     mips: MipChain,
@@ -593,6 +595,7 @@ impl Streamer {
         let h = &height_layout;
         let sl = &surface_layout;
         let mut pipelines = HashMap::new();
+        let mut labels = HashMap::new();
         let red = wgpu::ColorWrites::RED;
         let green = wgpu::ColorWrites::GREEN;
         for (name, layout, entry, format, blend, mask, group) in [
@@ -636,6 +639,7 @@ impl Streamer {
                 0,
             ),
         ] {
+            labels.insert(name, format!("Solar {name}"));
             pipelines.insert(
                 name,
                 pipeline(
@@ -746,6 +750,7 @@ impl Streamer {
             height_layout,
             surface_layout,
             pipelines,
+            labels,
             terrain_sampler,
             noise,
             mips: MipChain::new(device),
@@ -903,7 +908,7 @@ impl Streamer {
                 let group = self.height_group(device, &self.buffers["probe"]);
                 draw(
                     encoder,
-                    &self.pipelines["probe"],
+                    (self.labels["probe"].as_str(), &self.pipelines["probe"]),
                     &group,
                     &self.noise.group,
                     &level_view(&self.probe, 0, 0),
@@ -1051,7 +1056,7 @@ impl Streamer {
                 let (texture, layer) = self.texture_of(job.slot, pass.target);
                 draw(
                     encoder,
-                    &self.pipelines[pass.pipeline],
+                    (self.labels[pass.pipeline].as_str(), &self.pipelines[pass.pipeline]),
                     &group,
                     &self.noise.group,
                     &level_view(texture, 0, layer),
@@ -1096,7 +1101,7 @@ impl Streamer {
         let count = (self.rows * 2).min(SKY_HEIGHT - job.row);
         draw(
             encoder,
-            &self.pipelines["sky"],
+            (self.labels["sky"].as_str(), &self.pipelines["sky"]),
             &group,
             &self.noise.group,
             &level_view(&self.skies[job.index], 0, 0),
@@ -1169,7 +1174,7 @@ impl Streamer {
 #[allow(clippy::too_many_arguments)]
 fn draw(
     encoder: &mut wgpu::CommandEncoder,
-    pipeline: &wgpu::RenderPipeline,
+    (label, pipeline): (&str, &wgpu::RenderPipeline),
     group: &wgpu::BindGroup,
     noise: &wgpu::BindGroup,
     target: &wgpu::TextureView,
@@ -1202,7 +1207,7 @@ fn draw(
     pass.set_bind_group(0, group, &[]);
     pass.set_bind_group(1, noise, &[]);
     pass.set_scissor_rect(0, row, width, count);
-    pass.draw(0..3, 0..1);
+    crate::gpu::counted_draw(&mut pass, label, (width * count) as u64, 0..3, 0..1);
 }
 
 /// Builds mip chains on the GPU, one layer at a time.
@@ -1320,7 +1325,9 @@ impl MipChain {
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &group, &[]);
-            pass.draw(0..3, 0..1);
+            let size = target.texture().size();
+            let covered = ((size.width >> level).max(1) * (size.height >> level).max(1)) as u64;
+            crate::gpu::counted_draw(&mut pass, "Solar mip chain", covered, 0..3, 0..1);
         }
     }
 }

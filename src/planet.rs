@@ -432,15 +432,27 @@ impl Planet {
             let close = near > 0.001;
             let [background, ground, detail, sea, clouds, glow] =
                 &self.pipelines[usize::from(close)];
+            // Labels as made in `new`, and the pixels each covers, for the Pi
+            // estimate's fragment counts.
+            let label = |name: &str| format!("Planet {} {name}", if close { "near" } else { "far" });
+            let full = (SIZE * SIZE) as u64;
+            let d = uniforms_at(seconds, near, spin).disk;
+            let covered = ((d[2] - d[0]).abs() * (d[3] - d[1]).abs() / 4.0 * full as f32) as u64;
             pass.set_pipeline(background);
-            pass.draw(0..3, 0..1);
-            for pipeline in [ground, detail, sea, clouds, glow] {
+            crate::gpu::counted_draw(&mut pass, &label("background"), full, 0..3, 0..1);
+            for (pipeline, name) in [
+                (ground, "ground"),
+                (detail, "detail"),
+                (sea, "sea"),
+                (clouds, "clouds"),
+                (glow, "glow"),
+            ] {
                 // The detail only exists in low orbit.
                 if std::ptr::eq(pipeline, detail) && !close {
                     continue;
                 }
                 pass.set_pipeline(pipeline);
-                pass.draw(0..6, 0..1);
+                crate::gpu::counted_draw(&mut pass, &label(name), covered, 0..6, 0..1);
             }
         }
         gpu.submit(encoder.finish());
@@ -2461,6 +2473,26 @@ mod tests {
             image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
                 .expect("a preview image");
         }
+    }
+
+    /// Fragment counts for the Pi estimate: one frame of the globe, the dive
+    /// and the horizon, to `target/pi-estimate/planet.tsv`.
+    #[test]
+    #[ignore = "counts fragments for the Pi estimate; needs a GPU adapter with pipeline statistics"]
+    fn pi_estimate() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let planet = Planet::with_seed(&gpu, 7).expect("a planet");
+        assert!(crate::gpu::start_counting(&gpu.device), "this adapter cannot count fragments");
+        let mut out = String::from("scene\tmoment\tframe\tlabel\tcovered\tkept\n");
+        for (moment, near) in [("globe", 0.0f32), ("dive", 0.55), ("horizon", 1.0)] {
+            planet.draw(&gpu, 0.0, near, 0.0, 0);
+            for (label, covered, kept) in crate::gpu::take_counts(&gpu) {
+                out.push_str(&format!("planet\t{moment}\t0\t{label}\t{covered}\t{kept}\n"));
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/pi-estimate");
+        std::fs::create_dir_all(&dir).expect("an output directory");
+        std::fs::write(dir.join("planet.tsv"), out).expect("the counts");
     }
 
     /// Time the generator and the frames in both views.
