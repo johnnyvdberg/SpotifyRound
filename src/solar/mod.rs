@@ -32,6 +32,9 @@ use tour::{Phase, Tour, View, normalize};
 /// Size of the rendered frame.
 pub const SIZE: u32 = 1080;
 const MAX_BODIES: usize = 16;
+/// Cloud layers stacked over the deck in low orbit: each a pass of about
+/// 330 instructions where clouds are, so one (a second added little).
+const CLOUD_LAYERS: u32 = 1;
 const SLOTS: usize = crate::visuals::SLOTS;
 
 #[repr(C)]
@@ -308,6 +311,21 @@ impl Solar {
                         entry,
                         blend,
                         &[("SLOT", slot as f64)],
+                    ),
+                );
+            }
+        }
+        // The stacked cloud layers drawn in low orbit, per slot.
+        for slot in 0..2 {
+            for layer in 1..=CLOUD_LAYERS {
+                pipelines.insert(
+                    format!("cloudlayer{slot}x{layer}"),
+                    pipeline(
+                        &format!("Solar cloud layer {slot} {layer}"),
+                        "vs_body",
+                        "fs_cloud_layer",
+                        over,
+                        &[("SLOT", slot as f64), ("LAYER", layer as f64)],
                     ),
                 );
             }
@@ -1049,6 +1067,12 @@ fn surface_passes(
             }
             if kind.has_clouds() {
                 passes.push(format!("clouds{s}"));
+                // In low orbit, clouds that stand up from the deck.
+                if close {
+                    for layer in 1..=CLOUD_LAYERS {
+                        passes.push(format!("cloudlayer{s}x{layer}"));
+                    }
+                }
             }
             passes
         }

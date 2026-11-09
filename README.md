@@ -60,7 +60,11 @@ Spotify **Premium** account.
   dive to perihelion past the star, burning where thrust counts most, then a capture burn into
   orbit, and an escape burn before the jump. In low orbit a close-up pass adds grain and lit
   slopes finer than the maps ([docs/solar-low-detail.jpg](docs/solar-low-detail.jpg), before and
-  after), drawn only near the ground.
+  after), drawn only near the ground. Clouds are shaded as a layer with depth — tops facing the
+  sun bright and their far sides grey, thicker toward the limb, thin edges glowing with the star
+  behind them — and in low orbit a second, higher shell holds the densest clouds, so they stand
+  up from the deck, slide past it as the camera moves and break the horizon
+  ([docs/solar-cloud-layers.jpg](docs/solar-cloud-layers.jpg), without and with).
   A minimap of the system shows the orbits, the planets, the route and the ship
   ([docs/solar-flyby.jpg](docs/solar-flyby.jpg), [docs/solar-moon.jpg](docs/solar-moon.jpg)), beside a HUD of the
   destination, ETA, distance and real orbital speeds. Each jump uses one of five named drives, each

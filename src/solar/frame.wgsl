@@ -79,6 +79,9 @@ struct Params {
 // pipeline draws.
 override SLOT: i32 = 0;
 override WARP: i32 = 1;
+// Which of the stacked cloud layers drawn in low orbit (from 1): each a shell
+// a little higher, showing only the clouds dense enough to reach it.
+override LAYER: i32 = 1;
 
 const SKYLIGHT: vec3<f32> = vec3<f32>(0.035, 0.060, 0.110);
 const SCALE_HEIGHT: f32 = 0.011;
@@ -319,10 +322,14 @@ struct Hit {
 };
 
 fn trace(i: u32, position: vec2<f32>) -> Hit {
+    return trace_shell(i, position, params.bodies[i].place.w);
+}
+
+// The same against a shell of `radius` round the body's centre.
+fn trace_shell(i: u32, position: vec2<f32>, radius: f32) -> Hit {
     var h: Hit;
     h.dir = ray_at(position);
     let c = params.bodies[i].place.xyz;
-    let radius = params.bodies[i].place.w;
     let along = max(dot(c, h.dir), 0.0);
     let nearest = h.dir * along;
     h.closest = length(nearest - c) / radius;
@@ -582,7 +589,10 @@ fn fs_sea(in: Quad) -> @location(0) vec4<f32> {
     return vec4<f32>(colour * water * through(i, h), 0.0);
 }
 
-// The cloud deck over a mapped planet.
+// The cloud deck over a mapped planet, shaded as a layer with depth: each
+// cloud's slope toward the sun (from a second look at the map a little that
+// way) lit or left grey, thin edges glowing when the star is behind them,
+// and more opaque toward the limb, where the view crosses more of it.
 @fragment
 fn fs_clouds(in: Quad) -> @location(0) vec4<f32> {
     let i = in.body;
@@ -602,14 +612,54 @@ fn fs_clouds(in: Quad) -> @location(0) vec4<f32> {
     var side = 1.0;
     if (mu_sun > -0.05) {
         let toward = extra_texel(cuv + shadow_shift(i, nb, n, sun, mu_sun) * 0.35, lod).g;
-        side = clamp(1.0 - 1.4 * (toward - cloud), 0.55, 1.15);
+        // Tops facing the sun bright, the far sides of towers grey.
+        side = clamp(1.0 - 2.0 * (toward - cloud), 0.4, 1.3);
     }
     var sun_high = star_light();
     if (has_air(i)) {
         sun_high = star_light() * exp(-params.bodies[i].air.rgb * airmass(mu_sun + 0.04) * 0.55);
     }
+    // Forward scattering, a cheap stand-in for a Henyey-Greenstein lobe:
+    // thin cloud between the camera and the star lights up.
+    let toward_star = max(dot(h.dir, sun), 0.0);
+    let lobe = toward_star * toward_star * toward_star * toward_star;
+    let glow = (1.0 - cloud) * (0.2 + 1.2 * lobe * lobe);
     let sky = select(vec3<f32>(0.0), skylight() * smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
-    let lit = 0.85 * (sun_high * smoothstep01(-0.08, 0.04, mu_sun) * (0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + sky * 1.5);
+    let lit = 0.85 * (sun_high * smoothstep01(-0.08, 0.04, mu_sun) * ((0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + glow) + sky * 1.5);
+    // Toward the limb the view crosses more of the layer: more opaque.
+    let thick = min(cloud * (2.2 - 1.2 * clamp(dot(n, -h.dir), 0.0, 1.0)), 1.0) * h.cover;
+    return vec4<f32>(lit * through(i, h) * thick, thick);
+}
+
+// A stacked cloud layer, over the deck in low orbit: a shell a little higher
+// for each LAYER, showing only the clouds dense enough to reach it. Seen
+// from low down the shells slide past each other as the camera moves, so the
+// clouds stand up from the ground. One fetch.
+@fragment
+fn fs_cloud_layer(in: Quad) -> @location(0) vec4<f32> {
+    let i = in.body;
+    let lift = f32(LAYER) * 0.005;
+    let h = trace_shell(i, in.position.xy, params.bodies[i].place.w * (1.0 + lift));
+    let nb = to_body(i, h.n);
+    let uv = map_uv(nb);
+    let cuv = vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y);
+    let cloud = extra_texel(cuv, level(cuv, map_size())).g;
+    // The denser the cloud, the higher it reaches.
+    let reach = f32(LAYER) * 0.35;
+    let alpha = smoothstep01(reach, reach + 0.25, cloud) * 0.75 * h.cover;
+    if (alpha <= 0.002) {
+        discard;
+    }
+    let sun = normalize(params.star.xyz - h.point);
+    let mu_sun = dot(h.n, sun);
+    var sun_high = star_light();
+    if (has_air(i)) {
+        sun_high = star_light() * exp(-params.bodies[i].air.rgb * airmass(mu_sun + 0.04) * 0.5);
+    }
+    // Higher tops catch more light; their sides at low sun stay grey.
+    let lit = 0.85 * sun_high * smoothstep01(-0.1, 0.04, mu_sun)
+        * (0.35 + 0.65 * sqrt(max(mu_sun + 0.05, 0.0))) * (0.92 + 0.08 * f32(LAYER))
+        + skylight() * 1.2 * smoothstep01(-0.15, 0.4, mu_sun);
     return vec4<f32>(lit * through(i, h) * alpha, alpha);
 }
 

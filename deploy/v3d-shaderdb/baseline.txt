@@ -698,69 +698,69 @@ Solar warp Ion Slipstream #0     vs_background  VS-bin    33   4     0   23     
 Solar warp Graviton Spiral #0    fs_warp        FS       558   4     0  145    32        0:0    2   60
 Solar warp Graviton Spiral #0    vs_background  VS        34   4     0   22     6        0:0    0    1
 Solar warp Graviton Spiral #0    vs_background  VS-bin    33   4     0   23     7        0:0    0    0
-Solar star #0                    fs_star        FS       213   4     0   54    20        0:0    3    7
+Solar star #0                    fs_star        FS       215   4     0   55    20        0:0    2    8
 Solar star #0                    vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar star #0                    vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar flat #0                    fs_flat        FS       263   4     0   81    20        0:0    4    9
+Solar flat #0                    fs_flat        FS       263   4     0   84    20        0:0    5   12
 Solar flat #0                    vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar flat #0                    vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar limb #0                    fs_limb        FS       342   4     1   98    26        0:0    4   34
+Solar limb #0                    fs_limb        FS       341   4     1   97    26        0:0    4   33
 Solar limb #0                    vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar limb #0                    vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar ring #0                    fs_ring        FS       249   4     0   75    22        0:0    0   15
+Solar ring #0                    fs_ring        FS       250   4     0   76    22        0:0    0   16
 Solar ring #0                    vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar ring #0                    vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar eclipse #0                 fs_eclipse     FS       252   4     1   57    25        0:0    4   17
+Solar eclipse #0                 fs_eclipse     FS       248   4     1   58    19        0:0    4   17
 Solar eclipse #0                 vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar eclipse #0                 vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar ringshadow #0              fs_ring_shadow FS       263   4     0   67    25        0:0    4   18
+Solar ringshadow #0              fs_ring_shadow FS       265   4     0   68    25        0:0    3   19
 Solar ringshadow #0              vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar ringshadow #0              vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar ground 0 #0                fs_ground      FS       419   4     0  138    31        0:0    4   13
+Solar ground 0 #0                fs_ground      FS       424   4     0  139    31        0:0    3   14
 Solar ground 0 #0                vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar ground 0 #0                vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar detail 0 #0                fs_detail      FS       246   4     0   60    23        0:0    3    9
+Solar detail 0 #0                fs_detail      FS       244   4     0   61    23        0:0    2    9
 Solar detail 0 #0                vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar detail 0 #0                vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar grain 0 #0                 fs_grain       FS       235   4     0   74    20        0:0    4    6
-Solar grain 0 #0                 vs_body        VS        58   4     0   36     9        0:0    0    1
-Solar grain 0 #0                 vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar cloudshadow 0 #0           fs_cloud_shadow FS       278   4     0   91    30        0:0    4   16
+Solar cloudshadow 0 #0           fs_cloud_shadow FS       280   4     0   92    30        0:0    3   17
 Solar cloudshadow 0 #0           vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar cloudshadow 0 #0           vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar sea 0 #0                   fs_sea         FS       382   4     0  134    26        0:0    4   17
+Solar sea 0 #0                   fs_sea         FS       382   4     0  137    26        0:0    3   15
 Solar sea 0 #0                   vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar sea 0 #0                   vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar clouds 0 #0                fs_clouds      FS       414   4     0  147    32        0:0    4   21
+Solar clouds 0 #0                fs_clouds      FS       424   4     0  152    32        0:0    3   21
 Solar clouds 0 #0                vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar clouds 0 #0                vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar glow 0 #0                  fs_glow        FS       393   4     0  139    23        0:0    4   21
+Solar glow 0 #0                  fs_glow        FS       395   4     0  140    23        0:0    4   20
 Solar glow 0 #0                  vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar glow 0 #0                  vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar moon 0 #0                  fs_moon        FS       427   4     0  156    32        0:0    3   25
+Solar moon 0 #0                  fs_moon        FS       424   4     0  157    32        0:0    3   25
 Solar moon 0 #0                  vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar moon 0 #0                  vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar ground 1 #0                fs_ground      FS       419   4     0  138    31        0:0    4   13
+Solar ground 1 #0                fs_ground      FS       424   4     0  139    31        0:0    3   14
 Solar ground 1 #0                vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar ground 1 #0                vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar detail 1 #0                fs_detail      FS       246   4     0   60    23        0:0    3    9
+Solar detail 1 #0                fs_detail      FS       244   4     0   61    23        0:0    2    9
 Solar detail 1 #0                vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar detail 1 #0                vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar grain 1 #0                 fs_grain       FS       235   4     0   74    20        0:0    4    6
-Solar grain 1 #0                 vs_body        VS        58   4     0   36     9        0:0    0    1
-Solar grain 1 #0                 vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar cloudshadow 1 #0           fs_cloud_shadow FS       278   4     0   91    30        0:0    4   16
+Solar cloudshadow 1 #0           fs_cloud_shadow FS       280   4     0   92    30        0:0    3   17
 Solar cloudshadow 1 #0           vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar cloudshadow 1 #0           vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar sea 1 #0                   fs_sea         FS       382   4     0  134    26        0:0    4   17
+Solar sea 1 #0                   fs_sea         FS       382   4     0  137    26        0:0    3   15
 Solar sea 1 #0                   vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar sea 1 #0                   vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar clouds 1 #0                fs_clouds      FS       414   4     0  147    32        0:0    4   21
+Solar clouds 1 #0                fs_clouds      FS       424   4     0  152    32        0:0    3   21
 Solar clouds 1 #0                vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar clouds 1 #0                vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar glow 1 #0                  fs_glow        FS       393   4     0  139    23        0:0    4   21
+Solar glow 1 #0                  fs_glow        FS       395   4     0  140    23        0:0    4   20
 Solar glow 1 #0                  vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar glow 1 #0                  vs_body        VS-bin    58   4     0   36     9        0:0    0    0
-Solar moon 1 #0                  fs_moon        FS       427   4     0  156    32        0:0    3   25
+Solar moon 1 #0                  fs_moon        FS       424   4     0  157    32        0:0    3   25
 Solar moon 1 #0                  vs_body        VS        58   4     0   36     9        0:0    0    1
 Solar moon 1 #0                  vs_body        VS-bin    58   4     0   36     9        0:0    0    0
+Solar cloud layer 0 1 #0         fs_cloud_layer FS       330   4     0  126    23        0:0    3   14
+Solar cloud layer 0 1 #0         vs_body        VS        58   4     0   36     9        0:0    0    1
+Solar cloud layer 0 1 #0         vs_body        VS-bin    58   4     0   36     9        0:0    0    0
+Solar cloud layer 1 1 #0         fs_cloud_layer FS       330   4     0  126    23        0:0    3   14
+Solar cloud layer 1 1 #0         vs_body        VS        58   4     0   36     9        0:0    0    1
+Solar cloud layer 1 1 #0         vs_body        VS-bin    58   4     0   36     9        0:0    0    0
