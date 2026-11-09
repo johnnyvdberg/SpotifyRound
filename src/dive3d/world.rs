@@ -1075,18 +1075,22 @@ impl Seabed {
     /// the far distance.
     pub fn ground(&self, x: f32, z: f32) -> f32 {
         let b = self.biome(x, z);
+        // Depth and relief change over the wider grade, so the floor slopes
+        // from one sea's depth to the next rather than stepping; the shapes
+        // each sea gives its floor ride on it over the narrower blend.
+        let g = Biome::graded(f64::from(voyage_x(x, z)), &self.order);
         let sample = crate::dive3d::heightmap::sample(&self.map, x, z);
-        let base = -Self::by_biome(&b, SEABED);
-        let relief = Self::by_biome(&b, RELIEF) * sample[0];
+        let base = -Self::by_biome(&g, SEABED);
+        let relief = Self::by_biome(&g, RELIEF) * sample[0];
         let rough = Self::by_biome(
-            &b,
+            &g,
             [
                 0.05, 0.07, 0.05, 0.02, 0.03, 0.08, 0.05, 0.05, 0.06, 0.05, 0.08, 0.02, 0.04, 0.02,
                 0.03, 0.04, 0.04, 0.02,
             ],
         );
         let ridges = Self::by_biome(
-            &b,
+            &g,
             [
                 1.6, 2.2, 2.0, 2.6, 3.5, 5.0, 1.4, 2.4, 2.6, 2.0, 5.5, 0.5, 3.0, 1.2, 1.4, 2.2,
                 1.6, 1.0,
@@ -1106,7 +1110,7 @@ impl Seabed {
                     * (0.65 * vnoise(x * 0.16, z * 0.16 + 3.0, 4)
                         + 0.35 * vnoise(x * 0.47, z * 0.43, 6)))
             * Self::by_biome(
-                &b,
+                &g,
                 [
                     1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.15, 1.0, 0.3, 1.0,
                     1.0, 0.6, 0.5,
@@ -13957,7 +13961,7 @@ mod tests {
         // early legs, so the drowned city later in the circuit does not move
         // them; the meadow, added before the forest, moved the walking party
         // a leg on.
-        let scenes = [("diver helmets", 1040.0), ("shallows encounter", 840.0)];
+        let scenes = [("diver helmets", 1040.0), ("shallows encounter", 850.0)];
         for (name, start) in scenes {
             let seed = 0.0f32;
             let seabed = Seabed::new(0, seed);

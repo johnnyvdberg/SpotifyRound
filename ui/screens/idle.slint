@@ -1,5 +1,6 @@
 import { Pointer, Theme } from "../theme.slint";
 import { Idle } from "../state.slint";
+import { SeaChart } from "sea_chart.slint";
 
 // Taps and horizontal swipes on the visuals. Only a press that starts here
 // counts: the swipe that opened the visualizer started on the player, and must
@@ -9,6 +10,9 @@ component IdleGestures inherits TouchArea {
     callback tapped();
     // +1 for a swipe to the left, on to what lies ahead; -1 to the right, back.
     callback swiped(int);
+    // A finger held still on the scene, where it has a journey to chart.
+    in property <bool> can-hold: false;
+    callback held();
 
     private property <length> start-x: 0;
     private property <length> start-y: 0;
@@ -17,6 +21,20 @@ component IdleGestures inherits TouchArea {
     private property <length> slop: 14px;
     // How far a finger must travel sideways to count as a swipe.
     private property <length> reach: 110px;
+
+    // Held this long without moving, a press opens the chart instead, and
+    // letting go does nothing more.
+    Timer {
+        interval: 600ms;
+        running: root.tracking && root.can-hold;
+        triggered => {
+            if (Math.abs(root.mouse-x - root.start-x) <= root.slop
+                && Math.abs(root.mouse-y - root.start-y) <= root.slop) {
+                root.tracking = false;
+                root.held();
+            }
+        }
+    }
 
     pointer-event(event) => {
         if (event.kind == PointerEventKind.down) {
@@ -97,10 +115,15 @@ export component IdleScreen inherits Rectangle {
     }
 
     // Any tap leaves the visualizer and returns to the player; a swipe left or
-    // right carries the dive on to the next stretch of sea, or back.
+    // right carries the dive on to the next stretch of sea, or back, and a
+    // long press on the dive opens the chart of its seas.
     IdleGestures {
-        enabled: Idle.fade > 0.05;
+        enabled: Idle.fade > 0.05 && !Idle.charting;
+        can-hold: Idle.scene == 1 && Idle.seas.length > 0;
         tapped => { Idle.dismiss(); }
         swiped(legs) => { Idle.travel(legs); }
+        held => { Idle.charting = true; }
     }
+
+    SeaChart { }
 }

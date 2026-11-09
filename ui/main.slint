@@ -8,6 +8,7 @@ import { NowPlaying } from "screens/now_playing.slint";
 import { Playlists } from "screens/playlists.slint";
 import { Queue } from "screens/queue.slint";
 import { DevicePicker } from "screens/devices.slint";
+import { ScenePicker } from "screens/scene_picker.slint";
 
 // Re-export the shared API so the Rust side can address the globals and structs.
 export { Pointer, Theme } from "theme.slint";
@@ -80,6 +81,9 @@ export component AppWindow inherits Window {
 
         // The idle visualizer fades in over everything once playback stops.
         IdleScreen { }
+
+        // The screensaver chooser a swipe down on the player opens.
+        ScenePicker { }
 
         // The device picker is the topmost layer, so it also covers the
         // visualizer if that faded in while it was open.

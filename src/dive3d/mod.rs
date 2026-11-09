@@ -415,6 +415,30 @@ pub(crate) fn biome_name(id: usize) -> &'static str {
     }
 }
 
+/// A sea's name as the chart on the glass gives it (`Visual::seas`).
+pub(crate) fn sea_title(id: usize) -> &'static str {
+    match id {
+        0 => "The Shallows",
+        1 => "Kelp Forest",
+        2 => "The Wrecks",
+        3 => "Atlantis",
+        4 => "Lava Cave",
+        5 => "The Abyss",
+        6 => "Polar Ice",
+        7 => "The Trench",
+        8 => "Coral Garden",
+        9 => "Sargasso Sea",
+        10 => "The Vents",
+        11 => "Brine Flats",
+        12 => "The Bloom",
+        13 => "Drowned City",
+        14 => "Seagrass Meadow",
+        15 => "Glass Sponges",
+        16 => "Blue Hole",
+        _ => "The Museum",
+    }
+}
+
 pub(crate) struct Nautilus {
     /// What the pipelines were compiled from, for a benchmark to compile
     /// them again with other switches ([`compile`]).
@@ -3418,6 +3442,16 @@ impl Visual for Nautilus {
 
     fn travel(&mut self, legs: i32) {
         self.voyage.travel(legs, self.seconds);
+    }
+
+    fn seas(&self) -> Option<(Vec<&'static str>, usize)> {
+        self.visit?;
+        let order = &self.seabed.order;
+        let leg = (self.voyage.bound(self.seconds) / crate::voyage::LEG).floor() as i64;
+        Some((
+            order.iter().map(|&id| sea_title(id)).collect(),
+            leg.rem_euclid(order.len() as i64) as usize,
+        ))
     }
 
     fn whereabouts(&self) -> Option<String> {

@@ -9,13 +9,13 @@
 //! It goes where it points. Its track is the corridor's meander with a slow
 //! wander of the helmsman's own, never bending tighter than about ten hull
 //! lengths' radius, and the nose follows the track; it banks a degree or two
-//! into each bend. It climbs and dives on its ballast and planes at under a
-//! metre a second, gathering way over a quarter of a minute, noses up or down
-//! a few degrees as it does, and reads the ground several hull lengths ahead,
-//! so it starts up over a ridge in good time and sails over a gully instead
-//! of ducking into it. The whole hull, not just the window, keeps a metre of
-//! water under it and inside the cave's tunnel. Near the surface the swell
-//! lifts and rolls it a little, less the deeper it goes.
+//! into each bend. It climbs and dives on its ballast and planes at nearly
+//! two metres a second, gathering way in ten seconds or so, noses up or down
+//! as much as fifteen degrees as it does, and reads the ground several hull
+//! lengths ahead, so it starts up over a ridge in good time and sails over a
+//! gully instead of ducking into it. The whole hull, not just the window,
+//! keeps a metre of water under it and inside the cave's tunnel. Near the
+//! surface the swell lifts and rolls it a little, less the deeper it goes.
 //!
 //! A swipe's passage is the voyage fast-forwarded: the climbs and dives run
 //! on the voyage's own clock, so the boat rides over the ground as it would
@@ -97,9 +97,9 @@ const RADIUS: f32 = HEIGHT * 0.5;
 const KEEL: f32 = 0.09;
 /// The fastest the boat climbs or dives on its ballast and planes, and how
 /// quickly it gathers that way, in world units a second (of the voyage's own
-/// clock): under a metre a second, reached over a quarter of a minute.
-const CLIMB: f32 = 0.07;
-const LIFT: f32 = 0.003;
+/// clock): nearly two metres a second, reached in about ten seconds.
+const CLIMB: f32 = 0.16;
+const LIFT: f32 = 0.016;
 /// Blowing its tanks, as when a shelf ahead rises faster than it can climb
 /// on its planes, it comes up half as fast again, and gathers that way
 /// twice as quickly.
@@ -107,7 +107,7 @@ const BLOWN: f32 = 1.5;
 /// How far ahead, in world units, the helmsman reads the ground.
 const AHEAD: f32 = 5.0;
 /// The most the boat noses up or down, and banks into a bend, in radians.
-const PITCH: f32 = 0.10;
+const PITCH: f32 = 0.26;
 const BANK: f32 = 0.035;
 /// How many times its cruising rate the boat's attitude may turn in a
 /// swipe's passage.
@@ -547,9 +547,9 @@ impl Helm {
 
             // Nose up into a climb, down into a dive, with the rest on the
             // ballast.
-            let climb = (self.height.rate / SPEED as f32).atan() * 0.6;
+            let climb = (self.height.rate / SPEED as f32).atan() * 0.4;
             self.pitch
-                .follow(climb.clamp(-PITCH, PITCH), 0.35, attitude_dt, 0.012);
+                .follow(climb.clamp(-PITCH, PITCH), 0.5, attitude_dt, 0.03);
             // Round the museum's loop and down the blue hole's spiral the
             // helm is put over harder than anywhere on the open track,
             // enough for the spiral's tightest bends.

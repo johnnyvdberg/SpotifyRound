@@ -18,7 +18,7 @@ export component NowPlaying inherits Rectangle {
         height: 100%;
         swipe-left => { App.navigate(App.screen + 1); }
         swipe-right => { App.navigate(App.screen - 1); }
-        swipe-down => { App.show-visualizer(); }
+        swipe-down => { App.choosing = true; }
         scrub(value) => { App.scrub(value); }
         seek(value) => { App.seek(value); }
         tap(x, y) => {

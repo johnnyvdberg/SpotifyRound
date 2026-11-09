@@ -20,6 +20,11 @@ pub const SPEED: f64 = 0.055;
 /// through; the blend is kept near thirty seconds.
 pub const LEG: f64 = 16.5;
 const BLEND: f64 = 0.10;
+/// The share of a leg over which the seabed's depth and relief grade into the
+/// next sea's, centred on the same border as [`BLEND`] but wider, so the floor
+/// slopes down into a deeper sea, or up out of it, rather than stepping. It
+/// stops short of the museum's doors, which stand on its own floor.
+pub const GRADE: f64 = 0.24;
 pub const BIOMES: usize = 18;
 /// The order the legs come in, by biome: shallows, the coral garden, the
 /// seagrass meadow, the kelp forest, the blue hole, the sargasso, the trench,
@@ -202,8 +207,9 @@ impl Voyage {
         }
 
         let x = self.x(seconds);
-        let here = Biome::at(x, seed);
-        let seabed = here.mix(SEABED);
+        let order = order_for(seed);
+        let here = Biome::in_order(x, &order);
+        let seabed = Biome::graded(x, &order).mix(SEABED);
         let low = here.mix(CRUISE.map(|band| band.0));
         let high = here.mix(CRUISE.map(|band| band.1));
         let mut ceiling = here.mix(CEILING);
@@ -226,7 +232,7 @@ impl Voyage {
         let target = seabed - (low + (high - low) * swell.clamp(0.0, 1.0));
 
         // The boat answers the planes slowly, except when a swipe hurries it on.
-        let lag = if self.passage.is_some() { 0.8 } else { 5.0 };
+        let lag = if self.passage.is_some() { 0.8 } else { 2.5 };
         if fresh || dt > 0.5 {
             self.depth = target;
         } else {
@@ -250,11 +256,7 @@ impl Voyage {
         if self.seed.is_none() {
             return;
         }
-        let current = match self.passage {
-            Some(passage) => base(passage.begun + PASSAGE) + passage.to,
-            None => self.x(seconds),
-        };
-        let leg = (current / LEG).floor() + f64::from(legs);
+        let leg = (self.bound(seconds) / LEG).floor() + f64::from(legs);
         let landing = leg * LEG + LANDING;
         let end = seconds + PASSAGE;
         self.passage = Some(Passage {
@@ -262,6 +264,15 @@ impl Voyage {
             from: self.offset_at(seconds),
             to: landing - base(end),
         });
+    }
+
+    /// Where the Nautilus is bound: where a swipe's passage will land it, or
+    /// where it is when none is under way.
+    pub fn bound(&self, seconds: f64) -> f64 {
+        match self.passage {
+            Some(passage) => base(passage.begun + PASSAGE) + passage.to,
+            None => self.x(seconds),
+        }
     }
 
     fn x(&self, seconds: f64) -> f64 {
@@ -310,6 +321,22 @@ impl Biome {
         Self {
             a: id(k),
             b: id(k + 1.0),
+            w: t * t * (3.0 - 2.0 * t),
+        }
+    }
+
+    /// As [`Biome::in_order`], but changing over [`GRADE`] rather than
+    /// [`BLEND`]: how the seabed's depth and relief run from one sea to the
+    /// next.
+    pub fn graded(x: f64, order: &[usize; BIOMES]) -> Self {
+        // Shifted so the middle of each border falls on a whole leg.
+        let u = x / LEG + 0.5 * BLEND;
+        let k = u.round();
+        let id = |k: f64| order[(k as i64).rem_euclid(BIOMES as i64) as usize];
+        let t = ((u - k) / GRADE + 0.5).clamp(0.0, 1.0);
+        Self {
+            a: id(k - 1.0),
+            b: id(k),
             w: t * t * (3.0 - 2.0 * t),
         }
     }

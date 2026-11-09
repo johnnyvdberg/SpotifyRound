@@ -211,6 +211,8 @@ struct IdleState {
     stopped_since: Option<Instant>,
     /// Opened by the downward swipe.
     manual: bool,
+    /// The scene picked after that swipe, until the visualizer takes it up.
+    chosen: Option<Scene>,
     /// Closed by a tap; sticks until playback resumes.
     dismissed: bool,
     /// 0..1 cross-fade.
@@ -948,7 +950,7 @@ impl Shared {
         }
         {
             let this = self.clone();
-            app.on_show_visualizer(move || this.show_visualizer());
+            app.on_show_visualizer(move |scene| this.show_visualizer(scene));
         }
         {
             let this = self.clone();
@@ -2100,9 +2102,14 @@ impl Shared {
         model.note_playback(playing, has_track, now);
     }
 
-    /// Swipe down on the player: show the visualizer even while music plays.
-    fn show_visualizer(self: &Arc<Self>) {
+    /// The scene chosen after a swipe down on the player: show it even while
+    /// music plays. A negative `scene` leaves the pick to chance.
+    fn show_visualizer(self: &Arc<Self>, scene: i32) {
         let mut model = self.lock();
+        model.idle.chosen = usize::try_from(scene)
+            .ok()
+            .and_then(|i| Scene::ALL.get(i).copied())
+            .or(Some(Scene::random(self.idle_scenes.load(Ordering::Relaxed))));
         model.idle.manual = true;
         model.idle.dismissed = false;
     }
@@ -2139,7 +2146,14 @@ impl Shared {
         let (visualizer, fade, fade_changed, screen, selected) = {
             let mut model = self.lock();
             let visualizer = model.wants_visualizer(now);
-            let selected = if visualizer && !model.idle.showing && model.idle.fade <= 0.0 {
+            // A scene picked by hand is taken up even while the last one
+            // fades out; otherwise a new one is drawn at random each time
+            // the visualizer comes up from nothing.
+            let selected = if !visualizer {
+                None
+            } else if let Some(scene) = model.idle.chosen.take() {
+                Some(scene)
+            } else if !model.idle.showing && model.idle.fade <= 0.0 {
                 Some(Scene::random(available))
             } else {
                 None

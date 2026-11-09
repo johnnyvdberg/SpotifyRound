@@ -1,0 +1,292 @@
+import { Pointer, Theme } from "../theme.slint";
+import { Idle } from "../state.slint";
+
+// The Nautilus' chart of the seas, which a long press on the dive opens: a
+// brass dial over the salon window's glass, the seas of the circuit round its
+// rim in the order the boat sails them. A swipe turns the dial a sea at a time;
+// a tap on the glass sets course for the sea at the top, and the boat sails
+// there as a swipe on the dive would take it, leg by leg. A tap outside the
+// dial closes it.
+export component SeaChart inherits Rectangle {
+    width: 1080px;
+    height: 1080px;
+    background: transparent;
+    visible: Idle.charting && Idle.scene == 1 && Idle.seas.length > 0;
+
+    private property <int> count: Idle.seas.length;
+    // The sea at the top of the dial, counted on round the circuit without
+    // wrapping, so the dial turns the short way past the last sea.
+    private property <int> pick: 0;
+    private property <int> shown: Math.mod(Math.mod(root.pick, max(1, root.count)) + root.count, max(1, root.count));
+    // Legs from where the boat is bound to the sea shown, the short way round.
+    private property <int> ahead: Math.mod(root.shown - Idle.sea + root.count, max(1, root.count));
+    private property <int> legs: root.ahead > root.count / 2 ? root.ahead - root.count : root.ahead;
+
+    // The finger's pull on the dial while it is down, and how far a sea is.
+    private property <length> pull: 0;
+    private property <length> notch: 150px;
+    private property <float> turn: root.pick - root.pull / root.notch;
+    animate turn { duration: 220ms; easing: ease-out; }
+
+    private property <length> start-x: 0;
+    private property <length> start-y: 0;
+    private property <bool> tracking: false;
+    private property <length> slop: 14px;
+
+    in property <bool> open: Idle.charting;
+    changed open => {
+        root.pick = Idle.sea;
+        root.pull = 0;
+    }
+
+    private property <length> cx: 540px;
+    private property <length> cy: 540px;
+    // The glass inside the bezel, and the circle the seas' marks stand on.
+    private property <length> glass-r: 330px;
+    private property <length> marks-r: 296px;
+
+    private property <color> brass: #c9a35a;
+    private property <color> brass-light: #f0d79a;
+    private property <color> brass-dark: #6b4a1c;
+    private property <color> sea-glow: #5fd4d0;
+
+    // The salon's dark water behind the dial.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #010d12d8;
+    }
+
+    // The bezel: a brass ring, lit from the middle out.
+    Rectangle {
+        x: root.cx - 380px;
+        y: root.cy - 380px;
+        width: 760px;
+        height: 760px;
+        border-radius: 380px;
+        background: root.brass-dark;
+        border-width: 3px;
+        border-color: #00000070;
+    }
+
+    // Its light: a radial gradient's 100% is the box's corner, so the rim is
+    // at about 70%, and the light fades out just inside it over the brass.
+    Rectangle {
+        x: root.cx - 380px;
+        y: root.cy - 380px;
+        width: 760px;
+        height: 760px;
+        background: @radial-gradient(circle, root.brass-light 0%, root.brass 58%, root.brass-dark 66%, root.brass-dark.with-alpha(0) 69%);
+    }
+
+    // Its rivets.
+    for i in 12 : Rectangle {
+        x: root.cx + 356px * Math.sin(i * 30deg + 15deg) - 8px;
+        y: root.cy - 356px * Math.cos(i * 30deg + 15deg) - 8px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: root.brass;
+        border-width: 1px;
+        border-color: #00000080;
+    }
+
+    // The glass, deep green-blue and darker to its rim.
+    Rectangle {
+        x: root.cx - root.glass-r;
+        y: root.cy - root.glass-r;
+        width: root.glass-r * 2;
+        height: root.glass-r * 2;
+        border-radius: root.glass-r;
+        background: #03121a;
+        border-width: 4px;
+        border-color: root.brass-dark;
+    }
+
+    Rectangle {
+        x: root.cx - root.glass-r;
+        y: root.cy - root.glass-r;
+        width: root.glass-r * 2;
+        height: root.glass-r * 2;
+        background: @radial-gradient(circle, #0f3f4a 0%, #08262f 39%, #03121a 62%, #03121a00 68%);
+    }
+
+    // An engraved ring inside the glass, the dial's track.
+    Rectangle {
+        x: root.cx - root.marks-r;
+        y: root.cy - root.marks-r;
+        width: root.marks-r * 2;
+        height: root.marks-r * 2;
+        border-radius: root.marks-r;
+        background: transparent;
+        border-width: 1px;
+        border-color: root.brass.with-alpha(0.35);
+    }
+
+    // The lubber's mark at the top of the bezel, over the sea it points at.
+    Rectangle {
+        x: root.cx - 9px;
+        y: root.cy - 380px + 8px;
+        width: 18px;
+        height: 34px;
+        border-radius: 4px;
+        background: #2a1a06;
+        border-width: 2px;
+        border-color: root.brass-light;
+    }
+
+    // A mark for each sea round the dial, the one at the top the largest,
+    // the one the boat is in or bound for lit like the sea.
+    for name[k] in Idle.seas : Rectangle {
+        private property <float> step: k - root.turn
+            - root.count * Math.round((k - root.turn) / max(1, root.count));
+        private property <angle> at: self.step * 360deg / max(1, root.count);
+        private property <bool> top: k == root.shown;
+        private property <bool> here: k == Idle.sea;
+        private property <length> size: self.top ? 26px : (self.here ? 18px : 12px);
+        x: root.cx + root.marks-r * Math.sin(self.at) - self.size / 2;
+        y: root.cy - root.marks-r * Math.cos(self.at) - self.size / 2;
+        width: self.size;
+        height: self.size;
+        border-radius: self.size / 2;
+        background: self.here ? root.sea-glow : (self.top ? root.brass-light : root.brass.with-alpha(0.55));
+        border-width: self.top ? 3px : 0px;
+        border-color: self.here ? root.brass-light : root.brass-dark;
+    }
+
+    Text {
+        x: root.cx - 260px;
+        y: root.cy - 170px;
+        width: 520px;
+        height: 30px;
+        text: root.legs == 0 ? "THE NAUTILUS IS IN" : "SET COURSE FOR";
+        color: root.brass;
+        font-family: Theme.font;
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: 6px;
+        horizontal-alignment: center;
+    }
+
+    Text {
+        x: root.cx - 270px;
+        y: root.cy - 120px;
+        width: 540px;
+        height: 150px;
+        text: Idle.seas[root.shown];
+        color: #f4e6c4;
+        font-family: Theme.font;
+        font-size: 62px;
+        font-weight: 300;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    // A brass rule under the name.
+    Rectangle {
+        x: root.cx - 90px;
+        y: root.cy + 44px;
+        width: 180px;
+        height: 2px;
+        background: @linear-gradient(90deg, root.brass.with-alpha(0) 0%, root.brass 50%, root.brass.with-alpha(0) 100%);
+    }
+
+    Text {
+        x: root.cx - 260px;
+        y: root.cy + 62px;
+        width: 520px;
+        height: 30px;
+        text: root.legs == 0
+            ? "Here now"
+            : (root.legs > 0
+                ? (root.legs == 1 ? "The next sea ahead" : "\{root.legs} seas ahead")
+                : (root.legs == -1 ? "The sea astern" : "\{-root.legs} seas astern"));
+        color: root.legs == 0 ? root.sea-glow : Theme.ink-dim;
+        font-family: Theme.font;
+        font-size: 21px;
+        horizontal-alignment: center;
+    }
+
+    // The seas either side, faint, toward the way the dial turns.
+    Text {
+        x: root.cx - 300px;
+        y: root.cy + 132px;
+        width: 260px;
+        height: 28px;
+        text: "‹  " + Idle.seas[Math.mod(root.shown - 1 + root.count, max(1, root.count))];
+        color: root.brass.with-alpha(0.6);
+        font-family: Theme.font;
+        font-size: 18px;
+        horizontal-alignment: right;
+        overflow: elide;
+    }
+
+    Text {
+        x: root.cx + 40px;
+        y: root.cy + 132px;
+        width: 260px;
+        height: 28px;
+        text: Idle.seas[Math.mod(root.shown + 1, max(1, root.count))] + "  ›";
+        color: root.brass.with-alpha(0.6);
+        font-family: Theme.font;
+        font-size: 18px;
+        horizontal-alignment: left;
+        overflow: elide;
+    }
+
+    Text {
+        x: root.cx - 260px;
+        y: root.cy + 200px;
+        width: 520px;
+        height: 26px;
+        text: root.legs == 0 ? "Swipe to turn the dial · tap outside to close" : "Tap the glass to sail · swipe to turn the dial";
+        color: Theme.ink-faint;
+        font-family: Theme.font;
+        font-size: 16px;
+        horizontal-alignment: center;
+    }
+
+    // Swipes turn the dial; a tap on the glass sails, one outside closes.
+    TouchArea {
+        mouse-cursor: Pointer.plain;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                if (event.button != PointerEventButton.left) { return; }
+                root.start-x = self.mouse-x;
+                root.start-y = self.mouse-y;
+                root.tracking = true;
+            } else if (event.kind == PointerEventKind.up) {
+                if (!root.tracking) { return; }
+                root.tracking = false;
+                let dx = self.mouse-x - root.start-x;
+                let dy = self.mouse-y - root.start-y;
+                root.pull = 0;
+                if (Math.abs(dx) > root.slop || Math.abs(dy) > root.slop) {
+                    // A sea for every notch pulled, and at least one.
+                    let steps = Math.max(1, Math.round(Math.abs(dx) / root.notch));
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        root.pick += dx < 0 ? steps : -steps;
+                    }
+                    return;
+                }
+                let rx = self.mouse-x - root.cx;
+                let ry = self.mouse-y - root.cy;
+                if (rx * rx + ry * ry < root.glass-r * root.glass-r) {
+                    if (root.legs != 0) {
+                        Idle.travel(root.legs);
+                    }
+                }
+                Idle.charting = false;
+            } else if (event.kind == PointerEventKind.cancel) {
+                root.tracking = false;
+                root.pull = 0;
+            }
+        }
+        moved => {
+            if (root.tracking) {
+                root.pull = self.mouse-x - root.start-x;
+            }
+        }
+    }
+}

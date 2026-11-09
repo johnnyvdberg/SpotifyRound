@@ -225,6 +225,9 @@ pub trait WindowExt: Sized {
     /// The visualizer's frames in the last second, the mean time its thread
     /// spent on each and the mean time each took on the GPU, in ms.
     fn set_scene_stats(&self, frames: i32, ms: f32, gpu_ms: f32, place: &str);
+    /// The seas of the dive's circuit in order, and the one it is in or bound
+    /// for; none for a scene without a journey.
+    fn set_seas(&self, names: &[&str], here: usize);
     fn tick(&self, frame: &Frame);
     /// Name, icon kind and presence of the Spotify Connect device playback is
     /// running on.
@@ -380,6 +383,13 @@ impl WindowExt for AppWindow {
         }
         // Kept while hidden too, so a long press saves where the dive is now.
         stats.set_place(place.into());
+    }
+
+    fn set_seas(&self, names: &[&str], here: usize) {
+        let idle = self.global::<Idle>();
+        let names: Vec<slint::SharedString> = names.iter().map(|&n| n.into()).collect();
+        idle.set_seas(slint::ModelRc::new(VecModel::from(names)));
+        idle.set_sea(here as i32);
     }
 
     fn show_idle_frame(&self, index: usize) {
@@ -850,5 +860,18 @@ mod preview {
             ),
         ));
         save(&window, &soft, "12-nautilus");
+
+        // The chart a long press opens, turned a sea ahead of the boat.
+        let names: Vec<&str> = (0..crate::voyage::BIOMES).map(crate::dive3d::sea_title).collect();
+        window.set_seas(&names, 3);
+        window.global::<Idle>().set_charting(true);
+        save(&window, &soft, "13-sea-chart");
+        window.global::<Idle>().set_charting(false);
+
+        // The screensaver chooser a swipe down on the player opens.
+        window.set_idle(false, 0.0);
+        window.global::<App>().set_choosing(true);
+        save(&window, &soft, "14-scene-picker");
+        window.global::<App>().set_choosing(false);
     }
 }

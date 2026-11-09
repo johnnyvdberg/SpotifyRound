@@ -406,14 +406,17 @@ fn the_hull_moves_like_a_heavy_boat() {
             "{name}: turning in {:.2} hull lengths",
             s.radius
         );
-        // Under a metre a second on its planes; blowing its tanks for a
+        // Under two metres a second on its planes; blowing its tanks for a
         // shelf it could not otherwise clear, half as fast again.
-        assert!(s.climb < 1.2, "{name}: climbing at {:.2} m/s", s.climb);
-        assert!(s.heave < 0.3, "{name}: heaving at {:.2} m/s²", s.heave);
+        assert!(s.climb < 2.8, "{name}: climbing at {:.2} m/s", s.climb);
+        assert!(s.heave < 0.6, "{name}: heaving at {:.2} m/s²", s.heave);
         assert!(
-            // Banking under 2.5°, and the heel over the trench on top.
-            s.pitch < 6.5 && s.roll < 2.5 + super::PEER.to_degrees(),
-            "{name}: pitched or rolled too far"
+            // Nosing up to 15° into a climb; banking under 2.5°, and the
+            // heel over the trench on top.
+            s.pitch < 16.0 && s.roll < 2.5 + super::PEER.to_degrees(),
+            "{name}: pitched {:.1}° or rolled {:.1}° too far",
+            s.pitch,
+            s.roll
         );
         assert!(
             s.jitter < 2.0,

@@ -187,6 +187,13 @@ pub(crate) trait Visual: Send {
     /// scene's journey. Scenes without one ignore it.
     fn travel(&mut self, _legs: i32) {}
 
+    /// The stretches of the scene's journey in the order it sails them, and
+    /// the one it is in or bound for, for the chart a long press opens.
+    /// Scenes without a journey have none.
+    fn seas(&self) -> Option<(Vec<&'static str>, usize)> {
+        None
+    }
+
     /// Change the resolution the visual is drawn at; true if it changed.
     /// Scenes drawn at a fixed size ignore it.
     fn set_render_scale(&mut self, _gpu: &Graphics, _scale: f32) -> bool {
@@ -310,6 +317,8 @@ pub fn spawn(
             let mut deadline = last;
             let mut active = usize::MAX;
             let mut travelled = travel.load(Ordering::Relaxed);
+            // The chart the UI last had, sent again only when it changes.
+            let mut charted: Option<(Vec<&'static str>, usize)> = None;
             let mut drawn = 0u32;
             // Time spent recording and submitting frames since the last
             // report. The GPU time comes from the V3D's busy counters on the
@@ -374,8 +383,21 @@ pub fn spawn(
                 };
                 let swiped = travel.load(Ordering::Relaxed);
                 if swiped != travelled {
-                    renderer.travel((swiped - travelled).clamp(-7, 7) as i32);
+                    // Half the circuit either way: any sea the chart names.
+                    let most = crate::voyage::BIOMES as i64 / 2;
+                    renderer.travel((swiped - travelled).clamp(-most, most) as i32);
                     travelled = swiped;
+                }
+                let seas = renderer.seas();
+                if seas != charted {
+                    charted = seas.clone();
+                    let (names, here) = seas.unwrap_or_default();
+                    if ui
+                        .upgrade_in_event_loop(move |ui| ui.set_seas(&names, here))
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
                 let current = sequences[active];
                 let begun = Instant::now();
