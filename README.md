@@ -52,8 +52,15 @@ Spotify **Premium** account.
   ringed) and moons of the kinds ours has (cratered, icy, volcanic, hazy, captured rock). Some
   giants have a moon as big as a planet, a world of its own mapped in full with air, seas and
   clouds. The tour drops out of a hyperjump, orbits three planets high and low (and such a moon
-  after its giant), and jumps on to the next star, ten to twelve minutes a system. Crossings swing
-  round the star in a close flyby, or past a planet not otherwise visited, slowing to take it in.
+  after its giant), and jumps on to the next star, ten to twelve minutes a system. Crossings fly
+  real manoeuvres, each named and explained on screen as it happens
+  ([docs/solar-assist.jpg](docs/solar-assist.jpg)): a departure burn, a coast along a transfer
+  ellipse round the star (a Hohmann transfer when it sweeps half way round), a gravity assist past a
+  planet on the way (its turn and the speed traded worked out from the planet's mass), or an Oberth
+  dive to perihelion past the star, burning where thrust counts most, then a capture burn into
+  orbit, and an escape burn before the jump. In low orbit a close-up pass adds grain and lit
+  slopes finer than the maps ([docs/solar-low-detail.jpg](docs/solar-low-detail.jpg), before and
+  after), drawn only near the ground.
   A minimap of the system shows the orbits, the planets, the route and the ship
   ([docs/solar-flyby.jpg](docs/solar-flyby.jpg), [docs/solar-moon.jpg](docs/solar-moon.jpg)), beside a HUD of the
   destination, ETA, distance and real orbital speeds. Each jump uses one of five named drives, each

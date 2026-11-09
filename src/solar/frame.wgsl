@@ -522,36 +522,39 @@ fn fs_ground(in: Quad) -> @location(0) vec4<f32> {
     return vec4<f32>(colour * through(i, h) * h.cover, h.cover);
 }
 
+// How much close-up detail a mapped world's point gets: none until a pixel
+// covers less than a texel of its map, so only low orbits pay for it.
+fn closeness(i: u32, h: Hit) -> f32 {
+    let footprint = length(h.point) * params.frame.z;
+    let texel = params.bodies[i].place.w * TAU / map_size().x;
+    return smoothstep01(texel * 1.5, texel * 0.2, footprint) * step(0.999, h.cover);
+}
+
 // Close-up detail over a mapped world's ground, multiplied in (as half the
-// factor: the blend doubles it): grain finer than the map's texels and the
-// light their slopes catch, from two fetches of the noise volume. It fades in
-// where a pixel covers less than a texel of the map, so only low orbits pay.
+// factor: the blend doubles it): the light that slopes finer than the map's
+// texels catch, and a grain. One fetch of the noise volume: a second (a finer
+// octave, or the sea's mask) would halve the threads it runs with.
 @fragment
 fn fs_detail(in: Quad) -> @location(0) vec4<f32> {
     let i = in.body;
     let h = trace(i, in.position.xy);
-    if (h.cover < 0.999) {
-        discard;
-    }
-    let footprint = length(h.point) * params.frame.z;
-    let texel = params.bodies[i].place.w * TAU / map_size().x;
-    let close = smoothstep01(texel * 1.5, texel * 0.2, footprint);
+    let close = closeness(i, h);
     if (close <= 0.0) {
         discard;
     }
+    // All in the body's frame, so nothing turns back to the world's. No mask
+    // for the sea: a second fetch halves the threads, and under the sea the
+    // ground is near black, its glint and the sky's sheen added after this.
     let nb = to_body(i, h.n);
-    let water = relief_texel(map_uv(nb), 0.0).b;
     let a = noised(nb * 1400.0);
-    let b = noised(nb.zxy * 3700.0);
-    // The gradient in the body frame: b's input is swizzled, so is its slope.
-    let slope = from_body(i, a.yzw * (1400.0 * 0.6) + b.zwy * (3700.0 * 0.4));
-    let n = h.n;
-    let sun = normalize(params.star.xyz - h.point);
-    let mu = dot(n, sun);
-    let dry = close * (1.0 - water);
-    let tilted = dot(normalize(n - (slope - n * dot(slope, n)) * 0.00022 * dry), sun);
+    // The star is far enough that its direction from the body's centre does
+    // for every point: no need to keep the hit point.
+    let sun = to_body(i, normalize(params.star.xyz - params.bodies[i].place.xyz));
+    let mu = dot(nb, sun);
+    // The sun's height over the ground tilted by the slope, to first order.
+    let tilted = mu - 0.42 * close * (dot(a.yzw, sun) - dot(a.yzw, nb) * mu);
     let shading = clamp((max(tilted, 0.0) + 0.03) / (max(mu, 0.0) + 0.03), 0.6, 1.6);
-    let grain = 1.0 + (a.x * 0.6 + b.x * 0.4) * close * mix(0.28, 0.06, water);
+    let grain = 1.0 + a.x * 0.168 * close;
     return vec4<f32>(vec3<f32>(0.5 * grain * mix(1.0, shading, smoothstep01(-0.05, 0.1, mu))), 1.0);
 }
 
