@@ -1613,6 +1613,16 @@ impl Tour {
         }
     }
 
+    /// How far through the survey of the world being orbited, 0..1 (0 when
+    /// not orbiting).
+    pub fn survey(&self, t: f64) -> f32 {
+        let (segment, _) = self.segment(t);
+        match segment.phase {
+            Phase::High(p) => super::scan::Survey::progress(t - self.arrival(p)),
+            _ => 0.0,
+        }
+    }
+
     /// A stop's body in a line: its kind, size and what goes round it.
     fn describe(&self, stop: Stop) -> String {
         let p = self.world(stop);

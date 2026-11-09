@@ -102,14 +102,19 @@ export component IdleScreen inherits Rectangle {
 
     }
 
-    // A scene's heads-up display, low in the circle: the solar tour's
-    // destination, ETA and speeds. Hidden for scenes without one.
+    // A scene's heads-up display, at the top of the circle: its title and
+    // one reading at a time (the destination, ETA, speed, ...), each held a
+    // few seconds and faded into the next, with a dot per reading.
     if Idle.hud-title != "" : Rectangle {
+        property <duration> hold: 4s;
+        property <float> phase: Math.mod(animation-tick() / 1ms, hold / 1ms) / (hold / 1ms);
+        property <int> shown: Idle.hud-lines.length > 0
+            ? Math.mod(Math.floor(animation-tick() / hold), Idle.hud-lines.length) : 0;
         x: (parent.width - self.width) / 2;
-        y: 726px;
-        width: 640px;
-        height: 238px;
-        border-radius: 22px;
+        y: 66px;
+        width: 480px;
+        height: 76px;
+        border-radius: 38px;
         background: #04060cb0;
         border-width: 1px;
         border-color: Theme.accent.with-alpha(0.25);
@@ -117,106 +122,151 @@ export component IdleScreen inherits Rectangle {
 
         Text {
             x: 0;
-            y: 14px;
+            y: 9px;
             width: parent.width;
-            text: Idle.hud-title;
+            text: Idle.hud-title + "  ·  " + Idle.hud-lines[shown].label.to-uppercase();
             color: Theme.accent;
             font-family: Theme.font;
-            font-size: 20px;
+            font-size: 13px;
             font-weight: 700;
             letter-spacing: 3px;
             horizontal-alignment: center;
         }
         Text {
-            x: 20px;
-            y: 50px;
-            width: 158px;
-            text: Idle.hud-labels;
-            color: Theme.ink.with-alpha(0.55);
-            font-family: Theme.font;
-            font-size: 21px;
-            horizontal-alignment: right;
-        }
-        Text {
-            x: 194px;
-            y: 50px;
-            width: parent.width - 214px;
-            text: Idle.hud-values;
+            x: 30px;
+            y: 28px;
+            width: parent.width - 60px;
+            text: Idle.hud-lines[shown].value;
             color: Theme.ink;
+            opacity: min(1, phase * 10, (1 - phase) * 10);
             font-family: Theme.font;
-            font-size: 21px;
-            horizontal-alignment: left;
+            font-size: 20px;
+            font-weight: 600;
+            horizontal-alignment: center;
             overflow: elide;
+        }
+        for line[i] in Idle.hud-lines : Rectangle {
+            x: (parent.width - Idle.hud-lines.length * 12px) / 2 + i * 12px + 3px;
+            y: parent.height - 12px;
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: i == shown ? Theme.accent : Theme.ink.with-alpha(0.2);
         }
     }
 
-    // The scanner, high in the circle: each reading's name, a bar while it
-    // runs, then its result.
+    // The scanner, as a cockpit readout like the engine's burn and the same
+    // size, in a phosphor teal: a ladder lit to how much of the survey is
+    // done, a SCAN tag pulsing while an instrument runs, and each reading's
+    // name, bar and result.
     if Idle.hud-scans.length > 0 : Rectangle {
+        property <color> teal: #46e6c8;
+        property <bool> running: Idle.hud-survey < 0.999;
         x: (parent.width - self.width) / 2;
-        y: 118px;
-        width: 640px;
-        height: 30px + Idle.hud-scans.length * 52px;
-        border-radius: 22px;
-        background: #04060cb0;
-        border-width: 1px;
-        border-color: Theme.accent.with-alpha(0.25);
+        y: 150px;
+        width: 600px;
+        height: 196px;
+        border-radius: 14px;
+        background: #020a08d8;
+        border-width: 2px;
+        border-color: teal.with-alpha(0.55);
         opacity: Idle.fade;
 
+        // The survey ladder, bottom up.
+        for i in 10 : Rectangle {
+            x: 22px;
+            y: 160px - i * 13px;
+            width: 34px;
+            height: 9px;
+            border-radius: 2px;
+            background: Idle.hud-survey * 10 > i + 0.5 ? teal : teal.with-alpha(0.12);
+        }
         Text {
-            x: 0;
-            y: 8px;
-            width: parent.width;
-            text: "SCANNER";
-            color: Theme.accent;
+            x: 14px;
+            y: 172px;
+            width: 50px;
+            text: "SRV";
+            color: teal.with-alpha(0.7);
             font-family: Theme.font;
-            font-size: 15px;
+            font-size: 12px;
             font-weight: 700;
-            letter-spacing: 3px;
+            letter-spacing: 2px;
             horizontal-alignment: center;
         }
+
+        Text {
+            x: 76px;
+            y: 12px;
+            text: "SCANNER";
+            color: teal;
+            font-family: Theme.font;
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 3px;
+        }
+        // The tag, pulsing while an instrument runs.
+        Rectangle {
+            x: parent.width - 96px;
+            y: 12px;
+            width: 78px;
+            height: 24px;
+            border-radius: 4px;
+            background: teal;
+            opacity: running ? 0.55 + 0.45 * Math.sin(animation-tick() / 1ms * 0.008rad) : 0.15;
+            Text {
+                text: running ? "SCAN" : "DONE";
+                color: #00140f;
+                font-family: Theme.font;
+                font-size: 14px;
+                font-weight: 800;
+                letter-spacing: 3px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // The readings: the latest four, the running ones last.
         for scan[i] in Idle.hud-scans : Rectangle {
-            x: 22px;
-            y: 32px + i * 52px;
-            width: parent.width - 44px;
-            height: 48px;
+            x: 76px;
+            y: 46px + i * 36px;
+            width: parent.width - 100px;
+            height: 34px;
 
             Text {
                 x: 0;
                 y: 0;
-                width: 170px;
-                text: scan.name;
-                color: Theme.ink.with-alpha(0.7);
+                width: 136px;
+                text: scan.name.to-uppercase();
+                color: teal.with-alpha(0.75);
                 font-family: Theme.font;
-                font-size: 17px;
-                font-weight: 600;
-            }
-            // The bar, full once the reading is in.
-            Rectangle {
-                x: 170px;
-                y: 6px;
-                width: parent.width - 170px;
-                height: 6px;
-                border-radius: 3px;
-                background: Theme.ink.with-alpha(0.12);
-                Rectangle {
-                    x: 0;
-                    y: 0;
-                    width: parent.width * scan.progress;
-                    height: parent.height;
-                    border-radius: 3px;
-                    background: scan.progress >= 1 ? Theme.accent.with-alpha(0.55) : Theme.accent;
-                }
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                overflow: elide;
             }
             Text {
-                x: 0;
-                y: 22px;
-                width: parent.width;
+                x: 140px;
+                y: -2px;
+                width: parent.width - 140px;
                 text: scan.value;
-                color: scan.progress >= 1 ? Theme.ink : Theme.ink.with-alpha(0.5);
+                color: scan.progress >= 1 ? teal : teal.with-alpha(0.5);
                 font-family: Theme.font;
                 font-size: 16px;
                 overflow: elide;
+            }
+            // The bar, full once the reading is in.
+            Rectangle {
+                x: 0;
+                y: 22px;
+                width: parent.width;
+                height: 3px;
+                background: teal.with-alpha(0.15);
+                Rectangle {
+                    x: 0;
+                    width: parent.width * scan.progress;
+                    height: parent.height;
+                    background: scan.progress >= 1 ? teal.with-alpha(0.5) : teal;
+                }
             }
         }
     }
@@ -227,7 +277,7 @@ export component IdleScreen inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: 150px;
         width: 600px;
-        height: Idle.man-progress >= 0 ? 168px : 150px;
+        height: 196px;
         border-radius: 22px;
         background: #04060cb0;
         border-width: 1px;
@@ -248,9 +298,9 @@ export component IdleScreen inherits Rectangle {
         }
         Text {
             x: 26px;
-            y: 42px;
+            y: 44px;
             width: parent.width - 52px;
-            height: 96px;
+            height: 120px;
             text: Idle.man-text;
             color: Theme.ink;
             font-family: Theme.font;
@@ -285,7 +335,7 @@ export component IdleScreen inherits Rectangle {
         property <float> throttle: Idle.man-throttle;
         animate throttle { duration: 250ms; }
         x: (parent.width - self.width) / 2;
-        y: 140px;
+        y: 150px;
         width: 600px;
         height: 196px;
         border-radius: 14px;

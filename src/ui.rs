@@ -397,8 +397,16 @@ impl WindowExt for AppWindow {
     fn set_idle_hud(&self, hud: &crate::solar::Hud) {
         let idle = self.global::<Idle>();
         idle.set_hud_title(hud.title.as_str().into());
-        idle.set_hud_labels(hud.labels.as_str().into());
-        idle.set_hud_values(hud.values.as_str().into());
+        let lines: Vec<HudLine> = hud
+            .lines
+            .iter()
+            .map(|(label, value)| HudLine {
+                label: label.as_str().into(),
+                value: value.as_str().into(),
+            })
+            .collect();
+        idle.set_hud_lines(ModelRc::from(Rc::new(VecModel::from(lines))));
+        idle.set_hud_survey(hud.survey);
         let scans: Vec<ScanRow> = hud
             .scans
             .iter()

@@ -98,14 +98,15 @@ struct Frame {
     view: wgpu::TextureView,
 }
 
-/// What the HUD shows: a title, and lines of labels and values.
+/// What the HUD shows: a title, and lines of label and value.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Hud {
     pub title: String,
-    pub labels: String,
-    pub values: String,
-    /// The scanner's readings, while orbiting.
+    pub lines: Vec<(String, String)>,
+    /// The scanner's readings, while orbiting, and how far through the
+    /// whole survey, 0..1.
     pub scans: Vec<scan::Scan>,
+    pub survey: f32,
     /// The minimap of the system, while in one.
     pub map: Option<Minimap>,
     /// The manoeuvre under way and why, while not orbiting.
@@ -1242,22 +1243,19 @@ impl Solar {
             return;
         }
         self.hud_at = t;
-        let (title, lines) = self.tour.hud(t);
-        let labels = lines
-            .iter()
-            .map(|(l, _)| l.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let values = lines
-            .iter()
-            .map(|(_, v)| v.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let (title, mut lines) = self.tour.hud(t);
+        // A line that carries on the one before it (no label of its own)
+        // takes that label: the HUD shows one line at a time.
+        for k in 1..lines.len() {
+            if lines[k].0.is_empty() {
+                lines[k].0 = lines[k - 1].0.clone();
+            }
+        }
         self.hud = Hud {
             title,
-            labels,
-            values,
+            lines,
             scans: self.tour.scans(t),
+            survey: self.tour.survey(t),
             map: self.minimap(t),
             manoeuvre: self.tour.manoeuvre(t),
         };
@@ -2015,7 +2013,7 @@ pub(crate) mod tests {
                 solar.hud_at = f64::NEG_INFINITY;
                 solar.update_hud(t);
                 notes.push_str(&format!("  {name} (t={t:.1}s) {}\n", solar.hud.title));
-                for (l, v) in solar.hud.labels.lines().zip(solar.hud.values.lines()) {
+                for (l, v) in &solar.hud.lines {
                     notes.push_str(&format!("      {l:>13}  {v}\n"));
                 }
                 if let Some(image) = image::RgbaImage::from_raw(SIZE, SIZE, pixels) {

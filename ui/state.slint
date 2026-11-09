@@ -20,6 +20,12 @@ export struct QueueItem {
 }
 
 // One Spotify Connect device playback can be moved to.
+// One line of a scene's heads-up display: what it is, and its reading.
+export struct HudLine {
+    label: string,
+    value: string,
+}
+
 // One of a scene's scanner readings: its name, how far along it is, and its
 // result (or what it is doing while it runs).
 export struct ScanRow {
@@ -122,12 +128,13 @@ export global Idle {
     // They are kept as images here so the renderer caches them once, instead of
     // seeing a new image every frame.
     in-out property <[image]> frames;
-    // A scene's heads-up display: a title, and lines of labels and values
-    // (one per line). Empty for scenes without one.
+    // A scene's heads-up display: a title, and lines of label and value.
+    // Empty for scenes without one. While orbiting, the scanner's readings
+    // and how far through the whole survey, 0..1.
     in-out property <string> hud-title: "";
-    in-out property <string> hud-labels: "";
-    in-out property <string> hud-values: "";
+    in-out property <[HudLine]> hud-lines: [];
     in-out property <[ScanRow]> hud-scans: [];
+    in-out property <float> hud-survey: 0;
     // The minimap: orbits and route as path commands in a 240-unit square,
     // the planets and the star, and the ship. Hidden while empty.
     // The manoeuvre panel: what the ship is doing and why, and how far

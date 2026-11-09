@@ -321,6 +321,15 @@ impl Survey {
 
     /// The readings `seconds` after settling into orbit: finished ones with
     /// their results, running ones with their progress.
+    /// How far through all the readings at `seconds`, 0..1.
+    pub fn progress(seconds: f64) -> f32 {
+        let done: f64 = SCHEDULE
+            .iter()
+            .map(|(_, start, length, _)| ((seconds - start) / length).clamp(0.0, 1.0))
+            .sum();
+        (done / SCHEDULE.len() as f64) as f32
+    }
+
     pub fn at(&self, seconds: f64) -> Vec<Scan> {
         let results = [
             &self.atmosphere,
