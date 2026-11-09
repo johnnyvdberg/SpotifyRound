@@ -413,6 +413,8 @@ impl WindowExt for AppWindow {
         idle.set_man_name(manoeuvre.name.as_str().into());
         idle.set_man_text(manoeuvre.text.as_str().into());
         idle.set_man_progress(if manoeuvre.name.is_empty() { -1.0 } else { manoeuvre.progress });
+        idle.set_man_dv(manoeuvre.dv);
+        idle.set_man_throttle(manoeuvre.throttle());
         let map = hud.map.clone().unwrap_or_default();
         idle.set_map_orbits(map.orbits.as_str().into());
         idle.set_map_route(map.route.as_str().into());
@@ -945,6 +947,7 @@ mod preview {
             (14, "m1-low-orbit", "18-solar-moon"),
             (13, "-flyby", "19-solar-assist"),
             (5, "p1-low-orbit", "20-solar-low-detail"),
+            (11, "capture-burn", "21-solar-burn"),
         ] {
             let (pixels, hud) = crate::solar::tests::render_once(seed, moment);
             window.set_idle_hud(&hud);

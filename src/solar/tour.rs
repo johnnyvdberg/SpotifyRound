@@ -134,6 +134,22 @@ struct Path {
     waypoint: Option<usize>,
     /// When, as a share of the transfer, it passes closest.
     closest: f64,
+    /// What it slows past, as `time` was last given it.
+    slow: Option<([f64; 3], f64, f64, f64)>,
+    /// The spline's length as `time` weighs it: what one whole share of
+    /// the transfer's time covers at its ends.
+    weighted: f64,
+    /// The pace at its two ends, as the slope of the eased time against
+    /// plain time (see `ease`): the orbits' own speeds, so the camera never
+    /// stops between orbit and transfer.
+    pace: [f64; 2],
+    /// The speeds at its ends (distance a second; negative: the path's
+    /// average) and how long it lasts, which `time` sets `pace` from.
+    speeds: [f64; 2],
+    duration: f64,
+    /// The directions at its ends: along the orbit left and the one
+    /// reached. `time` lays the end tangents along them.
+    heading: [Option<[f64; 3]>; 2],
     /// The orbital mechanics behind it, for the manoeuvre panel.
     burns: Burns,
 }
@@ -171,6 +187,21 @@ pub struct Manoeuvre {
     pub text: String,
     /// How far through a burn or flyby, 0..1; negative while coasting.
     pub progress: f32,
+    /// The burn's whole change of speed in km/s; 0 when the engine is off
+    /// (coasting, or a flyby).
+    pub dv: f32,
+}
+
+impl Manoeuvre {
+    /// How hard the engine is firing, 0..1: run up at the start of a burn,
+    /// cut at its end.
+    pub fn throttle(&self) -> f32 {
+        if self.dv <= 0.0 || self.progress < 0.0 {
+            return 0.0;
+        }
+        let p = self.progress as f64;
+        (smoothstep(0.0, 0.06, p) * (1.0 - smoothstep(0.94, 1.0, p))) as f32
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -180,13 +211,13 @@ enum Anchor {
 }
 
 // Small vector helpers, in f64.
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(crate) fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(crate) fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
+pub(crate) fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -250,11 +281,12 @@ fn hermite(p0: [f64; 3], m0: [f64; 3], p1: [f64; 3], m1: [f64; 3], s: f64) -> [f
 }
 
 /// Inverse of `smootherstep` on [0, 1], by bisection.
-fn unsmootherstep(y: f64) -> f64 {
+/// The inverse of an increasing function on 0..1.
+fn invert(f: impl Fn(f64) -> f64, y: f64) -> f64 {
     let (mut lo, mut hi) = (0.0, 1.0);
     for _ in 0..40 {
         let mid = 0.5 * (lo + hi);
-        if smootherstep(mid) < y {
+        if f(mid) < y {
             lo = mid;
         } else {
             hi = mid;
@@ -270,11 +302,19 @@ impl Path {
         let last = self.knots.len() - 1;
         let k = (sigma.floor() as usize).min(last - 1);
         let s = (sigma - k as f64).clamp(0.0, 1.0);
+        // Tangents no longer than half again the segment: where knots crowd
+        // in on a flyby, the ones sized for the longer stretches either side
+        // would overshoot and loop the path back on itself.
+        let span = length(sub(self.knots[k + 1], self.knots[k]));
+        let cap = |m: [f64; 3]| {
+            let l = length(m);
+            if l > 1.5 * span { scale(m, 1.5 * span / l) } else { m }
+        };
         hermite(
             self.knots[k],
-            self.tangents[k],
+            cap(self.tangents[k]),
             self.knots[k + 1],
-            self.tangents[k + 1],
+            cap(self.tangents[k + 1]),
             s,
         )
     }
@@ -286,6 +326,13 @@ impl Path {
     /// however long the crossing is, so a slingshot past a small planet is
     /// seen for seconds, not a blink.
     fn time(&mut self, slow: Option<([f64; 3], f64, f64, f64)>) {
+        self.slow = slow;
+        let last = self.tangents.len() - 1;
+        for (i, heading) in [(0, self.heading[0]), (last, self.heading[1])] {
+            if let Some(heading) = heading {
+                self.tangents[i] = scale(heading, length(self.tangents[i]));
+            }
+        }
         let span = (self.knots.len() - 1) as f64;
         let mut ds = Vec::with_capacity(SAMPLES);
         let mut near = Vec::with_capacity(SAMPLES);
@@ -319,6 +366,15 @@ impl Path {
             length.push(length[j] + ds[j]);
         }
         let total = time[SAMPLES].max(1e-9);
+        self.weighted = total;
+        if self.duration > 0.0 {
+            let average = total / self.duration;
+            let slope = |v: f64| {
+                let v = if v < 0.0 { average } else { v };
+                (v * self.duration / total).clamp(0.0, 2.5)
+            };
+            self.pace = [slope(self.speeds[0]), slope(self.speeds[1])];
+        }
         for t in &mut time {
             *t /= total;
         }
@@ -327,16 +383,26 @@ impl Path {
         self.closest = match self.waypoint {
             Some(w) => {
                 let j = (w * SAMPLES) / (self.knots.len() - 1);
-                unsmootherstep(self.time[j.min(SAMPLES)])
+                invert(|u| self.ease(u), self.time[j.min(SAMPLES)])
             }
             None => 0.5,
         };
     }
 
+    /// The share of the eased time at a share `u` of the transfer: a cubic
+    /// leaving and reaching at the paces of the orbits at either end, and
+    /// increasing throughout (each slope at most 3 keeps it so).
+    fn ease(&self, u: f64) -> f64 {
+        let [m0, m1] = self.pace;
+        let u = u.clamp(0.0, 1.0);
+        let (u2, u3) = (u * u, u * u * u);
+        (u3 - 2.0 * u2 + u) * m0 + (-2.0 * u3 + 3.0 * u2) + (u3 - u2) * m1
+    }
+
     /// Where along the spline (`sigma`) the camera is, a share `u` of the
     /// way through the transfer.
     fn sigma(&self, u: f64) -> f64 {
-        let tau = smootherstep(u);
+        let tau = self.ease(u);
         let j = self.time.partition_point(|&t| t < tau).clamp(1, SAMPLES);
         let (a, b) = (self.time[j - 1], self.time[j]);
         let f = if b > a { (tau - a) / (b - a) } else { 0.0 };
@@ -516,10 +582,56 @@ impl Tour {
             exit,
         };
         tour.stage_moons();
-        tour.paths = (0..tour.itinerary.len())
-            .map(|k| tour.build_path(k, flybys[k], &mut rng))
-            .collect();
+        // Each orbit is entered the way the transfer reaching it comes in,
+        // keeping its momentum: where the orbit runs along the transfer's
+        // last stretch, and the way round (the same tilted plane, turned
+        // over) whose meeting point is nearer the preferred one over the
+        // night side. Drawn again a few times, as where it arrives bends
+        // the transfer's end.
+        for k in 0..tour.itinerary.len() {
+            let path = tour.build_path(k, flybys[k], &mut rng);
+            tour.paths.push(path);
+            let preferred = tour.orbits[k];
+            for _ in 0..3 {
+                let heading = tour.heading_in(k);
+                let mut best = (f64::INFINITY, preferred);
+                for sense in [1.0, -1.0] {
+                    let mut orbit = preferred;
+                    orbit.n = scale(preferred.n, sense);
+                    let (u, v) = tour.plane_axes(tour.itinerary[k], orbit, tour.arrival_time(k));
+                    // The prograde direction at angle a is -u sin a + v cos a.
+                    orbit.angle = (-dot(heading, u)).atan2(dot(heading, v));
+                    let off = (orbit.angle - preferred.angle + PI).rem_euclid(TAU) - PI;
+                    if off.abs() < best.0 {
+                        best = (off.abs(), orbit);
+                    }
+                }
+                tour.orbits[k] = best.1;
+                tour.paths[k] = tour.build_path(k, flybys[k], &mut rng);
+            }
+        }
         tour
+    }
+
+    /// Whether the camera, reaching stop `k`'s orbit at the end of its
+    /// transfer, moves against the orbit: its motion relative to the body
+    /// over the transfer's last seconds against the orbit's first seconds.
+    #[cfg(test)]
+    fn arrives_backwards(&self, k: usize) -> bool {
+        let stop = self.itinerary[k];
+        let segment = self.transfer_to(stop);
+        let t1 = segment.start + segment.duration;
+        let dt = 2.0;
+        let rel = |p: [f64; 3], t: f64| sub(p, self.system.centre(stop, t));
+        let before = sub(
+            rel(self.on_path(k, segment, t1).0, t1),
+            rel(self.on_path(k, segment, t1 - dt).0, t1 - dt),
+        );
+        let after = sub(
+            rel(self.orbiting(stop, t1 + dt).0, t1 + dt),
+            rel(self.orbiting(stop, t1).0, t1),
+        );
+        dot(before, after) < 0.0
     }
 
     /// The rough times of each transfer, `(leaves, arrives)`, for flyby
@@ -652,6 +764,22 @@ impl Tour {
             flyby,
             waypoint: None,
             closest: 0.5,
+            slow: None,
+            weighted: 0.0,
+            pace: [1.0, 1.0],
+            // Leave and arrive moving along the orbits, the way they are
+            // flown, at their speeds: the departure burn starts from the
+            // orbit's own motion, and the capture burn leaves the ship on
+            // the next, so the camera keeps going forward throughout.
+            speeds: [
+                from.map_or(-1.0, |f| self.orbit_speed(f, t0)),
+                self.orbit_speed(to, t1),
+            ],
+            duration: t1 - t0,
+            heading: [
+                from.map(|f| normalize(add(self.orbit_motion(f, t0), scale(away, 0.3)))),
+                Some(self.orbit_motion(to, t1)),
+            ],
             burns: Burns::default(),
         };
         let lift = rng.range(0.1, 0.3) * if rng.chance(0.5) { 1.0 } else { -1.0 };
@@ -742,6 +870,90 @@ impl Tour {
         }
         path.burns = self.burns(&path, from, to, t0, t1);
         path
+    }
+
+    /// The camera climbing out of `stop`'s orbit for the jump, which began
+    /// at `start`, at `t`: the orbit carried on, and the climb out along the
+    /// way the jump leaves, from the orbit's speed up.
+    fn departing(&self, stop: Stop, start: f64, t: f64) -> [f64; 3] {
+        let u = ((t - start) / DEPART).clamp(0.0, 1.0);
+        let (p0, ..) = self.orbiting(stop, start);
+        let out = normalize(sub(p0, self.system.centre(stop, start)));
+        let distance = self.world(stop).radius * 30.0;
+        let s = smootherstep(u);
+        add(self.orbiting(stop, t).0, scale(normalize(add(out, self.exit)), distance * s * s))
+    }
+
+    /// The way to look from `position` at `t` to frame `stop` as its high
+    /// orbit does (see `orbiting`): at the body, turned a little the way the
+    /// orbit flown at `when` runs.
+    fn framed(&self, stop: Stop, position: [f64; 3], t: f64, when: f64) -> [f64; 3] {
+        let centre = self.system.centre(stop, t);
+        let radial = normalize(sub(position, centre));
+        let along = self.orbit_motion(stop, when);
+        let prograde = sub(along, scale(radial, dot(along, radial)));
+        if length(prograde) > 1e-6 {
+            normalize(add(scale(radial, -0.97), scale(normalize(prograde), 0.24)))
+        } else {
+            scale(radial, -1.0)
+        }
+    }
+
+    /// How fast the camera moves round `stop` at `t`, relative to the body:
+    /// distance a second.
+    fn orbit_speed(&self, stop: Stop, t: f64) -> f64 {
+        let dt = 0.5;
+        let rel = |t: f64| sub(self.orbiting(stop, t).0, self.system.centre(stop, t));
+        length(sub(rel(t + dt), rel(t - dt))) / (2.0 * dt)
+    }
+
+    /// Which way the camera moves round `stop` just after `t`, relative to
+    /// the body.
+    fn orbit_motion(&self, stop: Stop, t: f64) -> [f64; 3] {
+        let dt = 0.5;
+        let rel = |t: f64| sub(self.orbiting(stop, t).0, self.system.centre(stop, t));
+        normalize(sub(rel(t + dt), rel(t)))
+    }
+
+    /// Which way transfer `k`'s last stretch heads, relative to the body
+    /// it reaches: from a quarter of the way before the end to a tenth.
+    fn heading_in(&self, k: usize) -> [f64; 3] {
+        let stop = self.itinerary[k];
+        let segment = self.transfer_to(stop);
+        let t1 = segment.start + segment.duration;
+        let rel = |t: f64| sub(self.on_path(k, segment, t).0, self.system.centre(stop, t));
+        normalize(sub(rel(t1 - 0.1 * segment.duration), rel(t1 - 0.25 * segment.duration)))
+    }
+
+    /// When the transfer to stop `k` ends.
+    fn arrival_time(&self, k: usize) -> f64 {
+        let segment = self.transfer_to(self.itinerary[k]);
+        segment.start + segment.duration
+    }
+
+    /// The axes of `orbit`'s plane round `stop` at `t`, as `orbiting` sets
+    /// them: `u` toward the sun, `v` a quarter turn on.
+    fn plane_axes(&self, stop: Stop, orbit: Orbit, t: f64) -> ([f64; 3], [f64; 3]) {
+        let sun = normalize(scale(self.system.centre(stop, t), -1.0));
+        let flat = sub(sun, scale(orbit.n, dot(sun, orbit.n)));
+        let u = if length(flat) > 1e-6 { normalize(flat) } else { orbit.u };
+        (u, cross(orbit.n, u))
+    }
+
+    /// How well transfer `k`'s last stretch already heads the way its orbit
+    /// runs, relative to the body: 1 along it, -1 against it.
+    #[cfg(test)]
+    fn approach(&self, k: usize) -> f64 {
+        dot(self.heading_in(k), self.orbit_motion(self.itinerary[k], self.arrival_time(k)))
+    }
+
+    /// The transfer segment that reaches `stop`.
+    fn transfer_to(&self, stop: Stop) -> Segment {
+        self.segments
+            .iter()
+            .find(|s| matches!(s.phase, Phase::Transfer { to, .. } if to == stop))
+            .copied()
+            .expect("every stop has a transfer")
     }
 
     /// The numbers behind a transfer's manoeuvres. Distances drawn are
@@ -971,14 +1183,7 @@ impl Tour {
         let (s, c) = angle.sin_cos();
         // The plane's axes follow the sun, which an inner planet's own orbit
         // swings round during a visit: angle 0 is noon below the camera.
-        let sun = normalize(scale(centre, -1.0));
-        let flat = sub(sun, scale(orbit.n, dot(sun, orbit.n)));
-        let u = if length(flat) > 1e-6 {
-            normalize(flat)
-        } else {
-            orbit.u
-        };
-        let v = cross(orbit.n, u);
+        let (u, v) = self.plane_axes(stop, orbit, t);
         let radial = add(scale(u, c), scale(v, s));
         let prograde = add(scale(u, -s), scale(v, c));
         let position = add(centre, scale(radial, distance));
@@ -1022,26 +1227,63 @@ impl Tour {
         let u = ((t - segment.start) / segment.duration).clamp(0.0, 1.0);
         let sigma = path.sigma(u);
         let mut position = path.spline(sigma);
-        // Each knot moves with its body, blended along the spline.
+        // Each end knot moves with its body, blended along the spline.
         let last = path.knots.len() - 1;
         let j = (sigma.floor() as usize).min(last - 1);
         let s = smoothstep(0.0, 1.0, sigma - j as f64);
         for (knot, weight) in [(j, 1.0 - s), (j + 1, s)] {
+            if Some(knot) == path.waypoint {
+                continue;
+            }
             if let (Anchor::Stop(stop), placed) = path.anchors[knot] {
                 let drift = sub(self.system.centre(stop, t), self.system.centre(stop, placed));
                 position = add(position, scale(drift, weight));
             }
         }
+        // A flyby's closest point moves with the planet passed over a span
+        // of time round the pass, not of the spline: its knots crowd in on
+        // it, and a blend over them would jerk the camera as the planet,
+        // moving as fast as the camera, is taken on and let go.
+        if let Some(w) = path.waypoint
+            && let (Anchor::Stop(stop), placed) = path.anchors[w]
+        {
+            let drift = sub(self.system.centre(stop, t), self.system.centre(stop, placed));
+            let span = 0.15 * segment.duration;
+            let x = (t - placed) / span;
+            let weight = (1.0 - x * x).max(0.0).powi(2);
+            position = add(position, scale(drift, weight));
+        }
         // Swing around anything in the way: a soft floor on the distance
-        // from every body.
+        // from every body. Toward each end the push its end point would get
+        // is taken off, so the push is nil where the path meets the orbits
+        // (which may lie within a neighbour's floor) and nothing snaps the
+        // camera back as it lets go.
         let fade = smoothstep(0.0, 0.02, u) * (1.0 - smoothstep(0.98, 1.0, u));
-        for (centre, floor) in self.obstacles(t) {
-            let rel = sub(position, centre);
+        let ends: Vec<[f64; 3]> = [0, last]
+            .iter()
+            .map(|&knot| match path.anchors[knot] {
+                (Anchor::Stop(stop), placed) => add(
+                    path.knots[knot],
+                    sub(self.system.centre(stop, t), self.system.centre(stop, placed)),
+                ),
+                (Anchor::Fixed, _) => path.knots[knot],
+            })
+            .collect();
+        let push = |p: [f64; 3], centre: [f64; 3], floor: f64| {
+            let rel = sub(p, centre);
             let d = length(rel);
             let k = floor * 0.2;
             let soft = 0.5 * (d + floor + ((d - floor) * (d - floor) + k * k).sqrt());
-            position = add(position, scale(normalize(rel), (soft - d) * fade));
+            scale(normalize(rel), soft - d)
+        };
+        let (w_start, w_end) = (1.0 - smoothstep(0.0, 0.4, u), smoothstep(0.6, 1.0, u));
+        let mut moved = [0.0; 3];
+        for (centre, floor) in self.obstacles(t) {
+            moved = add(moved, push(position, centre, floor));
+            moved = sub(moved, scale(push(ends[0], centre, floor), w_start));
+            moved = sub(moved, scale(push(ends[1], centre, floor), w_end));
         }
+        position = add(position, scale(moved, fade));
         (position, sigma)
     }
 
@@ -1077,29 +1319,22 @@ impl Tour {
                         (self.entry, toward, [0.0, 1.0, 0.0])
                     }
                 };
-                let (_, f1, up1) = self.orbiting(to, t1);
-                let (position, sigma) = self.on_path(k, segment, t);
-                let target = self.system.centre(to, t);
-                let toward = normalize(sub(target, position));
-                // Look ahead toward the destination, and round at what the
-                // path swings past as it nears it, with the way it is
-                // heading mixed in so the turn never flips.
-                let ahead = {
-                    let a = self.paths[k].spline((sigma + 0.02).min((self.paths[k].knots.len() - 1) as f64));
-                    let b = self.paths[k].spline(sigma);
-                    let d = sub(a, b);
-                    if length(d) > 1e-9 { normalize(d) } else { toward }
+                let (_, _, up1) = self.orbiting(to, t1);
+                let (position, _) = self.on_path(k, segment, t);
+                // Keep the destination in the middle of the view the whole
+                // way: what the path swings past crosses the view on its own.
+                let centre = self.system.centre(to, t);
+                let aim = normalize(sub(centre, position));
+                // Leave framing the body left, and settle into the framing
+                // of the one reached, each worked out from where the camera
+                // is: they are the orbits' own at either end, and keep the
+                // bodies in view in between.
+                let start = match from {
+                    Some(p) => self.framed(p, position, t, t0),
+                    None => f0,
                 };
-                let mut aim = toward;
-                if let Some((centre, _, _)) = self.flyby_body(k, t) {
-                    let near = (u - self.paths[k].closest) / 0.17;
-                    let w = 0.92 * (-near * near).exp();
-                    let at = normalize(sub(centre, position));
-                    let mixed = add(add(scale(toward, 1.0 - w), scale(at, w)), scale(ahead, 0.25 * w));
-                    aim = if length(mixed) > 0.2 { normalize(mixed) } else { ahead };
-                }
-                let mut forward = normalize(mix(f0, aim, smoothstep(0.0, 0.18, u)));
-                forward = normalize(mix(forward, f1, smoothstep(0.82, 1.0, u)));
+                let mut forward = normalize(mix(start, aim, smoothstep(0.0, 0.18, u)));
+                forward = normalize(mix(forward, self.framed(to, position, t, t1), smoothstep(0.82, 1.0, u)));
                 let up = normalize(mix(up0, up1, smoothstep(0.1, 0.9, u)));
                 if from.is_none() {
                     flash = 1.0 - smoothstep(0.0, 0.035, u);
@@ -1107,12 +1342,10 @@ impl Tour {
                 (position, forward, up)
             }
             Phase::Depart(p) => {
-                let (p0, f0, up0) = self.orbiting(p, segment.start);
-                let centre = self.system.centre(p, t);
-                let out = normalize(sub(p0, centre));
+                // Still going round as it climbs out, so it never stops.
+                let (_, f0, up0) = self.orbiting(p, t);
                 let s = smootherstep(u);
-                let distance = self.world(p).radius * 30.0;
-                let position = add(p0, scale(normalize(add(out, self.exit)), distance * s * s));
+                let position = self.departing(p, segment.start, t);
                 let forward = normalize(mix(f0, self.exit, smoothstep(0.0, 0.8, u)));
                 let up = normalize(mix(up0, [0.0, 1.0, 0.0], s));
                 warp = smoothstep(0.85, 1.0, u) * 0.25;
@@ -1121,8 +1354,7 @@ impl Tour {
             Phase::Jump => {
                 // Out beyond the departure point, heading for the next star.
                 let last = *self.itinerary.last().expect("a tour has stops");
-                let (p0, ..) = self.orbiting(last, segment.start - DEPART);
-                let start = add(p0, scale(self.exit, self.world(last).radius * 30.0));
+                let start = self.departing(last, segment.start - DEPART, segment.start);
                 let position = add(start, scale(self.exit, local * 400.0));
                 warp = 0.25 + 0.75 * smoothstep(0.0, 0.07, u);
                 warp *= 1.0 - smoothstep(0.93, 1.0, u);
@@ -1215,13 +1447,15 @@ impl Tour {
         let (segment, local) = self.segment(t);
         let u = local / segment.duration;
         let star = &self.system.star.name;
-        let make = |name: &str, text: String, progress: f64| {
+        let fire = |name: &str, text: String, progress: f64, dv: f64| {
             Some(Manoeuvre {
                 name: name.into(),
                 text,
                 progress: progress as f32,
+                dv: dv as f32,
             })
         };
+        let make = |name: &str, text: String, progress: f64| fire(name, text, progress, 0.0);
         match segment.phase {
             Phase::Transfer { from, to } => {
                 let k = self.index_of(to);
@@ -1232,22 +1466,24 @@ impl Tour {
                 if to.moon.is_some() {
                     let giant = &self.system.planets[to.planet].name;
                     return if u < 0.15 {
-                        make(
+                        fire(
                             "TRANSFER BURN",
                             format!(
                                 "Burning {:.2} km/s prograde to raise our orbit round {giant} out toward {dest}'s.",
                                 burns.depart
                             ),
                             u / 0.15,
+                            burns.depart,
                         )
                     } else if u > 0.85 {
-                        make(
+                        fire(
                             "ORBIT MATCH",
                             format!(
                                 "Burning {:.2} km/s to match {dest}'s pace round {giant} and fall into orbit about it.",
                                 burns.capture
                             ),
                             (u - 0.85) / 0.15,
+                            burns.capture,
                         )
                     } else {
                         make(
@@ -1263,13 +1499,14 @@ impl Tour {
                 if let Some(origin) = &origin
                     && u < 0.12
                 {
-                    return make(
+                    return fire(
                         "DEPARTURE BURN",
                         format!(
                             "Burning {:.1} km/s prograde: enough to break free of {origin} and leave it on a transfer orbit round {star}.",
                             burns.depart
                         ),
                         u / 0.12,
+                        burns.depart,
                     );
                 }
                 if origin.is_none() && u < 0.1 {
@@ -1280,13 +1517,14 @@ impl Tour {
                     );
                 }
                 if u > 0.88 {
-                    return make(
+                    return fire(
                         "CAPTURE BURN",
                         format!(
                             "Burning {:.1} km/s retrograde as we swing in close: {dest}'s gravity catches us into orbit.",
                             burns.capture
                         ),
                         (u - 0.88) / 0.12,
+                        burns.capture,
                     );
                 }
                 let near = u - path.closest;
@@ -1337,13 +1575,14 @@ impl Tour {
                     }
                     Some(Flyby::Star) => {
                         if near.abs() < window {
-                            make(
+                            fire(
                                 "OBERTH MANOEUVRE",
                                 format!(
                                     "Burning {:.1} km/s at perihelion, moving at {:.0} km/s: thrust adds most energy where we move fastest, as much as a {:.0} km/s burn far from {star}.",
                                     burns.oberth_burn, burns.oberth_speed, burns.oberth_equal
                                 ),
                                 (near + window) / (2.0 * window),
+                                burns.oberth_burn,
                             )
                         } else if near < 0.0 {
                             make(
@@ -1399,7 +1638,9 @@ impl Tour {
                 let world = self.world(p);
                 let mu = super::system::GM_EARTH * world.mass;
                 let r = length(sub(self.view(t).position, self.system.centre(p, t))).max(world.radius) * KM;
-                make(
+                // From orbital speed to escape speed, at the orbit left.
+                let r0 = Self::heights(world).0 * KM;
+                fire(
                     "ESCAPE BURN",
                     format!(
                         "Burning prograde past {}'s escape velocity, {:.1} km/s here, to climb clear of its gravity well before the jump.",
@@ -1407,6 +1648,7 @@ impl Tour {
                         (2.0 * mu / r).sqrt()
                     ),
                     u,
+                    (2.0f64.sqrt() - 1.0) * (mu / r0).sqrt(),
                 )
             }
             _ => None,
@@ -1648,6 +1890,88 @@ mod tests {
                 System::generate(seed),
                 System::generate(seed + 1),
             ));
+        }
+    }
+
+    /// The body the camera moves against at `t`, as a viewer sees it: the
+    /// nearest, in its own radii, of the stop made for, the one left and
+    /// what a transfer flies past. Its centre, as a function of time.
+    fn frame_body(tour: &Tour, t: f64) -> Option<(usize, Box<dyn Fn(f64) -> [f64; 3] + '_>)> {
+        let (segment, _) = tour.segment(t);
+        let at = tour.view(t).position;
+        let mut bodies: Vec<(usize, f64, Box<dyn Fn(f64) -> [f64; 3] + '_>)> = Vec::new();
+        let stop_body = |stop: Stop| {
+            let radius = tour.world(stop).radius;
+            (stop.key() as usize, radius, Box::new(move |t: f64| tour.system.centre(stop, t)) as Box<dyn Fn(f64) -> [f64; 3]>)
+        };
+        match segment.phase {
+            Phase::Transfer { from, to } => {
+                bodies.push(stop_body(to));
+                if let Some(f) = from {
+                    bodies.push(stop_body(f));
+                }
+                let k = tour.index_of(to);
+                if let Some(Flyby::Planet(i)) = tour.paths[k].flyby {
+                    let planet = &tour.system.planets[i];
+                    bodies.push((1000 + i, planet.radius, Box::new(move |t: f64| planet.position(t))));
+                }
+            }
+            Phase::Jump => return None,
+            _ => bodies.push(stop_body(tour.current(t)?)),
+        }
+        bodies
+            .into_iter()
+            .min_by(|a, b| {
+                let d = |c: &(usize, f64, Box<dyn Fn(f64) -> [f64; 3] + '_>)| length(sub(at, (c.2)(t))) / c.1;
+                d(a).total_cmp(&d(b))
+            })
+            .map(|(id, _, centre)| (id, centre))
+    }
+
+    #[test]
+    fn the_camera_never_stops_or_turns_back() {
+        let h = 1.0 / 30.0;
+        let systems = std::env::var("SOLAR_TEST_SYSTEMS").map_or(40, |v| v.parse().expect("a count"));
+        let mut turns = Vec::new();
+        for seed in 0..systems {
+            let tour = Tour::new(System::generate(seed), System::generate(seed + 1));
+            let mut t = h;
+            let mut last: Option<(usize, [f64; 3])> = None;
+            while t < tour.total - JUMP - h {
+                let Some((id, centre)) = frame_body(&tour, t) else { break };
+                let rel = |t: f64| sub(tour.view(t).position, centre(t));
+                let v = sub(rel(t + h), rel(t - h));
+                assert!(length(v) > 1e-6, "seed {seed}: stopped at {t:.2}");
+                if let Some((before, w)) = last
+                    && before == id
+                    && dot(normalize(v), normalize(w)) <= 0.0
+                {
+                    let (segment, local) = tour.segment(t);
+                    let k = tour.current(t).map_or(0, |s| tour.index_of(s));
+                    turns.push(format!(
+                        "seed {seed} at {t:.2}, {:.3} through {:?} (flyby {:?})",
+                        local / segment.duration,
+                        segment.phase,
+                        tour.paths[k].flyby
+                    ));
+                }
+                last = Some((id, v));
+                t += h;
+            }
+        }
+        assert!(turns.is_empty(), "turned back:\n{}", turns.join("\n"));
+    }
+
+    #[test]
+    fn orbits_are_entered_the_way_the_transfer_arrives() {
+        for seed in 0..60 {
+            let tour = Tour::new(System::generate(seed), System::generate(seed + 1));
+            for k in 0..tour.itinerary.len() {
+                assert!(
+                    !tour.arrives_backwards(k),
+                    "seed {seed}: stop {k}'s orbit runs against its arrival"
+                );
+            }
         }
     }
 

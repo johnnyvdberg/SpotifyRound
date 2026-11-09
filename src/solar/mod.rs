@@ -27,7 +27,7 @@ use crate::gpu::Graphics;
 use crate::visuals::Visual;
 use stream::{Key, Streamer, sampler_entry, texture_entry, uniform_entry};
 use system::{Kind, Planet, Stop, System, equatorial_to_system};
-use tour::{Phase, Tour, View, normalize};
+use tour::{Phase, Tour, View, add, normalize, scale, sub};
 
 /// Size of the rendered frame.
 pub const SIZE: u32 = 1080;
@@ -65,8 +65,20 @@ struct Params {
     light: [f32; 4],
     sky: [[f32; 4]; 3],
     warp: [f32; 4],
+    burn: [f32; 4],
+    dust: [f32; 4],
+    motion: [f32; 4],
     bodies: [Body; MAX_BODIES],
 }
+
+/// Motes of dust streaking past in a burn (`DUST` in the shader), the sides
+/// of the engines' glow round the rim (`RIM_SIDES`), how fast the dust
+/// drifts (box widths a second) and how long its streaks grow at full
+/// throttle (in box widths).
+const DUST_MOTES: u32 = 160;
+const RIM_SIDES: u32 = 48;
+const DUST_SPEED: f64 = 1.4;
+const DUST_STREAK: f32 = 0.14;
 
 /// The depth mask's format: ranks of up to 17 bodies need few bits.
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth16Unorm;
@@ -158,6 +170,10 @@ pub(crate) struct Solar {
     tour: Tour,
     hud: Hud,
     hud_at: f64,
+    /// How far the dust round the ship has drifted, in its box's units, and
+    /// the visit time that was worked out for.
+    dust: [f64; 3],
+    dust_at: Option<f64>,
 }
 
 fn system_for(base: u64, visit: u64) -> System {
@@ -353,6 +369,8 @@ impl Solar {
             "space".to_string(),
             pipeline("Solar space", "vs_background", "fs_space", None, &[]),
         );
+        pipelines.insert("dust".to_string(), pipeline("Solar burn dust", "vs_dust", "fs_dust", add, &[]));
+        pipelines.insert("rim".to_string(), pipeline("Solar burn rim", "vs_rim", "fs_rim", add, &[]));
         for (k, name) in tour::DRIVES.iter().enumerate() {
             let k = k as u32 + 1;
             pipelines.insert(
@@ -551,6 +569,8 @@ impl Solar {
             tour,
             hud: Hud::default(),
             hud_at: f64::NEG_INFINITY,
+            dust: [0.0; 3],
+            dust_at: None,
         }
     }
 
@@ -756,7 +776,18 @@ impl Solar {
     /// The shader's parameters at `t` into the visit, and the draws: which
     /// pipeline over which body, in order.
     fn params(&self, t: f64) -> (Params, Vec<(u32, String)>) {
-        let view = self.tour.view(t);
+        let mut view = self.tour.view(t);
+        let throttle = self.throttle(t);
+        if throttle > 0.0 {
+            // The thrust shudders through the hull: a small, quick shake.
+            let shake = |a: f64, b: f64| (t * a).sin() + 0.6 * (t * b + 1.3).sin();
+            let amount = 0.0016 * throttle as f64;
+            let right = cross(view.forward, view.up);
+            view.forward = normalize(add(
+                view.forward,
+                add(scale(right, shake(31.0, 47.0) * amount), scale(view.up, shake(37.0, 53.0) * amount)),
+            ));
+        }
         let system = &self.tour.system;
         let camera = view.position;
         let rel = |p: [f64; 3]| [p[0] - camera[0], p[1] - camera[1], p[2] - camera[2]];
@@ -978,12 +1009,53 @@ impl Solar {
                 t as f32,
                 (t - (self.tour.total - tour::JUMP)) as f32,
             ],
+            burn: [throttle, t as f32, 0.0, 0.0],
+            dust: [
+                self.dust[0] as f32,
+                self.dust[1] as f32,
+                self.dust[2] as f32,
+                DUST_STREAK * throttle,
+            ],
+            motion: f32x4(self.motion(t), 0.0),
             bodies: list,
         };
         (params, draws)
     }
 
+    /// How hard the engine fires at `t`, 0..1: zero but in a burn.
+    fn throttle(&self, t: f64) -> f32 {
+        self.tour.manoeuvre(t).map_or(0.0, |m| m.throttle())
+    }
+
+    /// Which way the ship is going at `t`, against the body it is at or
+    /// making for (the jump's own way during it).
+    fn motion(&self, t: f64) -> [f64; 3] {
+        let dt = 0.05;
+        let here = |t: f64| {
+            let p = self.tour.view(t).position;
+            match self.tour.current(t) {
+                Some(stop) => sub(p, self.tour.system.centre(stop, t)),
+                None => p,
+            }
+        };
+        let d = sub(here(t + dt), here(t - dt));
+        if length(d) > 1e-9 { normalize(d) } else { self.tour.view(t).forward }
+    }
+
+    /// Drift the dust past the ship while the engine fires.
+    fn drift_dust(&mut self, t: f64) {
+        let dt = self.dust_at.map_or(0.0, |last| (t - last).clamp(0.0, 0.1));
+        self.dust_at = Some(t);
+        if dt > 0.0 && self.throttle(t) > 0.0 {
+            let m = self.motion(t);
+            for (d, m) in self.dust.iter_mut().zip(m) {
+                *d = (*d - m * DUST_SPEED * dt).rem_euclid(1.0);
+            }
+        }
+    }
+
     fn draw(&mut self, gpu: &Graphics, t: f64, frame: usize) {
+        self.drift_dust(t);
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1086,6 +1158,17 @@ impl Solar {
                 if scissor.is_some() {
                     pass.set_scissor_rect(0, 0, SIZE, SIZE);
                 }
+            }
+            // An engine burn: the dust streaking past and the glow round
+            // the rim, over everything.
+            if params.burn[0] > 0.0 {
+                let (label, pipeline) = &self.pipelines["dust"];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, (DUST_MOTES * 400) as u64, 0..6, 0..DUST_MOTES);
+                let (label, pipeline) = &self.pipelines["rim"];
+                pass.set_pipeline(pipeline);
+                let ring = full - (full as f64 * 0.82 * 0.82 * std::f64::consts::FRAC_PI_4) as u64;
+                crate::gpu::counted_draw(&mut pass, label, ring, 0..RIM_SIDES * 6, 0..1);
             }
         }
         gpu.submit(encoder.finish());
@@ -1769,6 +1852,7 @@ pub(crate) mod tests {
                         format!("transfer-{from}-to-{to}-start"),
                         segment.start + 0.5,
                     ));
+                    out.push((format!("transfer-{from}-to-{to}-departure-burn"), at(0.06)));
                     match tour.flyby_at(to) {
                         Some(closest) => {
                             out.push((format!("transfer-{from}-to-{to}-flyby-near"), closest - 3.0));
@@ -1776,6 +1860,7 @@ pub(crate) mod tests {
                         }
                         None => out.push((format!("transfer-{from}-to-{to}-cruise"), at(0.5))),
                     }
+                    out.push((format!("transfer-{from}-to-{to}-capture-burn"), at(0.94)));
                     out.push((format!("transfer-{from}-to-{to}-arrival"), end - 1.5));
                 }
                 Phase::High(p) => out.push((format!("{p}-high-orbit"), at(0.5))),

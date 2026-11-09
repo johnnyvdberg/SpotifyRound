@@ -223,7 +223,7 @@ export component IdleScreen inherits Rectangle {
 
     // The manoeuvre under way, high in the circle where the scanner sits in
     // orbit: its name, why the ship does it, and a bar through a burn.
-    if Idle.man-name != "" && Idle.hud-scans.length == 0 : Rectangle {
+    if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-dv <= 0 : Rectangle {
         x: (parent.width - self.width) / 2;
         y: 150px;
         width: 600px;
@@ -274,6 +274,143 @@ export component IdleScreen inherits Rectangle {
                 border-radius: 3px;
                 background: Theme.accent;
             }
+        }
+    }
+
+    // An engine burn, as a cockpit readout: amber on black, a ladder of
+    // thrust lit to the throttle, the burn's whole change of speed set
+    // against what is done of it, a pulsing BURN tag, and why, below.
+    if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-dv > 0 : Rectangle {
+        property <color> amber: #ffb43c;
+        property <float> throttle: Idle.man-throttle;
+        animate throttle { duration: 250ms; }
+        x: (parent.width - self.width) / 2;
+        y: 140px;
+        width: 600px;
+        height: 196px;
+        border-radius: 14px;
+        background: #0a0602d8;
+        border-width: 2px;
+        border-color: amber.with-alpha(0.55);
+        opacity: Idle.fade;
+
+        // The thrust ladder, bottom up.
+        for i in 10 : Rectangle {
+            x: 22px;
+            y: 160px - i * 13px;
+            width: 34px;
+            height: 9px;
+            border-radius: 2px;
+            background: throttle * 10 > i + 0.5 ? (i >= 8 ? #ff6a2a : amber) : amber.with-alpha(0.12);
+        }
+        Text {
+            x: 14px;
+            y: 172px;
+            width: 50px;
+            text: "THR";
+            color: amber.with-alpha(0.7);
+            font-family: Theme.font;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            x: 76px;
+            y: 12px;
+            text: Idle.man-name;
+            color: amber;
+            font-family: Theme.font;
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 3px;
+        }
+        // The tag, pulsing while the engine fires.
+        Rectangle {
+            x: parent.width - 96px;
+            y: 12px;
+            width: 78px;
+            height: 24px;
+            border-radius: 4px;
+            background: #ff6a2a;
+            opacity: throttle > 0.05 ? 0.55 + 0.45 * Math.sin(animation-tick() / 1ms * 0.012rad) : 0.15;
+            Text {
+                text: "BURN";
+                color: #1a0800;
+                font-family: Theme.font;
+                font-size: 14px;
+                font-weight: 800;
+                letter-spacing: 3px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // The burn's whole change of speed, and what is done of it.
+        Text {
+            x: 76px;
+            y: 44px;
+            text: "SET";
+            color: amber.with-alpha(0.6);
+            font-family: Theme.font;
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+        Text {
+            x: 118px;
+            y: 38px;
+            text: Math.round(Idle.man-dv * 100) / 100 + " km/s";
+            color: amber;
+            font-family: Theme.font;
+            font-size: 22px;
+            font-weight: 600;
+        }
+        Text {
+            x: 316px;
+            y: 44px;
+            text: "KPS";
+            color: amber.with-alpha(0.6);
+            font-family: Theme.font;
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+        Text {
+            x: 358px;
+            y: 38px;
+            text: Math.round(Idle.man-dv * clamp(Idle.man-progress, 0, 1) * 100) / 100 + " km/s";
+            color: amber;
+            font-family: Theme.font;
+            font-size: 22px;
+            font-weight: 600;
+        }
+        // How far through the burn.
+        Rectangle {
+            x: 76px;
+            y: 74px;
+            width: parent.width - 100px;
+            height: 4px;
+            background: amber.with-alpha(0.15);
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(Idle.man-progress, 0, 1);
+                height: parent.height;
+                background: amber;
+            }
+        }
+        Text {
+            x: 76px;
+            y: 88px;
+            width: parent.width - 100px;
+            height: 96px;
+            text: Idle.man-text;
+            color: amber.with-alpha(0.85);
+            font-family: Theme.font;
+            font-size: 16px;
+            wrap: word-wrap;
+            overflow: elide;
         }
     }
 

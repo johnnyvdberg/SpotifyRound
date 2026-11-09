@@ -66,6 +66,13 @@ struct Params {
     sky: array<vec4<f32>, 3>,
     // x: warp 0..1; y: flash; z: seconds; w: seconds into the jump.
     warp: vec4<f32>,
+    // An engine burn: x the throttle 0..1, y the seconds, for its flicker.
+    burn: vec4<f32>,
+    // The dust drifting past the ship: xyz how far its field has moved, in
+    // its box's units; w how long a streak is in them.
+    dust: vec4<f32>,
+    // xyz: the way the ship is going, in the world.
+    motion: vec4<f32>,
     bodies: array<Body, 16>,
 };
 
@@ -1031,4 +1038,118 @@ fn fs_ring_shadow(in: Quad) -> @location(0) vec4<f32> {
     }
     discard;
     return vec4<f32>(0.0);
+}
+
+// ---------------------------------------------------------------------------
+// An engine burn, seen from the cockpit: dust in a box round the ship
+// streaking past against the way it goes, and the engines' glow welling up
+// round the rim of the view. Both small and added over the frame, drawn only
+// while the engine fires.
+// ---------------------------------------------------------------------------
+
+// Motes of dust in the box.
+const DUST: u32 = 160u;
+// Sides of the ring the glow is drawn over.
+const RIM_SIDES: u32 = 48u;
+// Where the glow starts, as a share of the view's radius.
+const RIM_INNER: f32 = 0.82;
+
+struct Streak {
+    @builtin(position) position: vec4<f32>,
+    // x: 0 at the head, 1 at the tail; y: across, -1..1; z: brightness.
+    @location(0) along: vec3<f32>,
+};
+
+// A point relative to the camera, on screen in clip space, and its depth.
+fn project_dust(p: vec3<f32>) -> vec3<f32> {
+    let z = dot(p, params.forward.xyz);
+    let x = dot(p, params.right.xyz) / z / params.frame.y;
+    let y = dot(p, params.up.xyz) / z / params.frame.y;
+    return vec3<f32>(x, y, z);
+}
+
+@vertex
+fn vs_dust(@builtin(vertex_index) index: u32, @builtin(instance_index) mote: u32) -> Streak {
+    var out: Streak;
+    let id = i32(mote);
+    let seed = vec3<f32>(hash3(vec3<i32>(id, 1, 7)), hash3(vec3<i32>(id, 2, 11)), hash3(vec3<i32>(id, 3, 13)));
+    // The box wraps round the camera, so the motes never run out.
+    let head = fract(seed + params.dust.xyz) * 2.0 - 1.0;
+    let tail = head + params.motion.xyz * params.dust.w;
+    // Fade near the box's faces, where a mote wraps to the far side.
+    let edge = 1.0 - max(max(abs(head.x), abs(head.y)), abs(head.z));
+    let near = 1.0 - smoothstep01(0.4, 1.6, length(head));
+    let brightness = params.burn.x * smoothstep01(0.0, 0.15, edge) * near;
+    var a = project_dust(head);
+    var b = project_dust(tail);
+    if (a.z < 0.05 || brightness <= 0.0) {
+        out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        out.along = vec3<f32>(0.0);
+        return out;
+    }
+    if (b.z < 0.05) {
+        // Cut where the tail goes behind the camera.
+        let t = (a.z - 0.05) / max(a.z - b.z, 1e-4);
+        b = project_dust(mix(head, tail, t));
+    }
+    // A thin quad from head to tail, a little over a pixel wide.
+    let pixel = 1.0 / params.frame.x;
+    var d = b.xy - a.xy;
+    if (length(d) < pixel) {
+        d = vec2<f32>(pixel, 0.0);
+    }
+    let dir = normalize(d);
+    let across = vec2<f32>(-dir.y, dir.x) * pixel * 1.3;
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+    );
+    let c = corners[index];
+    let at = mix(a.xy, a.xy + d, c.x) + across * c.y;
+    out.position = vec4<f32>(at, 0.0, 1.0);
+    out.along = vec3<f32>(c.x, c.y, brightness);
+    return out;
+}
+
+@fragment
+fn fs_dust(in: Streak) -> @location(0) vec4<f32> {
+    let fade = (1.0 - in.along.x) * (1.0 - in.along.y * in.along.y);
+    // Lit by the engines' glow from behind: warm white.
+    return vec4<f32>(vec3<f32>(1.0, 0.86, 0.66) * fade * in.along.z * 1.6, 0.0);
+}
+
+struct Rim {
+    @builtin(position) position: vec4<f32>,
+    @location(0) at: vec2<f32>,
+};
+
+@vertex
+fn vs_rim(@builtin(vertex_index) index: u32) -> Rim {
+    let side = index / 6u;
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+    );
+    let c = corners[index % 6u];
+    let angle = (f32(side) + c.x) * TAU / f32(RIM_SIDES);
+    // Out past the panel's circle, so the polygon's flats cover it.
+    let radius = mix(RIM_INNER * 0.98, 1.0 / cos(PI / f32(RIM_SIDES)), c.y);
+    let at = vec2<f32>(cos(angle), sin(angle)) * radius;
+    var out: Rim;
+    out.position = vec4<f32>(at, 0.0, 1.0);
+    out.at = at;
+    return out;
+}
+
+@fragment
+fn fs_rim(in: Rim) -> @location(0) vec4<f32> {
+    let r = length(in.at);
+    let t = params.burn.y;
+    // The exhaust's light thrown forward round the hull: strongest at the
+    // bottom, where the engines sit, and flickering with the burn.
+    let well = smoothstep01(RIM_INNER, 1.0, r);
+    let below = clamp(-in.at.y / max(r, 1e-4), 0.0, 1.0);
+    let flicker = 0.86 + 0.08 * sin(t * 37.0) + 0.06 * sin(t * 23.0 + in.at.x * 3.0);
+    let glow = vec3<f32>(1.0, 0.42, 0.10) * well * well * well * (0.04 + 0.22 * below * below) * flicker * params.burn.x;
+    return vec4<f32>(glow, 0.0);
 }
