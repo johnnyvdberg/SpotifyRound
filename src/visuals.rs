@@ -20,6 +20,8 @@ use slint::wgpu_30::wgpu;
 use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
+use crate::planet::Planet;
+use crate::solar::{Hud, Solar};
 use crate::ui::{AppWindow, WindowExt};
 
 /// Render targets per scene. Each scene rotates through this many textures so the
@@ -104,10 +106,15 @@ pub enum Scene {
     Globe,
     /// The Nautilus' voyage, seen through its salon window.
     Nautilus,
+    /// An invented planet, generated from a seed, seen from far away and
+    /// from low orbit.
+    Planet,
+    /// A grand tour of invented star systems, with hyperjumps between them.
+    Solar,
 }
 
 impl Scene {
-    pub const ALL: [Scene; 2] = [Scene::Globe, Scene::Nautilus];
+    pub const ALL: [Scene; 4] = [Scene::Globe, Scene::Nautilus, Scene::Planet, Scene::Solar];
 
     pub fn index(self) -> usize {
         self as usize
@@ -119,6 +126,8 @@ impl Scene {
         match self {
             Scene::Globe => crate::globe::SIZE as f32,
             Scene::Nautilus => crate::dive3d::SIZE as f32,
+            Scene::Planet => crate::planet::SIZE as f32,
+            Scene::Solar => crate::solar::SIZE as f32,
         }
     }
 
@@ -126,10 +135,12 @@ impl Scene {
         match self {
             Scene::Globe => Ok(Box::new(Globe::new(gpu)?)),
             Scene::Nautilus => Ok(Box::new(Nautilus::new(gpu)?)),
+            Scene::Planet => Ok(Box::new(Planet::new(gpu)?)),
+            Scene::Solar => Ok(Box::new(Solar::new(gpu)?)),
         }
     }
 
-    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe` or `nautilus`), which
+    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus`, `planet` or `solar`), which
     /// then shows from the start and stays: a fixed load for measuring one
     /// scene, together with `SPOTIFY_ROUND_FULL_SPEED`.
     pub fn forced() -> Option<Self> {
@@ -142,6 +153,8 @@ impl Scene {
             {
                 "globe" => Some(Scene::Globe),
                 "nautilus" => Some(Scene::Nautilus),
+                "planet" => Some(Scene::Planet),
+                "solar" => Some(Scene::Solar),
                 other => {
                     tracing::warn!(scene = other, "SPOTIFY_ROUND_SCENE names no scene");
                     None
@@ -204,6 +217,11 @@ pub(crate) trait Visual: Send {
     /// saving: enough to find the spot again. Scenes without a journey have
     /// none.
     fn whereabouts(&self) -> Option<String> {
+        None
+    }
+
+    /// Text to lay over the scene, for scenes with a HUD.
+    fn hud(&self) -> Option<Hud> {
         None
     }
 }
@@ -332,6 +350,7 @@ pub fn spawn(
             // sea's render scale between 0.6 and 1.0 from it.
             let adaptive = std::env::var_os("SPOTIFY_ROUND_ADAPTIVE").is_some();
             let mut scale = 1.0f32;
+            let mut shown_hud = Hud::default();
 
             loop {
                 if !take_built(&mut renderers, &mut mask, &mut building, &mut slots) {
@@ -368,6 +387,14 @@ pub fn spawn(
                 let switched = requested != active;
 
                 if switched {
+                    shown_hud = Hud::default();
+                    let cleared = Hud::default();
+                    if ui
+                        .upgrade_in_event_loop(move |ui| ui.set_idle_hud(&cleared))
+                        .is_err()
+                    {
+                        return;
+                    }
                     // A new visit gets a fresh dive: different seabed, wreck,
                     // jellyfish and plankton.
                     active = requested;
@@ -407,6 +434,17 @@ pub fn spawn(
                     continue;
                 }
                 busy += begun.elapsed();
+                if let Some(hud) = renderer.hud()
+                    && hud != shown_hud
+                {
+                    shown_hud = hud.clone();
+                    if ui
+                        .upgrade_in_event_loop(move |ui| ui.set_idle_hud(&hud))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
                 // Shown right after the UI thread submits it: both run there,
                 // in order. Only the sea image swaps.
                 let slot = active * SLOTS + current;
@@ -656,6 +694,8 @@ mod tests {
         for _ in 0..64 {
             assert_eq!(Scene::random(0b10), Scene::Nautilus);
             assert_eq!(Scene::random(0b01), Scene::Globe);
+            assert_eq!(Scene::random(0b100), Scene::Planet);
+            assert_eq!(Scene::random(0b1000), Scene::Solar);
         }
     }
 }

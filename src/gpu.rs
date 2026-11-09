@@ -392,6 +392,11 @@ fn open(adapter: &wgpu::Adapter, label: &str, headless: bool) -> Result<Graphics
     if std::env::var("SPOTIFY_ROUND_ETC2").as_deref() != Ok("0") {
         features |= adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_ETC2;
     }
+    // Headless, count each draw's fragments if the driver can: the Pi
+    // estimate (`pi_estimate`) multiplies them by the Pi's own shader costs.
+    if headless && adapter.features().contains(wgpu::Features::PIPELINE_STATISTICS_QUERY) {
+        features |= wgpu::Features::PIPELINE_STATISTICS_QUERY;
+    }
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some(label),
         required_features: features,
@@ -622,4 +627,145 @@ mod tests {
         }];
         assert!((profile_ms(&frame).unwrap() - 9.0).abs() < 1e-3);
     }
+}
+
+
+/// Fragment shader invocations per draw, for estimating what a frame costs
+/// on the Pi without one: the driver here counts how many pixels each draw
+/// shades, and `deploy/v3d-shaderdb/estimate.py` multiplies them by what the
+/// Pi's compiler says each shader costs. Off unless [`start_counting`] turned
+/// it on for this thread; drawing through [`counted_draw`] costs nothing then.
+pub struct FragmentCounter {
+    set: wgpu::QuerySet,
+    /// Per draw: its label and the pixels it covers.
+    labels: Vec<(String, u64)>,
+}
+
+/// Queries one frame can hold.
+const COUNTED_DRAWS: u32 = 4096;
+
+thread_local! {
+    static COUNTER: std::cell::RefCell<Option<FragmentCounter>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Start counting this thread's draws, if the device can.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn start_counting(device: &wgpu::Device) -> bool {
+    if !device.features().contains(wgpu::Features::PIPELINE_STATISTICS_QUERY) {
+        return false;
+    }
+    let set = device.create_query_set(&wgpu::QuerySetDescriptor {
+        label: Some("Fragment counts"),
+        ty: wgpu::QueryType::PipelineStatistics(
+            wgpu::PipelineStatisticsTypes::FRAGMENT_SHADER_INVOCATIONS,
+        ),
+        count: COUNTED_DRAWS,
+    });
+    COUNTER.with(|c| {
+        *c.borrow_mut() = Some(FragmentCounter {
+            set,
+            labels: Vec::new(),
+        })
+    });
+    true
+}
+
+/// Whether this thread is counting draws, for the Pi estimate.
+pub fn counting() -> bool {
+    COUNTER.with(|c| c.borrow().is_some())
+}
+
+/// The label of a probe draw: a pipeline that shades nothing, drawn just
+/// before a real draw with the same geometry and depth test. Its count is
+/// the pixels the real draw's shader runs for on the Pi (depth-rejected
+/// ones excluded, discarded ones included), and becomes that draw's
+/// `covered`.
+const PROBE: &str = "\0probe";
+
+/// Draw a probe (see [`PROBE`]) when counting.
+pub fn probe_draw(
+    pass: &mut wgpu::RenderPass<'_>,
+    vertices: std::ops::Range<u32>,
+    instances: std::ops::Range<u32>,
+) {
+    counted_draw(pass, PROBE, 0, vertices, instances);
+}
+
+/// Draw, counting the fragments it shades under `label` (the pipeline's
+/// label) when counting is on. `covered` is how many pixels the draw covers:
+/// the driver here counts only the fragments that survive a discard, but the
+/// Pi runs the whole shader for every pixel covered, discarded or not.
+pub fn counted_draw(
+    pass: &mut wgpu::RenderPass<'_>,
+    label: &str,
+    covered: u64,
+    vertices: std::ops::Range<u32>,
+    instances: std::ops::Range<u32>,
+) {
+    COUNTER.with(|c| {
+        let mut c = c.borrow_mut();
+        match c.as_mut() {
+            Some(counter) if (counter.labels.len() as u32) < COUNTED_DRAWS => {
+                let index = counter.labels.len() as u32;
+                counter.labels.push((label.to_string(), covered));
+                pass.begin_pipeline_statistics_query(&counter.set, index);
+                pass.draw(vertices, instances);
+                pass.end_pipeline_statistics_query();
+            }
+            _ => pass.draw(vertices, instances),
+        }
+    });
+}
+
+/// The counts since the last call: each draw's label, the pixels it covers
+/// and the fragments it kept, in order. Waits for the GPU.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn take_counts(gpu: &Graphics) -> Vec<(String, u64, u64)> {
+    COUNTER.with(|c| {
+        let mut c = c.borrow_mut();
+        let Some(counter) = c.as_mut() else {
+            return Vec::new();
+        };
+        let n = counter.labels.len() as u32;
+        if n == 0 {
+            return Vec::new();
+        }
+        let size = n as u64 * 8;
+        let resolve = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fragment counts"),
+            size,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fragment counts read"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.resolve_query_set(&counter.set, 0..n, &resolve, 0);
+        encoder.copy_buffer_to_buffer(&resolve, 0, &read, 0, size);
+        gpu.queue.submit([encoder.finish()]);
+        let slice = read.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        let values: Vec<u64> = match slice.get_mapped_range() {
+            Ok(data) => bytemuck::cast_slice(&data).to_vec(),
+            Err(_) => vec![0; n as usize],
+        };
+        let labels = std::mem::take(&mut counter.labels);
+        let mut out = Vec::new();
+        let mut probed = None;
+        for ((label, covered), kept) in labels.into_iter().zip(values) {
+            if label == PROBE {
+                probed = Some(kept);
+                continue;
+            }
+            out.push((label, probed.take().unwrap_or(covered), kept));
+        }
+        out
+    })
 }

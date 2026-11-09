@@ -1,0 +1,813 @@
+// The solar tour's map generator: every kind of planet and moon, painted
+// into equirectangular maps from 3D noise on the sphere. Prepended with
+// `noise.wgsl` and the noise volume's declarations (`noise3d.rs`).
+//
+// It runs as many small pipelines, each within the V3D's four-thread
+// register budget, a band of rows per frame (`stream.rs`):
+//
+// - `fs_height`: the large shapes and mountains; `fs_erosion` and
+//   `fs_craters` added on top. Craters also leave their rays' brightness in
+//   the terrain's green channel and calderas or cantaloupe cells in its blue,
+//   for the day colour to read without crater loops of its own.
+// - `fs_climate`: temperature, moisture, the coast's nearness and warmth, into
+//   a scratch map.
+// - `fs_relief`: the normal map's slopes and the water mask (for moons, the
+//   third channel is left for `fs_glow`).
+// - `fs_day`: the colour, from all of the above.
+// - `fs_lights` (red), `fs_towns` (added) and `fs_clouds` (green): the night
+//   glow and the cloud sheet, for planets.
+// - `fs_sky`: the system's sky (the galactic band).
+
+struct Gen {
+    // x, y: target size in texels; z: sea level; w: the kind.
+    size: vec4<f32>,
+    offsets: array<vec4<f32>, 4>,
+    plates: array<vec4<f32>, 12>,
+    storms: array<vec4<f32>, 12>,
+    palette: array<vec4<f32>, 4>,
+    // x: unused, y: cities, z: cratered (1 or 0), w: warmth (+ hotter,
+    // - colder).
+    flags: vec4<f32>,
+};
+
+// Which family of kinds a `fs_day`, `fs_lights` or `fs_clouds` pipeline is
+// built for, and which scale a `fs_craters` one paints, so each holds only
+// its own code.
+override GROUP: i32 = 0;
+
+@group(0) @binding(0) var<uniform> gen: Gen;
+@group(0) @binding(1) var terrain: texture_2d<f32>;
+@group(0) @binding(2) var terrain_sampler: sampler;
+// The scratch climate map and the finished relief, for the passes after them.
+@group(0) @binding(3) var climate_map: texture_2d<f32>;
+@group(0) @binding(4) var relief_map: texture_2d<f32>;
+
+const TERRAN: i32 = 0;
+const DESERT: i32 = 1;
+const OCEAN: i32 = 2;
+const ICE: i32 = 3;
+const LAVA: i32 = 4;
+const BARREN: i32 = 5;
+const GAS: i32 = 6;
+const ICE_GIANT: i32 = 7;
+const VOLCANIC: i32 = 8;
+const ICY_MOON: i32 = 9;
+const HAZY: i32 = 10;
+const CAPTURED: i32 = 11;
+const CLOUDY: i32 = 12;
+const EYEBALL: i32 = 13;
+const HOT: i32 = 14;
+const JUNGLE: i32 = 15;
+const GEYSER: i32 = 16;
+const TWO_FACED: i32 = 17;
+const NITROGEN: i32 = 18;
+const RUSTY: i32 = 19;
+
+fn kind() -> i32 {
+    return i32(gen.size.w + 0.5);
+}
+
+struct Varying {
+    @builtin(position) position: vec4<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> Varying {
+    var corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    var out: Varying;
+    out.position = vec4<f32>(corners[index], 0.0, 1.0);
+    return out;
+}
+
+fn sphere_at(uv: vec2<f32>) -> vec3<f32> {
+    let lon = (uv.x - 0.5) * TAU;
+    let lat = (0.5 - uv.y) * PI;
+    return vec3<f32>(cos(lat) * sin(lon), sin(lat), cos(lat) * cos(lon));
+}
+
+fn ridged(p: vec3<f32>, octaves: i32) -> f32 {
+    var q = p;
+    var sum = 0.0;
+    var amplitude = 0.5;
+    var weight = 1.0;
+    for (var i = 0; i < octaves; i++) {
+        var r = 1.0 - abs(noise(q));
+        r = r * r * weight;
+        weight = clamp(r * 1.6, 0.0, 1.0);
+        sum += amplitude * r;
+        q = OCTAVE * q * 2.07;
+        amplitude *= 0.5;
+    }
+    return sum;
+}
+
+fn eroded(p: vec3<f32>, octaves: i32) -> f32 {
+    var q = p;
+    var sum = 0.0;
+    var amplitude = 0.5;
+    var slope = vec3<f32>(0.0);
+    var frequency = 1.0;
+    for (var i = 0; i < octaves; i++) {
+        let n = noised(q);
+        // Kept in this octave's frame: the turn is orthonormal, so the
+        // slope's length is the same as in the sphere's own.
+        slope += n.yzw * frequency * amplitude;
+        sum += amplitude * n.x / (1.0 + dot(slope, slope) * 0.35);
+        q = OCTAVE * q * 2.01;
+        slope = OCTAVE * slope;
+        frequency *= 2.01;
+        amplitude *= 0.5;
+    }
+    return sum;
+}
+
+// Craters at `scale` cells per radius: bowls with raised rims, kept with
+// probability `density`. Returns the height change and the bright fresh
+// ejecta around the younger ones.
+fn craters(p: vec3<f32>, scale: f32, density: f32, seed: i32) -> vec2<f32> {
+    let x = p * scale;
+    let cell = vec3<i32>(floor(x));
+    var h = 0.0;
+    var rays = 0.0;
+    for (var k = 0; k < 27; k++) {
+        let id = cell + vec3<i32>(k % 3 - 1, (k / 3) % 3 - 1, k / 9 - 1);
+        if (hash3(id + vec3<i32>(seed, 5, 9)) > density) {
+            continue;
+        }
+        let centre = vec3<f32>(id) + vec3<f32>(
+            hash3(id + vec3<i32>(seed, 1, 7)),
+            hash3(id + vec3<i32>(seed, 2, 7)),
+            hash3(id + vec3<i32>(seed, 3, 7)),
+        );
+        let size = hash3(id + vec3<i32>(seed, 4, 7));
+        let radius = 0.15 + 0.45 * size * size;
+        let d = distance(x, centre) / radius;
+        if (d < 1.0) {
+            h += (d * d - 1.0) * 0.6 * radius;
+        }
+        let rim = (d - 1.0) / 0.22;
+        h += exp(-rim * rim) * 0.25 * radius;
+        let young = step(0.8, hash3(id + vec3<i32>(seed, 6, 7)));
+        rays += young * exp(-max(d - 1.0, 0.0) * 1.6) * step(0.9, d) * 0.6;
+    }
+    return vec2<f32>(h / scale, rays);
+}
+
+// Kinds whose ground is shaped: everything but the giants and the worlds
+// hidden under haze or cloud.
+fn has_ground(k: i32) -> bool {
+    return !(k == GAS || k == ICE_GIANT || k == HAZY || k == HOT || k == CLOUDY);
+}
+
+// Airless and icy worlds: little tectonics, a cratered face.
+fn cratered(k: i32) -> bool {
+    return k == BARREN || k == CAPTURED || k == ICY_MOON || k == DESERT || k == VOLCANIC
+        || k == GEYSER || k == TWO_FACED || k == NITROGEN || k == RUSTY;
+}
+
+// Planets that live: oceans, clouds, climates, maybe cities.
+fn living(k: i32) -> bool {
+    return k == TERRAN || k == OCEAN || k == JUNGLE || k == EYEBALL;
+}
+
+struct Shape {
+    q: vec3<f32>,
+    boundary: f32,
+    base: f32,
+};
+
+fn shape(p: vec3<f32>) -> Shape {
+    let o = gen.offsets;
+    let warp = vec3<f32>(
+        fbm(p * 1.4 + o[0].xyz, 4),
+        fbm(p * 1.4 + o[1].xyz, 4),
+        fbm(p * 1.4 + o[2].xyz, 4),
+    );
+    var out: Shape;
+    out.q = normalize(p + warp * 0.32);
+    var weights = 0.0;
+    var bias = 0.0;
+    var d1 = 9.0;
+    var d2 = 9.0;
+    for (var i = 0; i < 12; i++) {
+        let plate = gen.plates[i];
+        let d = distance(out.q, plate.xyz);
+        let w = exp(-d * d * 14.0);
+        weights += w;
+        bias += w * plate.w;
+        if (d < d1) {
+            d2 = d1;
+            d1 = d;
+        } else if (d < d2) {
+            d2 = d;
+        }
+    }
+    out.boundary = d2 - d1;
+    // Cratered worlds have little tectonics: half the large shapes.
+    out.base = (0.42 * bias / max(weights, 1e-5) + 0.55 * fbm(out.q * 2.2 + o[3].xyz, 6)) * (1.0 - 0.5 * gen.flags.z);
+    return out;
+}
+
+// Raw elevation without erosion or craters (sea level not yet taken off).
+@fragment
+fn fs_height(in: Varying) -> @location(0) vec4<f32> {
+    let k = kind();
+    if (!has_ground(k)) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    let p = sphere_at(in.position.xy / gen.size.xy);
+    let o = gen.offsets;
+    let s = shape(p);
+    let landish = smoothstep(-0.15, 0.25, s.base);
+    let belt = exp(-s.boundary * s.boundary / (0.07 * 0.07));
+    let ridges = ridged(s.q * 5.5 + o[0].zxy, 6);
+    let scattered = smoothstep(0.15, 0.55, fbm(s.q * 3.0 + o[1].zxy, 3));
+    let mountains = ridges * (belt * (0.35 + 0.65 * landish) * 0.42 + scattered * 0.12 * landish) * (1.0 - 0.65 * gen.flags.z);
+    return vec4<f32>(s.base + mountains, 0.0, 0.0, 1.0);
+}
+
+// The eroded detail, added.
+@fragment
+fn fs_erosion(in: Varying) -> @location(0) vec4<f32> {
+    let k = kind();
+    if (!has_ground(k)) {
+        return vec4<f32>(0.0);
+    }
+    let s = shape(sphere_at(in.position.xy / gen.size.xy));
+    let detail = eroded(s.q * 9.0 + gen.offsets[2].zxy, 7) * (0.05 + 0.10 * smoothstep(-0.15, 0.25, s.base)) * (1.0 - 0.4 * gen.flags.z);
+    return vec4<f32>(detail, 0.0, 0.0, 0.0);
+}
+
+// Craters, added, one scale per pipeline (`GROUP` 0, 1, 2): pits into the
+// elevation, the bright rays of young ones into green, and calderas
+// (volcanic moons) or a close mesh of dimples (nitrogen ice) into blue.
+@fragment
+fn fs_craters(in: Varying) -> @location(0) vec4<f32> {
+    let k = kind();
+    if (!cratered(k)) {
+        return vec4<f32>(0.0);
+    }
+    let p = sphere_at(in.position.xy / gen.size.xy);
+    var amount = 1.0;
+    if (k == ICY_MOON || k == GEYSER || k == NITROGEN) { amount = 0.25; }
+    if (k == DESERT) { amount = 0.4; }
+    var out = vec4<f32>(0.0);
+    if (k == VOLCANIC) {
+        if (GROUP == 0) {
+            let caldera = craters(p, 9.0, 0.5, 23);
+            out.g = caldera.y;
+            out.b = max(-caldera.x * 30.0, 0.0);
+        }
+    } else if (GROUP == 0) {
+        let big = craters(p, 7.0, 0.55 * amount, 3);
+        out.r = big.x * 1.6;
+        out.g = big.y;
+    } else if (GROUP == 1) {
+        let mid = craters(p, 22.0, 0.6 * amount, 17);
+        out.r = mid.x * 1.4;
+        out.g = mid.y;
+    } else if (k == NITROGEN) {
+        out.b = craters(p, 28.0, 1.0, 51).x * 28.0;
+    } else {
+        out.r = craters(p, 70.0, 0.6 * amount, 41).x * 1.2;
+    }
+    return out;
+}
+
+fn srgb(r: f32, g: f32, b: f32) -> vec3<f32> {
+    return pow(vec3<f32>(r, g, b) / 255.0, vec3<f32>(2.2));
+}
+
+fn wide(uv: vec2<f32>, level: f32) -> f32 {
+    return textureSampleLevel(terrain, terrain_sampler, uv, level).r - gen.size.z;
+}
+
+fn elevation_at(texel: vec2<i32>) -> f32 {
+    // Wrapped by compare and select: the V3D has no integer divide.
+    let w = i32(gen.size.x);
+    var x = select(texel.x, texel.x + w, texel.x < 0);
+    x = select(x, x - w, x >= w);
+    let t = vec2<i32>(x, clamp(texel.y, 0, i32(gen.size.y) - 1));
+    return textureLoad(terrain, t, 0).r - gen.size.z;
+}
+
+fn settlements(p: vec3<f32>, scale: f32, density: f32, seed: i32) -> f32 {
+    let x = p * scale;
+    let cell = vec3<i32>(floor(x));
+    var light = 0.0;
+    for (var k = 0; k < 27; k++) {
+        let id = cell + vec3<i32>(k % 3 - 1, (k / 3) % 3 - 1, k / 9 - 1);
+        if (hash3(id + vec3<i32>(seed, 17, 3)) > density) {
+            continue;
+        }
+        let centre = vec3<f32>(id) + vec3<f32>(
+            hash3(id + vec3<i32>(seed, 1, 0)),
+            hash3(id + vec3<i32>(seed, 2, 0)),
+            hash3(id + vec3<i32>(seed, 3, 0)),
+        );
+        let size = hash3(id + vec3<i32>(seed, 4, 0));
+        let population = size * size * size;
+        let radius = 0.08 + 0.42 * population;
+        let d = distance(x, centre) / radius;
+        light += (0.25 + 0.75 * population) * exp(-d * d * 2.5);
+    }
+    return light;
+}
+
+fn turn_about(v: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0 - c);
+}
+
+// Thin lines where a noise field crosses zero: cracks in ice and crust.
+// One fetch: the noise and, for the wiggle a finer octave would add, its
+// slope (two fetches unrolled cost the day pipelines two threads).
+fn cracks(p: vec3<f32>, width: f32) -> f32 {
+    let n = noised(p);
+    let a = abs(n.x + 0.12 * (n.y + n.z));
+    return 1.0 - smoothstep(0.0, width, a);
+}
+
+fn pal(i: i32) -> vec3<f32> {
+    return gen.palette[i].rgb;
+}
+
+struct Surface {
+    day: vec3<f32>,
+    bump: vec2<f32>,
+    // Water for the glint; 0 elsewhere.
+    water: f32,
+    // City lights, or molten rock's glow.
+    night: f32,
+    cloud: f32,
+};
+
+// Bands of a giant: latitude warped by turbulence and wound by storms.
+fn giant(p: vec3<f32>, k: i32) -> Surface {
+    let o = gen.offsets;
+    var c = p;
+    for (var i = 0; i < 6; i++) {
+        let storm = gen.storms[i];
+        let d = distance(c, storm.xyz);
+        c = turn_about(c, storm.xyz, storm.w * 1.4 * exp(-d * d / (0.12 * 0.12)));
+    }
+    let streaks = vec3<f32>(c.x * 3.0, c.y * 34.0, c.z * 3.0);
+    let turbulence = fbm(streaks + o[0].xyz, 6) * 0.9 + fbm(c * 9.0 + o[1].xyz, 4) * 0.35;
+    let y = c.y + turbulence * 0.05;
+    let bands = sin(y * (18.0 + o[2].w) + o[3].w) * 0.5 + 0.5;
+    let fine = sin(y * 61.0 + turbulence * 3.0) * 0.5 + 0.5;
+    var colour = mix(pal(0), pal(1), smoothstep(0.25, 0.75, bands));
+    colour = mix(colour, pal(2), smoothstep(0.55, 0.95, fine) * 0.45);
+    colour = mix(colour, pal(3), smoothstep(0.85, 0.98, abs(p.y)) * 0.6);
+    // One great storm: an oval of the darker colour with a pale rim.
+    let spot = gen.storms[0].xyz;
+    let rel = p - spot;
+    let oval = length(vec2<f32>(dot(rel, normalize(cross(vec3<f32>(0.0, 1.0, 0.0), spot))) * 0.55, rel.y)) / 0.07;
+    colour = mix(colour, pal(1) * 0.85, (1.0 - smoothstep(0.6, 1.0, oval)) * 0.85);
+    colour = mix(colour, pal(3), exp(-pow((oval - 1.1) / 0.15, 2.0)) * 0.35);
+    if (k == ICE_GIANT) {
+        colour = mix(pal(0), colour, 0.3);
+    }
+    var s: Surface;
+    s.day = colour * (0.94 + 0.12 * fbm(c * 40.0, 3));
+    s.bump = vec2<f32>(0.0);
+    s.water = 0.0;
+    s.night = 0.0;
+    if (k == HOT) {
+        // A hot Jupiter glows dull red from its own heat, brightest in the
+        // hotter bands.
+        s.night = 0.35 + 0.35 * bands + 0.2 * turbulence;
+    }
+    s.cloud = 0.0;
+    return s;
+}
+
+// A deck of sulphuric cloud: soft streaks swept along the latitudes into
+// broad chevrons, as Venus's are in ultraviolet.
+fn cloudy(p: vec3<f32>) -> Surface {
+    let o = gen.offsets;
+    let lon = atan2(p.x, p.z);
+    let chevron = p.y * 3.0 + abs(sin(lon * 0.5)) * 0.9 * sign(p.y);
+    let swirl = fbm(vec3<f32>(p.x * 2.0, p.y * 9.0 + chevron, p.z * 2.0) + o[0].xyz, 6);
+    let tone = smoothstep(-0.35, 0.45, swirl + 0.25 * sin(chevron * 3.0));
+    var s: Surface;
+    s.day = mix(pal(1), pal(2), tone) * (0.95 + 0.1 * fbm(p * 30.0 + o[1].xyz, 3));
+    s.day = mix(s.day, pal(3), smoothstep(0.8, 0.98, abs(p.y)) * 0.3);
+    s.bump = vec2<f32>(0.0);
+    s.water = 0.0;
+    s.night = 0.0;
+    s.cloud = 0.0;
+    return s;
+}
+
+// What the surface passes need to know about a texel.
+struct Climate {
+    p: vec3<f32>,
+    uv: vec2<f32>,
+    lat: f32,
+    e: f32,
+    land: f32,
+    warmth: f32,
+    temperature: f32,
+    moisture: f32,
+    near_coast: f32,
+};
+
+fn work_out_climate(position: vec2<f32>) -> Climate {
+    let k = kind();
+    var c: Climate;
+    c.uv = position / gen.size.xy;
+    c.p = sphere_at(c.uv);
+    let o = gen.offsets;
+    c.e = textureLoad(terrain, vec2<i32>(position), 0).r - gen.size.z;
+    c.land = smoothstep(-0.0015, 0.0015, c.e);
+    c.lat = asin(clamp(c.p.y, -1.0, 1.0));
+    let cos_lat = max(cos(c.lat), 0.02);
+    let wobble = fbm(c.p * 4.0 + o[3].zyx, 4);
+    c.warmth = pow(cos_lat, 0.85) + wobble * 0.10 + gen.flags.w;
+    if (k == EYEBALL) {
+        // Locked to its star, which always stands over longitude 0 (+z):
+        // warm under it, frozen past the terminator.
+        c.warmth = mix(-0.35, 1.2, smoothstep(-0.25, 0.95, c.p.z)) + wobble * 0.10;
+    } else if (k == JUNGLE) {
+        c.warmth += 0.08;
+    }
+    c.temperature = c.warmth - max(c.e, 0.0) * 1.5;
+    c.moisture = 0.0;
+    c.near_coast = 0.0;
+    if (living(k)) {
+        // The circulation cells, then the air's path from the sea along the
+        // prevailing wind, which mountains upwind wring dry.
+        let degrees = abs(c.lat) * 57.2958;
+        let from_east = select(-1.0, 1.0, degrees < 30.0 || degrees > 62.0);
+        var ocean_upwind = 0.0;
+        var barrier = 0.0;
+        for (var i = 1; i <= 5; i++) {
+            let up = wide(c.uv + vec2<f32>(from_east * f32(i) * 0.0105 / cos_lat, 0.0), 4.5);
+            ocean_upwind += (1.0 - smoothstep(-0.02, 0.03, up)) / f32(i);
+            barrier = max(barrier, up - max(c.e, 0.0));
+        }
+        ocean_upwind *= 60.0 / 137.0;
+        c.near_coast = 1.0 - smoothstep(0.0, 0.12, max(wide(c.uv, 5.5), 0.0));
+        let interior = smoothstep(0.03, 0.25, wide(c.uv, 7.5));
+        c.moisture = clamp(
+            select(0.0, 0.28, k == JUNGLE) + 0.40 + 0.26 * cos(6.0 * c.lat) + 0.30 * ocean_upwind
+                + 0.12 * c.near_coast - 0.18 * interior - 0.35 * smoothstep(0.05, 0.3, barrier)
+                + 0.22 * fbm(c.p * 6.0 + o[2].yzx, 5),
+            0.0,
+            1.0,
+        );
+    }
+    return c;
+}
+
+// Temperature, moisture, the coast's nearness and warmth, encoded for an
+// 8-bit map (temperatures from -0.5 to 1.5).
+@fragment
+fn fs_climate(in: Varying) -> @location(0) vec4<f32> {
+    let c = work_out_climate(in.position.xy);
+    return vec4<f32>((c.temperature + 0.5) * 0.5, c.moisture, c.near_coast, (c.warmth + 0.5) * 0.5);
+}
+
+fn climate(position: vec2<f32>) -> Climate {
+    var c: Climate;
+    c.uv = position / gen.size.xy;
+    c.p = sphere_at(c.uv);
+    c.e = textureLoad(terrain, vec2<i32>(position), 0).r - gen.size.z;
+    c.land = smoothstep(-0.0015, 0.0015, c.e);
+    c.lat = asin(clamp(c.p.y, -1.0, 1.0));
+    let stored = textureLoad(climate_map, vec2<i32>(position), 0);
+    c.temperature = stored.r * 2.0 - 0.5;
+    c.moisture = stored.g;
+    c.near_coast = stored.b;
+    c.warmth = stored.a * 2.0 - 0.5;
+    return c;
+}
+
+// The relief's slopes, as the normal map stores them.
+fn slopes(position: vec2<f32>, lat: f32, floor_at: f32) -> vec2<f32> {
+    let texel = vec2<i32>(position);
+    let east_step = max(cos(lat), 0.02) * TAU / gen.size.x;
+    let north_step = PI / gen.size.y;
+    let de = (max(elevation_at(texel + vec2<i32>(1, 0)), floor_at) - max(elevation_at(texel - vec2<i32>(1, 0)), floor_at)) / (2.0 * east_step);
+    let dn = (max(elevation_at(texel - vec2<i32>(0, 1)), floor_at) - max(elevation_at(texel + vec2<i32>(0, 1)), floor_at)) / (2.0 * north_step);
+    return clamp(-vec2<f32>(de, dn) * 0.0025 * 22.0, vec2<f32>(-0.45), vec2<f32>(0.45));
+}
+
+// The sea ice on living worlds, where it is cold enough.
+fn sea_ice(c: Climate) -> f32 {
+    return smoothstep(0.17, 0.10, c.warmth + 0.04 + 0.04 * fbm(c.p * 20.0, 3));
+}
+
+// The normal map's slopes and the water mask.
+@fragment
+fn fs_relief(in: Varying) -> @location(0) vec4<f32> {
+    let k = kind();
+    if (!has_ground(k)) {
+        return vec4<f32>(0.5, 0.5, 0.0, 1.0);
+    }
+    let c = climate(in.position.xy);
+    let wet = k == TERRAN || k == OCEAN || k == LAVA || k == ICE || k == JUNGLE || k == EYEBALL;
+    var bump = slopes(in.position.xy, c.lat, select(-1.0, 0.0, wet));
+    var water = 0.0;
+    if (living(k)) {
+        bump *= c.land;
+        water = (1.0 - c.land) * (1.0 - sea_ice(c));
+    } else if (k == LAVA) {
+        bump *= c.land;
+    } else if (k == ICE || k == NITROGEN) {
+        bump *= 0.5;
+    } else if (k == VOLCANIC || k == GEYSER) {
+        bump *= 0.4;
+    } else if (k == ICY_MOON) {
+        bump *= 0.6;
+    }
+    return vec4<f32>(vec2<f32>(0.5) + bump, water, 1.0);
+}
+
+fn steepness(position: vec2<f32>) -> f32 {
+    return length(textureLoad(relief_map, vec2<i32>(position), 0).rg - vec2<f32>(0.5));
+}
+
+// The terrain's crater channels: rays' brightness and calderas or cells.
+fn features(position: vec2<f32>) -> vec2<f32> {
+    return textureLoad(terrain, vec2<i32>(position), 0).gb;
+}
+
+// The day colour of a living world.
+fn living_day(c: Climate, steep: f32) -> vec3<f32> {
+    let o = gen.offsets;
+    let p = c.p;
+    let moisture = c.moisture;
+    let temperature = c.temperature;
+    let sand = mix(srgb(218.0, 184.0, 136.0), srgb(170.0, 118.0, 78.0), 0.45 * smoothstep(-0.2, 0.3, fbm(p * 14.0 + o[0].yxz, 4)));
+    let dry = mix(sand, srgb(150.0, 136.0, 94.0), smoothstep(0.10, 0.32, moisture));
+    let warm_green = mix(srgb(122.0, 114.0, 66.0), srgb(26.0, 54.0, 20.0), smoothstep(0.48, 0.80, moisture));
+    let green = mix(srgb(32.0, 48.0, 34.0), mix(srgb(48.0, 70.0, 32.0), warm_green, smoothstep(0.62, 0.85, temperature)), smoothstep(0.42, 0.58, temperature));
+    var ground = mix(dry, green, smoothstep(0.25, 0.62, moisture));
+    ground = mix(ground, srgb(108.0, 102.0, 88.0), smoothstep(0.46, 0.34, temperature));
+    ground = mix(ground, srgb(100.0, 88.0, 76.0), max(smoothstep(0.12, 0.40, steep) * 0.75, smoothstep(0.16, 0.34, c.e) * 0.55));
+    ground = mix(ground, srgb(236.0, 240.0, 245.0), smoothstep(0.26, 0.15, temperature));
+    ground *= 0.86 + 0.28 * (fbm(p * 60.0 + o[1].yxz, 4) + 0.5);
+    let depth = max(-c.e, 0.0);
+    var sea = mix(srgb(30.0, 82.0, 112.0), srgb(10.0, 28.0, 66.0), smoothstep(0.0, 0.035, depth));
+    sea = mix(sea, srgb(5.0, 13.0, 40.0), smoothstep(0.035, 0.22, depth));
+    sea = mix(sea, srgb(218.0, 226.0, 236.0), sea_ice(c));
+    return mix(sea, ground, c.land);
+}
+
+// The day colour of every other kind with ground.
+fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
+    let o = gen.offsets;
+    let p = c.p;
+    let low = 1.0 - c.land;
+    let grain = fbm(p * 60.0 + o[1].yxz, 4);
+    if (k == DESERT) {
+        // Rust and ochre, darker basalt lowlands, polar caps.
+        let tone = smoothstep(-0.3, 0.4, fbm(p * 5.0 + o[0].xyz, 5));
+        var ground = mix(pal(0), pal(2), tone * 0.6);
+        ground = mix(ground, pal(1), low * 0.7 + smoothstep(0.1, 0.35, steep) * 0.3);
+        ground = mix(ground, pal(3), smoothstep(0.2, 0.6, fbm(p * 18.0 + o[2].xyz, 4)) * 0.25);
+        let cap = smoothstep(0.2, 0.12, c.warmth + 0.05 * fbm(p * 12.0, 3));
+        ground = mix(ground, srgb(236.0, 232.0, 226.0), cap);
+        return ground * (0.88 + 0.24 * (grain + 0.5));
+    } else if (k == ICE) {
+        let lines = max(cracks(p * 9.0 + o[0].xyz, 0.035), cracks(p * 23.0 + o[1].xyz, 0.03) * 0.6);
+        var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 6.0 + o[2].xyz, 4)));
+        ground = mix(ground, pal(1), low * 0.6);
+        ground = mix(ground, pal(3), lines * 0.6);
+        return ground * (0.94 + 0.12 * (grain + 0.5));
+    } else if (k == LAVA) {
+        let lines = max(cracks(p * 7.0 + o[0].xyz, 0.03), cracks(p * 19.0 + o[1].xyz, 0.025) * 0.7);
+        let crust = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 12.0 + o[2].xyz, 4)));
+        // By day the lava reads as dark red rock with a crust on it; its
+        // light is mostly the emissive glow, which shows best at night.
+        return mix(crust * (0.8 + 0.4 * (grain + 0.5)), pal(1) * 0.25, max(low, lines * c.land));
+    } else if (k == VOLCANIC) {
+        // Sulphur yellow and orange, white frost, black calderas with red rims.
+        var ground = mix(pal(0), pal(1), smoothstep(-0.1, 0.35, fbm(p * 5.0 + o[0].xyz, 5)));
+        ground = mix(ground, pal(2), smoothstep(0.25, 0.5, fbm(p * 9.0 + o[1].xyz, 4)) * 0.6);
+        let spot = smoothstep(0.1, 0.5, feature.x + feature.y);
+        ground = mix(ground, pal(3), spot * 0.85);
+        ground = mix(ground, srgb(170.0, 60.0, 30.0), smoothstep(0.0, 0.3, feature.x) * (1.0 - spot) * 0.5);
+        return ground * (0.9 + 0.2 * (grain + 0.5));
+    } else if (k == ICY_MOON) {
+        let lines = max(cracks(p * 6.0 + o[0].xyz, 0.03), max(cracks(p * 14.0 + o[1].xyz, 0.025) * 0.8, cracks(p * 31.0 + o[2].xyz, 0.02) * 0.5));
+        var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 4.0 + o[3].xyz, 4)));
+        ground = mix(ground, pal(1), lines * 0.75);
+        return mix(ground, pal(3), smoothstep(0.2, 0.5, fbm(p * 3.0 + o[0].zyx, 3)) * 0.3);
+    } else if (k == GEYSER) {
+        // Bright fresh ice, and blue fissures across the south pole.
+        var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 5.0 + o[0].xyz, 4)));
+        let lon = atan2(p.x, p.z);
+        let stripes = 1.0 - smoothstep(0.0, 0.05, abs(sin(lon * 2.0 + p.y * 3.0 + 0.4 * noise(p * 6.0 + o[1].xyz))));
+        let south = smoothstep(-0.55, -0.8, p.y);
+        ground = mix(ground, pal(1), stripes * south * 0.85);
+        return mix(ground, pal(3), cracks(p * 8.0 + o[2].xyz, 0.02) * 0.4 * (1.0 - south));
+    } else if (k == TWO_FACED) {
+        // A dark leading hemisphere with a ragged edge, a bright trailing one.
+        let dark = 1.0 - smoothstep(-0.12, 0.12, p.z + 0.3 * fbm(p * 3.0 + o[0].xyz, 5));
+        var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 8.0 + o[1].xyz, 4)) * 0.5);
+        ground = mix(ground, mix(pal(1), pal(3), smoothstep(-0.3, 0.3, fbm(p * 6.0 + o[2].xyz, 4))), dark);
+        return ground * (0.9 + 0.2 * (grain + 0.5));
+    } else if (k == NITROGEN) {
+        // Cantaloupe terrain: the craters' dimples; dark wind streaks; a bright
+        // pinkish polar cap.
+        var ground = mix(pal(0), pal(1), smoothstep(-0.2, 0.2, feature.y + 0.3 * fbm(p * 7.0 + o[0].xyz, 4)) * 0.5);
+        let streak = smoothstep(0.35, 0.6, fbm(vec3<f32>(p.x * 14.0, p.y * 3.0, p.z * 14.0) + o[1].xyz, 4));
+        ground = mix(ground, pal(3), streak * 0.5 * smoothstep(-0.2, 0.3, p.y));
+        return mix(ground, pal(2), smoothstep(-0.25, -0.55, p.y + 0.1 * fbm(p * 5.0, 3)));
+    }
+    // Barren, captured and rusty rock: dark lowland plains, bright young
+    // craters' rays.
+    var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 8.0 + o[0].xyz, 4)) * 0.5);
+    ground = mix(ground, pal(1), low * 0.75);
+    ground = mix(ground, pal(2), clamp(feature.x, 0.0, 1.0) * 0.5);
+    if (kind() == CAPTURED) {
+        ground *= 0.55;
+    }
+    return ground * (0.85 + 0.3 * (grain + 0.5));
+}
+
+// The rocky kind a day pipeline is built for: one each from `GROUP` 4 to 11,
+// so the compiler drops every other kind's colours; 12 is barren, captured and
+// rusty rock, which share theirs (their palettes differ, and captured rock is
+// darkened).
+fn rocky_kind() -> i32 {
+    switch (GROUP) {
+        case 4: { return DESERT; }
+        case 5: { return ICE; }
+        case 6: { return LAVA; }
+        case 7: { return VOLCANIC; }
+        case 8: { return ICY_MOON; }
+        case 9: { return GEYSER; }
+        case 10: { return TWO_FACED; }
+        case 11: { return NITROGEN; }
+        default: { return BARREN; }
+    }
+}
+
+// The day map, one pipeline per family (`GROUP`): 0 giants, 1 cloud-wrapped
+// worlds, 2 hazy moons, 3 living worlds, 4 and up the rocky kinds.
+@fragment
+fn fs_day(in: Varying) -> @location(0) vec4<f32> {
+    let k = kind();
+    let p = sphere_at(in.position.xy / gen.size.xy);
+    if (GROUP == 0) {
+        return vec4<f32>(giant(p, k).day, 1.0);
+    }
+    if (GROUP == 1) {
+        return vec4<f32>(cloudy(p).day, 1.0);
+    }
+    if (GROUP == 2) {
+        let o = gen.offsets;
+        let tone = smoothstep(-0.3, 0.3, fbm(vec3<f32>(p.x, p.y * 2.5, p.z) * 3.0 + o[0].xyz, 5));
+        let day = mix(pal(0), pal(1), tone * 0.35);
+        return vec4<f32>(mix(day, pal(3), smoothstep(0.75, 0.95, abs(p.y)) * 0.4), 1.0);
+    }
+    let c = climate(in.position.xy);
+    let steep = steepness(in.position.xy);
+    if (GROUP == 3) {
+        return vec4<f32>(living_day(c, steep), 1.0);
+    }
+    return vec4<f32>(rocky_day(rocky_kind(), c, steep, features(in.position.xy)), 1.0);
+}
+
+// How likely people are to live here.
+fn liveable(position: vec2<f32>) -> f32 {
+    let c = climate(position);
+    return c.land
+        * smoothstep(0.30, 0.52, c.temperature) * (1.0 - smoothstep(0.30, 0.50, c.e))
+        * smoothstep(0.10, 0.35, c.moisture) * (0.45 + 0.9 * c.near_coast)
+        * smoothstep(-0.25, 0.20, fbm(c.p * 3.0 + gen.offsets[3].xzy, 3))
+        * (1.0 - smoothstep(0.08, 0.25, steepness(position)));
+}
+
+// The night map, into the red channel, one pipeline per family (`GROUP`):
+// 0 cities on living worlds, 1 molten rock's glow on lava worlds, 2 a hot
+// Jupiter's own heat, 3 nothing (it only clears the channel).
+@fragment
+fn fs_lights(in: Varying) -> @location(0) vec4<f32> {
+    let k = kind();
+    let p = sphere_at(in.position.xy / gen.size.xy);
+    var light = 0.0;
+    if (GROUP == 0 && gen.flags.y > 0.5) {
+        let live = liveable(in.position.xy);
+        if (live > 0.01) {
+            light = live * settlements(p, 120.0, 0.7, 11) * 1.8;
+        }
+    } else if (GROUP == 1 || GROUP == 4) {
+        // Molten seas and cracks: the broad cracks and the seas here, the fine
+        // cracks in a second pipeline (`GROUP` 4) blended in by maximum, as
+        // the one pass took the larger of the two.
+        let o = gen.offsets;
+        let c = climate(in.position.xy);
+        var molten = 0.0;
+        if (GROUP == 1) {
+            molten = max(1.0 - c.land, cracks(p * 7.0 + o[0].xyz, 0.03) * c.land);
+        } else {
+            molten = cracks(p * 19.0 + o[1].xyz, 0.025) * 0.7 * c.land;
+        }
+        light = molten * (0.6 + 0.4 * fbm(p * 30.0, 3) + 0.4);
+    } else if (GROUP == 2) {
+        light = giant(p, k).night;
+    }
+    return vec4<f32>(clamp(light, 0.0, 1.0), 0.0, 0.0, 0.0);
+}
+
+// The towns between the cities, added to the red channel.
+@fragment
+fn fs_towns(in: Varying) -> @location(0) vec4<f32> {
+    var light = 0.0;
+    if (living(kind()) && gen.flags.y > 0.5) {
+        let live = liveable(in.position.xy);
+        if (live > 0.01) {
+            light = live * settlements(sphere_at(in.position.xy / gen.size.xy), 420.0, 0.6, 29) * 0.7;
+        }
+    }
+    return vec4<f32>(clamp(light, 0.0, 1.0), 0.0, 0.0, 0.0);
+}
+
+// The cloud sheet, into the green channel, one pipeline per family
+// (`GROUP`): 0 weather on living worlds, 1 dust on deserts and thin haze on
+// ice worlds (and nothing for the rest).
+@fragment
+fn fs_clouds(in: Varying) -> @location(0) vec4<f32> {
+    let k = kind();
+    let o = gen.offsets;
+    let p = sphere_at(in.position.xy / gen.size.xy);
+    var cloud = 0.0;
+    if (GROUP == 0) {
+        let cl = climate(in.position.xy);
+        var c = p;
+        for (var i = 0; i < 12; i++) {
+            let storm = gen.storms[i];
+            let d = distance(c, storm.xyz);
+            c = turn_about(c, storm.xyz, storm.w * exp(-d * d / (0.22 * 0.22)));
+        }
+        let stretched = vec3<f32>(c.x, c.y * 1.9, c.z);
+        let cwarp = vec3<f32>(
+            fbm(stretched * 2.0 + o[1].xyz, 3),
+            fbm(stretched * 2.0 + o[2].xyz, 3),
+            fbm(stretched * 2.0 + o[3].xyz, 3),
+        );
+        let sheet = fbm(stretched * 3.5 + cwarp * 0.9 + o[0].xyz, 8);
+        let itcz = exp(-pow((cl.lat * 57.2958 - 4.0) / 7.0, 2.0));
+        let more = select(0.0, 0.08, k == OCEAN) + select(0.0, 0.06, k == JUNGLE);
+        var bands = 0.10 * cos(6.0 * cl.lat) + 0.12 * itcz;
+        if (k == EYEBALL) {
+            // One great storm system boils up under the star; the far side is
+            // too cold for cloud.
+            bands = 0.35 * smoothstep(0.55, 1.0, p.z) - 0.3 * (1.0 - smoothstep(-0.2, 0.3, p.z));
+        }
+        let cover = sheet + bands + 0.16 * (cl.moisture - 0.5) * cl.land - 0.10 + more;
+        cloud = smoothstep(0.0, 0.42, cover);
+        cloud *= smoothstep(-0.45, 0.25, fbm(c * 26.0 + o[3].yzx, 4) + cloud * 0.6);
+    } else if (k == DESERT) {
+        cloud = smoothstep(0.35, 0.6, fbm(vec3<f32>(p.x, p.y * 2.0, p.z) * 4.0 + o[3].xyz, 5)) * 0.25;
+    } else if (k == ICE) {
+        cloud = smoothstep(0.25, 0.6, fbm(vec3<f32>(p.x, p.y * 1.6, p.z) * 3.5 + o[3].xyz, 6)) * 0.5;
+    }
+    return vec4<f32>(0.0, clamp(cloud, 0.0, 1.0), 0.0, 0.0);
+}
+
+// A volcanic moon's glowing calderas, into its relief's third channel.
+@fragment
+fn fs_glow(in: Varying) -> @location(0) vec4<f32> {
+    var glow = 0.0;
+    if (kind() == VOLCANIC) {
+        let p = sphere_at(in.position.xy / gen.size.xy);
+        let f = features(in.position.xy);
+        let spot = smoothstep(0.1, 0.5, f.x + f.y);
+        glow = spot * smoothstep(0.6, 0.9, hash3(vec3<i32>(floor(p * 9.0)))) * 0.8;
+    }
+    return vec4<f32>(0.0, 0.0, glow, 0.0);
+}
+
+// The sky: the galaxy's band along a great circle (its pole in palette[0]),
+// dust lanes, and faint glowing clouds.
+@fragment
+fn fs_sky(in: Varying) -> @location(0) vec4<f32> {
+    let p = sphere_at(in.position.xy / gen.size.xy);
+    let pole = gen.palette[0].xyz;
+    let o = gen.offsets;
+    let off = dot(p, pole);
+    let warp = fbm(p * 3.0 + o[0].xyz, 4) * 0.12;
+    let band = exp(-pow((off + warp) / 0.16, 2.0));
+    let core = exp(-pow((off + warp) / 0.05, 2.0));
+    let dust = smoothstep(-0.1, 0.35, fbm(p * 9.0 + o[1].xyz, 6));
+    let glow = fbm(p * 5.0 + o[2].xyz, 5) * 0.5 + 0.5;
+    var sky = vec3<f32>(0.55, 0.52, 0.62) * band * (0.25 + 0.75 * glow) * 0.05;
+    sky += vec3<f32>(0.85, 0.72, 0.55) * core * 0.04 * glow;
+    sky *= 1.0 - dust * 0.75 * band;
+    // A few faint nebulae, tinted.
+    let cloud = smoothstep(0.25, 0.65, fbm(p * 2.2 + o[3].xyz, 5));
+    let tint = mix(vec3<f32>(0.6, 0.2, 0.35), vec3<f32>(0.2, 0.35, 0.6), fbm(p * 1.3 + o[0].zyx, 3) + 0.5);
+    sky += tint * cloud * 0.012;
+    return vec4<f32>(sky, 1.0);
+}

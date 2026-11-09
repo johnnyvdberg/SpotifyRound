@@ -228,6 +228,8 @@ pub trait WindowExt: Sized {
     /// The seas of the dive's circuit in order, and the one it is in or bound
     /// for; none for a scene without a journey.
     fn set_seas(&self, names: &[&str], here: usize);
+    /// The text a scene lays over its frame; empty strings hide it.
+    fn set_idle_hud(&self, hud: &crate::solar::Hud);
     fn tick(&self, frame: &Frame);
     /// Name, icon kind and presence of the Spotify Connect device playback is
     /// running on.
@@ -390,6 +392,45 @@ impl WindowExt for AppWindow {
         let names: Vec<slint::SharedString> = names.iter().map(|&n| n.into()).collect();
         idle.set_seas(slint::ModelRc::new(VecModel::from(names)));
         idle.set_sea(here as i32);
+    }
+
+    fn set_idle_hud(&self, hud: &crate::solar::Hud) {
+        let idle = self.global::<Idle>();
+        idle.set_hud_title(hud.title.as_str().into());
+        idle.set_hud_labels(hud.labels.as_str().into());
+        idle.set_hud_values(hud.values.as_str().into());
+        let scans: Vec<ScanRow> = hud
+            .scans
+            .iter()
+            .map(|scan| ScanRow {
+                name: scan.name.as_str().into(),
+                progress: scan.progress,
+                value: scan.value.as_str().into(),
+            })
+            .collect();
+        idle.set_hud_scans(ModelRc::from(Rc::new(VecModel::from(scans))));
+        let manoeuvre = hud.manoeuvre.clone().unwrap_or_default();
+        idle.set_man_name(manoeuvre.name.as_str().into());
+        idle.set_man_text(manoeuvre.text.as_str().into());
+        idle.set_man_progress(if manoeuvre.name.is_empty() { -1.0 } else { manoeuvre.progress });
+        let map = hud.map.clone().unwrap_or_default();
+        idle.set_map_orbits(map.orbits.as_str().into());
+        idle.set_map_route(map.route.as_str().into());
+        idle.set_map_ship_x(map.ship[0]);
+        idle.set_map_ship_y(map.ship[1]);
+        let dots: Vec<MapDot> = map
+            .dots
+            .iter()
+            .map(|d| MapDot {
+                x: d.at[0],
+                y: d.at[1],
+                size: d.size,
+                color: slint::Color::from_rgb_u8(d.colour[0], d.colour[1], d.colour[2]),
+                label: d.label.as_str().into(),
+                current: d.current,
+            })
+            .collect();
+        idle.set_map_dots(ModelRc::from(Rc::new(VecModel::from(dots))));
     }
 
     fn show_idle_frame(&self, index: usize) {
@@ -873,5 +914,49 @@ mod preview {
         window.global::<App>().set_choosing(true);
         save(&window, &soft, "14-scene-picker");
         window.global::<App>().set_choosing(false);
+
+        // ---- the solar tour, with its HUD ----
+        let (pixels, hud) = crate::solar::tests::render_once(11, "-low-orbit");
+        window.set_idle_scene(3, crate::solar::SIZE as f32);
+        window.set_idle(true, 1.0);
+        window.set_idle_hud(&hud);
+        window.set_idle_frame(slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::clone_from_slice(
+                &pixels,
+                crate::solar::SIZE,
+                crate::solar::SIZE,
+            ),
+        ));
+        save(&window, &soft, "15-solar");
+        let (pixels, hud) = crate::solar::tests::render_once(11, "jump-cruise");
+        window.set_idle_hud(&hud);
+        window.set_idle_frame(slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::clone_from_slice(
+                &pixels,
+                crate::solar::SIZE,
+                crate::solar::SIZE,
+            ),
+        ));
+        save(&window, &soft, "16-solar-jump");
+        // A star flyby, with the minimap's route, and a moon the size of a
+        // planet in low orbit.
+        for (seed, moment, name) in [
+            (23, "-flyby", "17-solar-flyby"),
+            (14, "m1-low-orbit", "18-solar-moon"),
+            (13, "-flyby", "19-solar-assist"),
+            (5, "p1-low-orbit", "20-solar-low-detail"),
+        ] {
+            let (pixels, hud) = crate::solar::tests::render_once(seed, moment);
+            window.set_idle_hud(&hud);
+            window.set_idle_frame(slint::Image::from_rgba8(
+                slint::SharedPixelBuffer::clone_from_slice(
+                    &pixels,
+                    crate::solar::SIZE,
+                    crate::solar::SIZE,
+                ),
+            ));
+            save(&window, &soft, name);
+        }
+        window.set_idle_hud(&crate::solar::Hud::default());
     }
 }

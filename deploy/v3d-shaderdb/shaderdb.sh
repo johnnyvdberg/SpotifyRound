@@ -1,6 +1,7 @@
 #!/bin/bash
 # Print Raspberry Pi 5 (V3D 7.1, Mesa v3dv) shader compile stats for every wgpu
-# pipeline the dive3d previews test builds, without Pi hardware.
+# pipeline the idle scenes build (the Nautilus, the planet and the solar tour),
+# without Pi hardware. SHADERDB_TESTS picks other tests to run.
 #
 #   shaderdb.sh <path to a SpotifyRound checkout> [raw log file]
 #
@@ -26,6 +27,7 @@ docker run --rm \
     -v "$volume":/target \
     -v v3d-shaderdb-cargo:/usr/local/cargo/registry \
     -e SHADERDB_TIMEOUT="${SHADERDB_TIMEOUT:-300}" \
+    ${SHADERDB_TESTS:+-e SHADERDB_TESTS="$SHADERDB_TESTS"} \
     v3d-shaderdb bash /w/inner.sh >"$raw" 2>&1 || true
 
 python3 "$here/label.py" "$raw"

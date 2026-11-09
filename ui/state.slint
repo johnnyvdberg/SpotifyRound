@@ -20,6 +20,24 @@ export struct QueueItem {
 }
 
 // One Spotify Connect device playback can be moved to.
+// One of a scene's scanner readings: its name, how far along it is, and its
+// result (or what it is doing while it runs).
+export struct ScanRow {
+    name: string,
+    progress: float,
+    value: string,
+}
+
+// A planet, or the star, on the solar tour's minimap.
+export struct MapDot {
+    x: length,
+    y: length,
+    size: length,
+    color: color,
+    label: string,
+    current: bool,
+}
+
 export struct DeviceItem {
     name: string,
     // Icon kind: "speaker", "computer", "phone", "tv" or "car".
@@ -104,6 +122,24 @@ export global Idle {
     // They are kept as images here so the renderer caches them once, instead of
     // seeing a new image every frame.
     in-out property <[image]> frames;
+    // A scene's heads-up display: a title, and lines of labels and values
+    // (one per line). Empty for scenes without one.
+    in-out property <string> hud-title: "";
+    in-out property <string> hud-labels: "";
+    in-out property <string> hud-values: "";
+    in-out property <[ScanRow]> hud-scans: [];
+    // The minimap: orbits and route as path commands in a 240-unit square,
+    // the planets and the star, and the ship. Hidden while empty.
+    // The manoeuvre panel: what the ship is doing and why, and how far
+    // through a burn or flyby (negative while coasting). Hidden while empty.
+    in-out property <string> man-name: "";
+    in-out property <string> man-text: "";
+    in-out property <float> man-progress: -1;
+    in-out property <string> map-orbits: "";
+    in-out property <string> map-route: "";
+    in-out property <[MapDot]> map-dots: [];
+    in-out property <length> map-ship-x: 0;
+    in-out property <length> map-ship-y: 0;
 
     // A tap anywhere on the visuals returns to the player.
     callback dismiss();
@@ -177,7 +213,7 @@ export global App {
     callback refresh-queue();
     callback begin-auth();
     // Swipe down on the player opens the screensaver chooser (`choosing`),
-    // which shows the scene picked: 0 the Earth, 1 the Nautilus, -1 either.
+    // which shows the scene picked: 0 the Earth, 1 the Nautilus, 2 the planet, 3 the solar tour, -1 any.
     in-out property <bool> choosing: false;
     callback show-visualizer(int);
     // The device pill on the player opens the picker of castable devices.

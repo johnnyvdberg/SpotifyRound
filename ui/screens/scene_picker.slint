@@ -15,67 +15,67 @@ component SceneTile inherits Rectangle {
     in property <color> rim;
     callback picked();
 
-    width: 300px;
-    height: 400px;
+    width: 220px;
+    height: 300px;
     background: transparent;
 
     // A soft glow behind the window, in the scene's own light.
     Rectangle {
-        x: -20px;
-        y: -20px;
-        width: 340px;
-        height: 340px;
-        border-radius: 170px;
+        x: -16px;
+        y: -16px;
+        width: 252px;
+        height: 252px;
+        border-radius: 126px;
         background: @radial-gradient(circle, root.rim.with-alpha(0.35) 0%, root.rim.with-alpha(0.0) 66%);
         opacity: touch.pressed ? 1 : 0.6;
         animate opacity { duration: 160ms; }
     }
 
     Rectangle {
-        width: 300px;
-        height: 300px;
+        width: 220px;
+        height: 220px;
         y: 0;
-        border-radius: 150px;
+        border-radius: 110px;
         background: root.deep;
     }
 
     Rectangle {
-        width: 300px;
-        height: 300px;
+        width: 220px;
+        height: 220px;
         y: 0;
         background: root.glass;
     }
 
     Rectangle {
-        width: 300px;
-        height: 300px;
+        width: 220px;
+        height: 220px;
         y: 0;
-        border-radius: 150px;
+        border-radius: 110px;
         background: transparent;
         border-width: 6px;
         border-color: root.rim;
     }
 
     Text {
-        y: 322px;
+        y: 232px;
         width: parent.width;
-        height: 40px;
+        height: 36px;
         text: root.label;
         color: Theme.ink;
         font-family: Theme.font;
-        font-size: 30px;
+        font-size: 26px;
         font-weight: 600;
         horizontal-alignment: center;
     }
 
     Text {
-        y: 360px;
+        y: 266px;
         width: parent.width;
-        height: 28px;
+        height: 24px;
         text: root.detail;
         color: Theme.ink-faint;
         font-family: Theme.font;
-        font-size: 17px;
+        font-size: 15px;
         horizontal-alignment: center;
     }
 
@@ -85,7 +85,7 @@ component SceneTile inherits Rectangle {
 }
 
 // The screensaver chooser a swipe down on the player opens: the Earth turning,
-// or the Nautilus' voyage, or either at random. A tap outside closes it.
+// the Nautilus' voyage, an invented planet, the solar tour, or any at random. A tap outside closes it.
 export component ScenePicker inherits Rectangle {
     width: 1080px;
     height: 1080px;
@@ -103,7 +103,7 @@ export component ScenePicker inherits Rectangle {
     }
 
     Text {
-        y: 214px;
+        y: 150px;
         width: parent.width;
         height: 44px;
         text: "Screensaver";
@@ -115,7 +115,7 @@ export component ScenePicker inherits Rectangle {
     }
 
     Text {
-        y: 262px;
+        y: 198px;
         width: parent.width;
         height: 28px;
         text: "Pick what fills the glass";
@@ -126,8 +126,8 @@ export component ScenePicker inherits Rectangle {
     }
 
     SceneTile {
-        x: 540px - 30px - self.width;
-        y: 330px;
+        x: 540px - 20px - self.width;
+        y: 250px;
         label: "Earth";
         detail: "The planet turning";
         deep: #0b2b52;
@@ -140,8 +140,8 @@ export component ScenePicker inherits Rectangle {
     }
 
     SceneTile {
-        x: 540px + 30px;
-        y: 330px;
+        x: 540px + 20px;
+        y: 250px;
         label: "Nautilus";
         detail: "A voyage under the sea";
         deep: #072630;
@@ -153,9 +153,37 @@ export component ScenePicker inherits Rectangle {
         }
     }
 
+    SceneTile {
+        x: 540px - 20px - self.width;
+        y: 570px;
+        label: "Planet";
+        detail: "An invented world";
+        deep: #2a1a0c;
+        glass: @radial-gradient(circle, #c9874a 0%, #7a4a22 32%, #2a1a0c 52%, #2a1a0c00 68%);
+        rim: #e8b070;
+        picked => {
+            App.choosing = false;
+            App.show-visualizer(2);
+        }
+    }
+
+    SceneTile {
+        x: 540px + 20px;
+        y: 570px;
+        label: "Solar tour";
+        detail: "A grand tour of the stars";
+        deep: #0a0820;
+        glass: @radial-gradient(circle, #5a4ab0 0%, #2a2166 32%, #0a0820 52%, #0a082000 68%);
+        rim: #a99cff;
+        picked => {
+            App.choosing = false;
+            App.show-visualizer(3);
+        }
+    }
+
     PillButton {
         x: (parent.width - self.width) / 2;
-        y: 770px;
+        y: 880px;
         label: "Surprise me";
         primary: false;
         clicked => {

@@ -42,7 +42,40 @@ Spotify **Premium** account.
   rotating Blue Marble with Black Marble city lights, drifting clouds and their shadows, sun glint,
   sunset colour along the terminator and a scattering atmosphere. The **Nautilus** is the view from its salon window on a Jules Verne voyage, drawn as a
   3D scene: seventeen seas from sunlit kelp shallows, a coral reef and a seagrass meadow to a blue
-  hole, a lava cave, a drowned city, a glass-sponge reef, the abyss and the polar ice (see [docs/nautilus.md](docs/nautilus.md)). Swipe down on the player
+  hole, a lava cave, a drowned city, a glass-sponge reef, the abyss and the polar ice (see [docs/nautilus.md](docs/nautilus.md)). The **Planet** is an
+  invented world generated on the GPU from a random seed — plates, mountains, climate and biomes,
+  storms and city lights — seen whole and then from low orbit over its horizon
+  (`PLANET_SEED` picks the world, `PLANET_VIEW=globe` or `horizon` holds one view). The **Solar tour**
+  is a grand tour of invented star systems: a star — red, orange and yellow dwarfs, white and blue
+  stars, a swollen red giant or a tiny white dwarf, each lighting its worlds in its own colour —
+  five to eight planets (temperate, ocean, desert, ice, lava, barren, gas and ice giants, some
+  ringed) and moons of the kinds ours has (cratered, icy, volcanic, hazy, captured rock). Some
+  giants have a moon as big as a planet, a world of its own mapped in full with air, seas and
+  clouds. The tour drops out of a hyperjump, orbits three planets high and low (and such a moon
+  after its giant), and jumps on to the next star, ten to twelve minutes a system. Crossings fly
+  real manoeuvres, each named and explained on screen as it happens
+  ([docs/solar-assist.jpg](docs/solar-assist.jpg)): a departure burn, a coast along a transfer
+  ellipse round the star (a Hohmann transfer when it sweeps half way round), a gravity assist past a
+  planet on the way (its turn and the speed traded worked out from the planet's mass), or an Oberth
+  dive to perihelion past the star, burning where thrust counts most, then a capture burn into
+  orbit, and an escape burn before the jump. In low orbit a close-up pass adds grain and lit
+  slopes finer than the maps ([docs/solar-low-detail.jpg](docs/solar-low-detail.jpg), before and
+  after), drawn only near the ground. Clouds are shaded as a layer with depth — tops facing the
+  sun bright and their far sides grey, thicker toward the limb, thin edges glowing with the star
+  behind them — and in low orbit a second, higher shell holds the densest clouds, so they stand
+  up from the deck, slide past it as the camera moves and break the horizon
+  ([docs/solar-cloud-layers.jpg](docs/solar-cloud-layers.jpg), without and with).
+  A minimap of the system shows the orbits, the planets, the route and the ship
+  ([docs/solar-flyby.jpg](docs/solar-flyby.jpg), [docs/solar-moon.jpg](docs/solar-moon.jpg)), beside a HUD of the
+  destination, ETA, distance and real orbital speeds. Each jump uses one of five named drives, each
+  with its own look — Lumen Drift, Tachyon Tunnel, Fold Drive, Ion Slipstream and Bubble Drive
+  ([docs/solar-warps.jpg](docs/solar-warps.jpg): Lumen Drift a blaze of blue rays, Fold Drive a starfield streaming past warped space, Bubble Drive a lensing bubble round the ship) — and while in orbit a scanner surveys the planet
+  with progress bars and results in real units: atmosphere (pressure and gas mix), gravimetry,
+  climate, magnetic field, surface radiation and a search for biosignatures
+  ([docs/solar-scanner.jpg](docs/solar-scanner.jpg)). Planet maps stream in on the GPU a few rows
+  a frame while it travels (`SOLAR_SEED`, `SOLAR_GEN_ROWS`; screenshots of every key moment:
+  `SOLAR_SHOTS_SEEDS=5,11 cargo test --release solar::tests::screenshots -- --ignored`, and of
+  every drive: `solar::tests::warps`). Swipe down on the player
   to summon the visualiser, swipe left or right on the dive to travel on to the next sea or back,
   and tap anywhere to fade back.
 - **Touch first**: swipes are the only navigation — right for the queue, left for playlists, with the
@@ -441,6 +474,16 @@ src/
 ├── motion.rs          Animato: accent tween, reveal, pulse
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
 ├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
+├── planet.rs          idle scene: an invented planet, its maps generated on the GPU from a seed, seen whole and from low orbit
+├── noise3d.rs         a 64³ volume of smooth noise and its gradient, which the planet and solar shaders sample
+├── shader_lab.rs      tests that compile WGSL experiments and dump the planet and solar shaders for shader-db
+├── solar/             idle scene: the grand tour of star systems
+│   ├── system.rs      seeded stars, planets, rings and moons, with real masses and orbital speeds
+│   ├── tour.rs        the timeline: transfers, orbits, departure, hyperjump; camera and HUD at any moment
+│   ├── scan.rs        the orbital survey: what each scan finds about a planet, and when
+│   ├── stream.rs      paints planet, moon and sky maps on the GPU a band of rows per frame, into two slots
+│   ├── generate.wgsl  the map generator for every kind of body
+│   └── frame.wgsl     background (stars, galaxy, glare, warp) and one ray-traced quad per body
 ├── shaders/           WESL package, linked to WGSL by `build.rs`
 │   ├── common.wesl    shared smoothing, distance and noise functions
 │   ├── scene.wesl     the dive: water, seabed, models, glass and sprites
@@ -526,6 +569,25 @@ numbers match the Pi's own `V3D_DEBUG=shaderdb` shader for shader. **Run
 `deploy/v3d-shaderdb/check.sh` before committing a shader change**: it fails if any shader runs at
 fewer threads than in `deploy/v3d-shaderdb/baseline.txt` or starts spilling, the cliff a change can
 fall off with no visible difference in the code (`check.sh . --update` accepts a new baseline).
+The baseline covers the dive, the Planet and the Solar tour: every Planet and Solar pipeline
+runs at four threads with no spills. They get there by reading smooth noise from a small 3D
+texture (`src/noise3d.rs`) instead of hashing it, and by splitting each look into many small
+pipelines, specialised with override constants and blended together in one render pass, rather
+than one large shader.
+**Estimating a frame's GPU time without a Pi**: `deploy/pi-estimate.sh` counts every draw's pixels
+at each key moment of the Planet scene and the solar tour on this machine's driver (pipeline
+statistics queries; Mesa's lavapipe has them), then costs them with the Pi compiler's numbers from
+`deploy/v3d-shaderdb/baseline.txt`: milliseconds a frame per moment, the heaviest passes, and what
+streaming maps adds. It prints a floor beside each estimate: on the V3D a `discard` does not stop the
+shader (the pixel is masked and the rest runs), but work inside an `if` is skipped for 16-pixel
+groups that all leave it, so a shader that branches instead of discarding approaches the floor. The
+scale comes from `--ms-per-inst` (0.025, from `gpu_cost` on the Pi); one real measurement of a
+moment calibrates it. What it showed for the solar tour, and what was done about it (all four cut
+the estimate by about a third to a half): a depth mask of each body's solid disc drawn first, so the
+GPU skips shading anything a nearer body hides, the background included; bodies drawn as a fan of
+triangles round their silhouette instead of a rectangle; body shaders that branch instead of
+discarding; and the galaxy and stars baked into a 4096 × 2048 map once a system (16 rows a frame,
+64 MB for this system and the next) instead of three layers of stars worked out per pixel.
 `spotify-round-tests gpu_cost::videocore_vii --ignored` asserts that the headless adapter really is
 the Pi 5's V3D; run it before trusting a Pi measurement. So:
 
@@ -553,7 +615,7 @@ the Pi 5's V3D; run it before trusting a Pi measurement. So:
   queues work ahead of the window's frames faster than the GPU finishes it, until every frame on
   screen is late.
 
-`SPOTIFY_ROUND_SCENE=globe` (or `nautilus`) shows that scene from the start, for measuring one with
+`SPOTIFY_ROUND_SCENE=globe` (or `nautilus`, `planet` or `solar`) shows that scene from the start, for measuring one with
 `SPOTIFY_ROUND_FULL_SPEED`. `WGPU_BACKEND` picks the backend (`gl`, `vulkan`). The display runs on
 Vulkan, because wgpu's OpenGL ES backend cannot present to cage's window; the tests and benchmarks
 run headless on the Pi's OpenGL ES driver, which is faster there (it has early-Z).
