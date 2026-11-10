@@ -435,8 +435,8 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
     let r = max(length(s), 1e-4);
     let theta = atan2(s.y, s.x);
     // Around the heading by cosine and sine, so noise has no seam where the
-    // angle wraps.
-    let around = vec2<f32>(cos(theta), sin(theta));
+    // angle wraps: the pixel's own direction from the heading.
+    let around = s / r;
     let logr = log(r);
     let warp = params.warp.x;
     let t = params.warp.w;

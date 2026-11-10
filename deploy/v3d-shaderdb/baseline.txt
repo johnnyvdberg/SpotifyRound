@@ -662,19 +662,19 @@ Solar burn dust #0               vs_dust        VS-bin   227   4     0   76    2
 Solar burn rim #0                fs_rim         FS        53   4     0   22     9        0:0    2    3
 Solar burn rim #0                vs_rim         VS        76   4     0   40    10        0:0    0    1
 Solar burn rim #0                vs_rim         VS-bin    75   4     0   39    11        0:0    0    0
-Solar warp Lumen Drift #0        fs_warp        FS       351   2     0  123    43        0:0    0    5
+Solar warp Lumen Drift #0        fs_warp        FS       345   2     0  122    43        0:0    0    7
 Solar warp Lumen Drift #0        vs_background  VS        63   4     0   36    10        0:0    0    3
 Solar warp Lumen Drift #0        vs_background  VS-bin    32   4     0   23     6        0:0    0    0
 Solar warp Tachyon Tunnel #0     fs_warp        FS       226   4     0   82    24        0:0    0    7
 Solar warp Tachyon Tunnel #0     vs_background  VS        63   4     0   36    10        0:0    0    3
 Solar warp Tachyon Tunnel #0     vs_background  VS-bin    32   4     0   23     6        0:0    0    0
-Solar warp Fold Drive #0         fs_warp        FS       464   4     0  148    32        0:0    0   24
+Solar warp Fold Drive #0         fs_warp        FS       461   4     0  147    32        0:0    0   29
 Solar warp Fold Drive #0         vs_background  VS        63   4     0   36    10        0:0    0    3
 Solar warp Fold Drive #0         vs_background  VS-bin    32   4     0   23     6        0:0    0    0
-Solar warp Ion Slipstream #0     fs_warp        FS       269   4     0   82    30        0:0    0    6
+Solar warp Ion Slipstream #0     fs_warp        FS       250   4     0   81    30        0:0    0    5
 Solar warp Ion Slipstream #0     vs_background  VS        63   4     0   36    10        0:0    0    3
 Solar warp Ion Slipstream #0     vs_background  VS-bin    32   4     0   23     6        0:0    0    0
-Solar warp Bubble Drive #0       fs_warp        FS       242   4     0   85    20        0:0    1   11
+Solar warp Bubble Drive #0       fs_warp        FS       238   4     0   84    21        0:0    1   13
 Solar warp Bubble Drive #0       vs_background  VS        63   4     0   36    10        0:0    0    3
 Solar warp Bubble Drive #0       vs_background  VS-bin    32   4     0   23     6        0:0    0    0
 Solar eclipse #0                 fs_eclipse     FS       277   4     1   55    26        0:0    4   27
