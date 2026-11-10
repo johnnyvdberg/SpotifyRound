@@ -149,11 +149,17 @@ fn craters(p: vec3<f32>, scale: f32, density: f32, seed: i32) -> vec2<f32> {
         let d = distance(x, centre) / radius;
         if (d < 1.0) {
             h += (d * d - 1.0) * 0.6 * radius;
+            // The bigger ones have a central peak.
+            h += exp(-d * d / 0.02) * 0.2 * radius * step(0.45, size);
         }
         let rim = (d - 1.0) / 0.22;
         h += exp(-rim * rim) * 0.25 * radius;
-        let young = step(0.8, hash3(id + vec3<i32>(seed, 6, 7)));
-        rays += young * exp(-max(d - 1.0, 0.0) * 1.6) * step(0.9, d) * 0.6;
+        if (hash3(id + vec3<i32>(seed, 6, 7)) > 0.8) {
+            // The young ones' bright ejecta, thrown out in streaks.
+            let dir = normalize(x - centre);
+            let streak = smoothstep(0.1, 0.9, sin(dot(dir, vec3<f32>(11.0, 17.0, 13.0)) + size * 40.0) * sin(dot(dir, vec3<f32>(-19.0, 7.0, 15.0))) + 0.5);
+            rays += exp(-max(d - 1.0, 0.0) * mix(2.4, 0.9, streak)) * step(0.9, d) * 0.6 * mix(0.4, 1.0, streak);
+        }
     }
     return vec2<f32>(h / scale, rays);
 }
@@ -596,6 +602,12 @@ fn living_day(c: Climate, steep: f32) -> vec3<f32> {
     return mix(sea, ground, c.land);
 }
 
+// How much of a lava sea glows: plates of crust parted by molten seams.
+fn lava_seams(p: vec3<f32>) -> f32 {
+    let o = gen.offsets;
+    return 0.6 + 0.4 * cracks(p * 23.0 + o[3].xyz, 0.06);
+}
+
 // The day colour of every other kind with ground.
 fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
     let o = gen.offsets;
@@ -621,8 +633,10 @@ fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
         let lines = max(cracks(p * 7.0 + o[0].xyz, 0.03), cracks(p * 19.0 + o[1].xyz, 0.025) * 0.7);
         let crust = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 12.0 + o[2].xyz, 4)));
         // By day the lava reads as dark red rock with a crust on it; its
-        // light is mostly the emissive glow, which shows best at night.
-        return mix(crust * (0.8 + 0.4 * (grain + 0.5)), pal(1) * 0.25, max(low, lines * c.land));
+        // light is mostly the emissive glow, which shows best at night. The
+        // seas are crusted over too, in plates parted by bright seams.
+        let sea = mix(crust * 0.6, pal(1) * 0.25, lava_seams(p));
+        return mix(crust * (0.8 + 0.4 * (grain + 0.5)), mix(pal(1) * 0.25, sea, low), max(low, lines * c.land));
     } else if (k == VOLCANIC) {
         // Sulphur yellow and orange, white frost, black calderas with red rims.
         var ground = mix(pal(0), pal(1), smoothstep(-0.1, 0.35, fbm(p * 5.0 + o[0].xyz, 5)));
@@ -744,9 +758,9 @@ fn fs_lights(in: Varying) -> @location(0) vec4<f32> {
         let c = climate(in.position.xy);
         var molten = 0.0;
         if (GROUP == 1) {
-            molten = max(1.0 - c.land, cracks(p * 7.0 + o[0].xyz, 0.03) * c.land);
+            molten = max((1.0 - c.land) * lava_seams(p), cracks(p * 7.0 + o[0].xyz, 0.03) * c.land);
         } else {
-            molten = cracks(p * 19.0 + o[1].xyz, 0.025) * 0.7 * c.land;
+            molten = max(cracks(p * 19.0 + o[1].xyz, 0.025) * 0.7, cracks(p * 47.0 + o[2].zxy, 0.02) * 0.35) * c.land;
         }
         light = molten * (0.6 + 0.4 * fbm(p * 30.0, 3) + 0.4);
     } else if (GROUP == 2) {
