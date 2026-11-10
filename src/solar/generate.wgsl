@@ -354,23 +354,42 @@ struct Surface {
     cloud: f32,
 };
 
-// Bands of a giant: latitude warped by turbulence and wound by storms.
+// Bands of a giant: latitude warped by turbulence and wound by storms, the
+// bands' edges curled into waves where the winds shear past each other, fine
+// streaks along the winds, and small eddies with pale ovals at their hearts.
 fn giant(p: vec3<f32>, k: i32) -> Surface {
     let o = gen.offsets;
     var c = p;
-    for (var i = 0; i < 6; i++) {
+    for (var i = 0; i < 12; i++) {
+        // The first six wind broad storms, the rest small, tight eddies.
         let storm = gen.storms[i];
+        let r = select(0.06, 0.12, i < 6);
         let d = distance(c, storm.xyz);
-        c = turn_about(c, storm.xyz, storm.w * 1.4 * exp(-d * d / (0.12 * 0.12)));
+        c = turn_about(c, storm.xyz, storm.w * select(2.4, 1.4, i < 6) * exp(-d * d / (r * r)));
     }
+    // Curls: the flow wound a little at a finer scale before it is drawn out.
+    // (One fetch: the noise's slope gives all three directions.)
+    c = normalize(c + noised(c * 13.0 + o[1].zxy).yzw * 0.02);
     let streaks = vec3<f32>(c.x * 3.0, c.y * 34.0, c.z * 3.0);
     let turbulence = fbm(streaks + o[0].xyz, 6) * 0.9 + fbm(c * 9.0 + o[1].xyz, 4) * 0.35;
-    let y = c.y + turbulence * 0.05;
+    let phase = c.y * (18.0 + o[2].w) + o[3].w + turbulence * 0.9;
+    // Waves along the edges of the bands, where the winds shear.
+    let lon = atan2(c.x, c.z);
+    let edge = abs(cos(phase));
+    let waves = sin(lon * 26.0 + c.y * 30.0 + turbulence * 2.0) * edge * edge * (1.0 - smoothstep(0.6, 0.85, abs(c.y)));
+    let y = c.y + turbulence * 0.05 + waves * 0.008;
     let bands = sin(y * (18.0 + o[2].w) + o[3].w) * 0.5 + 0.5;
     let fine = sin(y * 61.0 + turbulence * 3.0) * 0.5 + 0.5;
     var colour = mix(pal(0), pal(1), smoothstep(0.25, 0.75, bands));
     colour = mix(colour, pal(2), smoothstep(0.55, 0.95, fine) * 0.45);
     colour = mix(colour, pal(3), smoothstep(0.85, 0.98, abs(p.y)) * 0.6);
+    // Pale ovals in the small eddies, each with a darker ring.
+    for (var i = 6; i < 12; i++) {
+        let rel = p - gen.storms[i].xyz;
+        let d = length(vec3<f32>(rel.x, rel.y * 1.7, rel.z)) / 0.036;
+        colour = mix(colour, mix(pal(0), vec3<f32>(1.0), 0.3), (1.0 - smoothstep(0.45, 1.0, d)) * 0.85);
+        colour = mix(colour, pal(1) * 0.75, exp(-(d - 1.1) * (d - 1.1) / 0.03) * 0.5);
+    }
     // One great storm: an oval of the darker colour with a pale rim.
     let spot = gen.storms[0].xyz;
     let rel = p - spot;
@@ -378,10 +397,11 @@ fn giant(p: vec3<f32>, k: i32) -> Surface {
     colour = mix(colour, pal(1) * 0.85, (1.0 - smoothstep(0.6, 1.0, oval)) * 0.85);
     colour = mix(colour, pal(3), exp(-pow((oval - 1.1) / 0.15, 2.0)) * 0.35);
     if (k == ICE_GIANT) {
-        colour = mix(pal(0), colour, 0.3);
+        colour = mix(pal(0), colour, 0.4);
     }
     var s: Surface;
-    s.day = colour * (0.94 + 0.12 * fbm(c * 40.0, 3));
+    // Mottled, in fine streaks drawn out along the winds.
+    s.day = colour * (0.93 + 0.14 * (fbm(vec3<f32>(c.x * 30.0, c.y * 120.0, c.z * 30.0), 3) + 0.5));
     s.bump = vec2<f32>(0.0);
     s.water = 0.0;
     s.night = 0.0;
