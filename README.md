@@ -78,6 +78,12 @@ Spotify **Premium** account.
   every drive: `solar::tests::warps`). Swipe down on the player
   to summon the visualiser, swipe left or right on the dive to travel on to the next sea or back,
   and tap anywhere to fade back.
+- **Now-playing card** on every idle scene: the cover, the track, its artists and the playlist (or
+  album) it plays from, with previous, play/pause and next, and an add button that shows whether
+  the track is in your Liked Songs and saves or removes it. Once the visualiser is up it stays
+  when playback resumes — the card shows what plays — until you tap the scene. The button needs
+  the `user-library-read` and `user-library-modify` scopes; a token granted before them asks you to
+  sign in again.
 - **Touch first**: swipes are the only navigation — right for the queue, left for playlists, with the
   player in the middle — and dragging along the rim of the screen scrubs. Everything is laid out
   inside the circle so nothing hides in the corners of the round panel.

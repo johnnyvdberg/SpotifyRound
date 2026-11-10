@@ -193,6 +193,12 @@ pub trait WindowExt: Sized {
     fn set_screen(&self, screen: i32);
     fn set_status(&self, message: &str, visible: bool);
     fn set_track_text(&self, title: &str, subtitle: &str, has_track: bool);
+    /// The idle card's lines under the title: the artists, and what the track
+    /// plays from.
+    fn set_card_text(&self, artist: &str, context: &str);
+    /// Whether the track is in Liked Songs; `None` while that is not known, or
+    /// for an item that cannot be saved.
+    fn set_liked(&self, liked: Option<bool>);
     fn set_cover(&self, art: Option<&Art>);
     fn set_playback(&self, playing: bool, controls: bool, shuffle: bool, repeat: i32);
     fn set_skip_state(&self, can_previous: bool, can_next: bool);
@@ -305,6 +311,18 @@ impl WindowExt for AppWindow {
         player.set_title(title.into());
         player.set_subtitle(subtitle.into());
         player.set_has_track(has_track);
+    }
+
+    fn set_card_text(&self, artist: &str, context: &str) {
+        let player = self.global::<Player>();
+        player.set_artist(artist.into());
+        player.set_context(context.into());
+    }
+
+    fn set_liked(&self, liked: Option<bool>) {
+        let player = self.global::<Player>();
+        player.set_liked(liked.unwrap_or(false));
+        player.set_can_like(liked.is_some());
     }
 
     fn set_cover(&self, art: Option<&Art>) {
@@ -420,7 +438,11 @@ impl WindowExt for AppWindow {
         let manoeuvre = hud.manoeuvre.clone().unwrap_or_default();
         idle.set_man_name(manoeuvre.name.as_str().into());
         idle.set_man_text(manoeuvre.text.as_str().into());
-        idle.set_man_progress(if manoeuvre.name.is_empty() { -1.0 } else { manoeuvre.progress });
+        idle.set_man_progress(if manoeuvre.name.is_empty() {
+            -1.0
+        } else {
+            manoeuvre.progress
+        });
         idle.set_man_dv(manoeuvre.dv);
         idle.set_man_done(manoeuvre.done());
         idle.set_man_throttle(manoeuvre.throttle());
@@ -895,7 +917,9 @@ mod preview {
         window.set_ring_frame_image(ring(0.12, art.accent()));
         save(&window, &soft, "08-no-previous");
 
-        // ---- idle visualizer ----
+        // ---- idle visualizer, with the card of what plays ----
+        window.set_card_text("Mira Vale", "Late Night Drive");
+        window.set_liked(Some(false));
         let pixels = crate::globe::render_once(0.0).unwrap();
         window.set_idle_scene(0, crate::globe::SIZE as f32);
         window.set_idle(true, 1.0);
@@ -907,6 +931,10 @@ mod preview {
             ),
         ));
         save(&window, &soft, "09-idle");
+        // The track saved to Liked Songs, and playing on.
+        window.set_liked(Some(true));
+        window.set_skip_state(true, true);
+        save(&window, &soft, "09-idle-liked");
 
         // Half-way through its cross-fade.
         window.set_idle(true, 0.45);
@@ -926,7 +954,9 @@ mod preview {
         save(&window, &soft, "12-nautilus");
 
         // The chart a long press opens, turned a sea ahead of the boat.
-        let names: Vec<&str> = (0..crate::voyage::BIOMES).map(crate::dive3d::sea_title).collect();
+        let names: Vec<&str> = (0..crate::voyage::BIOMES)
+            .map(crate::dive3d::sea_title)
+            .collect();
         window.set_seas(&names, 3);
         window.global::<Idle>().set_charting(true);
         save(&window, &soft, "13-sea-chart");

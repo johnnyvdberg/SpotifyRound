@@ -30,6 +30,10 @@ pub const SCOPES: &[&str] = &[
     "user-read-currently-playing",
     "playlist-read-private",
     "playlist-read-collaborative",
+    // The idle card's add button: whether the track is in Liked Songs, and
+    // saving it there or taking it out.
+    "user-library-read",
+    "user-library-modify",
 ];
 
 const AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
@@ -446,18 +450,36 @@ fn random_urlsafe(bytes: usize) -> String {
 fn load_refresh_token(path: &std::path::Path, client_id: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     match serde_json::from_str::<StoredToken>(&text) {
-        Ok(stored) if stored.client_id == client_id => Some(stored.refresh_token),
-        Ok(_) => {
+        Ok(stored) if stored.client_id != client_id => {
             tracing::info!(
                 "the stored token belongs to another client id; authorization is needed"
             );
             None
         }
+        // A grant from before a scope was added cannot be widened by
+        // refreshing it: ask again.
+        Ok(stored) if !covers_scopes(&stored.scopes) => {
+            tracing::info!(
+                granted = %stored.scopes.join(" "),
+                "the stored token lacks a scope this build needs; authorization is needed"
+            );
+            None
+        }
+        Ok(stored) => Some(stored.refresh_token),
         Err(err) => {
             tracing::warn!(%err, "ignoring an unreadable token file");
             None
         }
     }
+}
+
+/// Whether a stored grant has every scope in `SCOPES`. A token file that never
+/// recorded its scopes is taken on trust; the next refresh fills them in.
+fn covers_scopes(granted: &[String]) -> bool {
+    granted.is_empty()
+        || SCOPES
+            .iter()
+            .all(|scope| granted.iter().any(|have| have == scope))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -754,6 +776,19 @@ mod tests {
         assert_eq!(params["code_challenge"], "challenge");
         assert_eq!(params["state"], "state");
         assert!(params["scope"].contains("user-modify-playback-state"));
+    }
+
+    #[test]
+    fn a_grant_without_the_library_scopes_asks_again() {
+        let all: Vec<String> = SCOPES.iter().map(|scope| (*scope).to_owned()).collect();
+        assert!(covers_scopes(&all));
+        assert!(covers_scopes(&[]), "an unrecorded grant is kept");
+        let old: Vec<String> = all
+            .iter()
+            .filter(|scope| !scope.starts_with("user-library"))
+            .cloned()
+            .collect();
+        assert!(!covers_scopes(&old));
     }
 
     #[test]

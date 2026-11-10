@@ -63,6 +63,14 @@ export global Player {
     in-out property <bool> controls: false;
     in-out property <string> title: "";
     in-out property <string> subtitle: "";
+    // The idle card's lines: the artists alone, and what is playing from (the
+    // playlist's name, or the album, show or Liked Songs).
+    in-out property <string> artist: "";
+    in-out property <string> context: "";
+    // Whether the track is in Liked Songs, as Spotify last said, and whether
+    // that is known and the item can be saved at all (a local file cannot).
+    in-out property <bool> liked: false;
+    in-out property <bool> can-like: false;
     in-out property <image> cover;
     in-out property <bool> has-cover: false;
     // Animated from Rust (animato tween): 0 = hidden, 1 = fully revealed.
@@ -220,6 +228,8 @@ export global App {
     callback next();
     callback previous();
     callback toggle-play();
+    // The idle card's add button: into Liked Songs, or out again.
+    callback toggle-liked();
     callback seek(float);
     callback scrub(float);
     callback toggle-shuffle();

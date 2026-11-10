@@ -53,6 +53,9 @@ const NO_DEVICES: &str = "No Spotify Connect devices. Chromecast and Google Home
      on them — start it from the Spotify app, then refresh.";
 
 const LIBRARY_TTL: Duration = Duration::from_secs(300);
+/// Whether the track is in Liked Songs is asked again this often, so a save
+/// made from the phone shows on the idle card too.
+const LIKED_TTL: Duration = Duration::from_secs(60);
 const QUEUE_TTL: Duration = Duration::from_secs(8);
 /// Devices come and go as phones and speakers come online, so the list is
 /// re-fetched whenever the picker is opened after this long.
@@ -200,6 +203,25 @@ struct Model {
     scrub: Option<f32>,
     /// Bookkeeping for the idle visualizer.
     idle: IdleState,
+    /// Whether the item playing is in Liked Songs.
+    liked: Liked,
+    /// Names of playlists that play but are not among the user's own, looked
+    /// up once each; empty while the lookup runs or after it failed.
+    context_names: HashMap<String, String>,
+}
+
+/// Whether the item playing is in Liked Songs, as Spotify last said.
+#[derive(Default)]
+struct Liked {
+    /// The item it was asked about.
+    uri: Option<String>,
+    /// `None` until Spotify answers.
+    saved: Option<bool>,
+    /// When it was last asked, or changed from here.
+    checked: Option<Instant>,
+    /// Bumped by every change of item and every save from here, so an answer
+    /// to an older question cannot overwrite it.
+    generation: u64,
 }
 
 /// Tracks when the display should fall back to the idle visualizer.
@@ -225,6 +247,17 @@ struct IdleState {
     playing: bool,
 }
 
+impl IdleState {
+    /// A tap on the visuals. Closed while paused, they stay away until
+    /// playback resumes; closed while music plays, there is nothing to latch,
+    /// and the next pause brings them back as usual.
+    fn dismiss(&mut self) {
+        self.manual = false;
+        self.showing = false;
+        self.dismissed = !self.playing;
+    }
+}
+
 impl Model {
     fn new() -> Self {
         Self {
@@ -248,6 +281,8 @@ impl Model {
             ring_input: None,
             scrub: None,
             idle: IdleState::default(),
+            liked: Liked::default(),
+            context_names: HashMap::new(),
         }
     }
 
@@ -286,6 +321,11 @@ impl Model {
         }
         if self.idle.dismissed {
             return false;
+        }
+        // Once up, the visuals stay until a tap: when playback resumes, the
+        // card on them shows what plays instead of the player taking over.
+        if self.idle.showing {
+            return true;
         }
         if let Some(since) = self.idle.stopped_since {
             return now.saturating_duration_since(since) >= STOPPED_IDLE;
@@ -343,6 +383,8 @@ impl Model {
             return NowPlayingView {
                 title: placeholder.title.clone(),
                 subtitle: placeholder.subtitle.clone(),
+                artist: placeholder.subtitle.clone(),
+                context: String::new(),
                 has_track: true,
                 cover_url: placeholder.cover_url.clone(),
                 playlist_uri: placeholder.playlist_uri.clone(),
@@ -360,6 +402,8 @@ impl Model {
             subtitle: item
                 .map(Track::subtitle)
                 .unwrap_or_else(|| "Start playback on a Spotify device".to_owned()),
+            artist: item.map(Track::artist_names).unwrap_or_default(),
+            context: self.context_name().unwrap_or_default(),
             has_track: item.is_some(),
             cover_url: item
                 .and_then(|item| item.cover_url(ART_SIZE))
@@ -379,6 +423,80 @@ impl Model {
             }
             _ => String::new(),
         }
+    }
+
+    /// What the item plays from, as the idle card names it: the playlist, the
+    /// album or show, or Liked Songs. `None` for a playlist whose name is not
+    /// known yet (`unnamed_playlist`), or a context with no name to give.
+    fn context_name(&self) -> Option<String> {
+        let playback = self.playback.as_ref()?;
+        let context = playback.context.as_ref()?;
+        let uri = context.uri.as_deref().unwrap_or_default();
+        match context.kind.as_deref() {
+            Some("playlist") => self
+                .playlists
+                .iter()
+                .find(|playlist| playlist.uri == uri)
+                .map(|playlist| playlist.name.clone())
+                .or_else(|| self.context_names.get(uri).cloned())
+                .filter(|name| !name.is_empty()),
+            Some("collection") => Some("Liked Songs".to_owned()),
+            Some("album") => playback.item.as_ref()?.album_name().map(str::to_owned),
+            Some("show") => Some(playback.item.as_ref()?.show.as_ref()?.name.clone()),
+            _ => None,
+        }
+    }
+
+    /// A playlist playing whose name has not been looked up yet: one followed
+    /// from someone else, missing from the user's own list.
+    fn unnamed_playlist(&self) -> Option<String> {
+        let context = self.playback.as_ref()?.context.as_ref()?;
+        let uri = context.uri.as_deref()?;
+        (context.kind.as_deref() == Some("playlist")
+            && !self.playlists.iter().any(|playlist| playlist.uri == uri)
+            && !self.context_names.contains_key(uri))
+        .then(|| uri.to_owned())
+    }
+
+    /// The item playing, if it is one that can go into Liked Songs: a track or
+    /// an episode from Spotify, not a local file.
+    fn likable_uri(&self) -> Option<String> {
+        if self.placeholder.is_some() {
+            return None;
+        }
+        self.current_uri()
+            .filter(|uri| uri.starts_with("spotify:track:") || uri.starts_with("spotify:episode:"))
+    }
+
+    /// Follows the item playing, and says whether Spotify should be asked
+    /// whether it is saved: on a new item, and every `LIKED_TTL` after. Returns
+    /// the item and the question's generation.
+    fn liked_due(&mut self, now: Instant) -> Option<(String, u64)> {
+        let uri = self.likable_uri();
+        if uri != self.liked.uri {
+            self.liked = Liked {
+                uri: uri.clone(),
+                generation: self.liked.generation + 1,
+                ..Liked::default()
+            };
+        }
+        let uri = uri?;
+        let fresh = self
+            .liked
+            .checked
+            .is_some_and(|checked| now.saturating_duration_since(checked) < LIKED_TTL);
+        if fresh {
+            return None;
+        }
+        self.liked.checked = Some(now);
+        Some((uri, self.liked.generation))
+    }
+
+    /// What the add button shows: `None` while nothing is known, or for an
+    /// item that cannot be saved.
+    fn liked_view(&self) -> Option<bool> {
+        self.liked.uri.as_ref()?;
+        self.liked.saved
     }
 
     fn current_uri(&self) -> Option<String> {
@@ -707,6 +825,9 @@ enum Skip {
 struct NowPlayingView {
     title: String,
     subtitle: String,
+    /// The idle card's lines: the artists, and what the item plays from.
+    artist: String,
+    context: String,
     has_track: bool,
     cover_url: Option<String>,
     playlist_uri: String,
@@ -882,6 +1003,12 @@ impl Shared {
             let this = self.clone();
             app.on_toggle_play(move || {
                 this.spawn_cmd(|this| async move { this.cmd_toggle_play().await });
+            });
+        }
+        {
+            let this = self.clone();
+            app.on_toggle_liked(move || {
+                this.spawn_cmd(|this| async move { this.cmd_toggle_liked().await });
             });
         }
         {
@@ -1358,6 +1485,91 @@ impl Shared {
         }
     }
 
+    // ---- liked songs --------------------------------------------------
+
+    /// Asks Spotify whether `uri` is in Liked Songs, for the question numbered
+    /// `generation`; a later item or a save from here makes the answer moot.
+    async fn check_liked(self: Arc<Self>, uri: String, generation: u64) {
+        let Some(source) = self.source.clone() else {
+            return;
+        };
+        match source.saved(&uri).await {
+            Ok(saved) => {
+                {
+                    let mut model = self.lock();
+                    if model.liked.generation != generation {
+                        return;
+                    }
+                    model.liked.saved = Some(saved);
+                }
+                self.push_liked();
+            }
+            Err(err) => tracing::warn!(%err, "checking Liked Songs failed"),
+        }
+    }
+
+    /// The idle card's add button: saves the item to Liked Songs, or takes it
+    /// out, showing the change before Spotify confirms it.
+    async fn cmd_toggle_liked(self: Arc<Self>) {
+        let Some(source) = self.source.clone() else {
+            return;
+        };
+        let change = {
+            let mut model = self.lock();
+            let uri = model.liked.uri.clone();
+            match (uri, model.liked.saved) {
+                (Some(uri), Some(saved)) => {
+                    model.liked.saved = Some(!saved);
+                    model.liked.checked = Some(Instant::now());
+                    model.liked.generation += 1;
+                    Some((uri, !saved, model.liked.generation))
+                }
+                _ => None,
+            }
+        };
+        let Some((uri, target, generation)) = change else {
+            return;
+        };
+        self.push_liked();
+
+        if let Err(err) = source.set_saved(&uri, target).await {
+            {
+                let mut model = self.lock();
+                if model.liked.generation == generation {
+                    model.liked.saved = Some(!target);
+                }
+            }
+            self.push_liked();
+            self.report(&err);
+            return;
+        }
+        self.show_status(if target {
+            "Added to Liked Songs".to_owned()
+        } else {
+            "Removed from Liked Songs".to_owned()
+        });
+    }
+
+    fn push_liked(&self) {
+        let liked = self.lock().liked_view();
+        let _ = self.ui.upgrade_in_event_loop(move |ui| ui.set_liked(liked));
+    }
+
+    /// Looks up the name of a playlist that plays but is not in the user's own
+    /// list, for the idle card.
+    async fn name_playlist(self: Arc<Self>, uri: String) {
+        let Some(source) = self.source.clone() else {
+            return;
+        };
+        match source.playlist_name(&uri).await {
+            Ok(name) => {
+                self.lock().context_names.insert(uri, name);
+                self.render_now_playing(false);
+            }
+            Err(err) => tracing::debug!(%err, "naming the playlist failed"),
+        }
+    }
+
     fn push_playback(&self) {
         let (playing, controls, shuffle, repeat) = {
             let model = self.lock();
@@ -1607,6 +1819,22 @@ impl Shared {
     /// item on screen is a different one.
     fn render_now_playing(self: &Arc<Self>, track_changed: bool) {
         self.note_idle();
+        let (liked_due, unnamed, liked) = {
+            let mut model = self.lock();
+            let due = model.liked_due(Instant::now());
+            let unnamed = model.unnamed_playlist();
+            if let Some(uri) = unnamed.as_ref() {
+                // Asked once: an empty name stands for the lookup under way.
+                model.context_names.insert(uri.clone(), String::new());
+            }
+            (due, unnamed, model.liked_view())
+        };
+        if let Some((uri, generation)) = liked_due {
+            self.spawn_cmd(move |this| async move { this.check_liked(uri, generation).await });
+        }
+        if let Some(uri) = unnamed {
+            self.spawn_cmd(move |this| async move { this.name_playlist(uri).await });
+        }
         let (view, playing, controls, shuffle, repeat, can_previous, can_next, device) = {
             let model = self.lock();
             let state = model.playback.as_ref();
@@ -1630,6 +1858,8 @@ impl Shared {
         let NowPlayingView {
             title,
             subtitle,
+            artist,
+            context,
             has_track,
             cover_url,
             playlist_uri,
@@ -1638,6 +1868,8 @@ impl Shared {
         let has_device = !device_name.is_empty();
         let _ = self.ui.upgrade_in_event_loop(move |ui| {
             ui.set_track_text(&title, &subtitle, has_track);
+            ui.set_card_text(&artist, &context);
+            ui.set_liked(liked);
             ui.set_playback(playing, controls, shuffle, repeat);
             ui.set_skip_state(can_previous, can_next);
             ui.set_device(&device_name, device_icon, has_device);
@@ -1671,10 +1903,13 @@ impl Shared {
             model.can_next = false;
             model.art_visible = false;
             model.note_playback(false, false, Instant::now());
+            model.liked_due(Instant::now());
         }
 
         let _ = self.ui.upgrade_in_event_loop(|ui| {
             ui.set_track_text("Nothing playing", "Open Spotify and start playback", false);
+            ui.set_card_text("", "");
+            ui.set_liked(None);
             ui.set_playback(false, false, false, 0);
             ui.set_device("", "speaker", false);
             ui.set_cover(None);
@@ -2109,7 +2344,9 @@ impl Shared {
         model.idle.chosen = usize::try_from(scene)
             .ok()
             .and_then(|i| Scene::ALL.get(i).copied())
-            .or(Some(Scene::random(self.idle_scenes.load(Ordering::Relaxed))));
+            .or(Some(Scene::random(
+                self.idle_scenes.load(Ordering::Relaxed),
+            )));
         model.idle.manual = true;
         model.idle.dismissed = false;
     }
@@ -2119,8 +2356,7 @@ impl Shared {
     fn dismiss_visualizer(self: &Arc<Self>) {
         {
             let mut model = self.lock();
-            model.idle.manual = false;
-            model.idle.dismissed = true;
+            model.idle.dismiss();
         }
         self.navigate(SCREEN_NOW);
     }
@@ -2958,6 +3194,94 @@ mod tests {
         model.note_playback(false, true, now + Duration::from_secs(3));
         model.note_playback(true, true, now + Duration::from_secs(4));
         assert!(!model.wants_visualizer(now + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn resuming_leaves_the_visuals_up_until_a_tap() {
+        let mut model = Model::new();
+        let now = Instant::now();
+        model.note_playback(false, true, now);
+        let up = now + PAUSED_IDLE;
+        assert!(model.wants_visualizer(up));
+        model.idle.showing = true;
+
+        // Playback comes back: the card fills in, the visuals stay.
+        model.note_playback(true, true, up);
+        assert!(model.wants_visualizer(up + Duration::from_secs(1)));
+
+        // A tap while it plays closes them, without latching: the next pause
+        // brings them back.
+        model.idle.dismiss();
+        assert!(!model.wants_visualizer(up + Duration::from_secs(2)));
+        let paused = up + Duration::from_secs(3);
+        model.note_playback(false, true, paused);
+        assert!(model.wants_visualizer(paused + PAUSED_IDLE));
+    }
+
+    #[test]
+    fn a_tap_while_paused_keeps_the_visuals_away() {
+        let mut model = Model::new();
+        let now = Instant::now();
+        model.note_playback(false, true, now);
+        model.idle.showing = true;
+        model.idle.dismiss();
+        assert!(!model.wants_visualizer(now + PAUSED_IDLE * 3));
+    }
+
+    #[test]
+    fn liked_songs_is_asked_about_each_item_and_again_later() {
+        let mut model = Model::new();
+        let now = Instant::now();
+        model.playback = Some(track_state("spotify:track:a"));
+        let (uri, first) = model.liked_due(now).expect("a new item is asked about");
+        assert_eq!(uri, "spotify:track:a");
+        assert_eq!(model.liked_view(), None, "unknown until Spotify answers");
+        assert!(model.liked_due(now + Duration::from_secs(1)).is_none());
+
+        model.liked.saved = Some(true);
+        assert_eq!(model.liked_view(), Some(true));
+        assert!(
+            model.liked_due(now + LIKED_TTL).is_some(),
+            "asked again later"
+        );
+
+        // A new item forgets the answer, and outdates questions about the last.
+        model.playback = Some(track_state("spotify:track:b"));
+        let (_, second) = model.liked_due(now + LIKED_TTL).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(model.liked_view(), None);
+
+        // A local file cannot be saved.
+        model.playback = Some(track_state("spotify:local:x"));
+        assert!(model.liked_due(now + LIKED_TTL).is_none());
+        assert_eq!(model.liked_view(), None);
+    }
+
+    #[test]
+    fn the_card_names_the_playlist_or_album_it_plays_from() {
+        let mut model = Model::new();
+        let mut state = track_state("spotify:track:a");
+        state.context = Some(
+            serde_json::from_str(r#"{"uri":"spotify:playlist:theirs","type":"playlist"}"#).unwrap(),
+        );
+        model.playback = Some(state);
+        assert_eq!(model.context_name(), None);
+        assert_eq!(
+            model.unnamed_playlist().as_deref(),
+            Some("spotify:playlist:theirs")
+        );
+
+        model
+            .context_names
+            .insert("spotify:playlist:theirs".to_owned(), "Road trip".to_owned());
+        assert_eq!(model.context_name().as_deref(), Some("Road trip"));
+        assert_eq!(model.unnamed_playlist(), None);
+
+        model.playback.as_mut().unwrap().context = Some(
+            serde_json::from_str(r#"{"uri":"spotify:user:me:collection","type":"collection"}"#)
+                .unwrap(),
+        );
+        assert_eq!(model.context_name().as_deref(), Some("Liked Songs"));
     }
 
     #[test]

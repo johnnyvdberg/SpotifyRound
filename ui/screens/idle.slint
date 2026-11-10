@@ -1,5 +1,6 @@
 import { Pointer, Theme } from "../theme.slint";
-import { Idle } from "../state.slint";
+import { Idle, Player } from "../state.slint";
+import { NowPlayingCard } from "../components/now_playing_card.slint";
 import { SeaChart } from "sea_chart.slint";
 
 // Taps and horizontal swipes on the visuals. Only a press that starts here
@@ -621,6 +622,16 @@ export component IdleScreen inherits Rectangle {
         tapped => { Idle.dismiss(); }
         swiped(legs) => { Idle.travel(legs); }
         held => { Idle.charting = true; }
+    }
+
+    // What is playing, low in the circle, over the gestures so its buttons
+    // take their own taps. Like the HUD it fades through an `opacity`, which
+    // is 1 (no layer) once the visuals are up. Gone with them, so it never
+    // takes a tap meant for the player's own transport underneath.
+    if Player.has-track && Idle.fade > 0.05 : NowPlayingCard {
+        x: (parent.width - self.width) / 2;
+        y: 784px;
+        opacity: Idle.fade;
     }
 
     SeaChart { }

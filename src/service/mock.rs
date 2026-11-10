@@ -4,6 +4,7 @@
 //! artwork (procedurally generated covers) and controls, can be exercised
 //! without Spotify credentials or network access.
 
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -36,6 +37,8 @@ struct State {
     started: Instant,
     shuffle: bool,
     repeat: RepeatMode,
+    /// The URIs in the demo's Liked Songs.
+    liked: HashSet<String>,
 }
 
 /// A Spotify Connect device the demo playback can be moved to.
@@ -95,6 +98,7 @@ impl Mock {
                 started: Instant::now(),
                 shuffle: false,
                 repeat: RepeatMode::Off,
+                liked: HashSet::new(),
             })),
         }
     }
@@ -191,6 +195,28 @@ impl Mock {
     pub fn transfer(&self, device_id: &str) -> Result<()> {
         self.lock().set_device(device_id);
         Ok(())
+    }
+
+    pub fn saved(&self, uri: &str) -> Result<bool> {
+        Ok(self.lock().liked.contains(uri))
+    }
+
+    pub fn set_saved(&self, uri: &str, saved: bool) -> Result<()> {
+        let mut state = self.lock();
+        if saved {
+            state.liked.insert(uri.to_owned());
+        } else {
+            state.liked.remove(uri);
+        }
+        Ok(())
+    }
+
+    pub fn playlist_name(&self, uri: &str) -> Result<String> {
+        let state = self.lock();
+        (0..state.playlists.len())
+            .find(|&index| state.playlist_uri(index) == uri)
+            .map(|index| state.playlists[index].name.to_owned())
+            .ok_or_else(|| anyhow::anyhow!("no demo playlist {uri}"))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
