@@ -422,7 +422,20 @@ impl WindowExt for AppWindow {
         idle.set_man_text(manoeuvre.text.as_str().into());
         idle.set_man_progress(if manoeuvre.name.is_empty() { -1.0 } else { manoeuvre.progress });
         idle.set_man_dv(manoeuvre.dv);
+        idle.set_man_done(manoeuvre.done());
         idle.set_man_throttle(manoeuvre.throttle());
+        let stages: Vec<HudLine> = manoeuvre
+            .stages
+            .iter()
+            .map(|(label, value)| HudLine {
+                label: label.as_str().into(),
+                value: value.as_str().into(),
+            })
+            .collect();
+        idle.set_man_stages(ModelRc::from(Rc::new(VecModel::from(stages))));
+        let (stage, through) = manoeuvre.stage();
+        idle.set_man_stage(stage as i32);
+        idle.set_man_stage_progress(through);
         let map = hud.map.clone().unwrap_or_default();
         idle.set_map_orbits(map.orbits.as_str().into());
         idle.set_map_route(map.route.as_str().into());

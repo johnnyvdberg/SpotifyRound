@@ -142,10 +142,16 @@ export global Idle {
     in-out property <string> man-name: "";
     in-out property <string> man-text: "";
     in-out property <float> man-progress: -1;
-    // An engine burn: its whole change of speed in km/s (0 when coasting)
-    // and how hard the engine fires, 0..1.
+    // An engine burn: its whole change of speed in km/s (0 when coasting),
+    // the share of it made, how hard the engine fires, 0..1, and its stages
+    // (named, and what each does here), with the one under way and how far
+    // through it.
     in-out property <float> man-dv: 0;
+    in-out property <float> man-done: 0;
     in-out property <float> man-throttle: 0;
+    in-out property <[HudLine]> man-stages: [];
+    in-out property <int> man-stage: 0;
+    in-out property <float> man-stage-progress: 0;
     in-out property <string> map-orbits: "";
     in-out property <string> map-route: "";
     in-out property <[MapDot]> map-dots: [];

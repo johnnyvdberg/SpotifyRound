@@ -332,7 +332,8 @@ export component IdleScreen inherits Rectangle {
 
     // An engine burn, as a cockpit readout: amber on black, a ladder of
     // thrust lit to the throttle, the burn's whole change of speed set
-    // against what is done of it, a pulsing BURN tag, and why, below.
+    // against what is done of it, a pulsing BURN tag, and below, the burn's
+    // stages, the one under way lit with how far through it.
     if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-dv > 0 : Rectangle {
         property <color> amber: #ffb43c;
         property <float> throttle: Idle.man-throttle;
@@ -434,7 +435,7 @@ export component IdleScreen inherits Rectangle {
         Text {
             x: 358px;
             y: 38px;
-            text: Math.round(Idle.man-dv * clamp(Idle.man-progress, 0, 1) * 100) / 100 + " km/s";
+            text: Math.round(Idle.man-dv * Idle.man-done * 100) / 100 + " km/s";
             color: amber;
             font-family: Theme.font;
             font-size: 22px;
@@ -454,17 +455,65 @@ export component IdleScreen inherits Rectangle {
                 background: amber;
             }
         }
-        Text {
+        // The stages: done ones dimmed and ticked off, the one under way
+        // lit with a bar, the ones to come faint.
+        for stage[i] in Idle.man-stages : Rectangle {
+            property <bool> past: i < Idle.man-stage;
+            property <bool> now: i == Idle.man-stage;
+            property <color> ink: now ? amber : amber.with-alpha(past ? 0.55 : 0.28);
             x: 76px;
-            y: 88px;
+            y: 90px + i * 24px;
             width: parent.width - 100px;
-            height: 96px;
-            text: Idle.man-text;
-            color: amber.with-alpha(0.85);
-            font-family: Theme.font;
-            font-size: 16px;
-            wrap: word-wrap;
-            overflow: elide;
+            height: 20px;
+            Text {
+                x: 0;
+                width: 104px;
+                height: parent.height;
+                text: stage.label;
+                color: ink;
+                font-family: Theme.font;
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                vertical-alignment: center;
+            }
+            Text {
+                x: 108px;
+                width: parent.width - 108px - 58px;
+                height: parent.height;
+                text: stage.value;
+                color: ink;
+                font-family: Theme.font;
+                font-size: 15px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if past : Text {
+                x: parent.width - 48px;
+                width: 48px;
+                height: parent.height;
+                text: "DONE";
+                color: ink;
+                font-family: Theme.font;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            if now : Rectangle {
+                x: parent.width - 48px;
+                y: (parent.height - 4px) / 2;
+                width: 48px;
+                height: 4px;
+                background: amber.with-alpha(0.15);
+                Rectangle {
+                    x: 0;
+                    width: parent.width * Idle.man-stage-progress;
+                    height: parent.height;
+                    background: amber;
+                }
+            }
         }
     }
 

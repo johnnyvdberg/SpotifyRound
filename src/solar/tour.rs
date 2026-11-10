@@ -43,6 +43,14 @@ pub const DRIVES: [&str; 5] = [
 const HALF_FOV: f64 = 0.4663; // 50°
 /// Points along a transfer path its timing is worked out at.
 const SAMPLES: usize = 400;
+/// The shares of a transfer's time given over to slowing the approach, and
+/// the climb away from the body left, in proportion to the nearness of the
+/// body (see `Path::time`).
+const APPROACH: f64 = 0.3;
+const LEAVE: f64 = 0.12;
+/// Where in a transfer the capture burn begins: as the approach slows, from
+/// some fifteen radii out.
+const CAPTURE: f64 = 0.8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
@@ -121,6 +129,11 @@ struct Path {
     tangents: Vec<[f64; 3]>,
     /// Per knot: the stop or planet it moves with, and when it was placed.
     anchors: Vec<(Anchor, f64)>,
+    /// Where each sample lies along the spline (`sigma`): crowding in on
+    /// either end over the first and last stretches and evenly between, so
+    /// the climb away and the approach are timed down to the orbits however
+    /// long the path.
+    places: Vec<f64>,
     /// The share of the transfer's (eased) time spent by each sample along
     /// the spline, and the distance covered, both cumulative.
     time: Vec<f64>,
@@ -132,6 +145,11 @@ struct Path {
     closest: f64,
     /// What it slows past, as `time` was last given it.
     slow: Option<([f64; 3], f64, f64, f64)>,
+    /// The bodies it leaves and arrives at, where each is then, and their
+    /// radii: `time` slows the climb away and the approach in proportion
+    /// to the nearness.
+    leave: Option<([f64; 3], f64)>,
+    arrive: Option<([f64; 3], f64)>,
     /// The spline's length as `time` weighs it: what one whole share of
     /// the transfer's time covers at its ends.
     weighted: f64,
@@ -186,17 +204,67 @@ pub struct Manoeuvre {
     /// The burn's whole change of speed in km/s; 0 when the engine is off
     /// (coasting, or a flyby).
     pub dv: f32,
+    /// A burn's stages (see `STAGES`), each named and what it does here;
+    /// none while the engine is off.
+    pub stages: Vec<(String, String)>,
 }
 
+/// Where each of a burn's stages begins, as a share of it: turning to the
+/// burn's attitude, lighting the engine, the burn itself, and the cut-off.
+const STAGES: [f64; 4] = [0.0, 0.08, 0.16, 0.9];
+
 impl Manoeuvre {
-    /// How hard the engine is firing, 0..1: run up at the start of a burn,
-    /// cut at its end.
+    /// A burn of `dv` km/s, `progress` of the way through, in its stages:
+    /// the attitude it is flown in, what the burn does and what it leaves.
+    fn burn(name: &str, progress: f64, dv: f64, attitude: &str, burn: String, cutoff: String) -> Option<Self> {
+        Some(Manoeuvre {
+            name: name.into(),
+            text: String::new(),
+            progress: progress as f32,
+            dv: dv as f32,
+            stages: vec![
+                ("ATTITUDE".into(), attitude.into()),
+                ("IGNITION".into(), "engine lit, throttle up".into()),
+                ("BURN".into(), burn),
+                ("CUTOFF".into(), cutoff),
+            ],
+        })
+    }
+
+    /// What the ship does with the engine off, and why.
+    fn coast(name: &str, text: String, progress: f64) -> Option<Self> {
+        Some(Manoeuvre {
+            name: name.into(),
+            text,
+            progress: progress as f32,
+            dv: 0.0,
+            stages: Vec::new(),
+        })
+    }
+
+    /// How hard the engine is firing, 0..1: off while the ship turns to the
+    /// burn's attitude, run up as it lights, cut at the end.
     pub fn throttle(&self) -> f32 {
         if self.dv <= 0.0 || self.progress < 0.0 {
             return 0.0;
         }
         let p = self.progress as f64;
-        (smoothstep(0.0, 0.06, p) * (1.0 - smoothstep(0.94, 1.0, p))) as f32
+        (smoothstep(STAGES[1], STAGES[2], p) * (1.0 - smoothstep(STAGES[3], STAGES[3] + 0.06, p))) as f32
+    }
+
+    /// The stage under way, and how far through it.
+    pub fn stage(&self) -> (usize, f32) {
+        let p = (self.progress as f64).clamp(0.0, 1.0);
+        let i = STAGES.iter().rposition(|&s| p >= s).unwrap_or(0);
+        let end = STAGES.get(i + 1).copied().unwrap_or(1.0);
+        (i, ((p - STAGES[i]) / (end - STAGES[i])).clamp(0.0, 1.0) as f32)
+    }
+
+    /// The share of the burn's change of speed made so far: from halfway up
+    /// the throttle's run-up to halfway down its cut.
+    pub fn done(&self) -> f32 {
+        let (on, off) = (0.5 * (STAGES[1] + STAGES[2]), STAGES[3] + 0.03);
+        (((self.progress as f64) - on) / (off - on)).clamp(0.0, 1.0) as f32
     }
 }
 
@@ -234,6 +302,44 @@ pub fn normalize(a: [f64; 3]) -> [f64; 3] {
 }
 fn mix(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     add(scale(a, 1.0 - t), scale(b, t))
+}
+/// Direction `v` as a heading round `up` and an elevation above the plane
+/// square to it.
+fn heading(v: [f64; 3], up: [f64; 3]) -> (f64, f64) {
+    let (e1, e2) = level_axes(up);
+    (dot(v, e2).atan2(dot(v, e1)), dot(v, up).clamp(-1.0, 1.0).asin())
+}
+
+fn level_axes(up: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let mut e1 = cross(up, [0.0, 0.0, 1.0]);
+    if length(e1) < 1e-3 {
+        e1 = cross(up, [1.0, 0.0, 0.0]);
+    }
+    let e1 = normalize(e1);
+    (e1, cross(up, e1))
+}
+
+/// The change of heading from `a` to `b`, a whole turn either way.
+fn heading_change(a: [f64; 3], b: [f64; 3], up: [f64; 3]) -> f64 {
+    let d = heading(b, up).0 - heading(a, up).0;
+    d - TAU * (d / TAU).round()
+}
+
+/// From direction `a` to direction `b`, a share `t` of the way, turning
+/// round `up` and tilting. A straight mix of two directions far apart passes
+/// near nothing and whips round there; and between two nearly opposite ones
+/// either way round is as short, so which way is taken could flip from one
+/// frame to the next. It goes the way round nearest `way`, a change of
+/// heading fixed for the whole turn.
+fn swing(a: [f64; 3], b: [f64; 3], t: f64, up: [f64; 3], way: f64) -> [f64; 3] {
+    let (ya, pa) = heading(a, up);
+    let (_, pb) = heading(b, up);
+    let mut dy = heading_change(a, b, up);
+    dy += TAU * ((way - dy) / TAU).round();
+    let (yaw, pitch) = (ya + dy * t, pa + (pb - pa) * t);
+    let (e1, e2) = level_axes(up);
+    let flat = add(scale(e1, yaw.cos()), scale(e2, yaw.sin()));
+    normalize(add(scale(flat, pitch.cos()), scale(up, pitch.sin())))
 }
 fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -330,19 +436,46 @@ impl Path {
             }
         }
         let span = (self.knots.len() - 1) as f64;
+        // Closer and closer to either end over the first and last stretch,
+        // evenly between: on a path tens of thousands of radii long, an even
+        // sample is longer than the whole approach.
+        let tail = span.min(3.0) / 3.0;
+        let (head, end) = (SAMPLES / 8, SAMPLES - SAMPLES / 4);
+        let crowd = |k: usize, n: usize| 1e-5f64.powf(k as f64 / n as f64);
+        self.places = (0..=SAMPLES)
+            .map(|j| match j {
+                0 => 0.0,
+                SAMPLES => span,
+                j if j <= head => tail * crowd(head - j, head),
+                j if j <= end => tail + (span - 2.0 * tail) * (j - head) as f64 / (end - head) as f64,
+                j => span - tail * crowd(j - end, SAMPLES - end),
+            })
+            .collect();
         let mut ds = Vec::with_capacity(SAMPLES);
         let mut near = Vec::with_capacity(SAMPLES);
+        let mut close_in = Vec::with_capacity(SAMPLES);
+        let mut close_out = Vec::with_capacity(SAMPLES);
         let mut last = self.spline(0.0);
         for j in 1..=SAMPLES {
-            let p = self.spline(span * j as f64 / SAMPLES as f64);
+            let p = self.spline(self.places[j]);
+            let middle = mix(p, last, 0.5);
             ds.push(length_of(sub(p, last)));
             near.push(match slow {
                 Some((centre, reach, width, _)) => {
-                    let d = length_of(sub(mix(p, last, 0.5), centre)) / (reach * width);
+                    let d = length_of(sub(middle, centre)) / (reach * width);
                     (-d * d).exp()
                 }
                 None => 0.0,
             });
+            // Time in proportion to the nearness: the body grows at a
+            // steady rate as it comes in, not doubling every second at
+            // the end.
+            let nearness = |body: Option<([f64; 3], f64)>| match body {
+                Some((centre, radius)) => radius / length_of(sub(middle, centre)).max(radius),
+                None => 0.0,
+            };
+            close_in.push(nearness(self.arrive));
+            close_out.push(nearness(self.leave));
             last = p;
         }
         // Weight 1 + boost near the flyby, the boost chosen so the near
@@ -355,21 +488,39 @@ impl Path {
             }
             _ => 0.0,
         };
+        // The climb away and the approach get their shares of the time on
+        // top.
+        let flown: f64 = ds.iter().zip(&near).map(|(d, g)| d * (1.0 + boost * g)).sum();
+        let share = |close: &[f64], share: f64| {
+            let nearing: f64 = ds.iter().zip(close).map(|(d, g)| d * g).sum();
+            if nearing > 1e-9 {
+                share / (1.0 - APPROACH - LEAVE) * flown / nearing
+            } else {
+                0.0
+            }
+        };
+        let (approach, leaving) = (share(&close_in, APPROACH), share(&close_out, LEAVE));
+        let weight = |j: usize| 1.0 + boost * near[j] + approach * close_in[j] + leaving * close_out[j];
         let mut time = vec![0.0];
         let mut length = vec![0.0];
         for j in 0..SAMPLES {
-            time.push(time[j] + ds[j] * (1.0 + boost * near[j]));
+            time.push(time[j] + ds[j] * weight(j));
             length.push(length[j] + ds[j]);
         }
         let total = time[SAMPLES].max(1e-9);
         self.weighted = total;
         if self.duration > 0.0 {
             let average = total / self.duration;
-            let slope = |v: f64| {
+            // The slope of the eased time that moves the camera at `v`
+            // where the spline is weighted `w`.
+            let slope = |v: f64, w: f64| {
                 let v = if v < 0.0 { average } else { v };
-                (v * self.duration / total).clamp(0.0, 2.5)
+                (v * w * self.duration / total).clamp(0.0, 2.5)
             };
-            self.pace = [slope(self.speeds[0]), slope(self.speeds[1])];
+            self.pace = [
+                slope(self.speeds[0], weight(0)),
+                slope(self.speeds[1], weight(SAMPLES - 1)),
+            ];
         }
         for t in &mut time {
             *t /= total;
@@ -378,7 +529,7 @@ impl Path {
         self.length = length;
         self.closest = match self.waypoint {
             Some(w) => {
-                let j = (w * SAMPLES) / (self.knots.len() - 1);
+                let j = self.places.partition_point(|&s| s < w as f64);
                 invert(|u| self.ease(u), self.time[j.min(SAMPLES)])
             }
             None => 0.5,
@@ -402,13 +553,12 @@ impl Path {
         let j = self.time.partition_point(|&t| t < tau).clamp(1, SAMPLES);
         let (a, b) = (self.time[j - 1], self.time[j]);
         let f = if b > a { (tau - a) / (b - a) } else { 0.0 };
-        (j as f64 - 1.0 + f) / SAMPLES as f64 * (self.knots.len() - 1) as f64
+        self.places[j - 1] + (self.places[j] - self.places[j - 1]) * f
     }
 
     /// Distance along the path still to go from `sigma`, in units.
     fn remaining(&self, sigma: f64) -> f64 {
-        let span = (self.knots.len() - 1) as f64;
-        let j = ((sigma / span * SAMPLES as f64) as usize).min(SAMPLES);
+        let j = self.places.partition_point(|&s| s <= sigma).saturating_sub(1).min(SAMPLES);
         self.length[SAMPLES] - self.length[j]
     }
 }
@@ -752,12 +902,15 @@ impl Tour {
             knots: vec![p0, p1],
             tangents: Vec::new(),
             anchors: vec![start_anchor, end_anchor],
+            places: Vec::new(),
             time: Vec::new(),
             length: Vec::new(),
             flyby,
             waypoint: None,
             closest: 0.5,
             slow: None,
+            leave: from.map(|f| (self.system.centre(f, t0), self.world(f).radius)),
+            arrive: Some((self.system.centre(to, t1), self.world(to).radius)),
             weighted: 0.0,
             pace: [1.0, 1.0],
             // Leave and arrive moving along the orbits, the way they are
@@ -1278,7 +1431,18 @@ impl Tour {
                     Some(p) => self.framed(p, position, t, t0),
                     None => f0,
                 };
-                let mut forward = normalize(mix(start, aim, smoothstep(0.0, 0.18, u)));
+                // Which way round to turn from the one to the other, settled
+                // once, halfway through the turn.
+                let way = {
+                    let at = t0 + 0.09 * segment.duration;
+                    let (there, _) = self.on_path(k, segment, at);
+                    let start = match from {
+                        Some(p) => self.framed(p, there, at, t0),
+                        None => f0,
+                    };
+                    heading_change(start, normalize(sub(self.system.centre(to, at), there)), up0)
+                };
+                let mut forward = swing(start, aim, smoothstep(0.0, 0.18, u), up0, way);
                 forward = normalize(mix(forward, self.framed(to, position, t, t1), smoothstep(0.82, 1.0, u)));
                 let up = normalize(mix(up0, up1, smoothstep(0.1, 0.9, u)));
                 if from.is_none() {
@@ -1392,15 +1556,8 @@ impl Tour {
         let (segment, local) = self.segment(t);
         let u = local / segment.duration;
         let star = &self.system.star.name;
-        let fire = |name: &str, text: String, progress: f64, dv: f64| {
-            Some(Manoeuvre {
-                name: name.into(),
-                text,
-                progress: progress as f32,
-                dv: dv as f32,
-            })
-        };
-        let make = |name: &str, text: String, progress: f64| fire(name, text, progress, 0.0);
+        let fire = Manoeuvre::burn;
+        let make = Manoeuvre::coast;
         match segment.phase {
             Phase::Transfer { from, to } => {
                 let k = self.index_of(to);
@@ -1413,22 +1570,20 @@ impl Tour {
                     return if u < 0.15 {
                         fire(
                             "TRANSFER BURN",
-                            format!(
-                                "Burning {:.2} km/s prograde to raise our orbit round {giant} out toward {dest}'s.",
-                                burns.depart
-                            ),
                             u / 0.15,
                             burns.depart,
+                            "prograde",
+                            format!("+{:.2} km/s, raising our orbit round {giant}", burns.depart),
+                            format!("on the ellipse out to {dest}"),
                         )
                     } else if u > 0.85 {
                         fire(
                             "ORBIT MATCH",
-                            format!(
-                                "Burning {:.2} km/s to match {dest}'s pace round {giant} and fall into orbit about it.",
-                                burns.capture
-                            ),
                             (u - 0.85) / 0.15,
                             burns.capture,
+                            "retrograde",
+                            format!("−{:.2} km/s to match {dest}'s pace", burns.capture),
+                            format!("in orbit round {dest}"),
                         )
                     } else {
                         make(
@@ -1446,12 +1601,11 @@ impl Tour {
                 {
                     return fire(
                         "DEPARTURE BURN",
-                        format!(
-                            "Burning {:.1} km/s prograde: enough to break free of {origin} and leave it on a transfer orbit round {star}.",
-                            burns.depart
-                        ),
                         u / 0.12,
                         burns.depart,
+                        "prograde",
+                        format!("+{:.1} km/s to break free of {origin}", burns.depart),
+                        format!("on a transfer orbit round {star}"),
                     );
                 }
                 if origin.is_none() && u < 0.1 {
@@ -1461,15 +1615,14 @@ impl Tour {
                         -1.0,
                     );
                 }
-                if u > 0.88 {
+                if u > CAPTURE {
                     return fire(
                         "CAPTURE BURN",
-                        format!(
-                            "Burning {:.1} km/s retrograde as we swing in close: {dest}'s gravity catches us into orbit.",
-                            burns.capture
-                        ),
-                        (u - 0.88) / 0.12,
+                        (u - CAPTURE) / (1.0 - CAPTURE),
                         burns.capture,
+                        "retrograde, engine first",
+                        format!("−{:.1} km/s as we swing in close", burns.capture),
+                        format!("captured into orbit round {dest}"),
                     );
                 }
                 let near = u - path.closest;
@@ -1522,12 +1675,11 @@ impl Tour {
                         if near.abs() < window {
                             fire(
                                 "OBERTH MANOEUVRE",
-                                format!(
-                                    "Burning {:.1} km/s at perihelion, moving at {:.0} km/s: thrust adds most energy where we move fastest, as much as a {:.0} km/s burn far from {star}.",
-                                    burns.oberth_burn, burns.oberth_speed, burns.oberth_equal
-                                ),
                                 (near + window) / (2.0 * window),
                                 burns.oberth_burn,
+                                "prograde at perihelion",
+                                format!("+{:.1} km/s while moving at {:.0} km/s", burns.oberth_burn, burns.oberth_speed),
+                                format!("worth {:.0} km/s far from {star}", burns.oberth_equal),
                             )
                         } else if near < 0.0 {
                             make(
@@ -1587,13 +1739,11 @@ impl Tour {
                 let r0 = Self::height(world) * KM;
                 fire(
                     "ESCAPE BURN",
-                    format!(
-                        "Burning prograde past {}'s escape velocity, {:.1} km/s here, to climb clear of its gravity well before the jump.",
-                        world.name,
-                        (2.0 * mu / r).sqrt()
-                    ),
                     u,
                     (2.0f64.sqrt() - 1.0) * (mu / r0).sqrt(),
+                    "prograde",
+                    format!("past escape velocity, {:.1} km/s here", (2.0 * mu / r).sqrt()),
+                    format!("clear of {}'s gravity, ready to jump", world.name),
                 )
             }
             _ => None,
@@ -2026,12 +2176,19 @@ mod manoeuvre_tests {
                 match segment.phase {
                     Phase::Transfer { .. } | Phase::Depart(_) => {
                         let m = m.expect("a manoeuvre while travelling");
+                        // A coast says why in a sentence, a burn in its stages.
+                        let said = if m.dv > 0.0 {
+                            m.stages.iter().map(|(name, what)| format!("{name}: {what}")).collect::<Vec<_>>().join(" / ")
+                        } else {
+                            m.text.clone()
+                        };
                         if std::env::var("SOLAR_PRINT").is_ok_and(|v| v == seed.to_string())
-                            && names.insert(format!("{seed}{}{}", m.name, m.text))
+                            && names.insert(format!("{seed}{}{said}", m.name))
                         {
-                            println!("{t:6.1} {}: {}", m.name, m.text);
+                            println!("{t:6.1} {}: {said}", m.name);
                         }
-                        assert!(!m.text.is_empty() && !m.text.contains("NaN"), "{m:?}");
+                        assert!(!said.is_empty() && !said.contains("NaN"), "{m:?}");
+                        assert!(m.dv <= 0.0 || m.stages.iter().all(|(_, what)| !what.is_empty()), "{m:?}");
                         names.insert(m.name);
                     }
                     _ => assert!(m.is_none()),
