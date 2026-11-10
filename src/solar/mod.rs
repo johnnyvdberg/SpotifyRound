@@ -2073,13 +2073,15 @@ pub(crate) mod tests {
     /// Run the streamer until everything wanted at `t` is in.
     fn settle(solar: &mut Solar, gpu: &Graphics, t: f64) {
         for _ in 0..4000 {
+            // Asked again before looking: a planet finished in the last draw
+            // leaves the streamer idle until the next one wanted is started.
             solar.stream(t);
-            solar.draw(gpu, t, 0);
-            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
             let baked = solar.starfield_slot(solar.tour.system.seed).is_some();
             if !solar.streamer.busy() && baked {
                 break;
             }
+            solar.draw(gpu, t, 0);
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         }
     }
 

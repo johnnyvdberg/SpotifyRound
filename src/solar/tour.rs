@@ -41,6 +41,9 @@ pub const DRIVES: [&str; 5] = [
 
 /// Field of view, the tangent of half of it.
 const HALF_FOV: f64 = 0.4663; // 50°
+/// The stop just left keeps its maps until its radius is this share of half
+/// the view: 1% is 5 pixels on the kiosk, where its flat colour passes.
+const LEFT_BEHIND: f64 = 0.01;
 /// Points along a transfer path its timing is worked out at.
 const SAMPLES: usize = 400;
 /// The shares of a transfer's time given over to slowing the approach, and
@@ -1532,8 +1535,10 @@ impl Tour {
 
     /// The stops whose maps should be resident at `t`: the one being visited
     /// or approached, and the next. At a moon, its giant stays resident, as
-    /// it fills the moon's sky. During the jump, none: the next visit's
-    /// first stop is what to stream.
+    /// it fills the moon's sky. Leaving a stop, it stays resident until it
+    /// is a few pixels across (`LEFT_BEHIND`): until then it would show as
+    /// its flat colour. During the jump, none: the next visit's first stop
+    /// is what to stream.
     pub fn wanted(&self, t: f64) -> (Option<Stop>, Option<Stop>) {
         let (segment, _) = self.segment(t);
         let second = |p: Stop| {
@@ -1544,6 +1549,9 @@ impl Tour {
             self.itinerary.get(k + 1).copied()
         };
         match segment.phase {
+            Phase::Transfer { from: Some(from), to } if self.in_sight(from, t) => {
+                (Some(to), Some(from))
+            }
             Phase::Transfer { to, .. } => (Some(to), second(to)),
             Phase::High(p) => {
                 (Some(p), second(p))
@@ -1554,6 +1562,13 @@ impl Tour {
             ),
             Phase::Jump => (None, None),
         }
+    }
+
+    /// Whether `stop` is still more than `LEFT_BEHIND` of the view across.
+    fn in_sight(&self, stop: Stop, t: f64) -> bool {
+        let view = self.view(t);
+        let distance = length(sub(self.system.centre(stop, t), view.position));
+        self.world(stop).radius / distance > LEFT_BEHIND * view.half_fov
     }
 
     /// The transfer path in view at `t`, from where the camera is to where it
