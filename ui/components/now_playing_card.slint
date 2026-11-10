@@ -1,0 +1,175 @@
+// What is playing, as a card low in the circle over the idle visuals: the
+// cover, the track, its artists and what it plays from, and the transport
+// with an add button for Liked Songs.
+//
+// The dimmed states are drawn in the colours, not an `opacity`: one below 1
+// around a button and its glyph would make Skia draw them through a layer
+// (docs/kiosk-ui-cost.md).
+
+import { Pointer, Theme } from "../theme.slint";
+import { App, Player } from "../state.slint";
+import { IconGlyph } from "icons.slint";
+
+component CardButton inherits Rectangle {
+    in property <string> icon: "play";
+    in property <length> size: 54px;
+    in property <length> icon-size: 24px;
+    in property <bool> enabled: true;
+    // The play button: filled with the accent.
+    in property <bool> primary: false;
+    // The add button once the track is saved: filled too, with a tick.
+    in property <bool> on: false;
+    // A ring round the button, for the add button while it is not on.
+    in property <bool> outlined: false;
+    callback clicked();
+
+    property <bool> filled: primary || on;
+
+    width: size;
+    height: size;
+    border-radius: size / 2;
+    background: filled
+        ? (enabled ? (touch.pressed ? Theme.accent.darker(0.2) : Theme.accent) : Theme.ink.with-alpha(0.12))
+        : enabled && touch.pressed ? Theme.ink.with-alpha(0.16) : Theme.ink.with-alpha(0.06);
+    border-width: outlined && !on ? 2px : 0;
+    border-color: Theme.ink.with-alpha(enabled ? 0.55 : 0.18);
+
+    animate background { duration: 160ms; }
+
+    IconGlyph {
+        width: root.icon-size;
+        height: root.icon-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        kind: root.icon;
+        tint: !root.enabled ? Theme.ink.with-alpha(0.3)
+            : root.filled ? Theme.accent-ink : Theme.ink;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: Pointer.hand;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component NowPlayingCard inherits Rectangle {
+    width: 740px;
+    height: 136px;
+    border-radius: 32px;
+    background: #04060cc8;
+    border-width: 1px;
+    border-color: Theme.accent.with-alpha(0.25);
+
+    // The card is not part of the visuals: a tap on it must not close them.
+    TouchArea {
+        mouse-cursor: Pointer.plain;
+    }
+
+    // ---- cover --------------------------------------------------------
+    // The artwork carries its softened corners in its pixels.
+    Image {
+        x: 14px;
+        y: 14px;
+        width: 108px;
+        height: 108px;
+        source: Player.cover;
+        visible: Player.has-cover;
+    }
+    if !Player.has-cover : Rectangle {
+        x: 14px;
+        y: 14px;
+        width: 108px;
+        height: 108px;
+        border-radius: 8px;
+        background: Theme.surface;
+        IconGlyph {
+            kind: "note";
+            size: 34px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            tint: Theme.ink-faint;
+        }
+    }
+
+    // ---- track --------------------------------------------------------
+    // Three lines, or two centred when there is nothing to name it from.
+    property <length> text-x: 140px;
+    property <length> text-width: buttons-x - text-x - 16px;
+    property <length> text-top: Player.context != "" ? 16px : 32px;
+
+    Text {
+        x: text-x;
+        y: text-top;
+        width: text-width;
+        height: 32px;
+        text: Player.title;
+        color: Theme.ink;
+        font-size: 24px;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Text {
+        x: text-x;
+        y: text-top + 34px;
+        width: text-width;
+        height: 26px;
+        text: Player.artist;
+        color: Theme.ink-dim;
+        font-size: 18px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if Player.context != "" : Text {
+        x: text-x;
+        y: text-top + 64px;
+        width: text-width;
+        height: 22px;
+        text: Player.context;
+        color: Theme.accent;
+        font-size: 15px;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    // ---- transport ----------------------------------------------------
+    property <length> gap: 8px;
+    property <length> buttons-x: self.width - 22px - 54px * 3 - 68px - gap * 3;
+
+    CardButton {
+        x: buttons-x;
+        y: (parent.height - self.height) / 2;
+        icon: "previous";
+        enabled: Player.controls && Player.can-previous;
+        clicked => { App.previous(); }
+    }
+    CardButton {
+        x: buttons-x + 54px + gap;
+        y: (parent.height - self.height) / 2;
+        size: 68px;
+        icon-size: 30px;
+        icon: Player.playing ? "pause" : "play";
+        primary: true;
+        enabled: Player.controls;
+        clicked => { App.toggle-play(); }
+    }
+    CardButton {
+        x: buttons-x + 54px + 68px + gap * 2;
+        y: (parent.height - self.height) / 2;
+        icon: "next";
+        enabled: Player.controls && Player.can-next;
+        clicked => { App.next(); }
+    }
+    // Liked Songs: a ringed plus to add it, a filled tick once it is in.
+    CardButton {
+        x: buttons-x + 54px * 2 + 68px + gap * 3;
+        y: (parent.height - self.height) / 2;
+        icon: Player.liked ? "check" : "plus";
+        outlined: true;
+        on: Player.liked;
+        enabled: Player.can-like;
+        clicked => { App.toggle-liked(); }
+    }
+}

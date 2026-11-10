@@ -220,6 +220,43 @@ impl Api {
         Ok(())
     }
 
+    /// Whether a track or episode is in the user's Liked Songs (their library).
+    pub async fn saved(&self, uri: &str) -> Result<bool, ApiError> {
+        let flags: Vec<bool> = self
+            .send(
+                Method::GET,
+                &format!("me/library/contains?uris={}", encode(uri)),
+                None,
+            )
+            .await?
+            .json()
+            .await?;
+        Ok(flags.first().copied().unwrap_or(false))
+    }
+
+    /// Add a track or episode to Liked Songs, or take it out.
+    pub async fn set_saved(&self, uri: &str, saved: bool) -> Result<(), ApiError> {
+        let method = if saved { Method::PUT } else { Method::DELETE };
+        self.send(method, &format!("me/library?uris={}", encode(uri)), None)
+            .await?;
+        Ok(())
+    }
+
+    /// A playlist's name, for one that is playing but not among the user's own.
+    pub async fn playlist_name(&self, uri: &str) -> Result<String, ApiError> {
+        let id = uri.rsplit(':').next().unwrap_or(uri);
+        let named: Named = self
+            .send(
+                Method::GET,
+                &format!("playlists/{}?fields=name", encode(id)),
+                None,
+            )
+            .await?
+            .json()
+            .await?;
+        Ok(named.name)
+    }
+
     async fn send(
         &self,
         method: Method,
@@ -232,7 +269,8 @@ impl Api {
             .join(path)
             .map_err(|err| ApiError::Other(err.into()))?;
 
-        let bodyless_write = body.is_none() && matches!(method, Method::POST | Method::PUT);
+        let bodyless_write =
+            body.is_none() && matches!(method, Method::POST | Method::PUT | Method::DELETE);
         let mut request = self.http.request(method, url).bearer_auth(token);
         if let Some(body) = body {
             request = request.json(&body);
@@ -251,6 +289,17 @@ impl Api {
             Err(error_from(response).await)
         }
     }
+}
+
+/// Percent-encodes one query or path value (a URI's colons included).
+fn encode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+#[derive(Debug, Deserialize)]
+struct Named {
+    #[serde(default)]
+    name: String,
 }
 
 async fn error_from(response: Response) -> ApiError {
@@ -806,6 +855,68 @@ mod tests {
         assert!(devices[0].is_active);
         assert_eq!(devices[1].kind.as_deref(), Some("Smartphone"));
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Answers one request with `status` and `body`, handing back what was asked.
+    async fn answer_once(
+        listener: tokio::net::TcpListener,
+        status: &'static str,
+        body: &'static str,
+    ) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buffer = vec![0u8; 4096];
+        let read = socket.read(&mut buffer).await.unwrap();
+        let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        request
+    }
+
+    /// Liked Songs is checked through `/me/library/contains`, by URI.
+    #[tokio::test]
+    async fn checks_the_library_by_uri() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(answer_once(listener, "200 OK", "[true]"));
+
+        let (api, dir) = test_api(port);
+        assert!(api.saved("spotify:track:abc").await.unwrap());
+
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("GET /v1/me/library/contains?uris=spotify%3Atrack%3Aabc "),
+            "unexpected request: {request}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Taking a track out of Liked Songs is a `DELETE /me/library`.
+    #[tokio::test]
+    async fn unsaving_deletes_from_the_library() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(answer_once(listener, "200 OK", ""));
+
+        let (api, dir) = test_api(port);
+        api.set_saved("spotify:track:abc", false).await.unwrap();
+
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("DELETE /v1/me/library?uris=spotify%3Atrack%3Aabc "),
+            "unexpected request: {request}"
+        );
+        assert!(
+            request.to_ascii_lowercase().contains("content-length: 0"),
+            "missing content length: {request}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

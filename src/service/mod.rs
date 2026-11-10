@@ -111,4 +111,25 @@ impl Source {
             Self::Mock(mock) => mock.transfer(device_id),
         }
     }
+
+    pub async fn saved(&self, uri: &str) -> Result<bool> {
+        match self {
+            Self::Live(api) => api.saved(uri).await.map_err(Into::into),
+            Self::Mock(mock) => mock.saved(uri),
+        }
+    }
+
+    pub async fn set_saved(&self, uri: &str, saved: bool) -> Result<()> {
+        match self {
+            Self::Live(api) => api.set_saved(uri, saved).await.map_err(Into::into),
+            Self::Mock(mock) => mock.set_saved(uri, saved),
+        }
+    }
+
+    pub async fn playlist_name(&self, uri: &str) -> Result<String> {
+        match self {
+            Self::Live(api) => api.playlist_name(uri).await.map_err(Into::into),
+            Self::Mock(mock) => mock.playlist_name(uri),
+        }
+    }
 }

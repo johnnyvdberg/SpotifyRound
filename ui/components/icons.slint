@@ -204,6 +204,19 @@ export component IconGlyph inherits Rectangle {
         commands: "M9.4 6.2 15.2 12l-5.8 5.8";
     }
 
+    // library -------------------------------------------------------------
+    if kind == "plus" : Glyph {
+        tint: root.tint;
+        weight: 2.2px;
+        commands: "M12 5.6v12.8 M5.6 12h12.8";
+    }
+
+    if kind == "check" : Glyph {
+        tint: root.tint;
+        weight: 2.4px;
+        commands: "M6 12.4l4 4L18.2 8";
+    }
+
     if kind == "close" : Glyph {
         tint: root.tint;
         weight: 1.9px;
