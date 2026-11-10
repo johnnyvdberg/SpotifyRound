@@ -15,16 +15,19 @@
 //   interpolated ray, and the star's glare), or `fs_space` (the same, worked
 //   out per pixel) until the bake is done, or `fs_warp` during a hyperjump,
 //   one pipeline per drive (`WARP`).
-// - Then the bodies, far to near, each a fan of triangles round its own
-//   silhouette (`vs_body`), shaders branching rather than discarding so the
-//   V3D skips their work for pixel groups with nothing to draw:
-//   `fs_star`; `fs_flat` for a planet whose maps are not in yet; a mapped
-//   world from afar in one pass, `fs_surface`, built for each sort of world
-//   (`SurfaceLook` in `mod.rs`) with its rings' shadow, or for the looks
-//   ported so far as a mesh of its own grid, `vs_globe` and `fs_globe`; close up
-//   `fs_ground`, `fs_detail`, `fs_clouds` and `fs_glow`; `fs_moon` for a
-//   moon; the air past a limb (added) as an annulus round the silhouette
-//   lit at its vertices (`vs_limb_ring`, `fs_limb_ring`) for a body wholly
+// - Then the bodies, far to near. The star, every planet and moon as a mesh
+//   of its own latitude-longitude grid (`vs_globe`), lit at its vertices:
+//   `fs_globe_star`; `fs_globe_flat` for a planet whose maps are not in
+//   yet; a mapped world from afar, `fs_globe` (and `fs_globe_glow` for one
+//   with seas), built for each sort of world (`SurfaceLook` in `mod.rs`)
+//   with its rings' shadow; `fs_globe_moon` for a moon. With
+//   `SOLAR_TRACED`, and a mapped world close up, each a fan of triangles
+//   round its own silhouette (`vs_body`), shaders branching rather than
+//   discarding so the V3D skips their work for pixel groups with nothing to
+//   draw: `fs_star`, `fs_flat`, `fs_surface`, `fs_moon`; close up
+//   `fs_ground`, `fs_detail`, `fs_clouds` and `fs_glow`. Then the air past a
+//   limb (added) as an annulus round the silhouette lit at its vertices
+//   (`vs_limb_ring`, `fs_limb_ring`) for a body wholly
 //   ahead, else traced over the fan (`fs_limb`); and the rings as an
 //   annulus in their plane (`vs_ring`, `fs_ring_annulus`). The mapped ones
 //   are built per map slot (`SLOT`), so each reads one set of textures.
@@ -1450,6 +1453,15 @@ fn fs_surface(in: Quad) -> @location(0) vec4<f32> {
 
 const GRID_STRIDE: u32 = 129u;
 
+// What the mesh is of: 0 a mapped world (`fs_globe`); 1 a world whose maps
+// are not in yet (`fs_globe_flat`: its colour folded into `direct`, its
+// bands' contrast in `uv.z`); 2 a moon (`fs_globe_moon`: its layer of the
+// moon maps in `uv.z`); 3 the star (`fs_globe_star`: its body-frame normal in
+// `direct`, its surface's style in `thru`). The fragment shaders of those
+// have no body index, so what they need of the body rides in varyings the
+// mapped world's shading uses and theirs does not.
+override GLOBE: i32 = 0;
+
 struct Globe {
     @builtin(position) position: vec4<f32>,
     // The map's coordinates, and the clouds' turned longitude.
@@ -1536,6 +1548,15 @@ fn vs_globe(@builtin(vertex_index) vertex: u32, @builtin(instance_index) i: u32)
         out.deck = high * thru * (0.85 * smoothstep01(-0.08, 0.04, mu));
         out.sheen = high * (vec3<f32>(1.0) - thru) * (0.45 * smoothstep01(-0.10, 0.08, mu));
     }
+    if (GLOBE == 1) {
+        out.direct *= params.bodies[i].colour.rgb;
+        out.uv.z = params.bodies[i].colour.w;
+    } else if (GLOBE == 2) {
+        out.uv.z = params.bodies[i].look.z;
+    } else if (GLOBE == 3) {
+        out.direct = nb;
+        out.thru = params.bodies[i].look.yzw;
+    }
     return out;
 }
 
@@ -1609,12 +1630,17 @@ fn fs_globe(in: Globe) -> @location(0) vec4<f32> {
         rgb += heat * in.thru * (night * (0.15 + 0.55 * darkness));
     }
     if (RINGS) {
-        let x = in.slope.w;
-        let density = textureSampleLevel(ring_profile, map_sampler, vec2<f32>(x, in.shift.w), 0.0).r;
-        rgb *= 1.0 - density * in.shift.z * step(0.0, x) * step(x, 1.0);
+        rgb *= globe_ring_shadow(in);
     }
     let cover = smoothstep01(-0.75, 0.75, -in.geo.x);
     return vec4<f32>(rgb * cover, cover);
+}
+
+// The rings' shadow, from the coordinate and strength `vs_globe` worked out.
+fn globe_ring_shadow(in: Globe) -> f32 {
+    let x = in.slope.w;
+    let density = textureSampleLevel(ring_profile, map_sampler, vec2<f32>(x, in.shift.w), 0.0).r;
+    return 1.0 - density * in.shift.z * step(0.0, x) * step(x, 1.0);
 }
 
 // The night side's city lights, before the air toward the viewer.
@@ -1656,6 +1682,73 @@ fn fs_globe_glow(in: Globe) -> @location(0) vec4<f32> {
     }
     let cover = smoothstep01(-0.75, 0.75, -in.geo.x);
     return vec4<f32>(rgb * cover, 0.0);
+}
+
+// A world whose maps are not in yet, over the mesh (`GLOBE` 1): its colour
+// lit through the air (`direct`), banded on a giant by its latitude, in its
+// rings' shadow. As `fs_flat`.
+@fragment
+fn fs_globe_flat(in: Globe) -> @location(0) vec4<f32> {
+    let mu = in.geo.y;
+    var day = smoothstep01(-0.03, 0.03, mu);
+    if (AIR == 1) {
+        day = smoothstep01(-0.035, 0.02, mu);
+    }
+    var rgb = in.direct * (day * max(mu + 0.03, 0.0));
+    if (GIANT == 1) {
+        let y = sin((0.5 - in.uv.y) * PI);
+        rgb *= 1.0 + in.uv.z * sin(y * 23.0 + sin(y * 7.0) * 2.0) * 0.5;
+    }
+    if (RINGS) {
+        rgb *= globe_ring_shadow(in);
+    }
+    let cover = smoothstep01(-0.75, 0.75, -in.geo.x);
+    return vec4<f32>(rgb * cover, cover);
+}
+
+// A moon over the mesh (`GLOBE` 2), from its layer of the slot's moon maps:
+// colour, relief, molten glow. As `fs_moon`.
+@fragment
+fn fs_globe_moon(in: Globe) -> @location(0) vec4<f32> {
+    let mu = in.geo.y;
+    let layer = i32(in.uv.z + 0.5);
+    var day: vec3<f32>;
+    var relief: vec4<f32>;
+    if (SLOT == 0) {
+        day = textureSampleBias(a_moon_day, map_sampler, in.uv.xy, layer, BIAS).rgb;
+        relief = textureSampleBias(a_moon_relief, map_sampler, in.uv.xy, layer, BIAS);
+    } else {
+        day = textureSampleBias(b_moon_day, map_sampler, in.uv.xy, layer, BIAS).rgb;
+        relief = textureSampleBias(b_moon_relief, map_sampler, in.uv.xy, layer, BIAS);
+    }
+    let d = relief.rg - 0.5;
+    let lit = (mu + dot(d, in.slope.xy)) * inverseSqrt(1.0 + 0.3025 * dot(d, d));
+    var sunup = smoothstep01(-0.03, 0.03, mu);
+    if (AIR == 1) {
+        sunup = smoothstep01(-0.035, 0.02, mu);
+    }
+    var rgb = day * in.direct * (sunup * max(lit + 0.03, 0.0));
+    // A moon's third relief channel is molten glow.
+    let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
+    let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), relief.b);
+    rgb += heat * in.thru * (relief.b * (0.15 + 0.55 * darkness));
+    let cover = smoothstep01(-0.75, 0.75, -in.geo.x);
+    return vec4<f32>(rgb * cover, cover);
+}
+
+// The star over the mesh (`GLOBE` 3): its limb darkened by the viewer's
+// height over its surface, its granules one noise fetch along the
+// interpolated body-frame normal. As `fs_star`.
+@fragment
+fn fs_globe_star(in: Globe) -> @location(0) vec4<f32> {
+    // thru: the convection cells' scale and contrast, and how much the limb
+    // darkens (the star's look.yzw).
+    let style = in.thru;
+    let granules = 1.0 + style.y * noise(in.direct * style.x + vec3<f32>(params.warp.z * 0.05));
+    let tint = params.star_colour.rgb / max(max(params.star_colour.r, params.star_colour.g), params.star_colour.b);
+    let light = min(tint * tint * 1.15 * (1.0 - style.z + style.z * in.geo.z) * granules, vec3<f32>(1.0));
+    let cover = smoothstep01(-0.75, 0.75, -in.geo.x);
+    return vec4<f32>(light * cover, cover);
 }
 
 // For the Pi estimate: the mesh's pixels, shaded by nothing.
