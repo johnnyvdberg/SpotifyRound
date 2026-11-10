@@ -51,6 +51,12 @@ const LEAVE: f64 = 0.12;
 /// Where in a transfer the capture burn begins: as the approach slows, from
 /// some fifteen radii out.
 const CAPTURE: f64 = 0.8;
+/// How close, in moon radii, the camera may come to a moon; how far either
+/// side of now, in seconds, the keep-away looks for it; and how much each
+/// look counts (a Hann window, summing to 1).
+const MOON_FLOOR: f64 = 3.0;
+const MOON_SMOOTH: f64 = 0.5;
+const MOON_SPAN: [f64; 7] = [0.0366, 0.125, 0.2134, 0.25, 0.2134, 0.125, 0.0366];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
@@ -1300,27 +1306,27 @@ impl Tour {
     }
 
     /// Everything a transfer path can bump into: planets, moons and the
-    /// star, with how close the camera may come.
-    fn obstacles(&self, t: f64) -> Vec<([f64; 3], f64)> {
+    /// star, with how close the camera may come, and whether it is a moon.
+    fn obstacles(&self, t: f64) -> Vec<([f64; 3], f64, bool)> {
         let mut obstacles = Vec::new();
         for (i, p) in self.system.planets.iter().enumerate() {
             let centre = p.position(t);
-            obstacles.push((centre, p.radius * if p.kind.is_giant() { 2.8 } else { 2.0 }));
+            obstacles.push((centre, p.radius * if p.kind.is_giant() { 2.8 } else { 2.0 }, false));
             for m in 0..p.moons.len().min(super::stream::MOONS as usize) {
                 let stop = Stop {
                     planet: i,
                     moon: Some(m),
                 };
-                obstacles.push((self.system.centre(stop, t), p.moons[m].radius * 2.0));
+                obstacles.push((self.system.centre(stop, t), p.moons[m].radius * MOON_FLOOR, true));
             }
         }
-        obstacles.push(([0.0; 3], self.system.star.radius * 3.0));
+        obstacles.push(([0.0; 3], self.system.star.radius * 3.0, false));
         obstacles
     }
 
-    /// The camera's position on transfer `k`'s path at `t`, and how far
-    /// along the spline it is.
-    fn on_path(&self, k: usize, segment: Segment, t: f64) -> ([f64; 3], f64) {
+    /// Where transfer `k`'s spline, carried along by the bodies at its
+    /// ends, is at `t` before anything is dodged, and how far along it is.
+    fn on_spline(&self, k: usize, segment: Segment, t: f64) -> ([f64; 3], f64) {
         let path = &self.paths[k];
         let u = ((t - segment.start) / segment.duration).clamp(0.0, 1.0);
         let sigma = path.sigma(u);
@@ -1351,11 +1357,49 @@ impl Tour {
             let weight = (1.0 - x * x).max(0.0).powi(2);
             position = add(position, scale(drift, weight));
         }
-        // Swing around anything in the way: a soft floor on the distance
-        // from every body. Toward each end the push its end point would get
-        // is taken off, so the push is nil where the path meets the orbits
-        // (which may lie within a neighbour's floor) and nothing snaps the
-        // camera back as it lets go.
+        (position, sigma)
+    }
+
+    /// The camera's position on transfer `k`'s path at `t`, and how far
+    /// along the spline it is.
+    fn on_path(&self, k: usize, segment: Segment, t: f64) -> ([f64; 3], f64) {
+        let (position, sigma) = self.on_spline(k, segment, t);
+        let mut position = add(position, self.keep_away(k, segment, t, Some(false)));
+        // A moon is dodged as it is over a span round now, the camera with
+        // it: a small moon passed at speed would otherwise shove the camera
+        // aside in a moment. Far from every moon, where the push is nil,
+        // what it is now will do.
+        let near = self
+            .obstacles(t)
+            .iter()
+            .filter(|o| o.2)
+            .map(|&(centre, floor, _)| length(sub(position, centre)) / floor)
+            .fold(f64::MAX, f64::min);
+        let spread = 1.0 - smoothstep(20.0, 30.0, near);
+        let now = self.keep_away(k, segment, t, Some(true));
+        let mut dodge = scale(now, 1.0 - spread);
+        if spread > 0.0 {
+            for (n, weight) in MOON_SPAN.iter().enumerate() {
+                let when = t + MOON_SMOOTH * (n as f64 - 3.0) / 4.0;
+                let push = if n == 3 { now } else { self.keep_away(k, segment, when, Some(true)) };
+                dodge = add(dodge, scale(push, weight * spread));
+            }
+        }
+        position = add(position, dodge);
+        (position, sigma)
+    }
+
+    /// How far the camera on transfer `k`'s path at `t` swings round
+    /// what is in the way (only the moons, all but them, or everything): a
+    /// soft floor on the distance from every body. Toward each end the push
+    /// its end point would get is taken off, so the push is nil where the
+    /// path meets the orbits (which may lie within a neighbour's floor) and
+    /// nothing snaps the camera back as it lets go.
+    fn keep_away(&self, k: usize, segment: Segment, t: f64, moons: Option<bool>) -> [f64; 3] {
+        let path = &self.paths[k];
+        let u = ((t - segment.start) / segment.duration).clamp(0.0, 1.0);
+        let (position, _) = self.on_spline(k, segment, t);
+        let last = path.knots.len() - 1;
         let fade = smoothstep(0.0, 0.02, u) * (1.0 - smoothstep(0.98, 1.0, u));
         let ends: Vec<[f64; 3]> = [0, last]
             .iter()
@@ -1376,13 +1420,15 @@ impl Tour {
         };
         let (w_start, w_end) = (1.0 - smoothstep(0.0, 0.4, u), smoothstep(0.6, 1.0, u));
         let mut moved = [0.0; 3];
-        for (centre, floor) in self.obstacles(t) {
+        for (centre, floor, moon) in self.obstacles(t) {
+            if moons.is_some_and(|moons| moon != moons) {
+                continue;
+            }
             moved = add(moved, push(position, centre, floor));
             moved = sub(moved, scale(push(ends[0], centre, floor), w_start));
             moved = sub(moved, scale(push(ends[1], centre, floor), w_end));
         }
-        position = add(position, scale(moved, fade));
-        (position, sigma)
+        scale(moved, fade)
     }
 
     /// Where the flyby of transfer `k` passes, at `t`, and its name.
@@ -1522,7 +1568,10 @@ impl Tour {
         (0..=steps)
             .map(|i| {
                 let tt = t + (segment.start + segment.duration - t) * i as f64 / steps as f64;
-                self.on_path(k, segment, tt).0
+                // Moons dodged as they are now: at the map's scale the
+                // difference does not show, and the camera's spread costs.
+                let (on, _) = self.on_spline(k, segment, tt);
+                add(on, self.keep_away(k, segment, tt, None))
             })
             .collect()
     }
