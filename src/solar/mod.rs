@@ -520,10 +520,46 @@ impl Solar {
             ("eclipse", "fs_eclipse", multiply),
             ("ringshadow", "fs_ring_shadow", multiply),
         ] {
+            // The star and worlds without maps are traced only with
+            // `SOLAR_TRACED`, else meshes (below).
+            if matches!(name, "star" | "flat") && !traced() {
+                continue;
+            }
             pipelines.insert(
                 name.to_string(),
                 pipeline(&format!("Solar {name}"), "vs_body", entry, blend, &[]),
             );
+        }
+        // The star, worlds whose maps are not in and moons as meshes too
+        // (`vs_globe`, `GLOBE`), named `globe…` so they are drawn as one.
+        let all = wgpu::ColorWrites::ALL;
+        const STAR_GLOBE: [(&str, f64); 2] = [("GLOBE", 3.0), ("AIR", 0.0)];
+        pipelines.insert(
+            "globestar".to_string(),
+            globe("Solar globestar", "fs_globe_star", over, &STAR_GLOBE, all),
+        );
+        for kind in Kind::ALL {
+            let ringed = matches!(kind, Kind::GasGiant | Kind::IceGiant);
+            for rings in [false, true].into_iter().filter(|&r| ringed || !r) {
+                let look = FlatLook::of(kind, rings);
+                let name = look.pipeline();
+                if pipelines.contains_key(&name) {
+                    continue;
+                }
+                let label = format!("Solar {name}");
+                let made = globe(&label, "fs_globe_flat", over, &look.constants(), all);
+                pipelines.insert(name, made);
+            }
+        }
+        for slot in 0..2 {
+            for air in [false, true] {
+                let name = moon_pipeline(slot, air);
+                let air = f64::from(u8::from(air));
+                let constants = [("GLOBE", 2.0), ("SLOT", slot as f64), ("AIR", air)];
+                let label = format!("Solar {name}");
+                let made = globe(&label, "fs_globe_moon", over, &constants, all);
+                pipelines.insert(name, made);
+            }
         }
         // The rings, drawn as an annulus (`vs_ring`).
         pipelines.insert(
@@ -636,6 +672,10 @@ impl Solar {
                 ("glow", "fs_glow", add),
                 ("moon", "fs_moon", over),
             ] {
+                // A moon is a mesh (`globemoon…`) unless `SOLAR_TRACED`.
+                if name == "moon" && !traced() {
+                    continue;
+                }
                 pipelines.insert(
                     format!("{name}{slot}"),
                     pipeline(
@@ -1095,13 +1135,21 @@ impl Solar {
                     system.star.surface[1],
                     system.star.surface[2],
                 ],
+                // Its own frame the world's (its mesh needs one; its
+                // granules lie in it).
+                rot: [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ],
                 ..Default::default()
             };
             if let Some(rect) = rect(&view, star_rel, system.star.radius * 1.02) {
                 star.rect = rect;
                 // air.w: how far round the centre the body's draws reach.
                 star.air[3] = (system.star.radius * 1.02) as f32;
-                bodies.push((length(star_rel), star, vec!["star".into()]));
+                let pass = if traced() { "star" } else { "globestar" };
+                bodies.push((length(star_rel), star, vec![pass.into()]));
             }
             for (index, planet) in system.planets.iter().enumerate() {
                 let centre = planet.position(t);
@@ -1184,7 +1232,11 @@ impl Solar {
                             ),
                         ),
                         (None, Some(s)) => {
-                            let mut passes = vec![format!("moon{s}")];
+                            let mut passes = vec![if traced() {
+                                format!("moon{s}")
+                            } else {
+                                moon_pipeline(s, air[0] > 0.0)
+                            }];
                             if eclipsed {
                                 passes.push("eclipse".into());
                             }
@@ -1978,12 +2030,15 @@ fn surface_passes(
             }
             passes
         }
+        // Its maps not in: as a mesh with its rings' shadow in it, or traced
+        // with the shadow a pass of its own.
+        None if !traced() => vec![FlatLook::of(kind, rings).pipeline()],
         None => vec!["flat".into()],
     };
     if eclipsed {
         passes.push("eclipse".into());
     }
-    if rings {
+    if rings && (slot.is_some() || traced()) {
         passes.push("ringshadow".into());
     }
     if let Some(s) = slot {
@@ -2073,6 +2128,51 @@ impl SurfaceLook {
             ("LIMB", f64::from(u8::from(self.limb))),
         ]
     }
+}
+
+/// What a world whose maps are not in yet needs drawn as a mesh
+/// (`fs_globe_flat`'s constants).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FlatLook {
+    air: bool,
+    giant: bool,
+    rings: bool,
+}
+
+impl FlatLook {
+    fn of(kind: Kind, rings: bool) -> Self {
+        Self {
+            air: kind.air()[0] > 0.0,
+            giant: matches!(kind, Kind::GasGiant | Kind::IceGiant | Kind::HotJupiter),
+            rings,
+        }
+    }
+
+    /// `globeflat` and its flags, so it is drawn as a mesh.
+    fn pipeline(self) -> String {
+        let flag = |on: bool, c: char| if on { c } else { '-' };
+        format!(
+            "globeflat{}{}{}",
+            flag(self.air, 'a'),
+            flag(self.giant, 'g'),
+            flag(self.rings, 'r'),
+        )
+    }
+
+    fn constants(self) -> [(&'static str, f64); 4] {
+        [
+            ("GLOBE", 1.0),
+            ("AIR", f64::from(u8::from(self.air))),
+            ("GIANT", f64::from(u8::from(self.giant))),
+            ("RINGS", f64::from(u8::from(self.rings))),
+        ]
+    }
+}
+
+/// A moon's mesh pipeline (`fs_globe_moon`) for map slot `slot`, with air or
+/// without.
+fn moon_pipeline(slot: usize, air: bool) -> String {
+    format!("globemoon{slot}{}", if air { 'a' } else { '-' })
 }
 
 fn night_mode(kind: Kind) -> f32 {
