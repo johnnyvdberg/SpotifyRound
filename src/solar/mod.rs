@@ -158,6 +158,19 @@ fn traced() -> bool {
     *TRACED.get_or_init(|| std::env::var_os("SOLAR_TRACED").is_some())
 }
 
+/// Anisotropic filtering of the planet maps, for measuring on the Pi:
+/// `SOLAR_ANISO=<2..16>` sharpens them toward the limb and the poles. Off by
+/// default, and always off for the traced shaders (their longitude seam).
+fn map_anisotropy() -> u16 {
+    if traced() {
+        return 1;
+    }
+    std::env::var("SOLAR_ANISO")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .map_or(1, |n| n.clamp(1, 16))
+}
+
 struct Frame {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -724,11 +737,12 @@ impl Solar {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            // No anisotropy: the shaders pick the level themselves, but the
-            // V3D still sizes an anisotropic footprint from the coordinates'
-            // own derivatives, which jump a whole turn where the longitude
-            // wraps (a dotted seam of the map's average colour down every
-            // planet), and it cost about 2 ms in a close orbit.
+            // No anisotropy unless `SOLAR_ANISO` asks for it: the traced
+            // shaders' coordinates jump a whole turn where the longitude
+            // wraps, and the V3D sized its footprint from that (a dotted seam
+            // down every planet; about 2 ms in a close orbit). The meshes
+            // never wrap inside a triangle, so they can use it.
+            anisotropy_clamp: map_anisotropy(),
             ..Default::default()
         });
         let frames = (0..SLOTS)
