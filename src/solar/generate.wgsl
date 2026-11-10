@@ -803,6 +803,9 @@ fn fs_clouds(in: Varying) -> @location(0) vec4<f32> {
         let cover = sheet + bands + 0.16 * (cl.moisture - 0.5) * cl.land - 0.10 + more;
         cloud = smoothstep(0.0, 0.42, cover);
         cloud *= smoothstep(-0.45, 0.25, fbm(c * 26.0 + o[3].yzx, 4) + cloud * 0.6);
+        // Billows within the deck: brighter tops, thinner gaps between.
+        let billow = 1.0 - 2.0 * abs(fbm(c * 30.0 + o[0].zxy, 4));
+        cloud *= mix(1.0, 0.78 + 0.22 * billow, smoothstep(0.3, 0.9, cloud));
     } else if (k == DESERT) {
         cloud = smoothstep(0.35, 0.6, fbm(vec3<f32>(p.x, p.y * 2.0, p.z) * 4.0 + o[3].xyz, 5)) * 0.25;
     } else if (k == ICE) {
