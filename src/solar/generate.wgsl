@@ -330,10 +330,14 @@ fn turn_about(v: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
 // Thin lines where a noise field crosses zero: cracks in ice and crust.
 // One fetch: the noise and, for the wiggle a finer octave would add, its
 // slope (two fetches unrolled cost the day pipelines two threads).
+// A line thinner than a texel is widened to one and dimmed to match, so it
+// stays unbroken rather than a trail of dots (called only in uniform
+// control flow, for the derivative).
 fn cracks(p: vec3<f32>, width: f32) -> f32 {
     let n = noised(p);
     let a = abs(n.x + 0.12 * (n.y + n.z));
-    return 1.0 - smoothstep(0.0, width, a);
+    let texel = fwidth(a);
+    return (1.0 - smoothstep(0.0, max(width, texel), a)) * min(1.0, width / max(texel, 1e-6) + 0.25);
 }
 
 fn pal(i: i32) -> vec3<f32> {
@@ -421,6 +425,14 @@ struct Climate {
     near_coast: f32,
 };
 
+// Land or not, its edge eased over about a texel so coasts and the edges of
+// plains are not stepped when seen close (called only in uniform control
+// flow, for the derivative).
+fn land_of(e: f32) -> f32 {
+    let w = max(0.0015, 0.7 * fwidth(e));
+    return smoothstep(-w, w, e);
+}
+
 fn work_out_climate(position: vec2<f32>) -> Climate {
     let k = kind();
     var c: Climate;
@@ -428,7 +440,7 @@ fn work_out_climate(position: vec2<f32>) -> Climate {
     c.p = sphere_at(c.uv);
     let o = gen.offsets;
     c.e = textureLoad(terrain, vec2<i32>(position), 0).r - gen.size.z;
-    c.land = smoothstep(-0.0015, 0.0015, c.e);
+    c.land = land_of(c.e);
     c.lat = asin(clamp(c.p.y, -1.0, 1.0));
     let cos_lat = max(cos(c.lat), 0.02);
     let wobble = fbm(c.p * 4.0 + o[3].zyx, 4);
@@ -482,7 +494,7 @@ fn climate(position: vec2<f32>) -> Climate {
     c.uv = position / gen.size.xy;
     c.p = sphere_at(c.uv);
     c.e = textureLoad(terrain, vec2<i32>(position), 0).r - gen.size.z;
-    c.land = smoothstep(-0.0015, 0.0015, c.e);
+    c.land = land_of(c.e);
     c.lat = asin(clamp(c.p.y, -1.0, 1.0));
     let stored = textureLoad(climate_map, vec2<i32>(position), 0);
     c.temperature = stored.r * 2.0 - 0.5;
