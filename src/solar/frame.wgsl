@@ -12,9 +12,13 @@
 //   pixel), else traced (`fs_mask`).
 // - The background, full screen: `fs_space_baked` (the galaxy and stars,
 //   baked into a cube map once a system by `fs_bake_stars`, read along the
-//   interpolated ray, and the star's glare), or `fs_space` (the same, worked
+//   interpolated ray, and nothing else; `fs_space_flash` while the jump's
+//   flash whitens it), or `fs_space` (the same and the star's glare, worked
 //   out per pixel) until the bake is done, or `fs_warp` during a hyperjump,
 //   one pipeline per drive (`WARP`).
+// - Over the baked background, the star's glare: a polygon round the star
+//   (`vs_glare`, or the whole frame in a flyby, `vs_glare_full`), added at
+//   the far end of the depth range so every body's mask hides it.
 // - Then the bodies, far to near. The star, every planet and moon as a mesh
 //   of its own latitude-longitude grid (`vs_globe`), lit at its vertices:
 //   `fs_globe_star`; `fs_globe_flat` for a planet whose maps are not in
@@ -291,11 +295,106 @@ fn fs_bake_sky(in: Full) -> @location(0) vec4<f32> {
 }
 
 // The background from the baked starfield: one read along the interpolated
-// ray, and the star's glare.
+// ray and nothing else. The star's glare is a polygon of its own round the
+// star (`vs_glare`), the jump's flash a pipeline of its own
+// (`fs_space_flash`).
 @fragment
 fn fs_space_baked(in: Full) -> @location(0) vec4<f32> {
+    return vec4<f32>(textureSampleLevel(starfield, map_sampler, in.dir, 0.0).rgb, 1.0);
+}
+
+// The same, whitened by the flash as a jump drops out (`warp.y`), only
+// while it is.
+@fragment
+fn fs_space_flash(in: Full) -> @location(0) vec4<f32> {
+    let colour = textureSampleLevel(starfield, map_sampler, in.dir, 0.0).rgb;
+    return vec4<f32>(mix(colour, vec3<f32>(1.0), params.warp.y), 1.0);
+}
+
+// All three over the whole frame, for `SOLAR_TRACED`.
+@fragment
+fn fs_space_glare(in: Full) -> @location(0) vec4<f32> {
     let colour = textureSampleLevel(starfield, map_sampler, in.dir, 0.0).rgb + glare_near(normalize(in.dir));
     return vec4<f32>(mix(colour, vec3<f32>(1.0), params.warp.y), 1.0);
+}
+
+// The star's glare, added over the background as a polygon round the star
+// out to where it falls under half a step of the 8-bit frame, with that
+// floor taken off so its rim does not show. At the far end of the depth
+// range, like the background, so every body's mask hides it. Over the
+// whole frame instead (`vs_glare_full`) when it reaches too far round the
+// sky for a polygon (a star flyby).
+const GLARE_SIDES: u32 = 32u;
+// Half a step of the 8-bit sRGB frame near black, in linear light.
+const GLARE_FLOOR: f32 = 1.5e-4;
+
+struct Glare {
+    @builtin(position) position: vec4<f32>,
+    // The ray through the pixel, not normalized (a point on the polygon's
+    // plane, or across the screen).
+    @location(0) dir: vec3<f32>,
+    // xyz: the way to the star; w: its disc's radius, as an angle.
+    @location(1) @interpolate(flat) star: vec4<f32>,
+    // rgb: the glare's colour; w: where it falls under the floor, as `g`.
+    @location(2) @interpolate(flat) tint: vec4<f32>,
+};
+
+fn glare_vertex(position: vec4<f32>, dir: vec3<f32>) -> Glare {
+    var out: Glare;
+    out.position = position;
+    out.dir = dir;
+    let distance = max(length(params.star.xyz), 1e-3);
+    out.star = vec4<f32>(params.star.xyz / distance, params.star.w / distance);
+    let colour = params.star_colour.rgb * params.star_colour.w;
+    let bright = max(max(colour.r, colour.g), colour.b);
+    // `g * 0.012 * bright` is the faint end's term (`glare_near`).
+    out.tint = vec4<f32>(colour * (1.0 - params.warp.y), GLARE_FLOOR / max(0.012 * bright, 1e-12));
+    return out;
+}
+
+@vertex
+fn vs_glare(@builtin(vertex_index) index: u32) -> Glare {
+    let distance = max(length(params.star.xyz), 1e-3);
+    let ahead = params.star.xyz / distance;
+    let colour = params.star_colour.rgb * params.star_colour.w;
+    let bright = max(max(colour.r, colour.g), colour.b);
+    // The chord to the star where the glare reaches the floor, as an angle
+    // (kept under a right angle: wider, the frame takes `vs_glare_full`).
+    let chord = params.star.w / distance * 0.012 * bright / GLARE_FLOOR;
+    let angle = min(2.0 * asin(min(chord * 0.5, 1.0)), 1.4);
+    // A fan of triangles as a list: the first corner, then each pair after.
+    let corner = index % 3u;
+    let k = select(index / 3u + corner, 0u, corner == 0u);
+    let phi = f32(k) * TAU / f32(GLARE_SIDES);
+    let side = normalize(cross(ahead, select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(ahead.y) > 0.9)));
+    let other = cross(ahead, side);
+    // Round the circle, on the plane a unit out toward the star.
+    let p = ahead + (side * cos(phi) + other * sin(phi)) * (tan(angle) / cos(PI / f32(GLARE_SIDES)));
+    let z = dot(p, params.forward.xyz);
+    // Just short of the far end (the background's), past every body's rank.
+    let position = vec4<f32>(dot(p, params.right.xyz) / params.frame.y, dot(p, params.up.xyz) / params.frame.y, z * 0.9999, z);
+    return glare_vertex(position, p);
+}
+
+@vertex
+fn vs_glare_full(@builtin(vertex_index) index: u32) -> Glare {
+    let full = full_vertex(index);
+    return glare_vertex(full.position, full.dir);
+}
+
+@fragment
+fn fs_glare(in: Glare) -> @location(0) vec4<f32> {
+    let angle = max(length(normalize(in.dir) - in.star.xyz), in.star.w * 0.5);
+    let g = in.star.w / angle;
+    let faint = in.tint.w;
+    // `glare_near`'s g² · 0.06 + g · 0.012, less its value at the floor.
+    let k = max((g - faint) * (0.012 + 0.06 * (g + faint)), 0.0);
+    return vec4<f32>(in.tint.rgb * k, 0.0);
+}
+
+@fragment
+fn fs_probe_glare(in: Glare) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
 }
 
 // Streaks flying out from the heading: each lives in a cell of the screen's

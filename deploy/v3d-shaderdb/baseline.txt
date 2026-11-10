@@ -638,9 +638,21 @@ Solar starfield bake #0          vs_bake        VS-bin    29   4     0   22     
 Solar sky cube bake #0           fs_bake_sky    FS       156   4     0   42    12        0:0    0   10
 Solar sky cube bake #0           vs_bake        VS        35   4     0   25     8        0:0    0    1
 Solar sky cube bake #0           vs_bake        VS-bin    29   4     0   22     6        0:0    0    0
-Solar space baked #0             fs_space_baked FS        91   4     0   23    11        0:0    0   10
+Solar space baked #0             fs_space_baked FS        16   4     0    3     4        0:0    1    0
 Solar space baked #0             vs_background  VS        63   4     0   36    10        0:0    0    3
 Solar space baked #0             vs_background  VS-bin    32   4     0   23     6        0:0    0    0
+Solar space flash #0             fs_space_flash FS        28   4     0    7     4        0:0    0    2
+Solar space flash #0             vs_background  VS        63   4     0   36    10        0:0    0    3
+Solar space flash #0             vs_background  VS-bin    32   4     0   23     6        0:0    0    0
+Solar glare #0                   fs_glare       FS        36   4     0    2    14        0:0    2    2
+Solar glare #0                   vs_glare       VS       162   4     0   75    27        0:0    1    4
+Solar glare #0                   vs_glare       VS-bin   143   4     0   60    21        0:0    1    2
+Solar glare full #0              fs_glare       FS        36   4     0    2    14        0:0    2    2
+Solar glare full #0              vs_glare_full  VS        97   4     0   56    18        0:0    1    3
+Solar glare full #0              vs_glare_full  VS-bin    32   4     0   23     6        0:0    0    0
+Solar probe glare #0             fs_probe_glare FS         8   4     0    0     0        0:0    0    3
+Solar probe glare #0             vs_glare       VS       147   4     0   60    21        0:0    1    2
+Solar probe glare #0             vs_glare       VS-bin   143   4     0   60    21        0:0    1    2
 Solar space #0                   fs_space       FS       640   4     0  138    32        0:0    4   52
 Solar space #0                   vs_background  VS        33   4     0   23     6        0:0    0    1
 Solar space #0                   vs_background  VS-bin    32   4     0   23     6        0:0    0    0

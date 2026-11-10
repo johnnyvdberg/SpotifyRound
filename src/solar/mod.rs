@@ -105,6 +105,15 @@ const MASK_VERTICES: u32 = 64 * 3;
 const RING_VERTICES: u32 = 32 * 6;
 /// The limb's annulus: `LIMB_SIDES` sides of two quads in `frame.wgsl`.
 const LIMB_RING_VERTICES: u32 = 128 * 2 * 6;
+/// The star's glare polygon (`vs_glare`): a fan of `GLARE_SIDES` 32 sides,
+/// drawn as a list of triangles.
+const GLARE_VERTICES: u32 = (32 - 2) * 3;
+/// Half a step of the 8-bit frame near black, in linear light: where the
+/// glare's polygon ends (`GLARE_FLOOR`).
+const GLARE_FLOOR: f64 = 1.5e-4;
+/// How far round the sky from the star the glare may reach as a polygon, in
+/// radians; farther (a star flyby), it is drawn over the whole frame.
+const GLARE_POLYGON: f64 = 1.35;
 
 /// A mapped world's mesh (`vs_globe`): grids of so many cells a side, all
 /// with one stride, a vertex being `row * GRID_STRIDE + column` (no vertex
@@ -219,7 +228,8 @@ pub struct MapDot {
 pub const MAP: f32 = 240.0;
 
 pub(crate) struct Solar {
-    /// The frame's small pipelines, by name: `space`, `warp1`..`warp5`,
+    /// The frame's small pipelines, by name: `space`, `spacebaked`,
+    /// `spaceflash`, `glare`, `glarefull`, `warp1`..`warp5`,
     /// `star`, `flat`, `limb`, `limbring`, `ring`, and per map slot
     /// `ground0`, `sea0`, `clouds0`, `glow0`, `moon0` (and `…1`), the worlds
     /// from afar `surface0…` (traced) and `globe0…` (a mesh, see
@@ -504,10 +514,30 @@ impl Solar {
                 false,
             ),
         );
-        pipelines.insert(
-            "spacebaked".to_string(),
-            pipeline("Solar space baked", "vs_background", "fs_space_baked", None, &[]),
-        );
+        // The baked background reads the cube and nothing else, the flash
+        // whitening it in a pipeline of its own and the star's glare added
+        // over it round the star; or all three in one with `SOLAR_TRACED`.
+        let backgrounds: &[(&str, &str, &str)] = if traced() {
+            &[("spacebaked", "Solar space glare", "fs_space_glare")]
+        } else {
+            &[
+                ("spacebaked", "Solar space baked", "fs_space_baked"),
+                ("spaceflash", "Solar space flash", "fs_space_flash"),
+            ]
+        };
+        for (name, label, fs) in backgrounds {
+            let made = pipeline(label, "vs_background", fs, None, &[]);
+            pipelines.insert(name.to_string(), made);
+        }
+        for (name, label, vs) in [
+            ("glare", "Solar glare", "vs_glare"),
+            ("glarefull", "Solar glare full", "vs_glare_full"),
+        ] {
+            pipelines.insert(name.to_string(), pipeline(label, vs, "fs_glare", add, &[]));
+        }
+        let (label, vs, fs) = ("Solar probe glare", "vs_glare", "fs_probe_glare");
+        let made = make(label, vs, fs, None, &[], Some(false), none, false);
+        pipelines.insert("probeglare".to_string(), made);
         pipelines.insert(
             "space".to_string(),
             pipeline("Solar space", "vs_background", "fs_space", None, &[]),
@@ -1444,14 +1474,25 @@ impl Solar {
         } else if self.starfield_slot(self.tour.system.seed).is_some()
             && std::env::var_os("SOLAR_PROCEDURAL_STARS").is_none()
         {
-            "spacebaked".to_string()
+            if params.warp[1] > 0.0 && !traced() {
+                "spaceflash".to_string()
+            } else {
+                "spacebaked".to_string()
+            }
         } else {
             "space".to_string()
+        };
+        // The star's glare over the baked background (`fs_space` and the
+        // traced one draw their own; the drives none).
+        let glare = match background.as_str() {
+            "spacebaked" | "spaceflash" if !traced() => glare_pass(&params),
+            _ => None,
         };
         #[cfg(test)]
         {
             *self.drawn.borrow_mut() = format!(
-                "{background} {}",
+                "{background}{} {}",
+                glare.map(|g| format!(" {g}")).unwrap_or_default(),
                 draws
                     .iter()
                     .map(|(b, n)| format!("{b}:{n}"))
@@ -1527,6 +1568,19 @@ impl Solar {
             let (label, pipeline) = &self.pipelines[&background];
             pass.set_pipeline(pipeline);
             crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+            if let Some(name) = glare {
+                let (vertices, probe) = match name {
+                    "glare" => (GLARE_VERTICES, "probeglare"),
+                    _ => (3, "probefull"),
+                };
+                if counting {
+                    pass.set_pipeline(&self.pipelines[probe].1);
+                    crate::gpu::probe_draw(&mut pass, 0..vertices, 0..1);
+                }
+                let (label, pipeline) = &self.pipelines[name];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, 0..1);
+            }
             for (body, name) in &draws {
                 // An eclipse only over where the shadows fall, if any does.
                 let scissor = if name == "eclipse" {
@@ -2340,6 +2394,23 @@ fn globe_mesh(body: &Body, pixel: f32) -> ([f32; 4], [f32; 4]) {
 /// of it, so its depth mask can be the polygon inscribed in it.
 fn inscribable(body: &Body, params: &Params) -> bool {
     wholly_ahead(body, params, 1.0)
+}
+
+/// How the star's glare is drawn: as a polygon round the star out to where
+/// it falls under `GLARE_FLOOR` (`glare`), over the whole frame when that
+/// reaches too far round the sky (`glarefull`), or not at all when the
+/// star's disc is hidden. The same sums as `vs_glare`.
+fn glare_pass(params: &Params) -> Option<&'static str> {
+    let shown = f64::from(params.star_colour[3]);
+    let colour = (0..3).map(|i| f64::from(params.star_colour[i]) * shown);
+    let bright = colour.fold(0.0, f64::max);
+    if bright <= 0.0 {
+        return None;
+    }
+    let distance = length([0, 1, 2].map(|i| f64::from(params.star[i]))).max(1e-3);
+    let chord = f64::from(params.star[3]) / distance * 0.012 * bright / GLARE_FLOOR;
+    let wide = chord >= 2.0 * (GLARE_POLYGON / 2.0).sin();
+    Some(if wide { "glarefull" } else { "glare" })
 }
 
 /// Whether everything within `scale` of its radii of the body's centre is
