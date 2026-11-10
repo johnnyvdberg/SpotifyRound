@@ -20,7 +20,8 @@
 //   V3D skips their work for pixel groups with nothing to draw:
 //   `fs_star`; `fs_flat` for a planet whose maps are not in yet; a mapped
 //   world from afar in one pass, `fs_surface`, built for each sort of world
-//   (`SurfaceLook` in `mod.rs`) with its rings' shadow; close up
+//   (`SurfaceLook` in `mod.rs`) with its rings' shadow, or for the looks
+//   ported so far as a mesh of its own grid, `vs_globe` and `fs_globe`; close up
 //   `fs_ground`, `fs_detail`, `fs_clouds` and `fs_glow`; `fs_moon` for a
 //   moon; the air past a limb (added) as an annulus round the silhouette
 //   lit at its vertices (`vs_limb_ring`, `fs_limb_ring`) for a body wholly
@@ -51,6 +52,13 @@ struct Body {
     // The bodies that can cast a shadow on this one (their indices; -1 for
     // none), from the CPU, so eclipses loop over those, not every body.
     shade: vec4<f32>,
+    // The patch of its latitude-longitude grid a mapped world is drawn as
+    // (`vs_globe`): longitude and latitude of its corner, then their spans,
+    // in radians, from the CPU.
+    window: vec4<f32>,
+    // x: the grid's cells along each side; y: how far the mesh stands proud
+    // of the surface, in radii, so the soft edge has pixels to fade over.
+    mesh: vec4<f32>,
 };
 
 struct Params {
@@ -1422,6 +1430,207 @@ fn fs_surface(in: Quad) -> @location(0) vec4<f32> {
         rgb += limb_glow(i, h, sun);
     }
     return vec4<f32>(rgb, alpha);
+}
+
+// ---------------------------------------------------------------------------
+// A mapped world seen from afar as a mesh: a patch of its own latitude-
+// longitude grid (`window`, `mesh` on the body, from the CPU), so everything
+// that varies smoothly over the sphere is worked out once a vertex and the
+// fragment shader keeps only what depends on a texel (docs/solar-perf-plan.md,
+// brief S1). The grid's vertex is its index, `row * GRID_STRIDE + column`
+// (no vertex buffer), from a static index buffer holding the triangles for
+// a few sizes of grid; back faces are culled. The mesh stands a pixel and a
+// half proud of the surface at the limb, and each vertex carries the soft
+// edge of the ray through it against the true sphere, so the edge fades as
+// the traced one does. The map's level is the GPU's own: the mesh never
+// crosses the longitude's wrap inside a triangle. Built per look as
+// `fs_surface` is (`SurfaceLook`); with `SOLAR_TRACED` the looks it serves
+// are drawn by `fs_surface` instead.
+// ---------------------------------------------------------------------------
+
+const GRID_STRIDE: u32 = 129u;
+
+struct Globe {
+    @builtin(position) position: vec4<f32>,
+    // The map's coordinates, and the clouds' turned longitude.
+    @location(0) uv: vec3<f32>,
+    // The soft edge in pixels past the limb (negative: inside), the sun's
+    // and the viewer's height over the ground, and the sea's glint angle.
+    @location(1) geo: vec4<f32>,
+    // The sun along east and north (x 0.55, the relief's strength), the
+    // clouds' forward-scattering lobe, and where the rings' shadow falls.
+    @location(2) slope: vec4<f32>,
+    // The clouds' shadow shift in map coordinates; the rings' shadow's
+    // strength and row.
+    @location(3) shift: vec4<f32>,
+    // Sunlight on the ground through the air both ways.
+    @location(4) direct: vec3<f32>,
+    // The air toward the viewer.
+    @location(5) thru: vec3<f32>,
+    // Sunlight on the cloud deck through the air above it and to the viewer.
+    @location(6) deck: vec3<f32>,
+    // The air's own sheen.
+    @location(7) sheen: vec3<f32>,
+};
+
+@vertex
+fn vs_globe(@builtin(vertex_index) vertex: u32, @builtin(instance_index) i: u32) -> Globe {
+    var out: Globe;
+    let cells = params.bodies[i].mesh.x;
+    let at = vec2<f32>(f32(vertex % GRID_STRIDE), f32(vertex / GRID_STRIDE)) / cells;
+    let window = params.bodies[i].window;
+    let lon = window.x + window.z * at.x;
+    let lat = window.y + window.w * at.y;
+    let cos_lat = cos(lat);
+    let nb = vec3<f32>(cos_lat * sin(lon), sin(lat), cos_lat * cos(lon));
+    let n = from_body(i, nb);
+    let east = from_body(i, vec3<f32>(cos(lon), 0.0, -sin(lon)));
+    let north = cross(n, east);
+    let c = params.bodies[i].place.xyz;
+    let radius = params.bodies[i].place.w;
+    let point = c + n * radius * (1.0 + params.bodies[i].mesh.y);
+    let distance = length(point);
+    let dir = point / distance;
+    // The ray through the vertex against the true sphere: its soft edge.
+    let closest = length(c - dir * dot(c, dir)) / radius;
+    let edge = (closest - 1.0) * radius / (distance * params.frame.z);
+    // Homogeneous, w the depth along the view, as `vs_ring`: the values are
+    // interpolated with the perspective, and what is behind is clipped.
+    let z = dot(point, params.forward.xyz);
+    out.position = vec4<f32>(dot(point, params.right.xyz) / params.frame.y, dot(point, params.up.xyz) / params.frame.y, params.bodies[i].ring_colour.w * z, z);
+
+    let sun = normalize(params.star.xyz - point);
+    let mu = dot(n, sun);
+    let mu_view = clamp(dot(n, -dir), 0.0, 1.0);
+    let se = dot(sun, east);
+    let sn = dot(sun, north);
+    out.uv = vec3<f32>(0.5 + lon / TAU, 0.5 - lat / PI, 0.5 + lon / TAU + params.bodies[i].rot[0].w);
+    out.geo = vec4<f32>(edge, mu, mu_view, dot(n, normalize(sun - dir)));
+    let toward_star = max(dot(dir, sun), 0.0);
+    let lobe = toward_star * toward_star * toward_star * toward_star;
+    out.slope = vec4<f32>(se * 0.55, sn * 0.55, 0.2 + 1.2 * lobe * lobe, 0.0);
+    let reach = 0.006 / max(mu, 0.12);
+    out.shift = vec4<f32>(se * reach / (TAU * max(cos_lat, 0.05)), -sn * reach / PI, 0.0, 0.0);
+    if (RINGS) {
+        let axis = params.bodies[i].rot[1].xyz;
+        let denom = dot(sun, axis);
+        let s = dot(c - point, axis) / denom;
+        let hit = point + sun * s - c;
+        let x = (length(hit) / radius - params.bodies[i].ring.x) / (params.bodies[i].ring.y - params.bodies[i].ring.x);
+        out.slope.w = clamp(x, -1.0, 2.0);
+        out.shift.z = select(0.0, params.bodies[i].ring.z * 0.85 * smoothstep01(-0.05, 0.12, mu), abs(denom) >= 1e-4 && s > 0.0);
+        // The profile's rows (`RING_ROWS`): the texture is not bound to the
+        // vertex stage.
+        out.shift.w = (params.bodies[i].ring.w + 0.5) / 8.0;
+    }
+    out.direct = star_light();
+    out.thru = vec3<f32>(1.0);
+    out.deck = star_light() * (0.85 * smoothstep01(-0.08, 0.04, mu));
+    out.sheen = vec3<f32>(0.0);
+    if (AIR == 1) {
+        let air = params.bodies[i].air.rgb;
+        let thru = exp(-air * airmass(mu_view));
+        let high = star_light() * exp(-air * (airmass(mu + 0.04) * 0.55));
+        out.thru = thru;
+        out.direct = star_light() * exp(-air * airmass(mu)) * thru;
+        out.deck = high * thru * (0.85 * smoothstep01(-0.08, 0.04, mu));
+        out.sheen = high * (vec3<f32>(1.0) - thru) * (0.45 * smoothstep01(-0.10, 0.08, mu));
+    }
+    return out;
+}
+
+// The maps of the slot a pipeline is built for, at the GPU's own level.
+fn globe_day(uv: vec2<f32>, bias: f32) -> vec3<f32> {
+    if (SLOT == 0) {
+        return textureSampleBias(a_day, map_sampler, uv, bias).rgb;
+    }
+    return textureSampleBias(b_day, map_sampler, uv, bias).rgb;
+}
+
+fn globe_relief(uv: vec2<f32>, bias: f32) -> vec4<f32> {
+    if (SLOT == 0) {
+        return textureSampleBias(a_relief, map_sampler, uv, bias);
+    }
+    return textureSampleBias(b_relief, map_sampler, uv, bias);
+}
+
+fn globe_extra(uv: vec2<f32>, bias: f32) -> vec2<f32> {
+    if (SLOT == 0) {
+        return textureSampleBias(a_extra, map_sampler, uv, bias).rg;
+    }
+    return textureSampleBias(b_extra, map_sampler, uv, bias).rg;
+}
+
+// The world over the mesh. Only the airless looks are drawn with it so far;
+// the other branches are the prototype's (docs/solar-lab/globe.wgsl) as
+// compiled there, not yet compared with `fs_surface`.
+@fragment
+fn fs_globe(in: Globe) -> @location(0) vec4<f32> {
+    let mu = in.geo.y;
+    let relief = globe_relief(in.uv.xy, BIAS + 0.4);
+    var cloud = 0.0;
+    if (CLOUDS) {
+        cloud = globe_extra(in.uv.zy, BIAS).g;
+    }
+    var albedo = globe_day(in.uv.xy, BIAS) * (1.0 - 0.2 * relief.b);
+    if (GIANT == 1) {
+        albedo *= 0.55 + 0.45 * sqrt(in.geo.z);
+    }
+    // The relief's tilt of the normal, along the interpolated east and north.
+    let d = relief.rg - 0.5;
+    let lit = (mu + dot(d, in.slope.xy)) * inverseSqrt(1.0 + 0.3025 * dot(d, d));
+    var day = smoothstep01(-0.03, 0.03, mu);
+    var sky = vec3<f32>(0.0);
+    if (AIR == 1) {
+        day = smoothstep01(-0.035, 0.02, mu);
+        sky = in.thru * skylight();
+    }
+    let sky_rise = smoothstep01(-0.15, 0.4, mu);
+    var rgb = albedo * (in.direct * (day * max(lit + 0.03, 0.0)) + sky * sky_rise);
+    if (CLOUDS) {
+        let toward = globe_extra(in.uv.zy + in.shift.xy, BIAS + 1.0).g;
+        let shadow = 0.6 * toward * smoothstep01(-0.05, 0.12, mu);
+        let side = select(1.0, clamp(1.0 - 2.0 * (toward - cloud), 0.4, 1.3), mu > -0.05);
+        let lit_deck = in.deck * ((0.30 + 0.70 * sqrt(max(mu, 0.0))) * side + (1.0 - cloud) * in.slope.z) + sky * (sky_rise * 1.275);
+        let thick = min(cloud * (2.2 - 1.2 * in.geo.z), 1.0);
+        rgb = lit_deck * thick + rgb * ((1.0 - thick) * (1.0 - shadow));
+    }
+    if (AIR == 1) {
+        rgb += in.sheen;
+    }
+    if (SEA) {
+        let water = relief.b * (1.0 - cloud);
+        let away = 1.0 - in.geo.z;
+        let away2 = away * away;
+        let fresnel = 0.02 + 0.98 * away2 * away2 * away;
+        let log_nh = log2(max(in.geo.w, 0.0));
+        let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
+        rgb += (in.direct * (day * glint * (0.25 + fresnel)) + sky * (2.0 * fresnel * smoothstep01(-0.1, 0.3, mu))) * water;
+    }
+    if (NIGHT == 1) {
+        let night = globe_extra(in.uv.xy, BIAS + 0.6).r;
+        let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
+        let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
+        rgb += tint * in.thru * (night * night * 2.2 * darkness * (1.0 - cloud * 0.85));
+    } else if (NIGHT == 2) {
+        let night = globe_extra(in.uv.xy, BIAS + 0.6).r;
+        let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
+        let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), night * night);
+        rgb += heat * in.thru * (night * (0.15 + 0.55 * darkness));
+    }
+    if (RINGS) {
+        let x = in.slope.w;
+        let density = textureSampleLevel(ring_profile, map_sampler, vec2<f32>(x, in.shift.w), 0.0).r;
+        rgb *= 1.0 - density * in.shift.z * step(0.0, x) * step(x, 1.0);
+    }
+    let cover = smoothstep01(-0.75, 0.75, -in.geo.x);
+    return vec4<f32>(rgb * cover, cover);
+}
+
+// For the Pi estimate: the mesh's pixels, shaded by nothing.
+@fragment
+fn fs_probe_globe(in: Globe) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
 }
 
 // ---------------------------------------------------------------------------

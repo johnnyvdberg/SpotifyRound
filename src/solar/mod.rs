@@ -51,6 +51,12 @@ struct Body {
     /// Up to four bodies that can cast a shadow on this one, by index (-1:
     /// none).
     shade: [f32; 4],
+    /// The patch of its grid a mapped world's mesh covers (`vs_globe`):
+    /// longitude and latitude of its corner, then their spans, in radians.
+    window: [f32; 4],
+    /// The mesh's cells along each side, and how far it stands proud of the
+    /// surface, in radii.
+    mesh: [f32; 4],
 }
 
 #[repr(C)]
@@ -99,6 +105,45 @@ const MASK_VERTICES: u32 = 64 * 3;
 const RING_VERTICES: u32 = 32 * 6;
 /// The limb's annulus: `LIMB_SIDES` sides of two quads in `frame.wgsl`.
 const LIMB_RING_VERTICES: u32 = 128 * 2 * 6;
+
+/// A mapped world's mesh (`vs_globe`): grids of so many cells a side, all
+/// with one stride, a vertex being `row * GRID_STRIDE + column` (no vertex
+/// buffer). One index buffer holds each grid's triangles in turn
+/// ([`grid_indices`], [`grid_range`]).
+const GRIDS: [u32; 6] = [8, 16, 32, 64, 96, 128];
+const GRID_STRIDE: u32 = 129;
+
+/// The triangles of every grid in `GRIDS`, one after another: each cell two,
+/// counter-clockwise seen from outside (its column runs east, its row north).
+fn grid_indices() -> Vec<u16> {
+    let mut indices = Vec::new();
+    for cells in GRIDS {
+        for row in 0..cells {
+            for column in 0..cells {
+                let a = row * GRID_STRIDE + column;
+                let (east, north) = (a + 1, a + GRID_STRIDE);
+                let corner = north + 1;
+                indices.extend([a, east, corner, a, corner, north].map(|i| i as u16));
+            }
+        }
+    }
+    indices
+}
+
+/// Where the triangles of the grid of `cells` a side lie in the index
+/// buffer: 8 at 0, 16 at 384, 32 at 1920, 64 at 8064, 96 at 32640 and 128
+/// at 87936, 186240 in all.
+fn grid_range(cells: u32) -> std::ops::Range<u32> {
+    let mut start = 0;
+    for n in GRIDS {
+        let count = n * n * 6;
+        if n >= cells {
+            return start..start + count;
+        }
+        start += count;
+    }
+    start - 128 * 128 * 6..start
+}
 
 /// Whether to draw as before the meshes and annuli of
 /// docs/solar-perf-plan.md (`SOLAR_TRACED` set): the air past a limb traced
@@ -160,7 +205,9 @@ pub const MAP: f32 = 240.0;
 pub(crate) struct Solar {
     /// The frame's small pipelines, by name: `space`, `warp1`..`warp5`,
     /// `star`, `flat`, `limb`, `limbring`, `ring`, and per map slot
-    /// `ground0`, `sea0`, `clouds0`, `glow0`, `moon0` (and `…1`).
+    /// `ground0`, `sea0`, `clouds0`, `glow0`, `moon0` (and `…1`), the worlds
+    /// from afar `surface0…` (traced) and `globe0…` (a mesh, see
+    /// `SurfaceLook::meshed`).
     /// Each with its label, which the Pi estimate matches to the shader-db.
     pipelines: std::collections::HashMap<String, (String, wgpu::RenderPipeline)>,
     /// A drive to use for every jump instead of each system's own, for the
@@ -168,6 +215,8 @@ pub(crate) struct Solar {
     drive_override: Option<u32>,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// The meshes' triangles, every grid's (`grid_indices`).
+    grid: wgpu::Buffer,
     sampler: wgpu::Sampler,
     bind_group: Option<wgpu::BindGroup>,
     /// Each ringed planet's ring density by radius, a row per planet, and the
@@ -253,15 +302,16 @@ impl Solar {
             immediate_size: 0,
         });
         // Every frame pipeline tests the depth mask (see `draw`); the mask's
-        // own pipeline writes it and nothing else.
-        let make = |label: &str,
-                    vs: &str,
-                    fs: &str,
-                    blend: Option<wgpu::BlendState>,
-                    constants: &[(&str, f64)],
-                    write_depth: Option<bool>,
-                    writes: wgpu::ColorWrites,
-                    strict: bool| {
+        // own pipeline writes it and nothing else. Only the meshes cull.
+        let make_culled = |label: &str,
+                           vs: &str,
+                           fs: &str,
+                           blend: Option<wgpu::BlendState>,
+                           constants: &[(&str, f64)],
+                           write_depth: Option<bool>,
+                           writes: wgpu::ColorWrites,
+                           strict: bool,
+                           cull_mode: Option<wgpu::Face>| {
             let options = wgpu::PipelineCompilationOptions {
                 constants,
                 ..Default::default()
@@ -285,7 +335,10 @@ impl Solar {
                     })],
                     compilation_options: options,
                 }),
-                primitive: wgpu::PrimitiveState::default(),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode,
+                    ..Default::default()
+                },
                 // None: drawn outside the frame's pass (the starfield bake).
                 depth_stencil: write_depth.map(|write| wgpu::DepthStencilState {
                     format: DEPTH,
@@ -305,6 +358,28 @@ impl Solar {
                 cache: None,
             });
             (label.to_string(), made)
+        };
+        let make = |label: &str,
+                    vs: &str,
+                    fs: &str,
+                    blend: Option<wgpu::BlendState>,
+                    constants: &[(&str, f64)],
+                    write_depth: Option<bool>,
+                    writes: wgpu::ColorWrites,
+                    strict: bool| {
+            let depth = write_depth;
+            make_culled(label, vs, fs, blend, constants, depth, writes, strict, None)
+        };
+        // A mapped world's mesh: its back faces culled (counter-clockwise
+        // seen from outside, see `grid_indices`).
+        let globe = |label: &str,
+                     fs: &str,
+                     blend: Option<wgpu::BlendState>,
+                     constants: &[(&str, f64)],
+                     writes: wgpu::ColorWrites| {
+            let (vs, back) = ("vs_globe", Some(wgpu::Face::Back));
+            let depth = Some(false);
+            make_culled(label, vs, fs, blend, constants, depth, writes, false, back)
         };
         let pipeline = |label: &str,
                         vs: &str,
@@ -484,10 +559,16 @@ impl Solar {
                 true,
             ),
         );
+        pipelines.insert(
+            "probeglobe".to_string(),
+            globe("Solar probe globe", "fs_probe_globe", None, &[], none),
+        );
+        let mut seen = std::collections::HashSet::new();
         for slot in 0..2 {
             // A mapped world from afar, in one pipeline (`fs_surface`), one
             // for each set of features a kind has: only its own code, in
-            // as few registers as it needs.
+            // as few registers as it needs. The looks drawn as a mesh
+            // (`fs_globe`) are traced only with `SOLAR_TRACED`.
             let looks = Kind::ALL.into_iter().flat_map(|k| {
                 let rings = matches!(k, Kind::GasGiant | Kind::IceGiant);
                 [(false, false), (false, true), (true, false), (true, true)]
@@ -497,11 +578,20 @@ impl Solar {
             });
             for look in looks {
                 let name = look.pipeline(slot);
-                if pipelines.contains_key(&name) {
+                if !seen.insert(name.clone()) {
                     continue;
                 }
                 let mut constants = vec![("SLOT", slot as f64)];
                 constants.extend(look.constants());
+                if look.meshed() {
+                    let mesh = look.globe(slot);
+                    let label = format!("Solar {mesh}");
+                    let all = wgpu::ColorWrites::ALL;
+                    pipelines.insert(mesh, globe(&label, "fs_globe", over, &constants, all));
+                    if !traced() {
+                        continue;
+                    }
+                }
                 pipelines.insert(
                     name.clone(),
                     pipeline(&format!("Solar {name}"), "vs_body", "fs_surface", over, &constants),
@@ -569,6 +659,14 @@ impl Solar {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let grid = {
+            use wgpu::util::DeviceExt;
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Solar mesh grids"),
+                contents: bytemuck::cast_slice(&grid_indices()),
+                usage: wgpu::BufferUsages::INDEX,
+            })
+        };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Solar maps"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -646,6 +744,7 @@ impl Solar {
             drive_override: None,
             layout,
             uniforms,
+            grid,
             sampler,
             bind_group: None,
             rings,
@@ -1198,6 +1297,14 @@ impl Solar {
             motion: f32x4(self.motion(t), 0.0),
             bodies: list,
         };
+        // The meshes' windows and grids, from the frame's pixel size.
+        let mut params = params;
+        for (body, name) in &draws {
+            if name.starts_with("globe") {
+                let b = &mut params.bodies[*body as usize];
+                (b.window, b.mesh) = globe_mesh(b, params.frame[2]);
+            }
+        }
         // The air past the limb of a body wholly ahead as an annulus.
         if !traced() {
             for (body, name) in &mut draws {
@@ -1304,6 +1411,7 @@ impl Solar {
             });
             pass.set_bind_group(0, group, &[]);
             pass.set_bind_group(1, &self.streamer.noise().group, &[]);
+            pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
             // First the depth mask: every body's solid disc at its rank, so
             // nothing a nearer body hides is shaded, the background included.
             let mut masked = Vec::new();
@@ -1352,6 +1460,20 @@ impl Solar {
                 if let Some([x, y, w, h]) = scissor {
                     pass.set_scissor_rect(x, y, w, h);
                 }
+                let instances = *body..*body + 1;
+                if name.starts_with("globe") {
+                    // A mesh: its grid's triangles, probed with the same.
+                    let indices = grid_range(params.bodies[*body as usize].mesh[0] as u32);
+                    if counting {
+                        pass.set_pipeline(&self.pipelines["probeglobe"].1);
+                        let (probed, of) = (indices.clone(), instances.clone());
+                        crate::gpu::probe_draw_indexed(&mut pass, probed, of);
+                    }
+                    let (label, pipeline) = &self.pipelines[name];
+                    pass.set_pipeline(pipeline);
+                    crate::gpu::counted_draw_indexed(&mut pass, label, 0, indices, instances);
+                    continue;
+                }
                 let (vertices, probe, probed) = match name.as_str() {
                     "ring" => (RING_VERTICES, "probe", BODY_VERTICES),
                     "limb" => (BODY_VERTICES, "probestrict", BODY_VERTICES),
@@ -1360,11 +1482,11 @@ impl Solar {
                 };
                 if counting {
                     pass.set_pipeline(&self.pipelines[probe].1);
-                    crate::gpu::probe_draw(&mut pass, 0..probed, *body..*body + 1);
+                    crate::gpu::probe_draw(&mut pass, 0..probed, instances.clone());
                 }
                 let (label, pipeline) = &self.pipelines[name];
                 pass.set_pipeline(pipeline);
-                crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, *body..*body + 1);
+                crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, instances);
                 if scissor.is_some() {
                     pass.set_scissor_rect(0, 0, SIZE, SIZE);
                 }
@@ -1796,7 +1918,11 @@ fn surface_passes(
         // of its own (`limb`, made `limbring` in `params`), or with
         // `SOLAR_TRACED` in this one unless an eclipse darkens it.
         let look = SurfaceLook::of(kind, rings, eclipsed);
-        let mut passes = vec![look.pipeline(s)];
+        let mut passes = vec![if look.meshed() && !traced() {
+            look.globe(s)
+        } else {
+            look.pipeline(s)
+        }];
         if eclipsed {
             passes.push("eclipse".into());
         }
@@ -1898,6 +2024,17 @@ impl SurfaceLook {
             flag(self.rings, 'r'),
             if self.limb { "l" } else { "" },
         )
+    }
+
+    /// Whether the look is drawn as a mesh (`fs_globe`) unless
+    /// `SOLAR_TRACED`: so far the airless ones.
+    fn meshed(self) -> bool {
+        !(self.sea || self.clouds || self.air || self.giant || self.rings)
+    }
+
+    /// Its mesh's pipeline: `globe` and the same flags.
+    fn globe(self, slot: usize) -> String {
+        self.pipeline(slot).replacen("surface", "globe", 1)
     }
 
     fn constants(self) -> [(&'static str, f64); 7] {
@@ -2009,6 +2146,53 @@ fn close_rect(view: &View, centre: [f64; 3], radius: f64) -> Option<[f32; 4]> {
         ((g as i64 + grow).clamp(0, CELLS as i64) as f64 / CELLS as f64 * 2.0 - 1.0) as f32
     };
     Some([edge(lo[0], -1), edge(lo[1], -1), edge(hi[0], 1), edge(hi[1], 1)])
+}
+
+/// A mapped world's mesh (`vs_globe`): the patch of its latitude-longitude
+/// grid the camera can see, as `Body::window`, and `Body::mesh`: the grid's
+/// cells a side, few enough that a far body costs little and many enough
+/// that the silhouette keeps within 0.2 px of the circle, and how far the
+/// mesh stands proud, 1.5 px at the limb, for the soft edge. `pixel` is the
+/// tangent a pixel spans (`frame.z`).
+fn globe_mesh(body: &Body, pixel: f32) -> ([f32; 4], [f32; 4]) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let c = [0, 1, 2].map(|i| f64::from(body.place[i]));
+    let r = f64::from(body.place[3]);
+    let d = length(c).max(r * 1.001);
+    // The way to the camera in the body's turning frame.
+    let row = |k: usize| [0, 1, 2].map(|i| f64::from(body.rot[k][i]));
+    let a = [0, 1, 2].map(|k| -dot(row(k), c) / d);
+    let lat_c = a[1].clamp(-1.0, 1.0).asin();
+    let lon_c = a[0].atan2(a[2]);
+    let tangent = (d * d - r * r).sqrt();
+    let pixel = f64::from(pixel);
+    // The limb's radius in pixels, and the widest cell that keeps the
+    // silhouette (a cell's sag, about R c^2 / 2) within 0.2 px.
+    let limb = r / (tangent * pixel);
+    let cell = (0.4 / limb.max(1e-6)).sqrt();
+    // The cap in view, two cells wider.
+    let alpha = (r / d).acos() + 2.0 * cell;
+    let lat_lo = (lat_c - alpha).max(-FRAC_PI_2);
+    let lat_hi = (lat_c + alpha).min(FRAC_PI_2);
+    let reach = alpha.sin() / lat_c.cos().max(1e-6);
+    let pole = lat_c + alpha >= FRAC_PI_2 || lat_c - alpha <= -FRAC_PI_2 || reach >= 1.0;
+    // With a pole in view, every longitude.
+    let half = if pole { PI } else { reach.asin() };
+    let (lon_lo, lon_span) = (lon_c - half, 2.0 * half);
+    // The window's widest side as an arc, at the latitude nearest the equator.
+    let mut widest = lat_lo.cos().max(lat_hi.cos());
+    if lat_lo <= 0.0 && lat_hi >= 0.0 {
+        widest = 1.0;
+    }
+    let span = (lat_hi - lat_lo).max(lon_span * widest);
+    let cells = GRIDS
+        .into_iter()
+        .find(|&n| span / f64::from(n) <= cell)
+        .unwrap_or(GRIDS[GRIDS.len() - 1]);
+    let proud = 1.5 * pixel * tangent / r;
+    let window = [lon_lo, lat_lo, lon_span, lat_hi - lat_lo];
+    let mesh = [cells as f32, proud as f32, 0.0, 0.0];
+    (window.map(|v| v as f32), mesh)
 }
 
 /// The quad covering a sphere of `radius` at `centre` (camera-relative), in
@@ -2189,6 +2373,34 @@ pub(crate) mod tests {
     /// every kind of planet and moon is visited), written to
     /// `SOLAR_SHOTS_DIR` (default `target/solar-shots`): one PNG per moment,
     /// a contact sheet per seed, and the HUD at each moment in `hud.txt`.
+    /// The index buffer's grids lie where `grid_range` says, and a mesh's
+    /// grid follows the disc's size: fine in orbit, coarse far off.
+    #[test]
+    fn grids() {
+        let indices = grid_indices();
+        assert_eq!(grid_range(8), 0..384);
+        assert_eq!(grid_range(96), 32640..87936);
+        assert_eq!(grid_range(128), 87936..186240);
+        assert_eq!(indices.len(), 186240);
+        assert_eq!(indices[87936..].iter().max(), Some(&(128 * 129 + 128)));
+        let pixel = (2.0 * 0.5 / f64::from(SIZE)) as f32;
+        let body = |distance: f32| Body {
+            place: [0.0, 0.0, distance, 1.0],
+            rot: [0, 1, 2].map(|k| [0, 1, 2, 3].map(|i| f32::from(u8::from(i == k)))),
+            ..Default::default()
+        };
+        // From 2.5 radii, a limb 470 px from the centre: cells under 1.7°, a
+        // cap of 66 degrees round the side facing the camera (-z).
+        let (window, mesh) = globe_mesh(&body(2.5), pixel);
+        assert_eq!(mesh[0], 96.0);
+        assert!(((window[0] + window[2] / 2.0).abs() - std::f32::consts::PI).abs() < 1e-4);
+        assert!(window[3] > 2.0 * 66.4f32.to_radians() && window[3] < 2.0 * 75f32.to_radians());
+        // Far off, a few pixels: the coarsest, every longitude.
+        let (window, mesh) = globe_mesh(&body(2000.0), pixel);
+        assert_eq!(mesh[0], 8.0);
+        assert_eq!(window[2], std::f32::consts::TAU);
+    }
+
     /// `SOLAR_SHOTS=low` keeps only the moments whose names contain `low`.
     /// The streamer is run until the moment's maps are in, so each shot shows
     /// the finished assets.
