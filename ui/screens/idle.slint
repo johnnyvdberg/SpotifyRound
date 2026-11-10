@@ -204,18 +204,21 @@ export component IdleScreen inherits Rectangle {
             font-weight: 700;
             letter-spacing: 3px;
         }
-        // The tag, pulsing while an instrument runs.
+        // The tag, pulsing while an instrument runs. The pulse is in the
+        // colours, not an `opacity`: one around the tag and its text would
+        // make Skia draw them through a layer every frame, splitting the
+        // window's render pass (docs/kiosk-ui-cost.md).
         Rectangle {
+            property <float> pulse: running ? 0.55 + 0.45 * Math.sin(animation-tick() / 1ms * 0.008rad) : 0.15;
             x: parent.width - 96px;
             y: 12px;
             width: 78px;
             height: 24px;
             border-radius: 4px;
-            background: teal;
-            opacity: running ? 0.55 + 0.45 * Math.sin(animation-tick() / 1ms * 0.008rad) : 0.15;
+            background: teal.with-alpha(pulse);
             Text {
                 text: running ? "SCAN" : "DONE";
-                color: #00140f;
+                color: #00140f.with-alpha(parent.pulse);
                 font-family: Theme.font;
                 font-size: 14px;
                 font-weight: 800;
@@ -376,18 +379,19 @@ export component IdleScreen inherits Rectangle {
             font-weight: 700;
             letter-spacing: 3px;
         }
-        // The tag, pulsing while the engine fires.
+        // The tag, pulsing while the engine fires; the pulse in the colours,
+        // like the scanner's.
         Rectangle {
+            property <float> pulse: throttle > 0.05 ? 0.55 + 0.45 * Math.sin(animation-tick() / 1ms * 0.012rad) : 0.15;
             x: parent.width - 96px;
             y: 12px;
             width: 78px;
             height: 24px;
             border-radius: 4px;
-            background: #ff6a2a;
-            opacity: throttle > 0.05 ? 0.55 + 0.45 * Math.sin(animation-tick() / 1ms * 0.012rad) : 0.15;
+            background: #ff6a2a.with-alpha(pulse);
             Text {
                 text: "BURN";
-                color: #1a0800;
+                color: #1a0800.with-alpha(parent.pulse);
                 font-family: Theme.font;
                 font-size: 14px;
                 font-weight: 800;
