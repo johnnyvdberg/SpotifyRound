@@ -689,6 +689,9 @@ Solar limb ring #0               vs_limb_ring   VS-bin   137   4     0   60    2
 Solar probe limb ring #0         fs_probe       FS         8   4     0    0     0        0:0    0    3
 Solar probe limb ring #0         vs_limb_ring   VS       138   4     0   60    29        0:0    0    2
 Solar probe limb ring #0         vs_limb_ring   VS-bin   137   4     0   60    29        0:0    0    0
+Solar probe globe #0             fs_probe_globe FS         8   4     0    0     0        0:0    0    3
+Solar probe globe #0             vs_globe       VS       136   4     0   64    22        0:0    0    2
+Solar probe globe #0             vs_globe       VS-bin   133   4     0   64    22        0:0    0    1
 Solar surface0sc1a-- #0          fs_surface     FS       578   2     0  172    50        0:0    3   22
 Solar surface0sc1a-- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface0sc1a-- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
@@ -698,18 +701,18 @@ Solar surface0-c0a-- #0          vs_body        VS-bin   264   4     0  114    2
 Solar surface0--2a-- #0          fs_surface     FS       450   4     0  123    32        0:0    6   19
 Solar surface0--2a-- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface0--2a-- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
-Solar surface0--0--- #0          fs_surface     FS       324   4     0   98    28        0:0    3   14
-Solar surface0--0--- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
-Solar surface0--0--- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
+Solar globe0--0--- #0            fs_globe       FS        49   4     0   14    15        0:0    0    2
+Solar globe0--0--- #0            vs_globe       VS       204   4     0   84    26        0:0    1    1
+Solar globe0--0--- #0            vs_globe       VS-bin   133   4     0   64    22        0:0    0    1
 Solar surface0--0ag- #0          fs_surface     FS       422   4     0  118    32        0:0    5   17
 Solar surface0--0ag- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface0--0ag- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
 Solar surface0--0agr #0          fs_surface     FS       469   2     0  140    44        0:0    2   17
 Solar surface0--0agr #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface0--0agr #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
-Solar surface0--2--- #0          fs_surface     FS       338   4     0  106    28        0:0    4   15
-Solar surface0--2--- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
-Solar surface0--2--- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
+Solar globe0--2--- #0            fs_globe       FS        63   4     0   23    17        0:0    0    2
+Solar globe0--2--- #0            vs_globe       VS       204   4     0   84    26        0:0    1    1
+Solar globe0--2--- #0            vs_globe       VS-bin   133   4     0   64    22        0:0    0    1
 Solar surface0--0a-- #0          fs_surface     FS       416   4     0  118    32        0:0    5   17
 Solar surface0--0a-- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface0--0a-- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
@@ -749,18 +752,18 @@ Solar surface1-c0a-- #0          vs_body        VS-bin   264   4     0  114    2
 Solar surface1--2a-- #0          fs_surface     FS       450   4     0  123    32        0:0    6   19
 Solar surface1--2a-- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface1--2a-- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
-Solar surface1--0--- #0          fs_surface     FS       324   4     0   98    28        0:0    3   14
-Solar surface1--0--- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
-Solar surface1--0--- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
+Solar globe1--0--- #0            fs_globe       FS        49   4     0   14    15        0:0    0    2
+Solar globe1--0--- #0            vs_globe       VS       204   4     0   84    26        0:0    1    1
+Solar globe1--0--- #0            vs_globe       VS-bin   133   4     0   64    22        0:0    0    1
 Solar surface1--0ag- #0          fs_surface     FS       422   4     0  118    32        0:0    5   17
 Solar surface1--0ag- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface1--0ag- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
 Solar surface1--0agr #0          fs_surface     FS       469   2     0  140    44        0:0    2   17
 Solar surface1--0agr #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface1--0agr #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
-Solar surface1--2--- #0          fs_surface     FS       338   4     0  106    28        0:0    4   15
-Solar surface1--2--- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
-Solar surface1--2--- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12
+Solar globe1--2--- #0            fs_globe       FS        63   4     0   23    17        0:0    0    2
+Solar globe1--2--- #0            vs_globe       VS       204   4     0   84    26        0:0    1    1
+Solar globe1--2--- #0            vs_globe       VS-bin   133   4     0   64    22        0:0    0    1
 Solar surface1--0a-- #0          fs_surface     FS       416   4     0  118    32        0:0    5   17
 Solar surface1--0a-- #0          vs_body        VS       270   4     0  125    23        0:0    1   10
 Solar surface1--0a-- #0          vs_body        VS-bin   264   4     0  114    24        0:0    2   12

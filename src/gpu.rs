@@ -691,6 +691,15 @@ pub fn probe_draw(
     counted_draw(pass, PROBE, 0, vertices, instances);
 }
 
+/// Draw an indexed probe (see [`PROBE`]) when counting.
+pub fn probe_draw_indexed(
+    pass: &mut wgpu::RenderPass<'_>,
+    indices: std::ops::Range<u32>,
+    instances: std::ops::Range<u32>,
+) {
+    counted_draw_indexed(pass, PROBE, 0, indices, instances);
+}
+
 /// Draw, counting the fragments it shades under `label` (the pipeline's
 /// label) when counting is on. `covered` is how many pixels the draw covers:
 /// the driver here counts only the fragments that survive a discard, but the
@@ -702,6 +711,29 @@ pub fn counted_draw(
     vertices: std::ops::Range<u32>,
     instances: std::ops::Range<u32>,
 ) {
+    counted(pass, label, covered, |pass| pass.draw(vertices, instances));
+}
+
+/// [`counted_draw`] for an indexed draw, from the bound index buffer (base
+/// vertex 0).
+pub fn counted_draw_indexed(
+    pass: &mut wgpu::RenderPass<'_>,
+    label: &str,
+    covered: u64,
+    indices: std::ops::Range<u32>,
+    instances: std::ops::Range<u32>,
+) {
+    counted(pass, label, covered, |pass| {
+        pass.draw_indexed(indices, 0, instances)
+    });
+}
+
+fn counted(
+    pass: &mut wgpu::RenderPass<'_>,
+    label: &str,
+    covered: u64,
+    draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+) {
     COUNTER.with(|c| {
         let mut c = c.borrow_mut();
         match c.as_mut() {
@@ -709,10 +741,10 @@ pub fn counted_draw(
                 let index = counter.labels.len() as u32;
                 counter.labels.push((label.to_string(), covered));
                 pass.begin_pipeline_statistics_query(&counter.set, index);
-                pass.draw(vertices, instances);
+                draw(pass);
                 pass.end_pipeline_statistics_query();
             }
-            _ => pass.draw(vertices, instances),
+            _ => draw(pass),
         }
     });
 }
