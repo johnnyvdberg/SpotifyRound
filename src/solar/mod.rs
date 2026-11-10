@@ -2452,7 +2452,7 @@ pub(crate) mod tests {
 
     /// Run the streamer until everything wanted at `t` is in.
     fn settle(solar: &mut Solar, gpu: &Graphics, t: f64) {
-        for _ in 0..4000 {
+        for _ in 0..100_000 {
             // Asked again before looking: a planet finished in the last draw
             // leaves the streamer idle until the next one wanted is started.
             solar.stream(t);

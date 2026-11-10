@@ -12,7 +12,13 @@
 //! histogram sets the sea level (read back without waiting), the height map
 //! a band of rows at a time, the surface maps a band at a time, the mip
 //! chains, then each moon. `SOLAR_GEN_ROWS` sets the band; a 2048-texel band
-//! of 8 rows is about 16k texels a pass.
+//! of 8 rows is about 16k texels a pass, and by default the band keeps that
+//! many texels at any map size.
+//!
+//! `SOLAR_MAP_SIZE` sets the planet maps' width (1024 to 8192, a power of
+//! two; the height is half), for measuring on the Pi: 2048 by default. A
+//! moon's maps stay 512 × 256: a moon is only ever a small disc beside its
+//! planet, and one the tour visits is painted into a planet slot.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,8 +29,8 @@ use slint::wgpu_30::wgpu;
 use super::system::{Kind, Moon, Planet, Rng};
 use crate::gpu::Graphics;
 
+/// The planet maps' width unless `SOLAR_MAP_SIZE` says otherwise.
 pub const MAP_WIDTH: u32 = 2048;
-pub const MAP_HEIGHT: u32 = 1024;
 pub const MOON_WIDTH: u32 = 512;
 pub const MOON_HEIGHT: u32 = 256;
 pub const MOONS: u32 = 6;
@@ -32,6 +38,20 @@ pub const SKY_WIDTH: u32 = 1024;
 pub const SKY_HEIGHT: u32 = 512;
 const PROBE_WIDTH: u32 = 128;
 const PROBE_HEIGHT: u32 = 64;
+
+/// The planet maps' width and height: `SOLAR_MAP_SIZE` (the width, rounded
+/// to a power of two from 1024 to 8192), else `MAP_WIDTH`; never more than
+/// the GPU's `limit`.
+pub fn map_size(limit: u32) -> (u32, u32) {
+    let width = std::env::var("SOLAR_MAP_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .map_or(MAP_WIDTH, |w| {
+            w.clamp(1024, 8192).next_power_of_two().min(8192)
+        });
+    let width = width.min(limit.max(1024));
+    (width, width / 2)
+}
 
 /// Identifies a planet across systems: the system's seed and its index.
 pub type Key = (u64, usize);
@@ -218,6 +238,8 @@ pub struct Streamer {
     /// Bumped whenever what the frame shader should bind changes.
     pub version: u64,
     rows: u32,
+    /// The planet maps' width and height (`map_size`).
+    size: (u32, u32),
 
     // Shared machinery.
     terrain: wgpu::Texture,
@@ -442,12 +464,14 @@ pub fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 impl Streamer {
     pub fn new(gpu: &Graphics) -> Self {
         let device = &gpu.device;
+        let (map_width, map_height) = map_size(device.limits().max_texture_dimension_2d);
+        tracing::info!(map_width, map_height, "solar planet maps");
         let slot = |n: usize| SlotMaps {
             day: map_texture(
                 device,
                 &format!("Solar day {n}"),
-                MAP_WIDTH,
-                MAP_HEIGHT,
+                map_width,
+                map_height,
                 1,
                 DAY,
                 true,
@@ -455,8 +479,8 @@ impl Streamer {
             relief: map_texture(
                 device,
                 &format!("Solar relief {n}"),
-                MAP_WIDTH,
-                MAP_HEIGHT,
+                map_width,
+                map_height,
                 1,
                 RELIEF,
                 true,
@@ -464,8 +488,8 @@ impl Streamer {
             extra: map_texture(
                 device,
                 &format!("Solar extra {n}"),
-                MAP_WIDTH,
-                MAP_HEIGHT,
+                map_width,
+                map_height,
                 1,
                 EXTRA,
                 true,
@@ -684,11 +708,12 @@ impl Streamer {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
+        // By default as many texels a band as 8 rows of a 2048-wide map.
         let rows = std::env::var("SOLAR_GEN_ROWS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(8u32)
-            .clamp(1, MAP_HEIGHT);
+            .unwrap_or((8 * MAP_WIDTH / map_width).max(1))
+            .clamp(1, map_height);
         Self {
             maps: [slot(0), slot(1)],
             owner: [None, None],
@@ -698,11 +723,12 @@ impl Streamer {
             sky_job: None,
             version: 0,
             rows,
+            size: (map_width, map_height),
             terrain: map_texture(
                 device,
                 "Solar terrain",
-                MAP_WIDTH,
-                MAP_HEIGHT,
+                map_width,
+                map_height,
                 1,
                 HEIGHT,
                 true,
@@ -710,8 +736,8 @@ impl Streamer {
             climate: map_texture(
                 device,
                 "Solar climate",
-                MAP_WIDTH,
-                MAP_HEIGHT,
+                map_width,
+                map_height,
                 1,
                 CLIMATE,
                 false,
@@ -983,14 +1009,15 @@ impl Streamer {
                 let (buffer, width, height) = match pass.moon {
                     None => {
                         let mut p = job.params;
-                        p.size[0] = MAP_WIDTH as f32;
-                        p.size[1] = MAP_HEIGHT as f32;
+                        p.size[0] = self.size.0 as f32;
+                        p.size[1] = self.size.1 as f32;
+                        p.flags[0] = (self.size.0 as f32 / MAP_WIDTH as f32).log2();
                         if job.lowland <= 0.0 {
                             p.size[2] = -10.0;
                         }
                         gpu.queue
                             .write_buffer(&self.buffers["planet"], 0, bytemuck::bytes_of(&p));
-                        (&self.buffers["planet"], MAP_WIDTH, MAP_HEIGHT)
+                        (&self.buffers["planet"], self.size.0, self.size.1)
                     }
                     Some(i) => {
                         let moon = &job.moons[i as usize];
@@ -1372,5 +1399,160 @@ mod tests {
             .map(|i| ((i / w) as f32 / (h - 1) as f32) * 2.0 - 1.0)
             .collect();
         assert!(sea_level(&heights, w, h, 0.5).abs() < 0.05);
+    }
+
+    /// Level 0 of a single-layer map, tightly packed.
+    fn read_map(gpu: &Graphics, texture: &wgpu::Texture, texel: u32) -> Vec<u8> {
+        let size = texture.size();
+        let row = size.width * texel;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: padded as u64 * size.height as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(size.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        let data = slice.get_mapped_range().expect("mapped");
+        let mut out = Vec::with_capacity((row * size.height) as usize);
+        for y in 0..size.height as usize {
+            out.extend_from_slice(&data[y * padded as usize..][..row as usize]);
+        }
+        out
+    }
+
+    /// One world of each kind (`SOLAR_GALLERY_KINDS`, comma separated, to
+    /// pick some), painted alone at the map size in use (`SOLAR_MAP_SIZE`):
+    /// its day, relief and extra maps as PNGs in `SOLAR_GALLERY_DIR` (default
+    /// `target/solar-gallery`), and in `times.txt` the frames each took and
+    /// the wall time of each pass (on this machine's GPU; relative only).
+    #[test]
+    #[ignore = "writes maps; needs a working GPU adapter"]
+    fn gallery() {
+        use super::super::system::{Stop, System};
+        let dir =
+            std::env::var("SOLAR_GALLERY_DIR").unwrap_or_else(|_| "target/solar-gallery".into());
+        let only = std::env::var("SOLAR_GALLERY_KINDS").ok();
+        std::fs::create_dir_all(&dir).expect("a gallery directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut streamer = Streamer::new(&gpu);
+        let mut notes = format!(
+            "map {} x {}, {} rows a band\n",
+            streamer.size.0, streamer.size.1, streamer.rows
+        );
+        for kind in Kind::ALL {
+            let name = format!("{kind:?}");
+            if only
+                .as_deref()
+                .is_some_and(|o| !o.split(',').any(|k| k.eq_ignore_ascii_case(&name)))
+            {
+                continue;
+            }
+            // The first world of this kind among the systems: planets first.
+            let found = (0..400u64).find_map(|seed| {
+                let system = System::generate(seed);
+                let stops = (0..system.planets.len()).flat_map(|p| {
+                    std::iter::once(Stop {
+                        planet: p,
+                        moon: None,
+                    })
+                    .chain((0..system.planets[p].moons.len()).map(move |m| {
+                        Stop {
+                            planet: p,
+                            moon: Some(m),
+                        }
+                    }))
+                });
+                let stops: Vec<Stop> = stops.collect();
+                stops
+                    .into_iter()
+                    .map(|s| system.world(s))
+                    .find(|w| w.kind == kind)
+                    .map(|w| (seed, w))
+            });
+            let Some((seed, mut world)) = found else {
+                notes.push_str(&format!("{name}: none found\n"));
+                continue;
+            };
+            world.moons.clear();
+            let key = (seed, 1000 + kind as usize);
+            let mut times: Vec<(&'static str, f64, u32)> = Vec::new();
+            let mut frames = 0u32;
+            let start = std::time::Instant::now();
+            while streamer.ready(key).is_none() && frames < 200_000 {
+                streamer.want(&[(key, &world)], &[]);
+                let pass = match streamer.job.as_ref().map(|j| (j.step, &j.plan)) {
+                    Some((Step::Pass(i, _), plan)) => plan[i].pipeline,
+                    _ => "probe",
+                };
+                let t = std::time::Instant::now();
+                let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                streamer.advance(&gpu, &mut encoder);
+                gpu.queue.submit(Some(encoder.finish()));
+                gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                let ms = t.elapsed().as_secs_f64() * 1e3;
+                match times.iter_mut().find(|(p, _, _)| *p == pass) {
+                    Some(entry) => {
+                        entry.1 += ms;
+                        entry.2 += 1;
+                    }
+                    None => times.push((pass, ms, 1)),
+                }
+                frames += 1;
+            }
+            let total = start.elapsed().as_secs_f64() * 1e3;
+            notes.push_str(&format!(
+                "{name} (seed {seed}, {}): {frames} frames, {total:.0} ms\n",
+                world.name
+            ));
+            for (pass, ms, n) in &times {
+                notes.push_str(&format!("    {pass:>9} {ms:8.0} ms over {n} frames\n"));
+            }
+            let slot = streamer.ready(key).expect("painted");
+            let maps = &streamer.maps[slot];
+            let (w, h) = streamer.size;
+            let save = |suffix: &str, data: Vec<u8>, colour| {
+                let path = std::path::Path::new(&dir).join(format!("{name}-{suffix}.png"));
+                image::save_buffer(&path, &data, w, h, colour).expect("a map");
+            };
+            save(
+                "day",
+                read_map(&gpu, &maps.day, 4),
+                image::ExtendedColorType::Rgba8,
+            );
+            save(
+                "relief",
+                read_map(&gpu, &maps.relief, 4),
+                image::ExtendedColorType::Rgba8,
+            );
+            let extra = read_map(&gpu, &maps.extra, 2);
+            let extra: Vec<u8> = extra
+                .chunks_exact(2)
+                .flat_map(|c| [c[0], c[1], 0])
+                .collect();
+            save("extra", extra, image::ExtendedColorType::Rgb8);
+        }
+        std::fs::write(std::path::Path::new(&dir).join("times.txt"), notes).expect("the times");
     }
 }

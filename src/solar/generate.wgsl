@@ -25,7 +25,8 @@ struct Gen {
     plates: array<vec4<f32>, 12>,
     storms: array<vec4<f32>, 12>,
     palette: array<vec4<f32>, 4>,
-    // x: unused, y: cities, z: cratered (1 or 0), w: warmth (+ hotter,
+    // x: how many mip levels finer than a 2048-wide map's the terrain is
+    // (log2 of width / 2048; 0 for moons), y: cities, z: cratered (1 or 0), w: warmth (+ hotter,
     // - colder).
     flags: vec4<f32>,
 };
@@ -282,8 +283,10 @@ fn srgb(r: f32, g: f32, b: f32) -> vec3<f32> {
     return pow(vec3<f32>(r, g, b) / 255.0, vec3<f32>(2.2));
 }
 
+// The terrain blurred over the same angle at any map size: `level` is
+// a 2048-wide map's.
 fn wide(uv: vec2<f32>, level: f32) -> f32 {
-    return textureSampleLevel(terrain, terrain_sampler, uv, level).r - gen.size.z;
+    return textureSampleLevel(terrain, terrain_sampler, uv, level + gen.flags.x).r - gen.size.z;
 }
 
 fn elevation_at(texel: vec2<i32>) -> f32 {
