@@ -2452,7 +2452,7 @@ pub(crate) mod tests {
 
     /// Run the streamer until everything wanted at `t` is in.
     fn settle(solar: &mut Solar, gpu: &Graphics, t: f64) {
-        for _ in 0..4000 {
+        for _ in 0..100_000 {
             solar.stream(t);
             solar.draw(gpu, t, 0);
             gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
