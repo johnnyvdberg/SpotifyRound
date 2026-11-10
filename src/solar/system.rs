@@ -63,6 +63,30 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Every kind, in the shader's order.
+    pub const ALL: [Kind; 20] = [
+        Kind::Terran,
+        Kind::Desert,
+        Kind::Ocean,
+        Kind::Ice,
+        Kind::Lava,
+        Kind::Barren,
+        Kind::GasGiant,
+        Kind::IceGiant,
+        Kind::Volcanic,
+        Kind::IcyMoon,
+        Kind::Hazy,
+        Kind::Captured,
+        Kind::Cloudy,
+        Kind::Eyeball,
+        Kind::HotJupiter,
+        Kind::Jungle,
+        Kind::Geyser,
+        Kind::TwoFaced,
+        Kind::Nitrogen,
+        Kind::Rusty,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Kind::Terran => "temperate world",
