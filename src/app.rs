@@ -384,6 +384,7 @@ impl Model {
                 title: placeholder.title.clone(),
                 subtitle: placeholder.subtitle.clone(),
                 artist: placeholder.subtitle.clone(),
+                album: String::new(),
                 context: String::new(),
                 has_track: true,
                 cover_url: placeholder.cover_url.clone(),
@@ -403,6 +404,7 @@ impl Model {
                 .map(Track::subtitle)
                 .unwrap_or_else(|| "Start playback on a Spotify device".to_owned()),
             artist: item.map(Track::artist_names).unwrap_or_default(),
+            album: item.and_then(Track::collection_name).unwrap_or_default(),
             context: self.context_name().unwrap_or_default(),
             has_track: item.is_some(),
             cover_url: item
@@ -425,12 +427,12 @@ impl Model {
         }
     }
 
-    /// What the item plays from, as the idle card names it: the playlist, the
-    /// album or show, or Liked Songs. `None` for a playlist whose name is not
-    /// known yet (`unnamed_playlist`), or a context with no name to give.
+    /// The playlist the item plays from, as the idle card names it, or Liked
+    /// Songs. `None` for a playlist whose name is not known yet
+    /// (`unnamed_playlist`), and for an album or show: the album line above
+    /// already names those.
     fn context_name(&self) -> Option<String> {
-        let playback = self.playback.as_ref()?;
-        let context = playback.context.as_ref()?;
+        let context = self.playback.as_ref()?.context.as_ref()?;
         let uri = context.uri.as_deref().unwrap_or_default();
         match context.kind.as_deref() {
             Some("playlist") => self
@@ -441,8 +443,6 @@ impl Model {
                 .or_else(|| self.context_names.get(uri).cloned())
                 .filter(|name| !name.is_empty()),
             Some("collection") => Some("Liked Songs".to_owned()),
-            Some("album") => playback.item.as_ref()?.album_name().map(str::to_owned),
-            Some("show") => Some(playback.item.as_ref()?.show.as_ref()?.name.clone()),
             _ => None,
         }
     }
@@ -827,6 +827,7 @@ struct NowPlayingView {
     subtitle: String,
     /// The idle card's lines: the artists, and what the item plays from.
     artist: String,
+    album: String,
     context: String,
     has_track: bool,
     cover_url: Option<String>,
@@ -1859,6 +1860,7 @@ impl Shared {
             title,
             subtitle,
             artist,
+            album,
             context,
             has_track,
             cover_url,
@@ -1868,7 +1870,7 @@ impl Shared {
         let has_device = !device_name.is_empty();
         let _ = self.ui.upgrade_in_event_loop(move |ui| {
             ui.set_track_text(&title, &subtitle, has_track);
-            ui.set_card_text(&artist, &context);
+            ui.set_card_text(&artist, &album, &context);
             ui.set_liked(liked);
             ui.set_playback(playing, controls, shuffle, repeat);
             ui.set_skip_state(can_previous, can_next);
@@ -1908,7 +1910,7 @@ impl Shared {
 
         let _ = self.ui.upgrade_in_event_loop(|ui| {
             ui.set_track_text("Nothing playing", "Open Spotify and start playback", false);
-            ui.set_card_text("", "");
+            ui.set_card_text("", "", "");
             ui.set_liked(None);
             ui.set_playback(false, false, false, 0);
             ui.set_device("", "speaker", false);
@@ -3282,6 +3284,11 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(model.context_name().as_deref(), Some("Liked Songs"));
+
+        // Playing an album, the album line names it; nothing below repeats it.
+        model.playback.as_mut().unwrap().context =
+            Some(serde_json::from_str(r#"{"uri":"spotify:album:x","type":"album"}"#).unwrap());
+        assert_eq!(model.context_name(), None);
     }
 
     #[test]

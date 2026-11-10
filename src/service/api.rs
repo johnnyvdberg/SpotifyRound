@@ -408,6 +408,14 @@ impl Track {
         self.album.as_ref().map(|album| album.name.as_str())
     }
 
+    /// The album a track is on, or the show an episode is from.
+    pub fn collection_name(&self) -> Option<String> {
+        self.album_name()
+            .or_else(|| self.show.as_ref().map(|show| show.name.as_str()))
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+    }
+
     /// "Artist · Album", falling back gracefully for podcasts and local files.
     pub fn subtitle(&self) -> String {
         match self.album_name() {

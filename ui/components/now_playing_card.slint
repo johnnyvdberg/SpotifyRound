@@ -1,5 +1,5 @@
 // What is playing, as a card low in the circle over the idle visuals: the
-// cover, the track, its artists and what it plays from, and the transport
+// cover, the track, its artists, album and playlist, and the transport
 // with an add button for Liked Songs.
 //
 // The dimmed states are drawn in the colours, not an `opacity`: one below 1
@@ -93,42 +93,56 @@ export component NowPlayingCard inherits Rectangle {
     }
 
     // ---- track --------------------------------------------------------
-    // Three lines, or two centred when there is nothing to name it from.
+    // The title and artists, then the album and the playlist when there are
+    // any, centred together beside the cover.
     property <length> text-x: 140px;
     property <length> text-width: buttons-x - text-x - 16px;
-    property <length> text-top: Player.context != "" ? 16px : 32px;
+    property <length> album-height: Player.album != "" ? 22px : 0;
+    property <length> context-height: Player.context != "" ? 21px : 0;
+    property <length> text-top: (self.height - 56px - album-height - context-height) / 2;
 
     Text {
         x: text-x;
         y: text-top;
         width: text-width;
-        height: 32px;
+        height: 31px;
         text: Player.title;
         color: Theme.ink;
-        font-size: 24px;
+        font-size: 23px;
         font-weight: 600;
         vertical-alignment: center;
         overflow: elide;
     }
     Text {
         x: text-x;
-        y: text-top + 34px;
+        y: text-top + 31px;
         width: text-width;
-        height: 26px;
+        height: 25px;
         text: Player.artist;
         color: Theme.ink-dim;
         font-size: 18px;
         vertical-alignment: center;
         overflow: elide;
     }
+    if Player.album != "" : Text {
+        x: text-x;
+        y: text-top + 56px;
+        width: text-width;
+        height: album-height;
+        text: Player.album;
+        color: Theme.ink-dim;
+        font-size: 15px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
     if Player.context != "" : Text {
         x: text-x;
-        y: text-top + 64px;
+        y: text-top + 56px + album-height;
         width: text-width;
-        height: 22px;
+        height: context-height;
         text: Player.context;
         color: Theme.accent;
-        font-size: 15px;
+        font-size: 14px;
         font-weight: 600;
         vertical-alignment: center;
         overflow: elide;

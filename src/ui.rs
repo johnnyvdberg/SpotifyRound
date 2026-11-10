@@ -193,9 +193,9 @@ pub trait WindowExt: Sized {
     fn set_screen(&self, screen: i32);
     fn set_status(&self, message: &str, visible: bool);
     fn set_track_text(&self, title: &str, subtitle: &str, has_track: bool);
-    /// The idle card's lines under the title: the artists, and what the track
-    /// plays from.
-    fn set_card_text(&self, artist: &str, context: &str);
+    /// The idle card's lines under the title: the artists, the album, and the
+    /// playlist the track plays from.
+    fn set_card_text(&self, artist: &str, album: &str, context: &str);
     /// Whether the track is in Liked Songs; `None` while that is not known, or
     /// for an item that cannot be saved.
     fn set_liked(&self, liked: Option<bool>);
@@ -313,9 +313,10 @@ impl WindowExt for AppWindow {
         player.set_has_track(has_track);
     }
 
-    fn set_card_text(&self, artist: &str, context: &str) {
+    fn set_card_text(&self, artist: &str, album: &str, context: &str) {
         let player = self.global::<Player>();
         player.set_artist(artist.into());
+        player.set_album(album.into());
         player.set_context(context.into());
     }
 
@@ -918,7 +919,7 @@ mod preview {
         save(&window, &soft, "08-no-previous");
 
         // ---- idle visualizer, with the card of what plays ----
-        window.set_card_text("Mira Vale", "Late Night Drive");
+        window.set_card_text("Mira Vale", "Afterglow", "Late Night Drive");
         window.set_liked(Some(false));
         let pixels = crate::globe::render_once(0.0).unwrap();
         window.set_idle_scene(0, crate::globe::SIZE as f32);

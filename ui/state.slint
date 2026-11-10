@@ -63,9 +63,11 @@ export global Player {
     in-out property <bool> controls: false;
     in-out property <string> title: "";
     in-out property <string> subtitle: "";
-    // The idle card's lines: the artists alone, and what is playing from (the
-    // playlist's name, or the album, show or Liked Songs).
+    // The idle card's lines: the artists alone, the album (or a podcast's
+    // show), and the playlist or Liked Songs it plays from; empty when the
+    // album line already names it.
     in-out property <string> artist: "";
+    in-out property <string> album: "";
     in-out property <string> context: "";
     // Whether the track is in Liked Songs, as Spotify last said, and whether
     // that is known and the item can be saved at all (a local file cannot).
