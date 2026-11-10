@@ -1561,9 +1561,10 @@ fn globe_extra(uv: vec2<f32>, bias: f32) -> vec2<f32> {
     return textureSampleBias(b_extra, map_sampler, uv, bias).rg;
 }
 
-// The world over the mesh. Only the airless looks are drawn with it so far;
-// the other branches are the prototype's (docs/solar-lab/globe.wgsl) as
-// compiled there, not yet compared with `fs_surface`.
+// The world over the mesh, every look as `fs_surface` draws it. A world with
+// seas (`SEA`) is two passes: here only its ground and cloud deck, in few
+// enough registers for four threads, then its added light (the sea's glint
+// and sheen, the cities, the air's sheen) in `fs_globe_glow`.
 @fragment
 fn fs_globe(in: Globe) -> @location(0) vec4<f32> {
     let mu = in.geo.y;
@@ -1595,23 +1596,12 @@ fn fs_globe(in: Globe) -> @location(0) vec4<f32> {
         let thick = min(cloud * (2.2 - 1.2 * in.geo.z), 1.0);
         rgb = lit_deck * thick + rgb * ((1.0 - thick) * (1.0 - shadow));
     }
-    if (AIR == 1) {
+    // A world with seas adds its light in `fs_globe_glow`.
+    if (AIR == 1 && !SEA) {
         rgb += in.sheen;
     }
-    if (SEA) {
-        let water = relief.b * (1.0 - cloud);
-        let away = 1.0 - in.geo.z;
-        let away2 = away * away;
-        let fresnel = 0.02 + 0.98 * away2 * away2 * away;
-        let log_nh = log2(max(in.geo.w, 0.0));
-        let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
-        rgb += (in.direct * (day * glint * (0.25 + fresnel)) + sky * (2.0 * fresnel * smoothstep01(-0.1, 0.3, mu))) * water;
-    }
-    if (NIGHT == 1) {
-        let night = globe_extra(in.uv.xy, BIAS + 0.6).r;
-        let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
-        let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
-        rgb += tint * in.thru * (night * night * 2.2 * darkness * (1.0 - cloud * 0.85));
+    if (NIGHT == 1 && !SEA) {
+        rgb += city_lights(globe_extra(in.uv.xy, BIAS + 0.6).r, mu, cloud) * in.thru;
     } else if (NIGHT == 2) {
         let night = globe_extra(in.uv.xy, BIAS + 0.6).r;
         let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
@@ -1625,6 +1615,47 @@ fn fs_globe(in: Globe) -> @location(0) vec4<f32> {
     }
     let cover = smoothstep01(-0.75, 0.75, -in.geo.x);
     return vec4<f32>(rgb * cover, cover);
+}
+
+// The night side's city lights, before the air toward the viewer.
+fn city_lights(night: f32, mu: f32, cloud: f32) -> vec3<f32> {
+    let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
+    let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
+    return tint * (night * night * 2.2 * darkness * (1.0 - cloud * 0.85));
+}
+
+// The added light of a world with seas, over `fs_globe` built with the same
+// constants (`add` blend): the sea's glint and sheen, the night side's
+// lights, the air's own sheen. Its own pass so that neither half needs more
+// than 32 registers, which on the V3D is four threads, not two.
+@fragment
+fn fs_globe_glow(in: Globe) -> @location(0) vec4<f32> {
+    let mu = in.geo.y;
+    var cloud = 0.0;
+    if (CLOUDS) {
+        cloud = globe_extra(in.uv.zy, BIAS).g;
+    }
+    let water = globe_relief(in.uv.xy, BIAS + 0.4).b * (1.0 - cloud);
+    var day = smoothstep01(-0.03, 0.03, mu);
+    var sky = vec3<f32>(0.0);
+    if (AIR == 1) {
+        day = smoothstep01(-0.035, 0.02, mu);
+        sky = in.thru * skylight();
+    }
+    let away = 1.0 - in.geo.z;
+    let away2 = away * away;
+    let fresnel = 0.02 + 0.98 * away2 * away2 * away;
+    let log_nh = log2(max(in.geo.w, 0.0));
+    let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
+    var rgb = (in.direct * (day * glint * (0.25 + fresnel)) + sky * (2.0 * fresnel * smoothstep01(-0.1, 0.3, mu))) * water;
+    if (NIGHT == 1) {
+        rgb += city_lights(globe_extra(in.uv.xy, BIAS + 0.6).r, mu, cloud) * in.thru;
+    }
+    if (AIR == 1) {
+        rgb += in.sheen;
+    }
+    let cover = smoothstep01(-0.75, 0.75, -in.geo.x);
+    return vec4<f32>(rgb * cover, 0.0);
 }
 
 // For the Pi estimate: the mesh's pixels, shaded by nothing.

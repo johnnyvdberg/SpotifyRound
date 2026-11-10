@@ -112,6 +112,9 @@ const LIMB_RING_VERTICES: u32 = 128 * 2 * 6;
 /// ([`grid_indices`], [`grid_range`]).
 const GRIDS: [u32; 6] = [8, 16, 32, 64, 96, 128];
 const GRID_STRIDE: u32 = 129;
+/// The fewest cells a side for a ringed world's mesh, whose rings' shadow
+/// is worked out at the vertices.
+const RINGED_GRID: u32 = 32;
 
 /// The triangles of every grid in `GRIDS`, one after another: each cell two,
 /// counter-clockwise seen from outside (its column runs east, its row north).
@@ -588,6 +591,13 @@ impl Solar {
                     let label = format!("Solar {mesh}");
                     let all = wgpu::ColorWrites::ALL;
                     pipelines.insert(mesh, globe(&label, "fs_globe", over, &constants, all));
+                    if look.sea {
+                        // A sea's added light, a pass of its own.
+                        let glow = look.globe_glow(slot);
+                        let label = format!("Solar {glow}");
+                        let glow_pipeline = globe(&label, "fs_globe_glow", add, &constants, all);
+                        pipelines.insert(glow, glow_pipeline);
+                    }
                     if !traced() {
                         continue;
                     }
@@ -1303,6 +1313,10 @@ impl Solar {
             if name.starts_with("globe") {
                 let b = &mut params.bodies[*body as usize];
                 (b.window, b.mesh) = globe_mesh(b, params.frame[2]);
+                // The rings' shadow is not linear across a coarse cell.
+                if b.ring[2] > 0.0 {
+                    b.mesh[0] = b.mesh[0].max(RINGED_GRID as f32);
+                }
             }
         }
         // The air past the limb of a body wholly ahead as an annulus.
@@ -1913,16 +1927,21 @@ fn surface_passes(
     if let Some(s) = slot
         && !close
     {
-        // From afar, the ground, clouds and added light in one pass.
-        // The rings' shadow is in it too; the air past the limb is a pass
+        // From afar, the ground, clouds and added light in one pass (two
+        // for a world with seas). The rings' shadow is in it too; the air past the limb is a pass
         // of its own (`limb`, made `limbring` in `params`), or with
         // `SOLAR_TRACED` in this one unless an eclipse darkens it.
         let look = SurfaceLook::of(kind, rings, eclipsed);
-        let mut passes = vec![if look.meshed() && !traced() {
-            look.globe(s)
+        let mut passes = if look.meshed() && !traced() {
+            // As a mesh; a sea's added light over it in a second pass.
+            let mut passes = vec![look.globe(s)];
+            if look.sea {
+                passes.push(look.globe_glow(s));
+            }
+            passes
         } else {
-            look.pipeline(s)
-        }];
+            vec![look.pipeline(s)]
+        };
         if eclipsed {
             passes.push("eclipse".into());
         }
@@ -2027,14 +2046,20 @@ impl SurfaceLook {
     }
 
     /// Whether the look is drawn as a mesh (`fs_globe`) unless
-    /// `SOLAR_TRACED`: so far the airless ones.
+    /// `SOLAR_TRACED`: every look but the traced limb's.
     fn meshed(self) -> bool {
-        !(self.sea || self.clouds || self.air || self.giant || self.rings)
+        !self.limb
     }
 
     /// Its mesh's pipeline: `globe` and the same flags.
     fn globe(self, slot: usize) -> String {
         self.pipeline(slot).replacen("surface", "globe", 1)
+    }
+
+    /// A sea's added light over its mesh (`fs_globe_glow`): `globeglow` and
+    /// the same flags, so it is drawn as a mesh too.
+    fn globe_glow(self, slot: usize) -> String {
+        self.pipeline(slot).replacen("surface", "globeglow", 1)
     }
 
     fn constants(self) -> [(&'static str, f64); 7] {
