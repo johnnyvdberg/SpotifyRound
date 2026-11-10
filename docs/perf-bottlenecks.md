@@ -485,6 +485,11 @@ paths.
 
 ### 3.8 The UI's present path: ~2 ms a frame that `hotspots` never sees
 
+> **Update 2026-11-10:** settled in `docs/kiosk-ui-cost.md`. Cage's direct scan-out is now
+> confirmed (`cage -D`, and the client's `WAYLAND_DEBUG`: `XR24`, linear). The 1.4 ms TFU job is
+> the Vulkan WSI's linear copy, which every client pays, `vkcube` included. The UI costs
+> 1.3–2.5 ms of render engine a frame. T9 is not worth doing.
+
 **Evidence.** §2's live sample: with the kiosk running normally the render engine does 4 jobs a
 frame at 60 fps and is busy 733 ms a second; the visual's own frame was one job of ~10.2 ms (the
 globe was on screen; the dive's frame is likewise one render job). The other three render jobs

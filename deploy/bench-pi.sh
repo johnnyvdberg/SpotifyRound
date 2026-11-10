@@ -46,14 +46,16 @@ run() {
         [[ $pair == *=* ]] || usage
         env+=" $(printf %q "$pair")"
     done
-    # The kiosk shares the GPU (and a global perfmon would count it), so it
-    # stops for the run and carries on however the run ends. Runs from
-    # several checkouts take turns: each holds the lock for its whole run, so
-    # one cannot resume the kiosk in the middle of another.
+    # The kiosk shares the GPU (and a global perfmon would count it), so its
+    # service stops for the run, cage and all, and starts again however the
+    # run ends. Runs from several checkouts take turns: each holds the lock
+    # for its whole run, so one cannot start the kiosk in the middle of
+    # another.
     ssh "$PI" "set -e; exec 9>/tmp/nautilus-bench.lock
         flock -n 9 || { echo 'waiting for another benchmark on the Pi'; flock 9; }
-        P=\$(pgrep -x spotify-round || true)
-        [ -n \"\$P\" ] && kill -STOP \$P; trap '[ -n \"\$P\" ] && kill -CONT \$P' EXIT
+        K=\$(systemctl is-active cage-kiosk || true)
+        [ \"\$K\" = active ] && sudo -n systemctl stop cage-kiosk
+        trap '[ \"\$K\" = active ] && sudo -n systemctl start cage-kiosk' EXIT
         mkdir -p /tmp/hot-$tag; cd /tmp
         env $env $remote $test --ignored --nocapture 2>&1 | grep -v '^MESA'"
     mkdir -p target/bench

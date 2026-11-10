@@ -10,8 +10,8 @@
 #   PI=<user>@<pi> deploy/shots.sh pi NAME [NAME=VALUE ...]
 #       the same on the Pi through target/pi/spotify-round-tests
 #       (deploy/build-for-pi.sh --tests), so the driver's own rendering
-#       shows. Freezes the kiosk for the run and resumes it, under the
-#       benchmark lock.
+#       shows. Stops the kiosk's service for the run and starts it
+#       again, under the benchmark lock.
 #   deploy/shots.sh compare A B
 #       writes target/shots/compare-A-B.html: for every place before | after
 #       | difference x16 with a change score, most-changed first, and the same
@@ -80,8 +80,9 @@ pi() {
     done
     ssh "$PI" "set -e; exec 9>/tmp/nautilus-bench.lock
         flock -n 9 || { echo 'waiting for another benchmark on the Pi'; flock 9; }
-        P=\$(pgrep -x spotify-round || true)
-        [ -n \"\$P\" ] && kill -STOP \$P; trap '[ -n \"\$P\" ] && kill -CONT \$P; rm -f $remote' EXIT
+        K=\$(systemctl is-active cage-kiosk || true)
+        [ \"\$K\" = active ] && sudo -n systemctl stop cage-kiosk
+        trap '[ \"\$K\" = active ] && sudo -n systemctl start cage-kiosk; rm -f $remote' EXIT
         mkdir -p /tmp/shots-$name; cd /tmp
         env $env $remote dive3d::tests::screenshots --ignored --nocapture 2>&1 | grep -v '^MESA'"
     local dir=target/shots/$name
