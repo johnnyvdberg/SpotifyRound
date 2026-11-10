@@ -97,6 +97,18 @@ const BODY_VERTICES: u32 = 48;
 const MASK_VERTICES: u32 = 64 * 3;
 /// The ring's draw: `RING_SIDES` quads in `frame.wgsl`.
 const RING_VERTICES: u32 = 32 * 6;
+/// The limb's annulus: `LIMB_SIDES` sides of two quads in `frame.wgsl`.
+const LIMB_RING_VERTICES: u32 = 128 * 2 * 6;
+
+/// Whether to draw as before the meshes and annuli of
+/// docs/solar-perf-plan.md (`SOLAR_TRACED` set): the air past a limb traced
+/// over the body's fan, in its surface pass unless eclipsed. Kept until the
+/// Pi has measured both ways; the pipelines only it uses are built only
+/// with it set.
+fn traced() -> bool {
+    static TRACED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACED.get_or_init(|| std::env::var_os("SOLAR_TRACED").is_some())
+}
 
 struct Frame {
     texture: wgpu::Texture,
@@ -147,8 +159,8 @@ pub const MAP: f32 = 240.0;
 
 pub(crate) struct Solar {
     /// The frame's small pipelines, by name: `space`, `warp1`..`warp5`,
-    /// `star`, `flat`, `limb`, `ring`, and per map slot `ground0`, `sea0`,
-    /// `clouds0`, `glow0`, `moon0` (and `…1`).
+    /// `star`, `flat`, `limb`, `limbring`, `ring`, and per map slot
+    /// `ground0`, `sea0`, `clouds0`, `glow0`, `moon0` (and `…1`).
     /// Each with its label, which the Pi estimate matches to the shader-db.
     pipelines: std::collections::HashMap<String, (String, wgpu::RenderPipeline)>,
     /// A drive to use for every jump instead of each system's own, for the
@@ -440,10 +452,37 @@ impl Solar {
             "ring".to_string(),
             pipeline("Solar ring", "vs_ring", "fs_ring_annulus", over, &[]),
         );
-        // The limb, off its own disc only (a strict depth test).
+        // The limb, off its own disc only (a strict depth test): an annulus
+        // lit at its vertices for a body wholly ahead, else traced.
         pipelines.insert(
             "limb".to_string(),
             make("Solar limb", "vs_body", "fs_limb", add, &[], Some(false), wgpu::ColorWrites::ALL, true),
+        );
+        pipelines.insert(
+            "limbring".to_string(),
+            make(
+                "Solar limb ring",
+                "vs_limb_ring",
+                "fs_limb_ring",
+                add,
+                &[],
+                Some(false),
+                wgpu::ColorWrites::ALL,
+                true,
+            ),
+        );
+        pipelines.insert(
+            "probelimbring".to_string(),
+            make(
+                "Solar probe limb ring",
+                "vs_limb_ring",
+                "fs_probe",
+                None,
+                &[],
+                Some(false),
+                none,
+                true,
+            ),
         );
         for slot in 0..2 {
             // A mapped world from afar, in one pipeline (`fs_surface`), one
@@ -1159,6 +1198,14 @@ impl Solar {
             motion: f32x4(self.motion(t), 0.0),
             bodies: list,
         };
+        // The air past the limb of a body wholly ahead as an annulus.
+        if !traced() {
+            for (body, name) in &mut draws {
+                if name == "limb" && wholly_ahead(&params.bodies[*body as usize], &params, 1.08) {
+                    *name = "limbring".into();
+                }
+            }
+        }
         (params, draws)
     }
 
@@ -1305,16 +1352,16 @@ impl Solar {
                 if let Some([x, y, w, h]) = scissor {
                     pass.set_scissor_rect(x, y, w, h);
                 }
-                if counting {
-                    let probe = if name == "limb" { "probestrict" } else { "probe" };
-                    pass.set_pipeline(&self.pipelines[probe].1);
-                    crate::gpu::probe_draw(&mut pass, 0..BODY_VERTICES, *body..*body + 1);
-                }
-                let vertices = if name == "ring" {
-                    RING_VERTICES
-                } else {
-                    BODY_VERTICES
+                let (vertices, probe, probed) = match name.as_str() {
+                    "ring" => (RING_VERTICES, "probe", BODY_VERTICES),
+                    "limb" => (BODY_VERTICES, "probestrict", BODY_VERTICES),
+                    "limbring" => (LIMB_RING_VERTICES, "probelimbring", LIMB_RING_VERTICES),
+                    _ => (BODY_VERTICES, "probe", BODY_VERTICES),
                 };
+                if counting {
+                    pass.set_pipeline(&self.pipelines[probe].1);
+                    crate::gpu::probe_draw(&mut pass, 0..probed, *body..*body + 1);
+                }
                 let (label, pipeline) = &self.pipelines[name];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, *body..*body + 1);
@@ -1745,8 +1792,9 @@ fn surface_passes(
         && !close
     {
         // From afar, the ground, clouds and added light in one pass.
-        // The rings' shadow is in it too, and the air past the limb unless
-        // an eclipse darkens that.
+        // The rings' shadow is in it too; the air past the limb is a pass
+        // of its own (`limb`, made `limbring` in `params`), or with
+        // `SOLAR_TRACED` in this one unless an eclipse darkens it.
         let look = SurfaceLook::of(kind, rings, eclipsed);
         let mut passes = vec![look.pipeline(s)];
         if eclipsed {
@@ -1819,6 +1867,7 @@ struct SurfaceLook {
     air: bool,
     giant: bool,
     rings: bool,
+    /// The air past the limb in this pass: only with `SOLAR_TRACED`.
     limb: bool,
 }
 
@@ -1832,12 +1881,13 @@ impl SurfaceLook {
             air: kind.air()[0] > 0.0,
             giant: matches!(kind, Kind::GasGiant | Kind::IceGiant | Kind::HotJupiter),
             rings,
-            limb: kind.air()[0] > 0.0 && !eclipsed,
+            limb: traced() && kind.air()[0] > 0.0 && !eclipsed,
         }
     }
 
     fn pipeline(self, slot: usize) -> String {
         let flag = |on: bool, c: char| if on { c } else { '-' };
+        // A trailing `l` only for the traced limb's looks.
         format!(
             "surface{slot}{}{}{}{}{}{}{}",
             flag(self.sea, 's'),
@@ -1846,7 +1896,7 @@ impl SurfaceLook {
             flag(self.air, 'a'),
             flag(self.giant, 'g'),
             flag(self.rings, 'r'),
-            flag(self.limb, 'l'),
+            if self.limb { "l" } else { "" },
         )
     }
 
@@ -1966,8 +2016,15 @@ fn close_rect(view: &View, centre: [f64; 3], radius: f64) -> Option<[f32; 4]> {
 /// Whether a body's silhouette lies wholly ahead of the camera, well clear
 /// of it, so its depth mask can be the polygon inscribed in it.
 fn inscribable(body: &Body, params: &Params) -> bool {
+    wholly_ahead(body, params, 1.0)
+}
+
+/// Whether everything within `scale` of its radii of the body's centre is
+/// wholly ahead of the camera, its silhouette a circle on the cone of
+/// tangents (for `scale` 1.08, its air's: the limb's annulus).
+fn wholly_ahead(body: &Body, params: &Params, scale: f64) -> bool {
     let c = [0, 1, 2].map(|i| f64::from(body.place[i]));
-    let r = f64::from(body.place[3]);
+    let r = f64::from(body.place[3]) * scale;
     let distance = length(c);
     if distance <= r * 1.05 {
         return false;

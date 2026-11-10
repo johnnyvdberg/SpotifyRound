@@ -20,12 +20,13 @@
 //   V3D skips their work for pixel groups with nothing to draw:
 //   `fs_star`; `fs_flat` for a planet whose maps are not in yet; a mapped
 //   world from afar in one pass, `fs_surface`, built for each sort of world
-//   (`SurfaceLook` in `mod.rs`) with its rings' shadow and the air past its
-//   limb; close up `fs_ground`, `fs_detail`, `fs_clouds` and `fs_glow`;
-//   `fs_moon` for a moon; `fs_limb` (added) for the air past a limb not
-//   drawn in its body's pass; and the rings as an annulus in their plane
-//   (`vs_ring`, `fs_ring_annulus`). The mapped ones are built per map slot
-//   (`SLOT`), so each reads one set of textures.
+//   (`SurfaceLook` in `mod.rs`) with its rings' shadow; close up
+//   `fs_ground`, `fs_detail`, `fs_clouds` and `fs_glow`; `fs_moon` for a
+//   moon; the air past a limb (added) as an annulus round the silhouette
+//   lit at its vertices (`vs_limb_ring`, `fs_limb_ring`) for a body wholly
+//   ahead, else traced over the fan (`fs_limb`); and the rings as an
+//   annulus in their plane (`vs_ring`, `fs_ring_annulus`). The mapped ones
+//   are built per map slot (`SLOT`), so each reads one set of textures.
 // - Shadows multiplied into what is drawn: `fs_eclipse` (only when another
 //   body is near the line to the star) and, close up, `fs_ring_shadow`.
 
@@ -1144,7 +1145,9 @@ fn fs_moon(in: Quad) -> @location(0) vec4<f32> {
 }
 
 // The air seen edge-on past a body's limb, added: `limb_glow`, in the
-// eclipses' shadows.
+// eclipses' shadows. Traced per pixel over the whole fan: only for a body
+// not wholly ahead of the camera (else `fs_limb_ring`), or with
+// `SOLAR_TRACED`.
 @fragment
 fn fs_limb(in: Quad) -> @location(0) vec4<f32> {
     let i = in.body;
@@ -1169,6 +1172,80 @@ fn limb_glow(i: u32, h: Hit, sun: vec3<f32>) -> vec3<f32> {
     let mu = dot(h.n, sun);
     let lit = star_light() * exp(-air * airmass(mu + 0.08) * 0.6) * smoothstep01(-0.30, 0.05, mu);
     return lit * (vec3<f32>(1.0) - exp(-depth)) * 0.9 * (1.0 - h.cover);
+}
+
+// The air past the limb of a body wholly ahead of the camera, as an annulus
+// round its silhouette instead of a fan over the whole disc: `LIMB_SIDES`
+// sides in two bands, from 2.5 px inside the limb to 1.02 radii, then on to
+// the top of the air. Its light (`limb_glow`'s, eclipses included) is worked
+// out at the vertices, as at each ray's closest point to the body; per pixel
+// only the air's depth along the ray and the soft edge. Added, strictly in
+// front of the depth mask as `fs_limb` is, so the mask rejects the disc.
+const LIMB_SIDES: u32 = 128u;
+
+struct Limb {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) body: u32,
+    // The ray's closest approach in radii, and the soft edge in pixels.
+    @location(1) reach: vec2<f32>,
+    @location(2) lit: vec3<f32>,
+};
+
+@vertex
+fn vs_limb_ring(@builtin(vertex_index) vertex: u32, @builtin(instance_index) i: u32) -> Limb {
+    var out: Limb;
+    out.body = i;
+    let c = params.bodies[i].place.xyz;
+    let radius = params.bodies[i].place.w;
+    let distance = length(c);
+    let axis = c / distance;
+    let side = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(axis.y) < 0.9);
+    let e1 = normalize(cross(axis, side));
+    let e2 = cross(axis, e1);
+    // Each side two quads, one a band: inner, inner next, outer; outer,
+    // inner next, outer next.
+    let corner = vertex % 6u;
+    let quad = vertex / 6u;
+    let k = quad / 2u + select(0u, 1u, corner == 1u || corner == 4u || corner == 5u);
+    let ring = quad % 2u + select(0u, 1u, corner == 2u || corner == 3u || corner == 5u);
+    // A pixel at the limb, in radii.
+    let pixel = params.frame.z * sqrt(max(distance * distance - radius * radius, 0.0)) / radius;
+    var rho = max(1.0 - 2.5 * pixel, 0.0);
+    if (ring == 1u) {
+        rho = 1.02;
+    } else if (ring == 2u) {
+        rho = ATMOSPHERE / cos(PI / f32(LIMB_SIDES));
+    }
+    let a = f32(k) * TAU / f32(LIMB_SIDES);
+    let out_dir = e1 * cos(a) + e2 * sin(a);
+    // On the cone of rays passing `rho` radii from the centre, in the plane
+    // through it.
+    let sin_t = min(rho * radius / distance, 0.999);
+    let spread = distance * sin_t / sqrt(1.0 - sin_t * sin_t);
+    let p = c + out_dir * spread;
+    // Homogeneous, w the depth along the view, as `vs_ring`: interpolated
+    // with the perspective, at the body's rank.
+    let z = dot(p, params.forward.xyz);
+    out.position = vec4<f32>(dot(p, params.right.xyz) / params.frame.y, dot(p, params.up.xyz) / params.frame.y, params.bodies[i].ring_colour.w * z, z);
+    out.reach = vec2<f32>(rho, (rho - 1.0) / pixel);
+    // Lit as at the ray's closest point to the body.
+    let dir = normalize(p);
+    let nearest = dir * dot(c, dir);
+    let n = normalize(nearest - c);
+    let sun = normalize(params.star.xyz - nearest);
+    let mu = dot(n, sun);
+    let air = params.bodies[i].air.rgb;
+    out.lit = star_light() * exp(-air * airmass(mu + 0.08) * 0.6) * (0.9 * smoothstep01(-0.30, 0.05, mu) * eclipse(i, nearest, sun));
+    return out;
+}
+
+@fragment
+fn fs_limb_ring(in: Limb) -> @location(0) vec4<f32> {
+    let r = in.reach.x;
+    let air = params.bodies[in.body].air.rgb;
+    let depth = air * (sqrt(TAU * r / SCALE_HEIGHT) * exp(-max(r - 1.0, 0.0) / SCALE_HEIGHT));
+    let cover = smoothstep01(-0.75, 0.75, -in.reach.y);
+    return vec4<f32>(in.lit * (vec3<f32>(1.0) - exp(-depth)) * (1.0 - cover), 0.0);
 }
 
 // The rings' colour at `p` on their plane (from the planet's centre): lit
@@ -1228,15 +1305,17 @@ fn fs_ring_shadow(in: Quad) -> @location(0) vec4<f32> {
 // them (`fs_ground`, `fs_clouds`, `fs_glow`). The ray, the map coordinates
 // and their level are worked out once, and the cloud and relief texels the
 // passes each read are read once. Eclipses, the rings' shadow and the limb
-// stay passes of their own, drawn only where there are any. Close up the
-// passes are drawn apart, with the close-up detail between.
+// (`fs_limb_ring`) stay passes of their own, drawn only where there are
+// any. Close up the passes are drawn apart, with the close-up detail
+// between.
 // ---------------------------------------------------------------------------
 
 override CLOUDS: bool = false;
 // Whether the world has rings, whose shadow falls on it.
 override RINGS: bool = false;
 // Whether to add the air's glow past the limb here (`limb_glow`), not in a
-// pass of its own: unless an eclipse has to darken it.
+// pass of its own: only with `SOLAR_TRACED` (the way before `fs_limb_ring`),
+// and unless an eclipse has to darken it.
 override LIMB: bool = false;
 
 @fragment
