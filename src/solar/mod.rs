@@ -537,7 +537,11 @@ impl Solar {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            anisotropy_clamp: 16,
+            // No anisotropy: the shaders pick the level themselves, but the
+            // V3D still sizes an anisotropic footprint from the coordinates'
+            // own derivatives, which jump a whole turn where the longitude
+            // wraps (a dotted seam of the map's average colour down every
+            // planet), and it cost about 2 ms in a close orbit.
             ..Default::default()
         });
         let frames = (0..SLOTS)
