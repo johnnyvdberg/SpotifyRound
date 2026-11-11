@@ -162,6 +162,17 @@ export global Idle {
     in-out property <[HudLine]> man-stages: [];
     in-out property <int> man-stage: 0;
     in-out property <float> man-stage-progress: 0;
+    // A hyperdrive spooling up at the jump point (0: none; 1..5 which, for
+    // its colours), and how charged it is, 0..1. Its stages are `man-stages`.
+    in-out property <int> man-drive: 0;
+    in-out property <float> man-charge: 0;
+    // The star the next jump makes for, marked on the frame: how brightly,
+    // how far locked on, 0..1, where (frame pixels) and its name.
+    in-out property <float> target-shown: 0;
+    in-out property <float> target-lock: 0;
+    in-out property <length> target-x: 0;
+    in-out property <length> target-y: 0;
+    in-out property <string> target-label: "";
     in-out property <string> map-orbits: "";
     in-out property <string> map-route: "";
     in-out property <[MapDot]> map-dots: [];

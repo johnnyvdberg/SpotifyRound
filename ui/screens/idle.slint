@@ -273,7 +273,7 @@ export component IdleScreen inherits Rectangle {
     // The manoeuvre under way, high in the circle where the scanner sits in
     // orbit, half the burn's height: its name, why the ship does it, and a
     // bar through it where it has one.
-    if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-dv <= 0 : Rectangle {
+    if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-dv <= 0 && Idle.man-drive == 0 : Rectangle {
         x: (parent.width - self.width) / 2;
         y: 150px;
         width: 600px;
@@ -510,6 +510,225 @@ export component IdleScreen inherits Rectangle {
                     width: parent.width * Idle.man-stage-progress;
                     height: parent.height;
                     background: amber;
+                }
+            }
+        }
+    }
+
+    // The star the next jump makes for, marked where it is: four corner
+    // brackets closing in on it as the drive locks on, and its name.
+    if Idle.target-shown > 0.01 : Rectangle {
+        property <length> size: 84px - 36px * Idle.target-lock;
+        property <color> ink: Idle.man-drive > 0 ? drive-ink : Theme.accent;
+        x: Idle.target-x - self.size / 2;
+        y: Idle.target-y - self.size / 2;
+        width: self.size;
+        height: self.size;
+        opacity: Idle.fade * Idle.target-shown * 0.9;
+        for corner in 4 : Rectangle {
+            property <bool> right: Math.mod(corner, 2) == 1;
+            property <bool> lower: corner >= 2;
+            x: right ? parent.width - 14px : 0;
+            y: lower ? parent.height - 14px : 0;
+            width: 14px;
+            height: 14px;
+            Rectangle {
+                x: 0;
+                y: lower ? parent.height - 2px : 0;
+                width: parent.width;
+                height: 2px;
+                background: ink;
+            }
+            Rectangle {
+                x: right ? parent.width - 2px : 0;
+                y: 0;
+                width: 2px;
+                height: parent.height;
+                background: ink;
+            }
+        }
+        Text {
+            x: (parent.width - 320px) / 2;
+            y: parent.height + 8px;
+            width: 320px;
+            text: Idle.target-label;
+            color: ink;
+            font-family: Theme.font;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            horizontal-alignment: center;
+        }
+    }
+
+    // A hyperdrive spooling up at the jump point, in the drive's own
+    // colours: a ladder of charge, the drive's name and its target, a tag
+    // pulsing as it spools and lit as it engages, and its stages, the one
+    // under way lit with how far through it.
+    property <color> drive-ink: Idle.man-drive == 1 ? #9fdcff
+        : Idle.man-drive == 2 ? #3fe6ff
+        : Idle.man-drive == 3 ? #b0bcff
+        : Idle.man-drive == 4 ? #2ee8b8
+        : #a894ff;
+    property <color> drive-hot: Idle.man-drive == 1 ? #ffffff
+        : Idle.man-drive == 2 ? #ff4fd8
+        : Idle.man-drive == 3 ? #ff9a6a
+        : Idle.man-drive == 4 ? #b4ff5a
+        : #ff8ad8;
+    if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-drive > 0 : Rectangle {
+        property <float> charge: Idle.man-charge;
+        property <bool> engaging: Idle.man-stage >= 4;
+        animate charge { duration: 250ms; }
+        x: (parent.width - self.width) / 2;
+        y: 150px;
+        width: 600px;
+        height: 224px;
+        border-radius: 14px;
+        background: #02040ad8;
+        border-width: 2px;
+        border-color: drive-ink.with-alpha(0.55);
+        opacity: Idle.fade;
+
+        // The charge ladder, bottom up.
+        for i in 10 : Rectangle {
+            x: 22px;
+            y: 182px - i * 15px;
+            width: 34px;
+            height: 10px;
+            border-radius: 2px;
+            background: charge * 10 > i + 0.5 ? (i >= 8 ? drive-hot : drive-ink) : drive-ink.with-alpha(0.12);
+        }
+        Text {
+            x: 14px;
+            y: 198px;
+            width: 50px;
+            text: "CHG";
+            color: drive-ink.with-alpha(0.7);
+            font-family: Theme.font;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            horizontal-alignment: center;
+        }
+        Text {
+            x: 76px;
+            y: 12px;
+            text: Idle.man-name;
+            color: drive-ink;
+            font-family: Theme.font;
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 3px;
+        }
+        Rectangle {
+            property <float> pulse: engaging ? 1.0 : 0.45 + 0.4 * Math.sin(animation-tick() / 1ms * 0.008rad);
+            x: parent.width - 112px;
+            y: 12px;
+            width: 94px;
+            height: 24px;
+            border-radius: 4px;
+            background: (engaging ? drive-hot : drive-ink).with-alpha(pulse);
+            Text {
+                text: engaging ? "ENGAGE" : "SPOOL";
+                color: #02040a;
+                font-family: Theme.font;
+                font-size: 14px;
+                font-weight: 800;
+                letter-spacing: 3px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            x: 76px;
+            y: 44px;
+            text: "TARGET";
+            color: drive-ink.with-alpha(0.6);
+            font-family: Theme.font;
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+        Text {
+            x: 156px;
+            y: 40px;
+            width: parent.width - 180px;
+            text: Idle.man-text;
+            color: drive-ink;
+            font-family: Theme.font;
+            font-size: 18px;
+            font-weight: 600;
+            overflow: elide;
+        }
+        Rectangle {
+            x: 76px;
+            y: 72px;
+            width: parent.width - 100px;
+            height: 4px;
+            background: drive-ink.with-alpha(0.15);
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(Idle.man-progress, 0, 1);
+                height: parent.height;
+                background: engaging ? drive-hot : drive-ink;
+            }
+        }
+        for stage[i] in Idle.man-stages : Rectangle {
+            property <bool> past: i < Idle.man-stage;
+            property <bool> now: i == Idle.man-stage;
+            property <color> ink: now ? (i >= 4 ? drive-hot : drive-ink) : drive-ink.with-alpha(past ? 0.55 : 0.28);
+            x: 76px;
+            y: 86px + i * 26px;
+            width: parent.width - 100px;
+            height: 22px;
+            Text {
+                x: 0;
+                width: 150px;
+                height: parent.height;
+                text: stage.label;
+                color: ink;
+                font-family: Theme.font;
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                x: 154px;
+                width: parent.width - 154px - 58px;
+                height: parent.height;
+                text: stage.value;
+                color: ink;
+                font-family: Theme.font;
+                font-size: 14px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if past : Text {
+                x: parent.width - 48px;
+                width: 48px;
+                height: parent.height;
+                text: "DONE";
+                color: ink;
+                font-family: Theme.font;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            if now : Rectangle {
+                x: parent.width - 48px;
+                y: (parent.height - 4px) / 2;
+                width: 48px;
+                height: 4px;
+                background: ink.with-alpha(0.15);
+                Rectangle {
+                    x: 0;
+                    width: parent.width * Idle.man-stage-progress;
+                    height: parent.height;
+                    background: ink;
                 }
             }
         }

@@ -74,6 +74,13 @@ struct Params {
     burn: [f32; 4],
     dust: [f32; 4],
     motion: [f32; 4],
+    /// The star the jump makes for: xyz its direction, w how brightly it is
+    /// marked; and its colour.
+    target: [f32; 4],
+    target_colour: [f32; 4],
+    /// The drive spooling up: x how far through its preparation, y how much
+    /// of its start-up effect shows.
+    spool: [f32; 4],
     bodies: [Body; MAX_BODIES],
 }
 
@@ -187,6 +194,19 @@ pub struct Hud {
     pub map: Option<Minimap>,
     /// The manoeuvre under way and why, while not orbiting.
     pub manoeuvre: Option<tour::Manoeuvre>,
+    /// The star the next jump makes for, where it is in view.
+    pub target: Option<Target>,
+}
+
+/// The next jump's star, marked on the frame.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Target {
+    /// Where it is, in the frame's pixels.
+    pub at: [f32; 2],
+    pub label: String,
+    /// How brightly the mark shows, 0..1, and how far it has locked on, 0..1.
+    pub shown: f32,
+    pub lock: f32,
 }
 
 /// A small tilted map of the system: its orbits, its planets, the route
@@ -267,6 +287,38 @@ pub(crate) struct Solar {
 
 fn system_for(base: u64, visit: u64) -> System {
     System::generate(base ^ visit.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
+/// Whether visit `visit` is to a relay star, only crossed on the way to the
+/// next real visit: by chance (`tour::RELAY_CHANCE`), never the first, and
+/// never more than two in a row.
+fn relay(base: u64, visit: u64) -> bool {
+    let roll = |v: u64| {
+        v > 0 && system::Rng::new(base ^ v.wrapping_mul(0x51af_d7ed_558c_cd1b) ^ 0x4e1a).unit() < tour::RELAY_CHANCE
+    };
+    roll(visit) && !(roll(visit - 1) && roll(visit.saturating_sub(2)))
+}
+
+/// The tour of visit `visit`: a whole one or a relay's crossing, the jump at
+/// its end making for the next visit's star, through it and any relays
+/// after to the next real visit.
+fn tour_for(base: u64, visit: u64) -> Tour {
+    let mut route = Vec::new();
+    let mut ahead = visit + 1;
+    loop {
+        route.push(system_for(base, ahead));
+        if !relay(base, ahead) {
+            break;
+        }
+        ahead += 1;
+    }
+    // The trip began at the last real visit (the first never a relay).
+    let mut began = visit;
+    while relay(base, began) {
+        began -= 1;
+    }
+    let (leg, legs) = ((visit - began + 1) as usize, (ahead - began) as usize);
+    Tour::plan(system_for(base, visit), route, relay(base, visit), leg, legs)
 }
 
 impl Solar {
@@ -575,10 +627,20 @@ impl Solar {
             "rim".to_string(),
             pipeline("Solar burn rim", "vs_rim", "fs_rim", add, &[]),
         );
+        // The baked sky with the next jump's star marked, out to the jump
+        // point.
+        pipelines.insert(
+            "target".to_string(),
+            pipeline("Solar space target", "vs_background", "fs_space_target", None, &[]),
+        );
         // Each drive's light over the whole frame, and with the flare at the
         // heading for the jump's last second.
         for (k, name) in tour::DRIVES.iter().enumerate() {
             let k = k as u32 + 1;
+            // Its start-up at the jump point, over the sky, rising into its
+            // light.
+            let made = pipeline(&format!("Solar spool {name}"), "vs_background", "fs_spool", None, &[("WARP", k as f64)]);
+            pipelines.insert(format!("spool{k}"), made);
             for (key, label, flare) in [
                 (format!("warp{k}"), format!("Solar warp {name}"), 0.0),
                 (format!("warpflare{k}"), format!("Solar warp flare {name}"), 1.0),
@@ -853,7 +915,7 @@ impl Solar {
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let tour = Tour::new(system_for(seed, 0), system_for(seed, 1));
+        let tour = tour_for(seed, 0);
         let rings = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Solar ring profiles"),
             size: wgpu::Extent3d {
@@ -938,10 +1000,12 @@ impl Solar {
         while seconds - self.visit_start >= self.tour.total {
             self.visit_start += self.tour.total;
             self.visit += 1;
-            let next = system_for(self.base_seed, self.visit + 1);
-            let current = std::mem::replace(&mut self.tour.next, next.clone());
-            self.tour = Tour::new(current, next);
-            tracing::info!(star = %self.tour.system.star.name, "arrived in a new system");
+            self.tour = tour_for(self.base_seed, self.visit);
+            tracing::info!(
+                star = %self.tour.system.star.name,
+                relay = self.tour.transit,
+                "arrived in a new system"
+            );
         }
         seconds - self.visit_start
     }
@@ -956,18 +1020,21 @@ impl Solar {
             .flatten()
             .map(|s| ((system.seed, s.key()), system.world(s)))
             .collect();
-        let jumping = matches!(segment.phase, Phase::Jump);
+        // Out to the jump point and on: the next visit's first stop, if it
+        // has stops, and its sky.
+        let leaving = matches!(segment.phase, Phase::Cruise { .. } | Phase::Spool | Phase::Jump);
         let departing = matches!(segment.phase, Phase::Depart(_));
-        if jumping || (departing && wanted.len() < 2) {
+        if (leaving || (departing && wanted.len() < 2))
+            && let Some(first) = self.tour.next_first()
+        {
             if wanted.len() >= 2 {
                 wanted.pop();
             }
             let next = &self.tour.next;
-            let first = next.itinerary()[0];
             wanted.push(((next.seed, first.key()), next.world(first)));
         }
         let mut skies = vec![(system.seed, system.sky)];
-        if jumping || departing {
+        if leaving || departing {
             skies.push((self.tour.next.seed, self.tour.next.sky));
         }
         let wanted: Vec<(Key, &Planet)> = wanted.iter().map(|(k, p)| (*k, p)).collect();
@@ -1452,6 +1519,13 @@ impl Solar {
                 DUST_STREAK * throttle,
             ],
             motion: f32x4(self.motion(t), 0.0),
+            target: f32x4(view.target, view.target_shown),
+            target_colour: {
+                let c = self.tour.next.star.colour;
+                let top = c[0].max(c[1]).max(c[2]).max(1e-3);
+                [c[0] / top, c[1] / top, c[2] / top, 0.0]
+            },
+            spool: [view.spool as f32, view.spool_light as f32, 0.0, 0.0],
             bodies: list,
         };
         // The meshes' windows and grids, from the frame's pixel size.
@@ -1522,12 +1596,17 @@ impl Solar {
         self.bake_stars(gpu, &mut encoder);
         self.bind(gpu);
         let (params, draws) = self.params(t);
-        let background = if params.warp[0] > 0.02 {
+        let baked = self.starfield_slot(self.tour.system.seed).is_some()
+            && std::env::var_os("SOLAR_PROCEDURAL_STARS").is_none();
+        let background = if baked && params.spool[1] > 0.001 {
+            // The drive starting up, and on into the jump's first seconds.
+            format!("spool{}", self.drive().0)
+        } else if params.warp[0] > 0.02 {
             let flare = if params.warp[1] > 0.0 { "flare" } else { "" };
             format!("warp{flare}{}", self.drive().0)
-        } else if self.starfield_slot(self.tour.system.seed).is_some()
-            && std::env::var_os("SOLAR_PROCEDURAL_STARS").is_none()
-        {
+        } else if baked && params.target[3] > 0.0 {
+            "target".to_string()
+        } else if baked {
             "spacebaked".to_string()
         } else {
             "space".to_string()
@@ -1535,7 +1614,8 @@ impl Solar {
         // The star's glare over the baked background (`fs_space` draws its
         // own; the drives none).
         let glare = match background.as_str() {
-            "spacebaked" => glare_pass(&params),
+            "spacebaked" | "target" => glare_pass(&params),
+            b if b.starts_with("spool") && params.warp[0] < 0.3 => glare_pass(&params),
             _ => None,
         };
         #[cfg(test)]
@@ -1753,12 +1833,47 @@ impl Solar {
             survey: self.tour.survey(t),
             map: self.minimap(t),
             manoeuvre: self.tour.manoeuvre(t),
+            target: self.target(t),
         };
+    }
+
+    /// The next jump's star on the frame at `t`, while it is marked and in
+    /// view.
+    fn target(&self, t: f64) -> Option<Target> {
+        let view = self.tour.view(t);
+        if view.target_shown <= 0.0 || view.warp > 0.3 {
+            return None;
+        }
+        let right = cross(view.forward, view.up);
+        let z = dot(view.target, view.forward);
+        if z < 0.05 {
+            return None;
+        }
+        let x = dot(view.target, right) / (z * view.half_fov);
+        let y = dot(view.target, view.up) / (z * view.half_fov);
+        if x.abs() > 0.9 || y.abs() > 0.9 {
+            return None;
+        }
+        let half = SIZE as f64 / 2.0;
+        // Locked on once the alignment is done.
+        let lock = match self.tour.manoeuvre(t) {
+            Some(m) if m.drive > 0 => smoothstep(0.0, tour::SPOOL_STAGES[1], m.progress as f64),
+            _ => 0.0,
+        };
+        Some(Target {
+            at: [(half * (1.0 + x)) as f32, (half * (1.0 - y)) as f32],
+            label: format!("{} · {:.1} ly", self.tour.next.star.name, self.tour.next.distance),
+            shown: view.target_shown as f32,
+            lock: if matches!(self.tour.segment(t).0.phase, Phase::Jump) { 1.0 } else { lock as f32 },
+        })
     }
 
     /// The minimap at `t`: none during the jump, between systems.
     fn minimap(&self, t: f64) -> Option<Minimap> {
-        let current = self.tour.current(t)?;
+        if matches!(self.tour.segment(t).0.phase, Phase::Jump) {
+            return None;
+        }
+        let current = self.tour.current(t);
         let system = &self.tour.system;
         // Distances from the star on a log scale, so close-in planets and
         // the outermost giant all fit; the plane seen tilted, from above.
@@ -1828,7 +1943,17 @@ impl Solar {
                 } else {
                     String::new()
                 },
-                current: current.planet == i,
+                current: current.is_some_and(|c| c.planet == i),
+            });
+        }
+        // The jump point, out at the edge, once the ship is making for it.
+        if matches!(self.tour.segment(t).0.phase, Phase::Depart(_) | Phase::Cruise { .. } | Phase::Spool) {
+            dots.push(MapDot {
+                at: project(self.tour.jump_point()),
+                size: 6.0,
+                colour: [235, 240, 255],
+                label: "JUMP".into(),
+                current: true,
             });
         }
         Some(Minimap {
@@ -2655,6 +2780,17 @@ pub(crate) mod tests {
                     out.push(("depart-start".into(), segment.start + 1.0));
                     out.push(("depart-spool".into(), end - 1.0));
                 }
+                Phase::Cruise { .. } => {
+                    out.push(("cruise-start".into(), segment.start + 1.0));
+                    out.push(("cruise".into(), at(0.5)));
+                    out.push(("cruise-arrival".into(), end - 1.0));
+                }
+                Phase::Spool => {
+                    for (i, &start) in tour::SPOOL_STAGES.iter().enumerate() {
+                        out.push((format!("spool-stage{i}"), at(start + 0.04)));
+                    }
+                    out.push(("spool-engage".into(), end - 0.5));
+                }
                 Phase::Jump => {
                     out.push(("jump-entry".into(), at(0.04)));
                     out.push(("jump-cruise".into(), at(0.5)));
@@ -2663,6 +2799,27 @@ pub(crate) mod tests {
             }
         }
         out
+    }
+
+    /// Some trips hop through relays, never more than two in a row, and
+    /// every tour's route ends at the next real visit.
+    #[test]
+    fn some_jumps_hop_through_relays() {
+        let base = 7;
+        let relays: Vec<bool> = (0..200).map(|v| relay(base, v)).collect();
+        assert!(!relays[0]);
+        let count = relays.iter().filter(|&&r| r).count();
+        assert!(count > 20 && count < 100, "{count}");
+        assert!(relays.windows(3).all(|w| !w.iter().all(|&r| r)));
+        assert!(relays.windows(2).any(|w| w[0] && w[1]), "a trip of three jumps now and then");
+        for visit in 0..60 {
+            let tour = tour_for(base, visit);
+            assert_eq!(tour.transit, relays[visit as usize]);
+            let hops = tour.route.len();
+            assert!(relays[visit as usize + 1..visit as usize + hops].iter().all(|&r| r));
+            assert!(!relays[visit as usize + hops]);
+            assert!(tour.leg >= 1 && tour.leg + hops - 1 == tour.legs, "{visit}: {} {hops} {}", tour.leg, tour.legs);
+        }
     }
 
     /// The index buffer's grids lie where `grid_range` says, and a mesh's
@@ -2813,7 +2970,81 @@ pub(crate) mod tests {
             .expect("a sheet");
     }
 
-    /// The drop-out from each drive into the next system: the jump's last
+    /// Every drive starting up at the jump point, a frame in each stage of
+    /// its preparation and two into the jump, to `SOLAR_SHOTS_DIR` (default
+    /// `target/solar-shots`): `spool-<drive>-<n>.png` and `spools-sheet.png`,
+    /// a row per drive.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn spools() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut solar = Solar::with_seed(&gpu, 11);
+        let start = solar.tour.total - tour::JUMP - tour::SPOOL;
+        settle(&mut solar, &gpu, start);
+        // Seconds into the spool: a little past each stage's start, the
+        // engagement's end, and into the jump.
+        let moments: Vec<f64> = tour::SPOOL_STAGES
+            .iter()
+            .map(|s| tour::SPOOL * (s + 0.12))
+            .chain([tour::SPOOL - 0.3, tour::SPOOL + 2.0, tour::SPOOL + 6.0])
+            .collect();
+        let cell = 216;
+        let mut sheet = image::RgbaImage::new(cell * moments.len() as u32, cell * tour::DRIVES.len() as u32);
+        for (k, name) in tour::DRIVES.iter().enumerate() {
+            solar.drive_override = Some(k as u32 + 1);
+            for (m, at) in moments.iter().enumerate() {
+                solar.draw(&gpu, start + at, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                let file = name.to_lowercase().replace(' ', "-");
+                let path = std::path::Path::new(&dir).join(format!("spool-{file}-{m}.png"));
+                image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
+                    .expect("a screenshot");
+                if let Some(image) = image::RgbaImage::from_raw(SIZE, SIZE, pixels) {
+                    let thumb = image::imageops::thumbnail(&image, cell, cell);
+                    image::imageops::overlay(&mut sheet, &thumb, (cell * m as u32) as i64, (cell * k as u32) as i64);
+                }
+            }
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("spools-sheet.png"))
+            .expect("a sheet");
+    }
+
+    /// A relay's crossing: dropping out at its edge, across it to the jump
+    /// point and the drive starting up there, as `relay-<n>.png` and
+    /// `relay-sheet.png` in `SOLAR_SHOTS_DIR`.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn relay_crossing() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut solar = Solar::with_seed(&gpu, 11);
+        let (system, next) = (solar.tour.next.clone(), system_for(11, 2));
+        solar.tour = Tour::plan(system, vec![next.clone(), system_for(11, 3)], true, 1, 2);
+        settle(&mut solar, &gpu, 0.0);
+        let moments = [0.5, 1.5, 3.0, 20.0, 40.0, 60.0, 78.0, 84.0, 100.0, 112.0];
+        let cell = 216;
+        let mut sheet = image::RgbaImage::new(cell * moments.len() as u32, cell);
+        for (m, &t) in moments.iter().enumerate() {
+            solar.draw(&gpu, t, 0);
+            let pixels = read_texture(&gpu, &solar.frames[0].texture);
+            let path = std::path::Path::new(&dir).join(format!("relay-{m}.png"));
+            image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
+                .expect("a screenshot");
+            if let Some(image) = image::RgbaImage::from_raw(SIZE, SIZE, pixels) {
+                let thumb = image::imageops::thumbnail(&image, cell, cell);
+                image::imageops::overlay(&mut sheet, &thumb, (cell * m as u32) as i64, 0);
+            }
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("relay-sheet.png"))
+            .expect("a sheet");
+    }
+
+        /// The drop-out from each drive into the next system: the jump's last
     /// second, then the next visit's first seconds, as `dropout-<drive>-<n>.png`
     /// and `dropouts-sheet.png` (a row a drive) in `SOLAR_SHOTS_DIR`.
     #[test]

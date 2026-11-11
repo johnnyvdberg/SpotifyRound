@@ -459,6 +459,14 @@ impl WindowExt for AppWindow {
         let (stage, through) = manoeuvre.stage();
         idle.set_man_stage(stage as i32);
         idle.set_man_stage_progress(through);
+        idle.set_man_drive(manoeuvre.drive as i32);
+        idle.set_man_charge(manoeuvre.charge);
+        let target = hud.target.clone().unwrap_or_default();
+        idle.set_target_shown(target.shown);
+        idle.set_target_lock(target.lock);
+        idle.set_target_x(target.at[0]);
+        idle.set_target_y(target.at[1]);
+        idle.set_target_label(target.label.as_str().into());
         let map = hud.map.clone().unwrap_or_default();
         idle.set_map_orbits(map.orbits.as_str().into());
         idle.set_map_route(map.route.as_str().into());
