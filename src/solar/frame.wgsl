@@ -15,7 +15,11 @@
 //   interpolated ray, and nothing else; `fs_space_flash` while the jump's
 //   flash whitens it), or `fs_space` (the same and the star's glare, worked
 //   out per pixel) until the bake is done, or during a hyperjump the drive's
-//   light, one pipeline per drive (`WARP`, `fs_warp`).
+//   light, one pipeline per drive (`WARP`, `fs_warp`; with the flare at the
+//   heading in its last second, `FLARE`). As the next visit begins, that
+//   light over everything, torn open from the heading (`fs_drop_ahead`
+//   before the background, `fs_drop_out` after the bodies), so the jump
+//   ends without a cut.
 // - Over the baked background, the star's glare: a polygon round the star
 //   (`vs_glare`, or the whole frame in a flyby, `vs_glare_full`), added at
 //   the far end of the depth range so every body's mask hides it.
@@ -82,7 +86,9 @@ struct Params {
     light: vec4<f32>,
     // Rows turning world directions into the sky map's frame.
     sky: array<vec4<f32>, 3>,
-    // x: warp 0..1; y: flash; z: seconds; w: seconds into the jump.
+    // x: warp 0..1; y: the drop-out's flare at the heading, 0..1; z: how far
+    // the jump's light has torn open over a new system, 0..1 (1: not
+    // dropping out); w: the drive's clock, seconds.
     warp: vec4<f32>,
     // An engine burn: x the throttle 0..1, y the seconds, for its flicker.
     burn: vec4<f32>,
@@ -118,6 +124,9 @@ struct Params {
 // pipeline draws.
 override SLOT: i32 = 0;
 override WARP: i32 = 1;
+// Whether a warp pipeline adds the flare at the heading: only the one drawn
+// in the jump's last second, so the rest of the jump has none of its code.
+override FLARE: bool = false;
 // Which of the stacked cloud layers drawn in low orbit (from 1): each a shell
 // a little higher, showing only the clouds dense enough to reach it.
 override LAYER: i32 = 1;
@@ -266,7 +275,7 @@ fn fs_space(in: Full) -> @location(0) vec4<f32> {
     colour += stars(dir, 170.0, 0.10, 0.6, 23, params.frame.z * 0.75);
     colour += stars(dir, 400.0, 0.025, 0.4, 37, params.frame.z * 0.75);
     colour += glare(dir);
-    return vec4<f32>(mix(colour, vec3<f32>(1.0), params.warp.y), 1.0);
+    return vec4<f32>(colour, 1.0);
 }
 
 // The starfield baked for the system: the same galaxy and stars as
@@ -295,19 +304,10 @@ fn fs_bake_sky(in: Full) -> @location(0) vec4<f32> {
 
 // The background from the baked starfield: one read along the interpolated
 // ray and nothing else. The star's glare is a polygon of its own round the
-// star (`vs_glare`), the jump's flash a pipeline of its own
-// (`fs_space_flash`).
+// star (`vs_glare`).
 @fragment
 fn fs_space_baked(in: Full) -> @location(0) vec4<f32> {
     return vec4<f32>(textureSampleLevel(starfield, map_sampler, in.dir, 0.0).rgb, 1.0);
-}
-
-// The same, whitened by the flash as a jump drops out (`warp.y`), only
-// while it is.
-@fragment
-fn fs_space_flash(in: Full) -> @location(0) vec4<f32> {
-    let colour = textureSampleLevel(starfield, map_sampler, in.dir, 0.0).rgb;
-    return vec4<f32>(mix(colour, vec3<f32>(1.0), params.warp.y), 1.0);
 }
 
 // The star's glare, added over the background as a polygon round the star
@@ -340,7 +340,7 @@ fn glare_vertex(position: vec4<f32>, dir: vec3<f32>) -> Glare {
     let colour = params.star_colour.rgb * params.star_colour.w;
     let bright = max(max(colour.r, colour.g), colour.b);
     // `g * 0.012 * bright` is the faint end's term (`glare_near`).
-    out.tint = vec4<f32>(colour * (1.0 - params.warp.y), GLARE_FLOOR / max(0.012 * bright, 1e-12));
+    out.tint = vec4<f32>(colour, GLARE_FLOOR / max(0.012 * bright, 1e-12));
     return out;
 }
 
@@ -431,15 +431,128 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
     let r = max(length(s), 1e-4);
     // Around the heading by cosine and sine, so noise has no seam where the
     // angle wraps: the pixel's own direction from the heading.
-    return warp_colour(r, atan2(s.y, s.x), log(r), s / r, in.dir);
+    let warp = params.warp.x;
+    var colour = warp_light(r, atan2(s.y, s.x), log(r), s / r);
+    if (FLARE) {
+        colour += flare(s, r) * params.warp.y;
+    }
+    // In and out of the jump, the calm sky fades under the drive's light.
+    // At full speed none of it shows: a branch the whole frame takes alike.
+    var calm = vec3<f32>(0.0);
+    if (warp < 0.999) {
+        calm = textureSampleLevel(starfield, map_sampler, in.dir, 0.0).rgb * (1.0 - warp);
+    }
+    return vec4<f32>(calm + colour * warp, 1.0);
+}
+
+// The flare at the heading as the jump drops out: a white-hot point, its
+// glow, and a thin streak of light across the frame.
+fn flare(s: vec2<f32>, r: f32) -> vec3<f32> {
+    let core = exp(-r * 20.0) * 2.0 + exp(-r * 4.5) * 0.3;
+    let streak = exp(-abs(s.y) * 110.0) * exp(-abs(s.x) * 2.5) * 0.9;
+    return vec3<f32>(1.0, 0.97, 0.94) * core + vec3<f32>(0.7, 0.85, 1.0) * streak;
+}
+
+// Dropping out of the jump into the next system: the drive's light (`WARP`,
+// the one that brought the ship here), still over the whole frame as the
+// visit begins, tears open from the heading in a shock front that races out
+// past the frame's corners, fast and then slowing (`warp.z`, 0..1): past the
+// round display's edge in about a second. Behind the front the new system
+// shows through, the drive's light lingering in a band behind the front and
+// dying away; the front is a white-blue rim with a faint fringe of colour,
+// and the flare at the heading fades. Two draws, so that what the light
+// still hides is never shaded: ahead of the front an opaque annulus, drawn
+// before the background and writing the depth (`vs_drop_ahead`); behind it,
+// after everything else, a disc out to just past the front, blended over
+// the new system (`vs_drop_behind`, `fs_drop_out`).
+const DROP_SIDES: u32 = 64u;
+
+// How far the front has come across the half frame.
+fn drop_front() -> f32 {
+    let q = 1.0 - params.warp.z;
+    return 1.5 * (1.0 - q * q);
+}
+
+struct Drop {
+    @builtin(position) position: vec4<f32>,
+};
+
+// The annulus from the front out past the corners, in front of everything.
+// Its inner edge is a polygon round the front's circle, never inside it.
+@vertex
+fn vs_drop_ahead(@builtin(vertex_index) vertex: u32) -> Drop {
+    var corners = array<vec2<u32>, 6>(
+        vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(0u, 1u),
+        vec2<u32>(0u, 1u), vec2<u32>(1u, 0u), vec2<u32>(1u, 1u),
+    );
+    let corner = corners[vertex % 6u];
+    let a = f32(vertex / 6u + corner.x) * TAU / f32(DROP_SIDES);
+    let reach = select(drop_front(), 1.6, corner.y == 1u) / cos(PI / f32(DROP_SIDES));
+    var out: Drop;
+    out.position = vec4<f32>(cos(a) * reach, sin(a) * reach, 0.0, 1.0);
+    return out;
+}
+
+// The light ahead of the front: the drive's, and the flare.
+@fragment
+fn fs_drop_ahead(in: Drop) -> @location(0) vec4<f32> {
+    let half = params.frame.x;
+    let s = vec2<f32>((in.position.x - half) / half, (half - in.position.y) / half);
+    let r = max(length(s), 1e-4);
+    var light = warp_light(r, atan2(s.y, s.x), log(r), s / r);
+    if (params.warp.y > 0.001) {
+        light += flare(s, r) * params.warp.y;
+    }
+    return vec4<f32>(light, 1.0);
+}
+
+// The disc out to just past the front (its rim), in front of everything.
+@vertex
+fn vs_drop_behind(@builtin(vertex_index) vertex: u32) -> Drop {
+    var out: Drop;
+    let corner = vertex % 3u;
+    if (corner == 0u) {
+        out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return out;
+    }
+    let a = f32(vertex / 3u + corner - 1u) * TAU / f32(DROP_SIDES);
+    let reach = (drop_front() + 0.08) / cos(PI / f32(DROP_SIDES));
+    out.position = vec4<f32>(cos(a) * reach, sin(a) * reach, 0.0, 1.0);
+    return out;
+}
+
+// Behind the front: the front's soft edge, the light lingering in a band
+// behind it, its rim and the flare, premultiplied over the new system.
+@fragment
+fn fs_drop_out(in: Drop) -> @location(0) vec4<f32> {
+    let half = params.frame.x;
+    let s = vec2<f32>((in.position.x - half) / half, (half - in.position.y) / half);
+    let r = max(length(s), 1e-4);
+    let p = params.warp.z;
+    let front = drop_front();
+    let ahead = smoothstep01(front - 0.04 - 0.2 * p, front, r);
+    let linger = sq(1.0 - p) * 0.5 * smoothstep01(front - 0.45, front, r) * (1.0 - ahead);
+    var light = vec3<f32>(0.0);
+    // Behind the band, the new system alone: nothing of the light to work out.
+    if (ahead + linger > 0.003) {
+        light = warp_light(r, atan2(s.y, s.x), log(r), s / r) * (ahead + linger);
+    }
+    // The front's rim: white-blue, a faint ring per colour a little apart
+    // round it, widening and fading as it slows.
+    let d = (r - front) / (0.006 + 0.016 * p);
+    let fringe = vec3<f32>(bump(d - 1.3), bump(d), bump(d + 1.3)) * 0.35;
+    let rim = (fringe + vec3<f32>(0.8, 0.9, 1.0) * bump(d * 0.8) * 0.75) * sq(1.0 - p) * 1.3;
+    if (params.warp.y > 0.001) {
+        light += flare(s, r) * params.warp.y;
+    }
+    return vec4<f32>(light + rim, ahead);
 }
 
 // Each drive's light at a distance `r` from the heading (across the half
 // frame), at angle `theta` round it (`atan2`'s), `logr` the log of `r` and
-// `around` the unit way round; `dir` the ray, for the calm sky.
-fn warp_colour(r: f32, theta: f32, logr: f32, around: vec2<f32>, dir: vec3<f32>) -> vec4<f32> {
+// `around` the unit way round.
+fn warp_light(r: f32, theta: f32, logr: f32, around: vec2<f32>) -> vec3<f32> {
     let s = around * r;
-    let warp = params.warp.x;
     let t = params.warp.w;
     var colour = vec3<f32>(0.0);
     if (WARP == 1) {
@@ -530,13 +643,7 @@ fn warp_colour(r: f32, theta: f32, logr: f32, around: vec2<f32>, dir: vec3<f32>)
         colour += shell_light;
         colour += vec3<f32>(0.85, 0.92, 1.0) * exp(-r * 12.0) * 0.8;
     }
-    // In and out of the jump, the calm sky fades under the drive's light.
-    // At full speed none of it shows: a branch the whole frame takes alike.
-    var calm = vec3<f32>(0.0);
-    if (warp < 0.999) {
-        calm = textureSampleLevel(starfield, map_sampler, dir, 0.0).rgb * (1.0 - warp);
-    }
-    return vec4<f32>(mix(calm + colour * warp, vec3<f32>(1.0), params.warp.y), 1.0);
+    return colour;
 }
 
 // ---------------------------------------------------------------------------
@@ -1649,7 +1756,7 @@ fn fs_globe_star(in: Globe) -> @location(0) vec4<f32> {
     // thru: the convection cells' scale and contrast, and how much the limb
     // darkens (the star's look.yzw).
     let style = in.thru;
-    let granules = 1.0 + style.y * noise(in.direct * style.x + vec3<f32>(params.warp.z * 0.05));
+    let granules = 1.0 + style.y * noise(in.direct * style.x + vec3<f32>(params.burn.y * 0.05));
     let tint = params.star_colour.rgb / max(max(params.star_colour.r, params.star_colour.g), params.star_colour.b);
     let light = min(tint * tint * 1.15 * (1.0 - style.z + style.z * in.geo.z) * granules, vec3<f32>(1.0));
     let cover = smoothstep01(-0.75, 0.75, -in.geo.x);

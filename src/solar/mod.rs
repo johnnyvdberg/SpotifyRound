@@ -105,6 +105,8 @@ const MASK_VERTICES: u32 = 64 * 3;
 const RING_VERTICES: u32 = 32 * 6;
 /// The limb's annulus: `LIMB_SIDES` sides of two quads in `frame.wgsl`.
 const LIMB_RING_VERTICES: u32 = 128 * 2 * 6;
+/// The drop-out's annulus and disc: `DROP_SIDES` sides in `frame.wgsl`.
+const DROP_SIDES: u32 = 64;
 /// The star's glare polygon (`vs_glare`): a fan of `GLARE_SIDES` 32 sides,
 /// drawn as a list of triangles.
 const GLARE_VERTICES: u32 = (32 - 2) * 3;
@@ -216,7 +218,7 @@ pub const MAP: f32 = 240.0;
 
 pub(crate) struct Solar {
     /// The frame's small pipelines, by name: `space`, `spacebaked`,
-    /// `spaceflash`, `glare`, `glarefull`, `warp1`..`warp5`,
+    /// `glare`, `glarefull`, `warp1`..`warp5`, `dropout1`..`dropout5`,
     /// `globestar`, `limb`, `limbring`, `ring`, and per map slot `ground0`,
     /// `sea0`, `clouds0`, `glow0` (and `…1`), the worlds from afar as meshes
     /// `globe0…` (`SurfaceLook`), moons `globemoon…` and worlds whose maps are
@@ -546,16 +548,12 @@ impl Solar {
                 false,
             ),
         );
-        // The baked background reads the cube and nothing else, the flash
-        // whitening it in a pipeline of its own and the star's glare added
-        // over it round the star.
-        for (name, label, fs) in [
-            ("spacebaked", "Solar space baked", "fs_space_baked"),
-            ("spaceflash", "Solar space flash", "fs_space_flash"),
-        ] {
-            let made = pipeline(label, "vs_background", fs, None, &[]);
-            pipelines.insert(name.to_string(), made);
-        }
+        // The baked background reads the cube and nothing else, the star's
+        // glare added over it round the star.
+        pipelines.insert(
+            "spacebaked".to_string(),
+            pipeline("Solar space baked", "vs_background", "fs_space_baked", None, &[]),
+        );
         for (name, label, vs) in [
             ("glare", "Solar glare", "vs_glare"),
             ("glarefull", "Solar glare full", "vs_glare_full"),
@@ -577,17 +575,34 @@ impl Solar {
             "rim".to_string(),
             pipeline("Solar burn rim", "vs_rim", "fs_rim", add, &[]),
         );
-        // Each drive's light over the whole frame.
+        // Each drive's light over the whole frame, and with the flare at the
+        // heading for the jump's last second.
         for (k, name) in tour::DRIVES.iter().enumerate() {
             let k = k as u32 + 1;
+            for (key, label, flare) in [
+                (format!("warp{k}"), format!("Solar warp {name}"), 0.0),
+                (format!("warpflare{k}"), format!("Solar warp flare {name}"), 1.0),
+            ] {
+                let constants = [("WARP", k as f64), ("FLARE", flare)];
+                let made = pipeline(&label, "vs_background", "fs_warp", None, &constants);
+                pipelines.insert(key, made);
+            }
+            // Its light torn open over the next system as the jump drops
+            // out: ahead of the front opaque, before everything else, and
+            // writing the depth so nothing it hides is shaded; behind the
+            // front blended over everything drawn.
+            let constants = [("WARP", k as f64)];
+            let (label, all) = (format!("Solar drop ahead {name}"), wgpu::ColorWrites::ALL);
+            let ahead = make(&label, "vs_drop_ahead", "fs_drop_ahead", None, &constants, Some(true), all, false);
+            pipelines.insert(format!("dropahead{k}"), ahead);
             pipelines.insert(
-                format!("warp{k}"),
+                format!("dropout{k}"),
                 pipeline(
-                    &format!("Solar warp {name}"),
-                    "vs_background",
-                    "fs_warp",
-                    None,
-                    &[("WARP", k as f64)],
+                    &format!("Solar drop out {name}"),
+                    "vs_drop_behind",
+                    "fs_drop_out",
+                    over,
+                    &constants,
                 ),
             );
         }
@@ -1425,9 +1440,9 @@ impl Solar {
             sky,
             warp: [
                 view.warp as f32,
-                view.flash as f32,
-                t as f32,
-                (t - (self.tour.total - tour::JUMP)) as f32,
+                view.flare as f32,
+                view.reveal as f32,
+                view.clock as f32,
             ],
             burn: [throttle, t as f32, 0.0, 0.0],
             dust: [
@@ -1508,22 +1523,19 @@ impl Solar {
         self.bind(gpu);
         let (params, draws) = self.params(t);
         let background = if params.warp[0] > 0.02 {
-            format!("warp{}", self.drive().0)
+            let flare = if params.warp[1] > 0.0 { "flare" } else { "" };
+            format!("warp{flare}{}", self.drive().0)
         } else if self.starfield_slot(self.tour.system.seed).is_some()
             && std::env::var_os("SOLAR_PROCEDURAL_STARS").is_none()
         {
-            if params.warp[1] > 0.0 {
-                "spaceflash".to_string()
-            } else {
-                "spacebaked".to_string()
-            }
+            "spacebaked".to_string()
         } else {
             "space".to_string()
         };
         // The star's glare over the baked background (`fs_space` draws its
         // own; the drives none).
         let glare = match background.as_str() {
-            "spacebaked" | "spaceflash" => glare_pass(&params),
+            "spacebaked" => glare_pass(&params),
             _ => None,
         };
         #[cfg(test)]
@@ -1537,6 +1549,10 @@ impl Solar {
                     .collect::<Vec<_>>()
                     .join(" ")
             );
+            if params.warp[2] < 1.0 {
+                let over = format!(" dropout{}", self.arrival_drive().0);
+                self.drawn.borrow_mut().push_str(&over);
+            }
         }
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&params));
@@ -1602,6 +1618,16 @@ impl Solar {
             if counting {
                 pass.set_pipeline(&self.pipelines["probefull"].1);
                 crate::gpu::probe_draw(&mut pass, 0..3, 0..1);
+            }
+            // Dropping out of the jump: its light ahead of the front, in
+            // front of everything and writing the depth, so the background
+            // and the bodies it hides are not shaded.
+            let dropping = params.warp[2] < 1.0;
+            if dropping {
+                let k = self.arrival_drive().0;
+                let (label, pipeline) = &self.pipelines[&format!("dropahead{k}")];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, 0, 0..DROP_SIDES * 6, 0..1);
             }
             let (label, pipeline) = &self.pipelines[&background];
             pass.set_pipeline(pipeline);
@@ -1680,6 +1706,13 @@ impl Solar {
                 let ring = full - (full as f64 * 0.82 * 0.82 * std::f64::consts::FRAC_PI_4) as u64;
                 crate::gpu::counted_draw(&mut pass, label, ring, 0..RIM_SIDES * 6, 0..1);
             }
+            // And behind the front, over everything drawn.
+            if dropping {
+                let k = self.arrival_drive().0;
+                let (label, pipeline) = &self.pipelines[&format!("dropout{k}")];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, 0, 0..DROP_SIDES * 3, 0..1);
+            }
         }
         gpu.submit(encoder.finish());
     }
@@ -1689,6 +1722,14 @@ impl Solar {
         match self.drive_override {
             Some(k) => (k, tour::DRIVES[(k as usize - 1) % tour::DRIVES.len()]),
             None => self.tour.drive(),
+        }
+    }
+
+    /// The drive of the jump that arrived in this visit's system.
+    fn arrival_drive(&self) -> (u32, &'static str) {
+        match self.drive_override {
+            Some(k) => (k, tour::DRIVES[(k as usize - 1) % tour::DRIVES.len()]),
+            None => self.tour.arrival_drive(),
         }
     }
 
@@ -2769,6 +2810,59 @@ pub(crate) mod tests {
         }
         sheet
             .save(std::path::Path::new(&dir).join("warps-sheet.png"))
+            .expect("a sheet");
+    }
+
+    /// The drop-out from each drive into the next system: the jump's last
+    /// second, then the next visit's first seconds, as `dropout-<drive>-<n>.png`
+    /// and `dropouts-sheet.png` (a row a drive) in `SOLAR_SHOTS_DIR`.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn drop_outs() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        // Seconds before the end of the jump (negative), then into the next visit.
+        let moments = [-1.0, -0.4, -0.02, 0.0, 0.25, 0.5, 0.8, 1.2, 1.7, 2.6];
+        let cell = 216;
+        let mut sheet = image::RgbaImage::new(
+            cell * moments.len() as u32,
+            cell * tour::DRIVES.len() as u32,
+        );
+        for (k, name) in tour::DRIVES.iter().enumerate() {
+            let mut solar = Solar::with_seed(&gpu, 11);
+            solar.drive_override = Some(k as u32 + 1);
+            let total = solar.tour.total;
+            // The next system's starfield and first stop, as the jump has
+            // them ready by its end.
+            settle(&mut solar, &gpu, total - 1.0);
+            let mut arrived = false;
+            for (m, &at) in moments.iter().enumerate() {
+                let t = if at < 0.0 {
+                    total + at
+                } else {
+                    if !arrived {
+                        solar.catch_up(total);
+                        settle(&mut solar, &gpu, 0.0);
+                        arrived = true;
+                    }
+                    at
+                };
+                solar.draw(&gpu, t, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                let file = name.to_lowercase().replace(' ', "-");
+                let path = std::path::Path::new(&dir).join(format!("dropout-{file}-{m}.png"));
+                image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
+                    .expect("a screenshot");
+                if let Some(image) = image::RgbaImage::from_raw(SIZE, SIZE, pixels) {
+                    let thumb = image::imageops::thumbnail(&image, cell, cell);
+                    let (x, y) = (cell * m as u32, cell * k as u32);
+                    image::imageops::overlay(&mut sheet, &thumb, x as i64, y as i64);
+                }
+            }
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("dropouts-sheet.png"))
             .expect("a sheet");
     }
 

@@ -40,6 +40,12 @@ the frame texture's `VIEW_FORMATS`. Base `5e6a964`, before S1–S5:
 - **Jump per drive** (seed 5, t 505–560), before → now: Lumen Drift 6.12 → 5.96, Tachyon Tunnel
   4.09 → 4.11, Fold Drive 8.09 → 8.04, Ion Slipstream 4.91 → 4.63, Bubble Drive 4.94 → 4.82.
 - `SOLAR_ANISO=4` costs 1.3–1.5 ms in orbit; it stays off.
+- **The drop-out** (the jump's light torn open over the next system, no white): the arriving
+  visit's first 2.4 s peak at 6.9–8.7 ms, Fold Drive 11.6 (a frame every 0.3 s, seed 5). Drawn as
+  one overlay over the new system it peaked at 8.1–13.3 ms; the part ahead of the front is now an
+  opaque annulus drawn first and writing the depth, so nothing it hides is shaded. Jumps are
+  0.22–0.26 ms faster than before it, the white flash's mix gone and the flare a pipeline of its
+  own for the last second.
 
 ## 1. Summary (ranked)
 

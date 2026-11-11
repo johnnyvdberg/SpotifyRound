@@ -30,6 +30,13 @@ pub const HOP: f64 = 32.0;
 pub const HIGH: f64 = 70.0;
 pub const DEPART: f64 = 20.0;
 pub const JUMP: f64 = 150.0;
+/// The jump's last seconds, in which the drive slows (`drive_clock`).
+const SLOWING: f64 = 4.0;
+/// The last second of the jump, in which a flare builds at the heading.
+const FLARE: f64 = 1.0;
+/// How long the drive's light takes to tear open on arrival, over the new
+/// system (`View::reveal`).
+pub const DROP_OUT: f64 = 2.4;
 /// The hyperjump drives, each its own look (`fs_warp` in `frame.wgsl`).
 pub const DRIVES: [&str; 5] = [
     "Lumen Drift",
@@ -96,8 +103,30 @@ pub struct View {
     pub half_fov: f64,
     /// 0 at rest, 1 at full hyperjump.
     pub warp: f64,
-    /// A flash as the jump drops out, 0..1.
-    pub flash: f64,
+    /// The flare at the heading as the jump drops out, 0..1: building over
+    /// the jump's last second, fading as the next visit begins.
+    pub flare: f64,
+    /// How far the drive's light has torn open over the new system, 0..1,
+    /// in a visit's first seconds (`DROP_OUT`); 1 once it has, and always
+    /// outside them.
+    pub reveal: f64,
+    /// The drive's own clock, seconds: what its light scrolls by. Slows
+    /// over the jump's last seconds and on through the drop-out, so the
+    /// two read as one.
+    pub clock: f64,
+}
+
+/// The drive used for the jump to `system`: its number and name.
+fn drive_to(system: &System) -> (u32, &'static str) {
+    let k = (super::system::Rng::new(system.seed ^ 0xd21e).next() % DRIVES.len() as u64) as usize;
+    (k as u32 + 1, DRIVES[k])
+}
+
+/// The drive's clock `local` seconds into a jump: running at full speed,
+/// then slowing to 0.4 of it over the last `SLOWING` seconds.
+fn drive_clock(local: f64) -> f64 {
+    let x = ((local - (JUMP - SLOWING)) / SLOWING).clamp(0.0, 1.0);
+    local.min(JUMP - SLOWING) + SLOWING * (x - 0.3 * x * x)
 }
 
 pub struct Tour {
@@ -1235,9 +1264,12 @@ impl Tour {
     /// The drive the jump at the end of this visit uses: its number (from 1)
     /// and name.
     pub fn drive(&self) -> (u32, &'static str) {
-        let k = (super::system::Rng::new(self.next.seed ^ 0xd21e).next() % DRIVES.len() as u64)
-            as usize;
-        (k as u32 + 1, DRIVES[k])
+        drive_to(&self.next)
+    }
+
+    /// The drive the jump that arrived here used: the last visit's.
+    pub fn arrival_drive(&self) -> (u32, &'static str) {
+        drive_to(&self.system)
     }
 
     /// The segment at `t`, and how far into it.
@@ -1450,7 +1482,7 @@ impl Tour {
         let (segment, local) = self.segment(t);
         let u = (local / segment.duration).clamp(0.0, 1.0);
         let mut warp = 0.0;
-        let mut flash = 0.0;
+        let (mut flare, mut reveal, mut clock) = (0.0, 1.0, 0.0);
         let (position, forward, up) = match segment.phase {
             Phase::High(p) => {
                 self.orbiting(p, t)
@@ -1494,8 +1526,13 @@ impl Tour {
                 let mut forward = swing(start, aim, smoothstep(0.0, 0.18, u), up0, way);
                 forward = normalize(mix(forward, self.framed(to, position, t, t1), smoothstep(0.82, 1.0, u)));
                 let up = normalize(mix(up0, up1, smoothstep(0.1, 0.9, u)));
-                if from.is_none() {
-                    flash = 1.0 - smoothstep(0.0, 0.035, u);
+                if from.is_none() && local < DROP_OUT {
+                    // Dropping out: the jump's light tears open over the new
+                    // system, its drive slowing on from 0.4 to 0.15.
+                    let p = local / DROP_OUT;
+                    reveal = p;
+                    flare = (1.0 - p).powi(3);
+                    clock = drive_clock(JUMP) + DROP_OUT * (0.4 * p - 0.125 * p * p);
                 }
                 (position, forward, up)
             }
@@ -1514,9 +1551,11 @@ impl Tour {
                 let last = *self.itinerary.last().expect("a tour has stops");
                 let start = self.departing(last, segment.start - DEPART, segment.start);
                 let position = add(start, scale(self.exit, local * 400.0));
+                // At full light to the end: the next visit takes it over
+                // (`reveal`), slowing, the flare at its brightest.
                 warp = 0.25 + 0.75 * smoothstep(0.0, 0.07, u);
-                warp *= 1.0 - smoothstep(0.93, 1.0, u);
-                flash = smoothstep(0.97, 1.0, u);
+                flare = smoothstep(segment.duration - FLARE, segment.duration, local);
+                clock = drive_clock(local);
                 (position, self.exit, [0.0, 1.0, 0.0])
             }
         };
@@ -1529,7 +1568,9 @@ impl Tour {
             up,
             half_fov: HALF_FOV,
             warp,
-            flash,
+            flare,
+            reveal,
+            clock,
         }
     }
 
