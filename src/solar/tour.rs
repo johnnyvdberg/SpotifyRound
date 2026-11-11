@@ -26,7 +26,8 @@ pub const TRANSFER: f64 = 45.0;
 pub const FLYBY: f64 = 64.0;
 /// The short hop from a giant out to its moon.
 pub const HOP: f64 = 32.0;
-/// Long enough for the scanner's whole survey (see `scan::SCHEDULE`).
+/// The orbit, unhurried: the scanner's survey (`scan::SCHEDULE`) takes its
+/// first half.
 pub const HIGH: f64 = 70.0;
 pub const DEPART: f64 = 20.0;
 pub const JUMP: f64 = 150.0;

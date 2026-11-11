@@ -633,9 +633,19 @@ fn warp_light(r: f32, theta: f32, logr: f32, around: vec2<f32>) -> vec3<f32> {
         let ring = vec3<f32>(bump(d - 1.0), bump(d), bump(d + 1.0));
         let shell_light = (ring * 1.3 + vec3<f32>(0.3, 0.45, 0.9) * bump(d * 0.3) * 0.3) * ripple;
         // Inside, look out through the bubble at space squeezed toward the
-        // heading; outside, at space stretched away from it.
-        let bend = mix(r * 1.45, r * 0.55, inside);
-        let dir_out = normalize(params.forward.xyz + (params.right.xyz * around.x + params.up.xyz * around.y) * bend * params.frame.y);
+        // heading and churned by the warp: lensing waves running out from
+        // the heading to the shell, and a swirl that turns the middle of the
+        // bubble one way and then the other, both dying off at the shell so
+        // its edge stays put. Outside, space is stretched away from it.
+        let q = min(r / shell, 1.0);
+        let wave = sin(r * 22.0 - t * 3.2) * 0.5 + sin(r * 9.0 + theta * 2.0 - t * 1.7) * 0.5;
+        let squeeze = r * (0.55 + 0.11 * wave * q * (1.0 - q) * 4.0);
+        let bend = mix(r * 1.45, squeeze, inside);
+        let swirl = inside * sq(1.0 - q) * (0.55 * sin(t * 0.45) + 0.18 * sin(r * 12.0 - t * 1.9));
+        let c = cos(swirl);
+        let sn = sin(swirl);
+        let way = vec2<f32>(around.x * c - around.y * sn, around.x * sn + around.y * c);
+        let dir_out = normalize(params.forward.xyz + (params.right.xyz * way.x + params.up.xyz * way.y) * bend * params.frame.y);
         let tint = mix(vec3<f32>(1.0, 0.55, 0.4), vec3<f32>(0.6, 0.8, 1.0), inside);
         // The stars and the galaxy from the baked starfield: one read (worked
         // out per pixel beside the streaks, they held twice the registers).

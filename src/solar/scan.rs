@@ -22,21 +22,21 @@ pub struct Scan {
 /// When each reading starts and how long it takes, in seconds after the
 /// camera settles into orbit. Overlapping, as several instruments run at once.
 const SCHEDULE: [(&str, f64, f64, &str); 6] = [
-    ("Atmosphere", 2.0, 14.0, "spectrometer: absorption lines"),
-    ("Gravimetry", 8.0, 10.0, "tracking orbital perturbations"),
-    ("Climate", 14.0, 14.0, "thermal infrared mapping"),
-    ("Magnetometer", 24.0, 12.0, "sampling the field"),
-    ("Radiation", 34.0, 10.0, "dosimeters integrating"),
+    ("Atmosphere", 1.0, 7.0, "spectrometer: absorption lines"),
+    ("Gravimetry", 4.0, 5.0, "tracking orbital perturbations"),
+    ("Climate", 7.0, 7.0, "thermal infrared mapping"),
+    ("Magnetometer", 12.0, 6.0, "sampling the field"),
+    ("Radiation", 17.0, 5.0, "dosimeters integrating"),
     (
         "Biosignatures",
-        42.0,
-        22.0,
+        21.0,
+        11.0,
         "searching spectra for disequilibrium",
     ),
 ];
 
-/// Readings to show at once: the latest few, the running ones last.
-const SHOWN: usize = 4;
+/// Readings to show at once: the latest two, the running ones last.
+const SHOWN: usize = 2;
 
 fn subscript(formula: &str) -> String {
     formula
@@ -398,7 +398,7 @@ mod tests {
         let system = System::generate(1);
         let survey = Survey::of(&system.planets[0], &system.star);
         assert!(survey.at(0.0).is_empty());
-        let running = survey.at(5.0);
+        let running = survey.at(2.5);
         assert_eq!(running.len(), 1);
         assert!(running[0].progress > 0.0 && running[0].progress < 1.0);
         assert!(running[0].value.ends_with('…'));
