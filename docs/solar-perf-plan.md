@@ -16,6 +16,31 @@ What was measured for this plan, and what was not:
   which reads high: it puts an orbit of a sea world at 15–19 ms where commit `1fd9399` reports under
   10 ms on the Pi. Read the gains as ratios; S1's first job is to measure one on the Pi.
 
+## 0. Measured on the Pi (2026-11-11)
+
+`solar::tests::frame_sweep` on the Pi 5, kiosk stopped, a frame every 8 s through seeds 5 and 23
+(medians; run to run within 0.01 ms). Headless runs need `WGPU_BACKEND=vulkan` on the Pi: GL lacks
+the frame texture's `VIEW_FORMATS`. Base `5e6a964`, before S1–S5:
+
+| | high orbit | departure, worst | transfer | jump |
+|---|---|---|---|---|
+| seed 5 before | 7.27 | 10.44 | 2.36 | 4.95 |
+| seed 5 after | 5.49 | 7.64 | 2.51 | 4.85 |
+| seed 23 before | 8.89 | 12.42 | 2.33 | 4.95 |
+| seed 23 after | 5.24 | 7.34 | 2.33 | 4.85 |
+
+- **S1–S4 hold up**: the traced paths (`SOLAR_TRACED`) measured the same as before on every frame, so
+  they and the shaders only they used are gone.
+- **S5 step 2, the polar fan, did not**: some 42,000 small triangles carrying three varyings cost
+  the binner and the varyings more than `atan2` and `log` a pixel. Every drive's jump was 1.1–3.1 ms
+  slower than before, so the fan is gone and `fs_warp` draws the whole frame again. The estimator
+  cannot see this: it counts pixels and instructions, not triangles.
+- **Four threads are not always faster**: Lumen Drift with its streaks before its noise fits four
+  threads (376 instructions) but ran 6.60 ms; the other order, two threads (344), runs 5.96.
+- **Jump per drive** (seed 5, t 505–560), before → now: Lumen Drift 6.12 → 5.96, Tachyon Tunnel
+  4.09 → 4.11, Fold Drive 8.09 → 8.04, Ion Slipstream 4.91 → 4.63, Bubble Drive 4.94 → 4.82.
+- `SOLAR_ANISO=4` costs 1.3–1.5 ms in orbit; it stays off.
+
 ## 1. Summary (ranked)
 
 | | what | where the time is now | prototype | expected |

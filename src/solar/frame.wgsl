@@ -15,9 +15,7 @@
 //   interpolated ray, and nothing else; `fs_space_flash` while the jump's
 //   flash whitens it), or `fs_space` (the same and the star's glare, worked
 //   out per pixel) until the bake is done, or during a hyperjump the drive's
-//   light, one pipeline per drive (`WARP`): `fs_warp_fan` over a polar fan
-//   round the heading (`vs_warp_fan`) that brings each pixel its angle and
-//   log of distance, or traced, `fs_warp`, with `SOLAR_TRACED`.
+//   light, one pipeline per drive (`WARP`, `fs_warp`).
 // - Over the baked background, the star's glare: a polygon round the star
 //   (`vs_glare`, or the whole frame in a flyby, `vs_glare_full`), added at
 //   the far end of the depth range so every body's mask hides it.
@@ -26,12 +24,11 @@
 //   `fs_globe_star`; `fs_globe_flat` for a planet whose maps are not in
 //   yet; a mapped world from afar, `fs_globe` (and `fs_globe_glow` for one
 //   with seas), built for each sort of world (`SurfaceLook` in `mod.rs`)
-//   with its rings' shadow; `fs_globe_moon` for a moon. With
-//   `SOLAR_TRACED`, and a mapped world close up, each a fan of triangles
-//   round its own silhouette (`vs_body`), shaders branching rather than
-//   discarding so the V3D skips their work for pixel groups with nothing to
-//   draw: `fs_star`, `fs_flat`, `fs_surface`, `fs_moon`; close up
-//   `fs_ground`, `fs_detail`, `fs_clouds` and `fs_glow`. Then the air past a
+//   with its rings' shadow; `fs_globe_moon` for a moon. A mapped world
+//   close up is a fan of triangles round its own silhouette (`vs_body`),
+//   shaders branching rather than discarding so the V3D skips their work for
+//   pixel groups with nothing to draw: `fs_ground`, `fs_detail`, `fs_clouds`
+//   and `fs_glow`. Then the air past a
 //   limb (added) as an annulus round the silhouette lit at its vertices
 //   (`vs_limb_ring`, `fs_limb_ring`) for a body wholly
 //   ahead, else traced over the fan (`fs_limb`); and the rings as an
@@ -313,13 +310,6 @@ fn fs_space_flash(in: Full) -> @location(0) vec4<f32> {
     return vec4<f32>(mix(colour, vec3<f32>(1.0), params.warp.y), 1.0);
 }
 
-// All three over the whole frame, for `SOLAR_TRACED`.
-@fragment
-fn fs_space_glare(in: Full) -> @location(0) vec4<f32> {
-    let colour = textureSampleLevel(starfield, map_sampler, in.dir, 0.0).rgb + glare_near(normalize(in.dir));
-    return vec4<f32>(mix(colour, vec3<f32>(1.0), params.warp.y), 1.0);
-}
-
 // The star's glare, added over the background as a polygon round the star
 // out to where it falls under half a step of the 8-bit frame, with that
 // floor taken off so its rim does not show. At the far end of the depth
@@ -399,33 +389,6 @@ fn fs_probe_glare(in: Glare) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-// The jump's background as a polar fan round the heading (`warp_fan` in
-// mod.rs), carrying each pixel's angle round it and the log of its distance
-// as interpolated values, so no pixel takes `atan2`, `log` or `length`.
-struct Polar {
-    @builtin(position) position: vec4<f32>,
-    // The ray through the pixel, not normalized, for the calm sky.
-    @location(0) @interpolate(linear) dir: vec3<f32>,
-    // x: the angle round the heading (−π to π, as `atan2`); y: the log of
-    // the distance from it; z: the distance (across the half frame).
-    @location(1) @interpolate(linear) polar: vec3<f32>,
-    // The way from the heading on the screen, unit length.
-    @location(2) @interpolate(linear) around: vec2<f32>,
-};
-
-// `place`: xy on the screen (across the half frame, the heading at 0), zw
-// the way round; `polar`: the angle, the log of the distance, the distance.
-@vertex
-fn vs_warp_fan(@location(0) place: vec4<f32>, @location(1) polar: vec4<f32>) -> Polar {
-    var out: Polar;
-    // At the far end of the depth mask, as the background.
-    out.position = vec4<f32>(place.xy, 1.0, 1.0);
-    out.dir = params.forward.xyz + (params.right.xyz * place.x + params.up.xyz * place.y) * params.frame.y;
-    out.polar = polar.xyz;
-    out.around = place.zw;
-    return out;
-}
-
 // Streaks flying out from the heading: each lives in a cell of the screen's
 // polar coordinates (angle around the heading, log of the distance from it),
 // which scroll outward with time, so one cell lookup draws a moving streak.
@@ -457,8 +420,10 @@ fn hash_cell(p: vec3<f32>) -> f32 {
     return fract((q.x + q.y) * q.z);
 }
 
-// The drive's light, traced: the pixel's polar coordinates worked out here
-// (only with `SOLAR_TRACED`; else `fs_warp_fan`).
+// The drive's light over the whole frame, the pixel's polar coordinates
+// round the heading worked out here. (A polar fan of triangles carrying them
+// as varyings was 1.1-3.1 ms slower on the Pi: some 42,000 small triangles
+// cost the binner and the varyings more than `atan2` and `log` a pixel.)
 @fragment
 fn fs_warp(in: Full) -> @location(0) vec4<f32> {
     let half = params.frame.x;
@@ -467,13 +432,6 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
     // Around the heading by cosine and sine, so noise has no seam where the
     // angle wraps: the pixel's own direction from the heading.
     return warp_colour(r, atan2(s.y, s.x), log(r), s / r, in.dir);
-}
-
-// The drive's light over the polar fan: the angle, the log of the distance
-// and the way round interpolated from its corners.
-@fragment
-fn fs_warp_fan(in: Polar) -> @location(0) vec4<f32> {
-    return warp_colour(in.polar.z, in.polar.x, in.polar.y, in.around, in.dir);
 }
 
 // Each drive's light at a distance `r` from the heading (across the half
@@ -489,16 +447,16 @@ fn warp_colour(r: f32, theta: f32, logr: f32, around: vec2<f32>, dir: vec3<f32>)
         // core fill the frame (two octaves of noise round the heading, so
         // they shimmer and never repeat), fast streaks fly out along them,
         // and soft sheets of light fan out flat to the sides.
-        // The streaks before the noise: the other way round, the noise's
-        // reads waited beside the streaks' sums and held 42 registers (two
-        // threads), this way 30 (four).
-        colour += vec3<f32>(0.70, 0.90, 1.0) * streaks(theta, logr, 260.0, 10.0, 0.85, 3) * smoothstep01(0.05, 0.4, r);
-        colour += vec3<f32>(0.85, 0.95, 1.0) * streaks(theta, logr, 120.0, 7.0, 0.9, 7) * 0.6 * smoothstep01(0.1, 0.6, r);
+        // The noise before the streaks. The other way round it fits four
+        // threads, yet on the Pi it ran 6.60 ms a frame against 5.96 this
+        // way, at two.
         let fine = noise(vec3<f32>(around * 26.0, logr * 0.35 - t * 0.25));
         let broad = noise(vec3<f32>(around * 9.0, logr * 0.2 - t * 0.12));
         let rays = smoothstep01(0.05, 0.75, fine) * 0.7 + smoothstep01(-0.1, 0.8, broad) * 0.5;
         let falloff = exp(-r * 1.3);
         colour += vec3<f32>(0.10, 0.55, 0.95) * rays * falloff * 1.1;
+        colour += vec3<f32>(0.70, 0.90, 1.0) * streaks(theta, logr, 260.0, 10.0, 0.85, 3) * smoothstep01(0.05, 0.4, r);
+        colour += vec3<f32>(0.85, 0.95, 1.0) * streaks(theta, logr, 120.0, 7.0, 0.9, 7) * 0.6 * smoothstep01(0.1, 0.6, r);
         let sheet = exp(-abs(s.y) * 5.0 / (0.2 + r)) * (0.6 + 0.4 * broad);
         colour += vec3<f32>(0.40, 0.75, 1.0) * sheet * 0.6;
         // The deep blue the rays shine through, lighter toward the core.
@@ -902,7 +860,7 @@ fn skylight() -> vec3<f32> {
 }
 
 // A world's features, fixed for a pipeline that draws only one sort of
-// world (`fs_surface`), or -1 to read them from the body.
+// world (`fs_globe`), or -1 to read them from the body.
 override AIR: i32 = -1;
 override NIGHT: i32 = -1;
 override GIANT: i32 = -1;
@@ -975,47 +933,6 @@ fn shadow_shift(i: u32, nb: vec3<f32>, n: vec3<f32>, sun: vec3<f32>, mu_sun: f32
     let cos_lat = sqrt(max(nb.x * nb.x + nb.z * nb.z, 1e-8));
     let reach = 0.006 / max(mu_sun, 0.12);
     return vec2<f32>(dot(sun, east) * reach / (TAU * max(cos_lat, 0.05)), -dot(sun, cross(n, east)) * reach / PI);
-}
-
-@fragment
-fn fs_star(in: Quad) -> @location(0) vec4<f32> {
-    let i = in.body;
-    let h = trace(i, in.position.xy);
-    // A branch, not a discard: the V3D skips the work for 16-pixel groups
-    // that all leave it, but runs on through a discard.
-    if (!(h.cover <= 0.0)) {
-        let mu = sqrt(max(1.0 - h.closest * h.closest, 0.0));
-        // look.yzw: the convection cells' scale and contrast (a red giant's few
-        // huge ones, a red dwarf's spots), and how much the limb darkens.
-        let style = params.bodies[i].look.yzw;
-        let granules = 1.0 + style.y * noise(to_body(i, h.n) * style.x + vec3<f32>(params.warp.z * 0.05));
-        // Its own colour, deepened, not blown out: a red giant's face is orange
-        // and mottled, a white dwarf's searing white.
-        let tint = params.star_colour.rgb / max(max(params.star_colour.r, params.star_colour.g), params.star_colour.b);
-        let light = min(tint * tint * 1.15 * (1.0 - style.z + style.z * mu) * granules, vec3<f32>(1.0));
-        return vec4<f32>(light * h.cover, h.cover);
-    }
-    discard;
-    return vec4<f32>(0.0);
-}
-
-// A planet whose maps are not in yet: its colour, banded on giants, lit.
-@fragment
-fn fs_flat(in: Quad) -> @location(0) vec4<f32> {
-    let i = in.body;
-    let h = trace(i, in.position.xy);
-    // A branch, not a discard: the V3D skips the work for 16-pixel groups
-    // that all leave it, but runs on through a discard.
-    if (!(h.cover <= 0.0)) {
-        let nb = to_body(i, h.n);
-        let sun = normalize(params.star.xyz - h.point);
-        let mu = dot(h.n, sun);
-        let albedo = params.bodies[i].colour.rgb * (1.0 + params.bodies[i].colour.w * sin(nb.y * 23.0 + sin(nb.y * 7.0) * 2.0) * 0.5);
-        let light = ground_light(i, mu) * max(mu + 0.03, 0.0);
-        return vec4<f32>(albedo * light * through(i, h) * h.cover, h.cover);
-    }
-    discard;
-    return vec4<f32>(0.0);
 }
 
 // Close up (`DETAIL`, low orbit and the dive to it), the map's lookups are
@@ -1264,46 +1181,9 @@ fn fs_glow(in: Quad) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-// A moon, from its layer of the slot's moon maps: colour, relief, molten glow.
-@fragment
-fn fs_moon(in: Quad) -> @location(0) vec4<f32> {
-    let i = in.body;
-    let h = trace(i, in.position.xy);
-    let nb = to_body(i, h.n);
-    let uv = map_uv(nb);
-    let lod = level(uv, vec2<f32>(512.0, 256.0));
-    // A branch, not a discard: the V3D skips the work for 16-pixel groups
-    // that all leave it, but runs on through a discard.
-    if (!(h.cover <= 0.0)) {
-        let layer = i32(params.bodies[i].look.z);
-        var day: vec3<f32>;
-        var relief: vec4<f32>;
-        if (SLOT == 0) {
-            day = textureSampleLevel(a_moon_day, map_sampler, uv, layer, lod).rgb;
-            relief = textureSampleLevel(a_moon_relief, map_sampler, uv, layer, lod);
-        } else {
-            day = textureSampleLevel(b_moon_day, map_sampler, uv, layer, lod).rgb;
-            relief = textureSampleLevel(b_moon_relief, map_sampler, uv, layer, lod);
-        }
-        let n = h.n;
-        let sun = normalize(params.star.xyz - h.point);
-        let mu_sun = dot(n, sun);
-        let east = east_of(i, nb);
-        let tilted = normalize(n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * 0.55);
-        var colour = day * ground_light(i, mu_sun) * max(dot(tilted, sun) + 0.03, 0.0);
-        // A moon's third relief channel is molten glow.
-        let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
-        colour += mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), relief.b) * relief.b * (0.15 + 0.55 * darkness);
-        return vec4<f32>(colour * through(i, h) * h.cover, h.cover);
-    }
-    discard;
-    return vec4<f32>(0.0);
-}
-
 // The air seen edge-on past a body's limb, added: `limb_glow`, in the
 // eclipses' shadows. Traced per pixel over the whole fan: only for a body
-// not wholly ahead of the camera (else `fs_limb_ring`), or with
-// `SOLAR_TRACED`.
+// not wholly ahead of the camera (else `fs_limb_ring`).
 @fragment
 fn fs_limb(in: Quad) -> @location(0) vec4<f32> {
     let i = in.body;
@@ -1455,130 +1335,10 @@ fn fs_ring_shadow(in: Quad) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-// ---------------------------------------------------------------------------
-// A mapped world seen from afar, in one pipeline: the ground, the cloud deck
-// and its shadows and the added light, composited as the passes above blend
-// them (`fs_ground`, `fs_clouds`, `fs_glow`). The ray, the map coordinates
-// and their level are worked out once, and the cloud and relief texels the
-// passes each read are read once. Eclipses, the rings' shadow and the limb
-// (`fs_limb_ring`) stay passes of their own, drawn only where there are
-// any. Close up the passes are drawn apart, with the close-up detail
-// between.
-// ---------------------------------------------------------------------------
-
+// Whether the world has a cloud deck.
 override CLOUDS: bool = false;
 // Whether the world has rings, whose shadow falls on it.
 override RINGS: bool = false;
-// Whether to add the air's glow past the limb here (`limb_glow`), not in a
-// pass of its own: only with `SOLAR_TRACED` (the way before `fs_limb_ring`),
-// and unless an eclipse has to darken it.
-override LIMB: bool = false;
-
-@fragment
-fn fs_surface(in: Quad) -> @location(0) vec4<f32> {
-    let i = in.body;
-    let h = trace(i, in.position.xy);
-    let nb = to_body(i, h.n);
-    let uv = map_uv(nb);
-    // Derivatives first, while every pixel of the quad still runs.
-    let lod = level(uv, map_size());
-    let sun = normalize(params.star.xyz - h.point);
-    let mu_sun = dot(h.n, sun);
-    var rgb = vec3<f32>(0.0);
-    var alpha = 0.0;
-    // A branch, not a discard: the V3D skips the work for 16-pixel groups
-    // that all leave it, but runs on through a discard.
-    if (!(h.cover <= 0.0)) {
-        // Built up in `rgb` as it goes, the ground first, so few colours are
-        // held at once: in 32 registers the V3D runs four threads, which
-        // hide the waits on these five maps.
-        let n = h.n;
-        // The air in front and the sunlight high in it, kept as their air
-        // masses (one register each, not three) and made colours where used.
-        let view_mass = select(0.0, airmass(clamp(dot(n, -h.dir), 0.0, 1.0)), has_air(i));
-        let high_mass = select(0.0, airmass(mu_sun + 0.04) * 0.55, has_air(i));
-        let relief = relief_texel(uv, lod + 0.4);
-        var cloud = 0.0;
-        if (CLOUDS) {
-            cloud = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y), lod).g;
-        }
-
-        // The ground.
-        var albedo = day_texel(uv, lod) * mix(1.0, 0.8, relief.b);
-        let east = east_of(i, nb);
-        let tilted = normalize(n + (east * (relief.r - 0.5) + cross(n, east) * (relief.g - 0.5)) * 0.55);
-        let sky_rise = select(0.0, smoothstep01(-0.15, 0.4, mu_sun), has_air(i));
-        let kind = i32(params.bodies[i].look.x);
-        if (select(kind == 6 || kind == 7 || kind == 14, GIANT == 1, GIANT >= 0)) {
-            // Giants darken toward the limb.
-            albedo *= 0.55 + 0.45 * sqrt(clamp(dot(n, -h.dir), 0.0, 1.0));
-        }
-        rgb = albedo * (ground_light(i, mu_sun) * max(dot(tilted, sun) + 0.03, 0.0) + skylight() * sky_rise) * thin(i, view_mass) * h.cover;
-        alpha = h.cover;
-
-        // The cloud deck over the ground, and its shadows on it: what lies
-        // behind keeps (1 - cover) of itself under the deck.
-        if (CLOUDS) {
-            var toward = 0.0;
-            if (mu_sun > -0.05) {
-                toward = extra_texel(vec2<f32>(uv.x + params.bodies[i].rot[0].w, uv.y) + shadow_shift(i, nb, n, sun, mu_sun), lod + 1.0).g;
-            }
-            let shadow = 0.6 * toward * sunlit(mu_sun) * h.cover;
-            var covered = shadow;
-            var deck = vec3<f32>(0.0);
-            if (cloud * h.cover > 0.002) {
-                var side = 1.0;
-                if (mu_sun > -0.05) {
-                    side = clamp(1.0 - 2.0 * (toward - cloud), 0.4, 1.3);
-                }
-                let toward_star = max(dot(h.dir, sun), 0.0);
-                let lobe = toward_star * toward_star * toward_star * toward_star;
-                let glow = (1.0 - cloud) * (0.2 + 1.2 * lobe * lobe);
-                let lit = 0.85 * (star_light() * thin(i, high_mass) * smoothstep01(-0.08, 0.04, mu_sun) * ((0.30 + 0.70 * sqrt(max(mu_sun, 0.0))) * side + glow) + skylight() * sky_rise * 1.5);
-                let thick = min(cloud * (2.2 - 1.2 * clamp(dot(n, -h.dir), 0.0, 1.0)), 1.0) * h.cover;
-                deck = lit * thin(i, view_mass) * thick;
-                covered = 1.0 - (1.0 - thick) * (1.0 - shadow);
-            }
-            rgb = deck + rgb * (1.0 - covered);
-            alpha = 1.0 - (1.0 - h.cover) * (1.0 - covered);
-        }
-
-        // The added light, over the deck: the air's sheen, the sea's glint
-        // and sheen, the night side's lights or molten glow.
-        if (has_air(i)) {
-            rgb += star_light() * thin(i, high_mass) * smoothstep01(-0.10, 0.08, mu_sun) * (vec3<f32>(1.0) - thin(i, view_mass)) * (0.45 * h.cover);
-        }
-        if (SEA) {
-            let water = relief.b * (1.0 - cloud);
-            if (water > 0.0) {
-                let fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, -h.dir), 0.0, 1.0), 5.0);
-                let log_nh = log2(max(dot(n, normalize(sun - h.dir)), 0.0));
-                let glint = exp2(log_nh * 260.0) * 0.9 + exp2(log_nh * 45.0) * 0.06;
-                rgb += (ground_light(i, mu_sun) * glint * (0.25 + fresnel)
-                    + skylight() * 2.0 * fresnel * smoothstep01(-0.1, 0.3, mu_sun)) * thin(i, view_mass) * (water * h.cover);
-            }
-        }
-        let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu_sun);
-        let mode = select(i32(params.bodies[i].look.w + 0.5), NIGHT, NIGHT >= 0);
-        if (mode == 1 && darkness > 0.002) {
-            let night = extra_texel(uv, lod + 0.6).r;
-            let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
-            rgb += tint * thin(i, view_mass) * (night * night * 2.2 * darkness * (1.0 - cloud * 0.85) * h.cover);
-        } else if (mode == 2) {
-            let night = extra_texel(uv, lod + 0.6).r;
-            let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), night * night);
-            rgb += heat * thin(i, view_mass) * (night * (0.15 + 0.55 * darkness) * h.cover);
-        }
-        // The rings' shadow, as their own pass multiplies it in elsewhere.
-        if (RINGS) {
-            rgb *= mix(1.0, ring_shadow(i, h.point, sun), sunlit(mu_sun));
-        }
-    }
-    if (LIMB && !(h.closest >= ATMOSPHERE || h.cover >= 1.0)) {
-        rgb += limb_glow(i, h, sun);
-    }
-    return vec4<f32>(rgb, alpha);
-}
 
 // ---------------------------------------------------------------------------
 // A mapped world seen from afar as a mesh: a patch of its own latitude-
@@ -1591,9 +1351,8 @@ fn fs_surface(in: Quad) -> @location(0) vec4<f32> {
 // half proud of the surface at the limb, and each vertex carries the soft
 // edge of the ray through it against the true sphere, so the edge fades as
 // the traced one does. The map's level is the GPU's own: the mesh never
-// crosses the longitude's wrap inside a triangle. Built per look as
-// `fs_surface` is (`SurfaceLook`); with `SOLAR_TRACED` the looks it serves
-// are drawn by `fs_surface` instead.
+// crosses the longitude's wrap inside a triangle. Built per look
+// (`SurfaceLook`): only its own code, in as few registers as it needs.
 // ---------------------------------------------------------------------------
 
 const GRID_STRIDE: u32 = 129u;
@@ -1727,7 +1486,8 @@ fn globe_extra(uv: vec2<f32>, bias: f32) -> vec2<f32> {
     return textureSampleBias(b_extra, map_sampler, uv, bias).rg;
 }
 
-// The world over the mesh, every look as `fs_surface` draws it. A world with
+// The world over the mesh: the ground, the cloud deck and its shadows and
+// the added light, its rings' shadow included. A world with
 // seas (`SEA`) is two passes: here only its ground and cloud deck, in few
 // enough registers for four threads, then its added light (the sea's glint
 // and sheen, the cities, the air's sheen) in `fs_globe_glow`.
@@ -1831,7 +1591,7 @@ fn fs_globe_glow(in: Globe) -> @location(0) vec4<f32> {
 
 // A world whose maps are not in yet, over the mesh (`GLOBE` 1): its colour
 // lit through the air (`direct`), banded on a giant by its latitude, in its
-// rings' shadow. As `fs_flat`.
+// rings' shadow.
 @fragment
 fn fs_globe_flat(in: Globe) -> @location(0) vec4<f32> {
     let mu = in.geo.y;
@@ -1852,7 +1612,7 @@ fn fs_globe_flat(in: Globe) -> @location(0) vec4<f32> {
 }
 
 // A moon over the mesh (`GLOBE` 2), from its layer of the slot's moon maps:
-// colour, relief, molten glow. As `fs_moon`.
+// colour, relief, molten glow.
 @fragment
 fn fs_globe_moon(in: Globe) -> @location(0) vec4<f32> {
     let mu = in.geo.y;
@@ -1883,7 +1643,7 @@ fn fs_globe_moon(in: Globe) -> @location(0) vec4<f32> {
 
 // The star over the mesh (`GLOBE` 3): its limb darkened by the viewer's
 // height over its surface, its granules one noise fetch along the
-// interpolated body-frame normal. As `fs_star`.
+// interpolated body-frame normal.
 @fragment
 fn fs_globe_star(in: Globe) -> @location(0) vec4<f32> {
     // thru: the convection cells' scale and contrast, and how much the limb
