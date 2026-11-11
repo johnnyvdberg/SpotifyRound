@@ -20,20 +20,29 @@ pub struct Scan {
 }
 
 /// When each reading starts and how long it takes, in seconds after the
-/// camera settles into orbit. Overlapping, as several instruments run at once.
+/// camera settles into orbit: the whole survey in ten. Overlapping, as
+/// several instruments run at once.
 const SCHEDULE: [(&str, f64, f64, &str); 6] = [
-    ("Atmosphere", 1.0, 7.0, "spectrometer: absorption lines"),
-    ("Gravimetry", 4.0, 5.0, "tracking orbital perturbations"),
-    ("Climate", 7.0, 7.0, "thermal infrared mapping"),
-    ("Magnetometer", 12.0, 6.0, "sampling the field"),
-    ("Radiation", 17.0, 5.0, "dosimeters integrating"),
+    ("Atmosphere", 0.5, 2.5, "spectrometer: absorption lines"),
+    ("Gravimetry", 1.5, 2.0, "tracking orbital perturbations"),
+    ("Climate", 2.5, 2.5, "thermal infrared mapping"),
+    ("Magnetometer", 4.0, 2.0, "sampling the field"),
+    ("Radiation", 5.5, 2.0, "dosimeters integrating"),
     (
         "Biosignatures",
-        21.0,
-        11.0,
+        6.5,
+        3.5,
         "searching spectra for disequilibrium",
     ),
 ];
+
+/// The share of worlds the scanner surveys; the rest are only orbited.
+const CHANCE: f64 = 0.1;
+
+/// Whether the scanner surveys this world: the same answer on every visit.
+pub fn surveyed(planet: &Planet) -> bool {
+    Rng::new(planet.seed ^ 0x5ca9).chance(CHANCE)
+}
 
 /// Readings to show at once: the latest two, the running ones last.
 const SHOWN: usize = 2;
@@ -394,11 +403,20 @@ mod tests {
     }
 
     #[test]
+    fn about_one_world_in_ten_is_surveyed() {
+        let worlds: Vec<_> = (0..300)
+            .flat_map(|seed| System::generate(seed).planets)
+            .collect();
+        let share = worlds.iter().filter(|p| surveyed(p)).count() as f64 / worlds.len() as f64;
+        assert!((0.06..0.14).contains(&share), "{share}");
+    }
+
+    #[test]
     fn readings_run_then_report() {
         let system = System::generate(1);
         let survey = Survey::of(&system.planets[0], &system.star);
         assert!(survey.at(0.0).is_empty());
-        let running = survey.at(2.5);
+        let running = survey.at(1.0);
         assert_eq!(running.len(), 1);
         assert!(running[0].progress > 0.0 && running[0].progress < 1.0);
         assert!(running[0].value.ends_with('…'));

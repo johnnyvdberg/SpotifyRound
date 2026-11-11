@@ -26,8 +26,8 @@ pub const TRANSFER: f64 = 45.0;
 pub const FLYBY: f64 = 64.0;
 /// The short hop from a giant out to its moon.
 pub const HOP: f64 = 32.0;
-/// The orbit, unhurried: the scanner's survey (`scan::SCHEDULE`) takes its
-/// first half.
+/// The orbit, unhurried: on the worlds the scanner surveys
+/// (`scan::surveyed`), its survey takes the first ten seconds.
 pub const HIGH: f64 = 70.0;
 pub const DEPART: f64 = 20.0;
 pub const JUMP: f64 = 150.0;
@@ -1856,12 +1856,12 @@ impl Tour {
         }
     }
 
-    /// The scanner's readings at `t`: while orbiting a stop, from the moment
-    /// the camera settles into orbit; none otherwise.
+    /// The scanner's readings at `t`: while orbiting a stop it surveys (one
+    /// in ten), from the moment the camera settles into orbit; none otherwise.
     pub fn scans(&self, t: f64) -> Vec<super::scan::Scan> {
         let (segment, _) = self.segment(t);
         match segment.phase {
-            Phase::High(p) => {
+            Phase::High(p) if super::scan::surveyed(self.world(p)) => {
                 let survey = super::scan::Survey::of(self.world(p), &self.system.star);
                 survey.at(t - self.arrival(p))
             }
@@ -1874,7 +1874,9 @@ impl Tour {
     pub fn survey(&self, t: f64) -> f32 {
         let (segment, _) = self.segment(t);
         match segment.phase {
-            Phase::High(p) => super::scan::Survey::progress(t - self.arrival(p)),
+            Phase::High(p) if super::scan::surveyed(self.world(p)) => {
+                super::scan::Survey::progress(t - self.arrival(p))
+            }
             _ => 0.0,
         }
     }
