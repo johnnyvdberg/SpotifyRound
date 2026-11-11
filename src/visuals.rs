@@ -20,6 +20,7 @@ use slint::wgpu_30::wgpu;
 use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
+use crate::solar::labels::BodyLabel;
 use crate::solar::{Hud, Solar};
 use crate::ui::{AppWindow, WindowExt};
 
@@ -217,6 +218,12 @@ pub(crate) trait Visual: Send {
     fn hud(&self) -> Option<Hud> {
         None
     }
+
+    /// Labels on things in the scene, placed in the frame's pixels; moved
+    /// every frame, so sent apart from the HUD.
+    fn labels(&self) -> Vec<BodyLabel> {
+        Vec::new()
+    }
 }
 
 /// Render the selected scene while the visualizer is visible.
@@ -344,6 +351,7 @@ pub fn spawn(
             let adaptive = std::env::var_os("SPOTIFY_ROUND_ADAPTIVE").is_some();
             let mut scale = 1.0f32;
             let mut shown_hud = Hud::default();
+            let mut shown_labels: Vec<BodyLabel> = Vec::new();
 
             loop {
                 if !take_built(&mut renderers, &mut mask, &mut building, &mut slots) {
@@ -381,9 +389,13 @@ pub fn spawn(
 
                 if switched {
                     shown_hud = Hud::default();
+                    shown_labels.clear();
                     let cleared = Hud::default();
                     if ui
-                        .upgrade_in_event_loop(move |ui| ui.set_idle_hud(&cleared))
+                        .upgrade_in_event_loop(move |ui| {
+                            ui.set_idle_hud(&cleared);
+                            ui.set_idle_labels(&[]);
+                        })
                         .is_err()
                     {
                         return;
@@ -433,6 +445,16 @@ pub fn spawn(
                     shown_hud = hud.clone();
                     if ui
                         .upgrade_in_event_loop(move |ui| ui.set_idle_hud(&hud))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let labels = renderer.labels();
+                if labels != shown_labels {
+                    shown_labels = labels.clone();
+                    if ui
+                        .upgrade_in_event_loop(move |ui| ui.set_idle_labels(&labels))
                         .is_err()
                     {
                         return;
