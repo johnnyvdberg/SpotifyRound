@@ -15,6 +15,7 @@
 //! passes: a full-screen background of stars and the galaxy, then one small
 //! quad per body, far to near, so a pixel only pays for the bodies over it.
 
+pub mod labels;
 pub mod scan;
 pub mod stream;
 pub mod system;
@@ -276,6 +277,8 @@ pub(crate) struct Solar {
     tour: Tour,
     hud: Hud,
     hud_at: f64,
+    /// The labels on the worlds in view, worked out every frame.
+    labels: Vec<labels::BodyLabel>,
     /// How far the dust round the ship has drifted, in its box's units, and
     /// the visit time that was worked out for.
     dust: [f64; 3],
@@ -985,6 +988,7 @@ impl Solar {
             tour,
             hud: Hud::default(),
             hud_at: f64::NEG_INFINITY,
+            labels: Vec::new(),
             dust: [0.0; 3],
             dust_at: None,
             #[cfg(test)]
@@ -1251,9 +1255,8 @@ impl Solar {
         self.starfield_owner[slot] = Some((seed, row + rows));
     }
 
-    /// The shader's parameters at `t` into the visit, and the draws: which
-    /// pipeline over which body, in order.
-    fn params(&self, t: f64) -> (Params, Vec<(u32, String)>) {
+    /// The camera at `t`, shaken by the engines through a burn.
+    fn view(&self, t: f64) -> View {
         let mut view = self.tour.view(t);
         let throttle = self.throttle(t);
         if throttle > 0.0 {
@@ -1271,6 +1274,14 @@ impl Solar {
             // Square again, or rays and projections part (by a few pixels).
             view.up = normalize(cross(normalize(cross(view.forward, view.up)), view.forward));
         }
+        view
+    }
+
+    /// The shader's parameters at `t` into the visit, and the draws: which
+    /// pipeline over which body, in order.
+    fn params(&self, t: f64) -> (Params, Vec<(u32, String)>) {
+        let view = self.view(t);
+        let throttle = self.throttle(t);
         let system = &self.tour.system;
         let camera = view.position;
         let rel = |p: [f64; 3]| [p[0] - camera[0], p[1] - camera[1], p[2] - camera[2]];
@@ -1868,6 +1879,39 @@ impl Solar {
         })
     }
 
+    /// The labels on the worlds in view at `t`, clear of the HUD's panels
+    /// that are up (where `idle.slint` puts them, in the frame's pixels).
+    fn update_labels(&mut self, t: f64) {
+        let hud = &self.hud;
+        let mut panels = Vec::new();
+        if !hud.title.is_empty() {
+            panels.push([260.0, 84.0, 820.0, 126.0]);
+        }
+        // The scanner or the manoeuvre under way: a half-height panel, the
+        // burn's readout taller and the drive's taller still.
+        let tall = match &hud.manoeuvre {
+            _ if !hud.scans.is_empty() => Some(98.0),
+            Some(m) if m.drive > 0 => Some(224.0),
+            Some(m) if m.dv > 0.0 => Some(196.0),
+            Some(_) => Some(98.0),
+            None => None,
+        };
+        if let Some(height) = tall {
+            panels.push([240.0, 150.0, 840.0, 150.0 + height]);
+        }
+        // The next jump's star, its brackets and its name.
+        if let Some(target) = &hud.target {
+            let [x, y] = target.at.map(f64::from);
+            panels.push([x - 130.0, y - 50.0, x + 130.0, y + 80.0]);
+        }
+        if hud.map.is_some() {
+            panels.push([780.0, 415.0, 1030.0, 665.0]);
+        }
+        // The now-playing card, when a track is up.
+        panels.push([170.0, 784.0, 910.0, 920.0]);
+        self.labels = labels::labels(&self.tour.system, &self.view(t), t, &panels);
+    }
+
     /// The minimap at `t`: none during the jump, between systems.
     fn minimap(&self, t: f64) -> Option<Minimap> {
         if matches!(self.tour.segment(t).0.phase, Phase::Jump) {
@@ -1969,6 +2013,7 @@ impl Solar {
         self.stream(t);
         self.draw(gpu, t, frame);
         self.update_hud(t);
+        self.update_labels(t);
         Ok(())
     }
 }
@@ -1984,6 +2029,10 @@ impl Visual for Solar {
 
     fn hud(&self) -> Option<Hud> {
         Some(self.hud.clone())
+    }
+
+    fn labels(&self) -> Vec<labels::BodyLabel> {
+        self.labels.clone()
     }
 }
 
@@ -3099,7 +3148,10 @@ pub(crate) mod tests {
 
     /// One finished frame and its HUD at the first moment whose name holds
     /// `moment`, for the UI previews.
-    pub(crate) fn render_once(seed: u64, moment: &str) -> (Vec<u8>, Hud) {
+    pub(crate) fn render_once(
+        seed: u64,
+        moment: &str,
+    ) -> (Vec<u8>, Hud, Vec<labels::BodyLabel>) {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut solar = Solar::with_seed(&gpu, seed);
         let t = moments(&solar.tour)
@@ -3110,9 +3162,11 @@ pub(crate) mod tests {
         solar.draw(&gpu, t, 0);
         solar.hud_at = f64::NEG_INFINITY;
         solar.update_hud(t);
+        solar.update_labels(t);
         (
             read_texture(&gpu, &solar.frames[0].texture),
             solar.hud.clone(),
+            solar.labels.clone(),
         )
     }
 

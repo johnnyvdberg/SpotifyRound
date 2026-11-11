@@ -734,6 +734,85 @@ export component IdleScreen inherits Rectangle {
         }
     }
 
+    // Labels on the worlds in view: a ring at the limb, a leader 45° up and
+    // then a short line across (to the right, or mirrored to the left where
+    // there is no room), the name above the line and the distance below.
+    // Placed by Rust in the frame's pixels (`src/solar/labels.rs`); the
+    // fade sits in the colours, so nothing here needs a layer.
+    for label in Idle.labels : Rectangle {
+        property <length> run: max(name.preferred-width, distance.preferred-width) + 20px;
+        x: (parent.width - Idle.frame-size) / 2 + label.x * Idle.frame-size / 1080px;
+        y: (parent.height - Idle.frame-size) / 2 + label.y * Idle.frame-size / 1080px;
+        width: 0;
+        height: 0;
+
+        // A soft glow under the leader, then the leader itself.
+        Path {
+            x: label.left ? -70px : 0;
+            y: -70px;
+            width: 70px;
+            height: 70px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 70;
+            viewbox-height: 70;
+            commands: label.left ? "M 67 67 L 0 0" : "M 3 67 L 70 0";
+            stroke: Theme.accent.with-alpha(0.35 * Idle.fade);
+            stroke-width: 5px;
+        }
+        Path {
+            x: label.left ? -70px : 0;
+            y: -70px;
+            width: 70px;
+            height: 70px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 70;
+            viewbox-height: 70;
+            commands: label.left ? "M 67 67 L 0 0" : "M 3 67 L 70 0";
+            stroke: Theme.ink.with-alpha(0.9 * Idle.fade);
+            stroke-width: 2px;
+        }
+        Rectangle {
+            x: label.left ? -70px - run : 70px;
+            y: -71px;
+            width: run;
+            height: 2px;
+            background: Theme.ink.with-alpha(0.9 * Idle.fade);
+        }
+        // The ring at the limb.
+        Rectangle {
+            x: -4px;
+            y: -4px;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            border-width: 2px;
+            border-color: Theme.ink.with-alpha(Idle.fade);
+        }
+        name := Text {
+            x: label.left ? -80px - self.width : 80px;
+            y: -76px - self.height;
+            width: self.preferred-width;
+            text: label.name;
+            color: Theme.ink.with-alpha(Idle.fade);
+            font-family: Theme.font;
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+        distance := Text {
+            x: label.left ? -80px - self.width : 80px;
+            y: -64px;
+            width: self.preferred-width;
+            text: label.distance;
+            color: Theme.ink-dim.with-alpha(Idle.fade);
+            font-family: Theme.font;
+            font-size: 15px;
+            font-weight: 500;
+        }
+    }
+
     // The minimap, floating at the right of the circle: the system
     // seen tilted from above, its orbits, its planets (the stops lettered,
     // the current one in the accent), the route still to fly and the ship.

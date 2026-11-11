@@ -34,6 +34,17 @@ export struct ScanRow {
     value: string,
 }
 
+// A label on a planet or moon in the solar tour's frame: where its leader
+// starts on the limb, in the frame's pixels, whether it runs up to the left
+// instead of the right, the world's name and how far it is.
+export struct WorldLabel {
+    x: length,
+    y: length,
+    left: bool,
+    name: string,
+    distance: string,
+}
+
 // A planet, or the star, on the solar tour's minimap.
 export struct MapDot {
     x: length,
@@ -178,6 +189,8 @@ export global Idle {
     in-out property <[MapDot]> map-dots: [];
     in-out property <length> map-ship-x: 0;
     in-out property <length> map-ship-y: 0;
+    // Labels on the worlds in view, moved every frame. Hidden while empty.
+    in-out property <[WorldLabel]> labels: [];
 
     // A tap anywhere on the visuals returns to the player.
     callback dismiss();

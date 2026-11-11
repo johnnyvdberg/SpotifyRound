@@ -236,6 +236,8 @@ pub trait WindowExt: Sized {
     fn set_seas(&self, names: &[&str], here: usize);
     /// The text a scene lays over its frame; empty strings hide it.
     fn set_idle_hud(&self, hud: &crate::solar::Hud);
+    /// The labels a scene lays on the worlds in its frame; none hides them.
+    fn set_idle_labels(&self, labels: &[crate::solar::labels::BodyLabel]);
     fn tick(&self, frame: &Frame);
     /// Name, icon kind and presence of the Spotify Connect device playback is
     /// running on.
@@ -485,6 +487,32 @@ impl WindowExt for AppWindow {
             })
             .collect();
         idle.set_map_dots(ModelRc::from(Rc::new(VecModel::from(dots))));
+    }
+
+    fn set_idle_labels(&self, labels: &[crate::solar::labels::BodyLabel]) {
+        let rows: Vec<WorldLabel> = labels
+            .iter()
+            .map(|l| WorldLabel {
+                x: l.at[0],
+                y: l.at[1],
+                left: l.left,
+                name: l.name.as_str().into(),
+                distance: l.distance.as_str().into(),
+            })
+            .collect();
+        // They move every frame: rows are updated in place while their
+        // number holds, so the repeater keeps its items.
+        let idle = self.global::<Idle>();
+        let model = idle.get_labels();
+        if model.row_count() == rows.len() {
+            for (i, row) in rows.into_iter().enumerate() {
+                if model.row_data(i).as_ref() != Some(&row) {
+                    model.set_row_data(i, row);
+                }
+            }
+        } else {
+            idle.set_labels(ModelRc::from(Rc::new(VecModel::from(rows))));
+        }
     }
 
     fn show_idle_frame(&self, index: usize) {
@@ -978,10 +1006,11 @@ mod preview {
         window.global::<App>().set_choosing(false);
 
         // ---- the solar tour, with its HUD ----
-        let (pixels, hud) = crate::solar::tests::render_once(11, "-high-orbit");
+        let (pixels, hud, labels) = crate::solar::tests::render_once(11, "-high-orbit");
         window.set_idle_scene(3, crate::solar::SIZE as f32);
         window.set_idle(true, 1.0);
         window.set_idle_hud(&hud);
+        window.set_idle_labels(&labels);
         window.set_idle_frame(slint::Image::from_rgba8(
             slint::SharedPixelBuffer::clone_from_slice(
                 &pixels,
@@ -990,8 +1019,9 @@ mod preview {
             ),
         ));
         save(&window, &soft, "15-solar");
-        let (pixels, hud) = crate::solar::tests::render_once(11, "jump-cruise");
+        let (pixels, hud, labels) = crate::solar::tests::render_once(11, "jump-cruise");
         window.set_idle_hud(&hud);
+        window.set_idle_labels(&labels);
         window.set_idle_frame(slint::Image::from_rgba8(
             slint::SharedPixelBuffer::clone_from_slice(
                 &pixels,
@@ -1008,8 +1038,9 @@ mod preview {
             (13, "-flyby", "19-solar-assist"),
             (11, "capture-burn", "20-solar-burn"),
         ] {
-            let (pixels, hud) = crate::solar::tests::render_once(seed, moment);
+            let (pixels, hud, labels) = crate::solar::tests::render_once(seed, moment);
             window.set_idle_hud(&hud);
+            window.set_idle_labels(&labels);
             window.set_idle_frame(slint::Image::from_rgba8(
                 slint::SharedPixelBuffer::clone_from_slice(
                     &pixels,
@@ -1020,5 +1051,6 @@ mod preview {
             save(&window, &soft, name);
         }
         window.set_idle_hud(&crate::solar::Hud::default());
+        window.set_idle_labels(&[]);
     }
 }
