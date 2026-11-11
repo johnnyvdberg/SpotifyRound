@@ -14,8 +14,10 @@
 //   baked into a cube map once a system by `fs_bake_stars`, read along the
 //   interpolated ray, and nothing else; `fs_space_flash` while the jump's
 //   flash whitens it), or `fs_space` (the same and the star's glare, worked
-//   out per pixel) until the bake is done, or `fs_warp` during a hyperjump,
-//   one pipeline per drive (`WARP`).
+//   out per pixel) until the bake is done, or during a hyperjump the drive's
+//   light, one pipeline per drive (`WARP`): `fs_warp_fan` over a polar fan
+//   round the heading (`vs_warp_fan`) that brings each pixel its angle and
+//   log of distance, or traced, `fs_warp`, with `SOLAR_TRACED`.
 // - Over the baked background, the star's glare: a polygon round the star
 //   (`vs_glare`, or the whole frame in a flyby, `vs_glare_full`), added at
 //   the far end of the depth range so every body's mask hides it.
@@ -397,6 +399,33 @@ fn fs_probe_glare(in: Glare) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
+// The jump's background as a polar fan round the heading (`warp_fan` in
+// mod.rs), carrying each pixel's angle round it and the log of its distance
+// as interpolated values, so no pixel takes `atan2`, `log` or `length`.
+struct Polar {
+    @builtin(position) position: vec4<f32>,
+    // The ray through the pixel, not normalized, for the calm sky.
+    @location(0) @interpolate(linear) dir: vec3<f32>,
+    // x: the angle round the heading (−π to π, as `atan2`); y: the log of
+    // the distance from it; z: the distance (across the half frame).
+    @location(1) @interpolate(linear) polar: vec3<f32>,
+    // The way from the heading on the screen, unit length.
+    @location(2) @interpolate(linear) around: vec2<f32>,
+};
+
+// `place`: xy on the screen (across the half frame, the heading at 0), zw
+// the way round; `polar`: the angle, the log of the distance, the distance.
+@vertex
+fn vs_warp_fan(@location(0) place: vec4<f32>, @location(1) polar: vec4<f32>) -> Polar {
+    var out: Polar;
+    // At the far end of the depth mask, as the background.
+    out.position = vec4<f32>(place.xy, 1.0, 1.0);
+    out.dir = params.forward.xyz + (params.right.xyz * place.x + params.up.xyz * place.y) * params.frame.y;
+    out.polar = polar.xyz;
+    out.around = place.zw;
+    return out;
+}
+
 // Streaks flying out from the heading: each lives in a cell of the screen's
 // polar coordinates (angle around the heading, log of the distance from it),
 // which scroll outward with time, so one cell lookup draws a moving streak.
@@ -428,16 +457,30 @@ fn hash_cell(p: vec3<f32>) -> f32 {
     return fract((q.x + q.y) * q.z);
 }
 
+// The drive's light, traced: the pixel's polar coordinates worked out here
+// (only with `SOLAR_TRACED`; else `fs_warp_fan`).
 @fragment
 fn fs_warp(in: Full) -> @location(0) vec4<f32> {
     let half = params.frame.x;
     let s = vec2<f32>((in.position.x - half) / half, (half - in.position.y) / half);
     let r = max(length(s), 1e-4);
-    let theta = atan2(s.y, s.x);
     // Around the heading by cosine and sine, so noise has no seam where the
     // angle wraps: the pixel's own direction from the heading.
-    let around = s / r;
-    let logr = log(r);
+    return warp_colour(r, atan2(s.y, s.x), log(r), s / r, in.dir);
+}
+
+// The drive's light over the polar fan: the angle, the log of the distance
+// and the way round interpolated from its corners.
+@fragment
+fn fs_warp_fan(in: Polar) -> @location(0) vec4<f32> {
+    return warp_colour(in.polar.z, in.polar.x, in.polar.y, in.around, in.dir);
+}
+
+// Each drive's light at a distance `r` from the heading (across the half
+// frame), at angle `theta` round it (`atan2`'s), `logr` the log of `r` and
+// `around` the unit way round; `dir` the ray, for the calm sky.
+fn warp_colour(r: f32, theta: f32, logr: f32, around: vec2<f32>, dir: vec3<f32>) -> vec4<f32> {
+    let s = around * r;
     let warp = params.warp.x;
     let t = params.warp.w;
     var colour = vec3<f32>(0.0);
@@ -446,13 +489,16 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
         // core fill the frame (two octaves of noise round the heading, so
         // they shimmer and never repeat), fast streaks fly out along them,
         // and soft sheets of light fan out flat to the sides.
+        // The streaks before the noise: the other way round, the noise's
+        // reads waited beside the streaks' sums and held 42 registers (two
+        // threads), this way 30 (four).
+        colour += vec3<f32>(0.70, 0.90, 1.0) * streaks(theta, logr, 260.0, 10.0, 0.85, 3) * smoothstep01(0.05, 0.4, r);
+        colour += vec3<f32>(0.85, 0.95, 1.0) * streaks(theta, logr, 120.0, 7.0, 0.9, 7) * 0.6 * smoothstep01(0.1, 0.6, r);
         let fine = noise(vec3<f32>(around * 26.0, logr * 0.35 - t * 0.25));
         let broad = noise(vec3<f32>(around * 9.0, logr * 0.2 - t * 0.12));
         let rays = smoothstep01(0.05, 0.75, fine) * 0.7 + smoothstep01(-0.1, 0.8, broad) * 0.5;
         let falloff = exp(-r * 1.3);
         colour += vec3<f32>(0.10, 0.55, 0.95) * rays * falloff * 1.1;
-        colour += vec3<f32>(0.70, 0.90, 1.0) * streaks(theta, logr, 260.0, 10.0, 0.85, 3) * smoothstep01(0.05, 0.4, r);
-        colour += vec3<f32>(0.85, 0.95, 1.0) * streaks(theta, logr, 120.0, 7.0, 0.9, 7) * 0.6 * smoothstep01(0.1, 0.6, r);
         let sheet = exp(-abs(s.y) * 5.0 / (0.2 + r)) * (0.6 + 0.4 * broad);
         colour += vec3<f32>(0.40, 0.75, 1.0) * sheet * 0.6;
         // The deep blue the rays shine through, lighter toward the core.
@@ -530,7 +576,7 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
     // At full speed none of it shows: a branch the whole frame takes alike.
     var calm = vec3<f32>(0.0);
     if (warp < 0.999) {
-        calm = textureSampleLevel(starfield, map_sampler, in.dir, 0.0).rgb * (1.0 - warp);
+        calm = textureSampleLevel(starfield, map_sampler, dir, 0.0).rgb * (1.0 - warp);
     }
     return vec4<f32>(mix(calm + colour * warp, vec3<f32>(1.0), params.warp.y), 1.0);
 }

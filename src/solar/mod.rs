@@ -105,6 +105,22 @@ const MASK_VERTICES: u32 = 64 * 3;
 const RING_VERTICES: u32 = 32 * 6;
 /// The limb's annulus: `LIMB_SIDES` sides of two quads in `frame.wgsl`.
 const LIMB_RING_VERTICES: u32 = 128 * 2 * 6;
+/// The jump's polar fan (`warp_fan`, drawn with `vs_warp_fan`): bands of
+/// rows of sectors, outermost first.
+const WARP_FAN_ROWS: [u32; 5] = [71, 14, 7, 4, 2];
+/// The fan's triangles' indices, after the grids' in the index buffer.
+const WARP_FAN_INDICES: u32 = {
+    let mut triangles = 0;
+    let mut band = 0;
+    while band < WARP_FAN_ROWS.len() {
+        let sectors = 256 >> band;
+        triangles += WARP_FAN_ROWS[band] * sectors * 2;
+        let last = band + 1 == WARP_FAN_ROWS.len();
+        triangles += if last { sectors } else { sectors / 2 * 3 };
+        band += 1;
+    }
+    triangles * 3
+};
 /// The star's glare polygon (`vs_glare`): a fan of `GLARE_SIDES` 32 sides,
 /// drawn as a list of triangles.
 const GLARE_VERTICES: u32 = (32 - 2) * 3;
@@ -155,6 +171,80 @@ fn grid_range(cells: u32) -> std::ops::Range<u32> {
         start += count;
     }
     start - 128 * 128 * 6..start
+}
+
+/// The jump's background as a polar fan round the heading, so the drives'
+/// light (`fs_warp_fan`) takes each pixel's angle and the log of its
+/// distance as interpolated values instead of `atan2`, `log` and `length`.
+/// Each vertex: the place on the screen (across the half frame, the heading
+/// at 0) and the way round from the heading, then the angle (−π to π, as
+/// `atan2`), the log of the distance and the distance. Rings a constant ratio
+/// apart, as wide as a sector, so linear interpolation of both is exact to
+/// 1e-4 along a cell's sides and 3e-4 across it (its sag, a sector's angle
+/// squared over 8). 256 sectors out to past
+/// the frame's corners; inside a quarter of the frame, where the cells shrink
+/// to a few pixels, each band in has half the sectors of the one outside it,
+/// joined by a row of three triangles to each pair of sectors (no corner in
+/// the middle of an edge), and a fan to the heading closes the last 6 px.
+/// The seam's vertices are doubled: one place, the angle −π and π.
+fn warp_fan() -> (Vec<[f32; 8]>, Vec<u16>) {
+    use std::f64::consts::{PI, TAU};
+    let mut vertices: Vec<[f32; 8]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    // Each ring's first vertex and its sectors, outermost first.
+    let mut rings: Vec<(u32, u32)> = Vec::new();
+    let ring = |vertices: &mut Vec<[f32; 8]>, sectors: u32, log: f64| {
+        let first = vertices.len() as u32;
+        let r = log.exp();
+        for k in 0..=sectors {
+            let theta = f64::from(k) / f64::from(sectors) * TAU - PI;
+            // The seam's far side at exactly its near side's place.
+            let phi = f64::from(k % sectors) / f64::from(sectors) * TAU - PI;
+            let (sin, cos) = phi.sin_cos();
+            vertices.push([r * cos, r * sin, cos, sin, theta, log, r, 0.0].map(|x| x as f32));
+        }
+        (first, sectors)
+    };
+    let mut log = 1.42f64.ln();
+    for (band, rows) in WARP_FAN_ROWS.iter().enumerate() {
+        let sectors = 256 >> band;
+        let step = TAU / f64::from(sectors);
+        for row in 0..=*rows {
+            rings.push(ring(&mut vertices, sectors, log));
+            if row < *rows {
+                log -= step;
+            }
+        }
+        // The next band's first ring: a step of this one's in.
+        log -= step;
+    }
+    for pair in rings.windows(2) {
+        let ((a, n), (b, m)) = (pair[0], pair[1]);
+        if n == m {
+            for k in 0..n {
+                indices.extend([a + k, b + k, a + k + 1, a + k + 1, b + k, b + k + 1]);
+            }
+        } else {
+            for k in 0..m {
+                let o = a + 2 * k;
+                let i = b + k;
+                indices.extend([o, i, o + 1, o + 1, i, i + 1, o + 1, i + 1, o + 2]);
+            }
+        }
+    }
+    // The fan to the heading: a point for each sector, at its middle angle.
+    let &(a, n) = rings.last().expect("rings");
+    let inner = vertices[a as usize][5];
+    for k in 0..n {
+        let theta = (f64::from(k) + 0.5) / f64::from(n) * TAU - PI;
+        let (sin, cos) = theta.sin_cos();
+        let centre = vertices.len() as u32;
+        let (cos, sin, theta) = (cos as f32, sin as f32, theta as f32);
+        vertices.push([0.0, 0.0, cos, sin, theta, inner - 1.0, 0.0, 0.0]);
+        indices.extend([a + k, centre, a + k + 1]);
+    }
+    assert!(vertices.len() <= usize::from(u16::MAX));
+    (vertices, indices.into_iter().map(|i| i as u16).collect())
 }
 
 /// Whether to draw as before the meshes and annuli of
@@ -241,8 +331,11 @@ pub(crate) struct Solar {
     drive_override: Option<u32>,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
-    /// The meshes' triangles, every grid's (`grid_indices`).
+    /// The meshes' triangles, every grid's (`grid_indices`), then the jump
+    /// fan's (`warp_fan`).
     grid: wgpu::Buffer,
+    /// The jump fan's vertices.
+    fan: wgpu::Buffer,
     sampler: wgpu::Sampler,
     bind_group: Option<wgpu::BindGroup>,
     /// Each ringed planet's ring density by radius, a row per planet, and the
@@ -329,6 +422,7 @@ impl Solar {
         });
         // Every frame pipeline tests the depth mask (see `draw`); the mask's
         // own pipeline writes it and nothing else. Only the meshes cull.
+        type Layout<'a> = wgpu::VertexBufferLayout<'a>;
         let make_culled = |label: &str,
                            vs: &str,
                            fs: &str,
@@ -337,7 +431,8 @@ impl Solar {
                            write_depth: Option<bool>,
                            writes: wgpu::ColorWrites,
                            strict: bool,
-                           cull_mode: Option<wgpu::Face>| {
+                           cull_mode: Option<wgpu::Face>,
+                           buffers: &[Option<Layout>]| {
             let options = wgpu::PipelineCompilationOptions {
                 constants,
                 ..Default::default()
@@ -348,7 +443,7 @@ impl Solar {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some(vs),
-                    buffers: &[],
+                    buffers,
                     compilation_options: options.clone(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -394,7 +489,10 @@ impl Solar {
                     writes: wgpu::ColorWrites,
                     strict: bool| {
             let depth = write_depth;
-            make_culled(label, vs, fs, blend, constants, depth, writes, strict, None)
+            let buffers = &[];
+            make_culled(
+                label, vs, fs, blend, constants, depth, writes, strict, None, buffers,
+            )
         };
         // A mapped world's mesh: its back faces culled (counter-clockwise
         // seen from outside, see `grid_indices`).
@@ -405,7 +503,10 @@ impl Solar {
                      writes: wgpu::ColorWrites| {
             let (vs, back) = ("vs_globe", Some(wgpu::Face::Back));
             let depth = Some(false);
-            make_culled(label, vs, fs, blend, constants, depth, writes, false, back)
+            let (buffers, strict) = (&[], false);
+            make_culled(
+                label, vs, fs, blend, constants, depth, writes, strict, back, buffers,
+            )
         };
         let pipeline = |label: &str,
                         vs: &str,
@@ -544,18 +645,28 @@ impl Solar {
         );
         pipelines.insert("dust".to_string(), pipeline("Solar burn dust", "vs_dust", "fs_dust", add, &[]));
         pipelines.insert("rim".to_string(), pipeline("Solar burn rim", "vs_rim", "fs_rim", add, &[]));
+        // Each drive's light over the polar fan (`warp_fan`), or traced over
+        // the whole frame with `SOLAR_TRACED`.
+        let fan = wgpu::VertexBufferLayout {
+            array_stride: 32,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
+        };
         for (k, name) in tour::DRIVES.iter().enumerate() {
             let k = k as u32 + 1;
-            pipelines.insert(
-                format!("warp{k}"),
-                pipeline(
-                    &format!("Solar warp {name}"),
-                    "vs_background",
-                    "fs_warp",
-                    None,
-                    &[("WARP", k as f64)],
-                ),
+            let (label, vs, fs, buffers) = if traced() {
+                let label = format!("Solar warp {name}");
+                (label, "vs_background", "fs_warp", vec![])
+            } else {
+                let label = format!("Solar warp fan {name}");
+                (label, "vs_warp_fan", "fs_warp_fan", vec![Some(fan.clone())])
+            };
+            let constants = [("WARP", k as f64)];
+            let (all, depth) = (wgpu::ColorWrites::ALL, Some(false));
+            let made = make_culled(
+                &label, vs, fs, None, &constants, depth, all, false, None, &buffers,
             );
+            pipelines.insert(format!("warp{k}"), made);
         }
         for (name, entry, blend) in [
             ("star", "fs_star", over),
@@ -756,8 +867,16 @@ impl Solar {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Solar mesh grids"),
-                contents: bytemuck::cast_slice(&grid_indices()),
+                contents: bytemuck::cast_slice(&[grid_indices(), warp_fan().1].concat()),
                 usage: wgpu::BufferUsages::INDEX,
+            })
+        };
+        let fan = {
+            use wgpu::util::DeviceExt;
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Solar jump fan"),
+                contents: bytemuck::cast_slice(&warp_fan().0),
+                usage: wgpu::BufferUsages::VERTEX,
             })
         };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -839,6 +958,7 @@ impl Solar {
             layout,
             uniforms,
             grid,
+            fan,
             sampler,
             bind_group: None,
             rings,
@@ -1567,7 +1687,14 @@ impl Solar {
             }
             let (label, pipeline) = &self.pipelines[&background];
             pass.set_pipeline(pipeline);
-            crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+            if background.starts_with("warp") && !traced() {
+                pass.set_vertex_buffer(0, self.fan.slice(..));
+                let start = grid_range(128).end;
+                let indices = start..start + WARP_FAN_INDICES;
+                crate::gpu::counted_draw_indexed(&mut pass, label, full, indices, 0..1);
+            } else {
+                crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+            }
             if let Some(name) = glare {
                 let (vertices, probe) = match name {
                     "glare" => (GLARE_VERTICES, "probeglare"),
@@ -2581,6 +2708,62 @@ pub(crate) mod tests {
     /// every kind of planet and moon is visited), written to
     /// `SOLAR_SHOTS_DIR` (default `target/solar-shots`): one PNG per moment,
     /// a contact sheet per seed, and the HUD at each moment in `hud.txt`.
+    /// The jump fan has the triangles `WARP_FAN_INDICES` counts, covers the
+    /// frame and has no cracks: every edge inside it is two triangles', by
+    /// place, and only the outermost ring's edges are one's. Its angle and
+    /// log of distance, interpolated across a triangle, are the true ones to
+    /// 1e-4 along its sides and 3e-4 across its diagonals in the 256 sectors
+    /// (outside a quarter of the frame), and to 0.04 in the coarsest band,
+    /// round the heading's last 30 px.
+    #[test]
+    fn warp_fan_closes() {
+        let (vertices, indices) = warp_fan();
+        assert_eq!(indices.len() as u32, WARP_FAN_INDICES);
+        let place = |i: u16| {
+            let v = vertices[usize::from(i)];
+            (v[0].to_bits(), v[1].to_bits())
+        };
+        let mut edges = std::collections::HashMap::new();
+        for t in indices.chunks(3) {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (a, b) = (place(a), place(b));
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edges.entry(key).or_insert(0) += 1;
+            }
+        }
+        for (&(a, b), &count) in &edges {
+            let r = |p: (u32, u32)| f32::from_bits(p.0).hypot(f32::from_bits(p.1));
+            let outer = (r(a) - 1.42).abs() < 1e-4 && (r(b) - 1.42).abs() < 1e-4;
+            assert_eq!(count, if outer { 1 } else { 2 }, "edge {a:?} {b:?}");
+        }
+        // Mid-points of each triangle's edges and its centre, interpolated
+        // against the truth (the seam's angle unwrapped).
+        let mut worst = [(0.0f64, 0.0f64); 2];
+        for t in indices.chunks(3) {
+            let v = [t[0], t[1], t[2]].map(|i| vertices[usize::from(i)].map(f64::from));
+            if v.iter().any(|v| v[6] == 0.0) {
+                continue;
+            }
+            let worst = &mut worst[usize::from(v.iter().any(|v| v[6] < 0.24))];
+            let thirds = [1.0 / 3.0; 3];
+            for w in [[0.5, 0.5, 0.0], [0.0, 0.5, 0.5], [0.5, 0.0, 0.5], thirds] {
+                let at = |k: usize| (0..3).map(|j| v[j][k] * w[j]).sum::<f64>();
+                let (x, y) = (at(0), at(1));
+                let theta = y.atan2(x);
+                // Across the seam, the angle a turn on.
+                let theta = if theta < at(4) - 3.0 {
+                    theta + std::f64::consts::TAU
+                } else {
+                    theta
+                };
+                worst.0 = worst.0.max((theta - at(4)).abs());
+                worst.1 = worst.1.max((x.hypot(y).ln() - at(5)).abs());
+            }
+        }
+        assert!(worst[0].0 < 4e-4 && worst[0].1 < 4e-4, "{worst:?}");
+        assert!(worst[1].0 < 0.04 && worst[1].1 < 0.04, "{worst:?}");
+    }
+
     /// The index buffer's grids lie where `grid_range` says, and a mesh's
     /// grid follows the disc's size: fine in orbit, coarse far off.
     #[test]
