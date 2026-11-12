@@ -148,6 +148,8 @@ const RING_VERTICES: u32 = 32 * 6;
 const LIMB_RING_VERTICES: u32 = 128 * 2 * 6;
 /// The drop-out's annulus and disc: `DROP_SIDES` sides in `frame.wgsl`.
 const DROP_SIDES: u32 = 64;
+/// The sides of the polygon round the display's circle in `vs_corners`.
+const CORNER_SIDES: u32 = 32;
 /// The star's glare polygon (`vs_glare`): a fan of `GLARE_SIDES` 32 sides,
 /// drawn as a list of triangles.
 const GLARE_VERTICES: u32 = (32 - 2) * 3;
@@ -582,6 +584,20 @@ impl Solar {
                 "Solar mask",
                 "vs_body",
                 "fs_mask",
+                None,
+                &[],
+                Some(true),
+                none,
+                false,
+            ),
+        );
+        // The frame's corners, which the round display never shows.
+        pipelines.insert(
+            "corners".to_string(),
+            make(
+                "Solar corners",
+                "vs_corners",
+                "fs_corners",
                 None,
                 &[],
                 Some(true),
@@ -2040,6 +2056,10 @@ impl Solar {
             // When counting for the Pi estimate, a probe before each draw
             // counts the pixels that pass the mask: what the Pi shades.
             let counting = crate::gpu::counting();
+            // The corners off the round display, before everything.
+            let (label, corners) = &self.pipelines["corners"];
+            pass.set_pipeline(corners);
+            crate::gpu::counted_draw(&mut pass, label, 0, 0..CORNER_SIDES * 6, 0..1);
             for body in &masked {
                 if counting {
                     pass.set_pipeline(&self.pipelines["probe"].1);

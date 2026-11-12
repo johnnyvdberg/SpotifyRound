@@ -704,6 +704,31 @@ fn vs_drop_ahead(@builtin(vertex_index) vertex: u32) -> Drop {
     return out;
 }
 
+// The frame's corners, past the round display's edge: never seen, so the
+// pass starts with them masked, in front of everything, and nothing drawn
+// after is shaded there (a fifth of the frame). The inner edge is a polygon
+// round the display's circle, never inside it.
+const CORNER_SIDES: u32 = 32u;
+
+@vertex
+fn vs_corners(@builtin(vertex_index) vertex: u32) -> Drop {
+    var corners = array<vec2<u32>, 6>(
+        vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(0u, 1u),
+        vec2<u32>(0u, 1u), vec2<u32>(1u, 0u), vec2<u32>(1u, 1u),
+    );
+    let corner = corners[vertex % 6u];
+    let a = f32(vertex / 6u + corner.x) * TAU / f32(CORNER_SIDES);
+    let reach = select(1.0, 1.6, corner.y == 1u) / cos(PI / f32(CORNER_SIDES));
+    var out: Drop;
+    out.position = vec4<f32>(cos(a) * reach, sin(a) * reach, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_corners(in: Drop) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
+}
+
 // The light ahead of the front: the drive's, and the flare.
 @fragment
 fn fs_drop_ahead(in: Drop) -> @location(0) vec4<f32> {

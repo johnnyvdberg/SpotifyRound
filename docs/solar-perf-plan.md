@@ -46,6 +46,24 @@ the frame texture's `VIEW_FORMATS`. Base `5e6a964`, before S1–S5:
   opaque annulus drawn first and writing the depth, so nothing it hides is shaded. Jumps are
   0.22–0.26 ms faster than before it, the white flash's mix gone and the flare a pipeline of its
   own for the last second.
+- **The jump point and spool-up** (8d8bb5f, seed 5, `SWEEP_DRIVE` 1–5): the cruise out runs 3.7 ms,
+  the stages of the spool-up 6.8–9.3 ms (`fs_spool`, two threads but for Tachyon Tunnel). Its last
+  ~14 s, from the engagement into the jump's first 9 s, mix the drive's jump light into
+  `fs_spool` too, and those frames peak at Lumen Drift 13.7, Tachyon Tunnel 15.3, Fold Drive 15.2,
+  Ion Slipstream 10.1, Bubble Drive 11.9 ms: the heaviest frames in the tour, close to the budget
+  before the UI and the compositor. The jump after is unchanged (3.9–7.8 ms) but for Bubble Drive,
+  4.61 → 5.34 ms with its churning stars (265 instructions, was 227). Orbits, transfers and the
+  drop-out are unchanged.
+- **The frame's corners masked**: the round display never shows the fifth of the frame outside its
+  circle, so the pass now starts with a depth-only annulus there (a 32-gon round the circle out
+  past the corners) and nothing after it is shaded there. The fade peaks drop to Lumen Drift 11.3,
+  Tachyon Tunnel 12.5, Fold Drive 12.6, Ion Slipstream 8.4, Bubble Drive 9.9 ms; the spool-up's
+  stages by 1.0–1.5 ms, jumps by 0.4–1.2 ms, orbits by about 0.25 ms.
+- Tried and dropped for the fade: a spool shader without the drive's light for the stages before
+  the engagement (half the instructions, but Lumen Drift went to four threads and 0.45 ms slower,
+  the others 0–0.4 ms faster), and the fade as the jump's light with that shader blended over it
+  (Tachyon Tunnel 12.5 → 10.9 ms, every other drive 0.5–0.9 ms slower). Neither lowers the worst
+  frame, Fold Drive's 12.6 ms.
 
 ## 1. Summary (ranked)
 
