@@ -3657,6 +3657,54 @@ pub(crate) mod tests {
             .expect("a sheet");
     }
 
+    /// Battles of six draws (other fleets each), a row each: the fight,
+    /// the blast, and its shock rippling out and shoving the ships aside:
+    /// `battles-sheet.png`.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn battles() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let cell = 270;
+        let after = [-3.0, 0.25, 0.9, 1.8];
+        let mut sheet = image::RgbaImage::new(cell * after.len() as u32, cell * 6);
+        let mut solar = Solar::with_seed(&gpu, 11);
+        for v in 0..6u64 {
+            let stop = voyage::Stopover {
+                event: voyage::Event::Battle,
+                variant: v * 104_729 + 17,
+            };
+            solar.tour = tour_through(11, vec![stop]);
+            let seg = solar
+                .tour
+                .segments
+                .iter()
+                .find(|s| s.phase == Phase::Stopover(0))
+                .copied()
+                .expect("a stopover");
+            let kill = voyage::shot(&stop, 0.0).objects[1][2];
+            settle(&mut solar, &gpu, seg.start);
+            for (m, at) in after.iter().enumerate() {
+                let t = seg.start + kill + at;
+                solar.draw(&gpu, t, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                shoot(
+                    &dir,
+                    &format!("battle-{v}-{m}"),
+                    pixels,
+                    &mut sheet,
+                    cell,
+                    m as u32,
+                    v as u32,
+                );
+            }
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("battles-sheet.png"))
+            .expect("a sheet");
+    }
+
     /// What is seen inside a leg, each through two drives' light:
     /// `fluxes-sheet.png`, a row a flux.
     #[test]

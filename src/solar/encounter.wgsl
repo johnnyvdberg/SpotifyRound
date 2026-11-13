@@ -215,10 +215,10 @@ fn vs_rock(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
         let kill = ev_obj(1).z;
         let wreck = battle_ship(battle_lost(), kill);
         let dir = normalize(vec3<f32>(h.x - 0.5, (h.y - 0.5) * 0.6, h.z - 0.5) + vec3<f32>(1e-3));
-        let speed = mix(3.0, 16.0, h.z);
-        let age = max(t - kill, 0.0);
+        let speed = mix(10.0, 34.0, h.z);
+        let age = max(t - kill - 0.35, 0.0);
         p = wreck[0].xyz + dir * speed * age + wreck[1].xyz * age * 4.0;
-        radius = select(0.0, mix(0.25, 2.2, h.w * h.w * h.w), t > kill && instance < 90u);
+        radius = select(0.0, mix(0.2, 1.6, h.w * h.w * h.w), t > kill + 0.35 && instance < 90u);
         kind = 3.0;
     } else {
         // Ice glittering round the ship as it crosses the comet's tail.
@@ -1213,45 +1213,234 @@ fn ev_wormhole(d: vec3<f32>) -> vec4<f32> {
 }
 
 // ---------------------------------------------------------------------------
-// A battle between two fleets, watched from its edge: eight ships circling
-// each other, lasers flicking between them, torpedoes arcing over with their
-// trails and bursting on the shields, one ship lost in a fireball and a
-// ring of shock, its wreckage spreading (`vs_rock`); stray fire passing the
-// ship close.
+// A battle between two fleets, watched from its edge. Each fleet is one of
+// six designs (`voyage::FACTIONS`), its ships traced by marching their
+// distance fields inside a bounding sphere: saucer cruisers on nacelles,
+// vast wedge destroyers with fighters weaving round them, winged raiders,
+// crescent warbirds, horseshoe traders and cubes, each at its own scale
+// (taking a unit as some 25 m). Each fleet fires its own way: beams,
+// pulsed bolts, torpedoes bursting on shields that flare where they are
+// struck. A ship is lost: a fireball, its wreckage (`vs_rock`), and a shock
+// that ripples out through space, bending the stars behind it, shoving the
+// other ships aside as it passes while their shields flare on the side it
+// strikes, and rocking the ship.
 // ---------------------------------------------------------------------------
 
-// Ship `i` of the battle at `t` (0-3 one fleet, 4-7 the other): where it
-// is, its size, and which way it heads.
-fn battle_ship(i: i32, t: f32) -> array<vec4<f32>, 2> {
+fn sd_ellipsoid(p: vec3<f32>, r: vec3<f32>) -> f32 {
+    let k0 = length(p / r);
+    let k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / max(k1, 1e-5);
+}
+
+fn sd_capsule(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>, r: f32) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
+fn sd_box(p: vec3<f32>, b: vec3<f32>) -> f32 {
+    let q = abs(p) - b;
+    return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+fn sd_box2(p: vec2<f32>, b: vec2<f32>) -> f32 {
+    let q = abs(p) - b;
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
+}
+
+// A hull of design `kind_`, in its own frame (x to starboard, y up, z
+// ahead), spanning about -1..1 along z.
+fn hull_sdf(p: vec3<f32>, kind_: i32) -> f32 {
+    let m = vec3<f32>(abs(p.x), p.y, p.z);
+    if (kind_ == 0) {
+        // A saucer on a neck, the engineering hull below, two nacelles high
+        // astern on swept pylons.
+        let saucer = sd_ellipsoid(p - vec3<f32>(0.0, 0.07, 0.42), vec3<f32>(0.56, 0.06, 0.56));
+        let bridge = sd_ellipsoid(p - vec3<f32>(0.0, 0.14, 0.42), vec3<f32>(0.12, 0.04, 0.12));
+        let hull = sd_capsule(p, vec3<f32>(0.0, -0.17, 0.05), vec3<f32>(0.0, -0.15, -0.55), 0.09);
+        let neck = sd_box(p - vec3<f32>(0.0, -0.04, 0.1), vec3<f32>(0.035, 0.08, 0.13));
+        let nacelle = sd_capsule(m, vec3<f32>(0.34, 0.17, -0.22), vec3<f32>(0.34, 0.17, -1.0), 0.055);
+        let lean = m - vec3<f32>(0.19, 0.02, -0.45);
+        let pylon = sd_box(vec3<f32>(lean.x * 0.8 - lean.y * 0.6, lean.x * 0.6 + lean.y * 0.8, lean.z), vec3<f32>(0.17, 0.012, 0.07));
+        return min(min(min(saucer, bridge), min(hull, neck)), min(nacelle, pylon));
+    } else if (kind_ == 1) {
+        // A wedge, a dagger seen from above, thicker astern, its bridge
+        // tower standing at the stern.
+        let edge = dot(vec2<f32>(m.x, p.z - 1.0), normalize(vec2<f32>(2.0, 0.6)));
+        let back = -p.z - 1.0;
+        let h = 0.025 + 0.085 * (1.0 - p.z) * 0.5 - m.x * 0.14;
+        let slab = max(p.y - h, -p.y - h * 0.5);
+        var d = max(max(edge, back), slab) * 0.7;
+        d = min(d, sd_box(p - vec3<f32>(0.0, 0.2, -0.8), vec3<f32>(0.09, 0.08, 0.07)));
+        d = min(d, sd_box(p - vec3<f32>(0.0, 0.29, -0.82), vec3<f32>(0.22, 0.022, 0.04)));
+        return d;
+    } else if (kind_ == 2) {
+        // A raider: a head on a long neck, a body, and wings swept down.
+        let head = sd_ellipsoid(p - vec3<f32>(0.0, 0.0, 0.78), vec3<f32>(0.1, 0.07, 0.16));
+        let neck = sd_capsule(p, vec3<f32>(0.0, 0.02, 0.65), vec3<f32>(0.0, 0.05, 0.05), 0.045);
+        let body = sd_ellipsoid(p - vec3<f32>(0.0, 0.04, -0.15), vec3<f32>(0.24, 0.09, 0.32));
+        let w = m - vec3<f32>(0.12, 0.0, -0.18);
+        let c = cos(0.38);
+        let s = sin(0.38);
+        let along = w.x * c + w.y * s;
+        let across = -w.x * s + w.y * c;
+        let wing = sd_box(vec3<f32>(along - 0.42, across, w.z + along * 0.12), vec3<f32>(0.44, 0.016, 0.22 - along * 0.12));
+        let tip = sd_capsule(m, vec3<f32>(0.86, -0.36, 0.0), vec3<f32>(0.86, -0.36, -0.3), 0.025);
+        return min(min(min(head, neck), body), min(wing, tip));
+    } else if (kind_ == 3) {
+        // A warbird: two great wings arching above and below, open between,
+        // a long head forward.
+        let q = p - vec3<f32>(0.0, 0.0, -0.25);
+        let around = length(vec2<f32>(q.y * 1.15, q.z * 0.85)) - 0.52;
+        let wings = sd_box2(vec2<f32>(around, q.x), vec2<f32>(0.03, 0.6 - abs(q.z) * 0.25)) * 0.8;
+        let head = sd_capsule(p, vec3<f32>(0.0, 0.0, 0.2), vec3<f32>(0.0, 0.0, 0.82), 0.06);
+        let bulb = sd_ellipsoid(p - vec3<f32>(0.0, -0.02, 0.88), vec3<f32>(0.13, 0.08, 0.12));
+        return min(wings, min(head, bulb));
+    } else if (kind_ == 4) {
+        // A trader: a broad horseshoe, open ahead, its bridge raised astern.
+        let q = p - vec3<f32>(0.0, 0.0, -0.05);
+        let radial = length(q.xz) - 0.52;
+        var d = (length(vec2<f32>(radial / 0.24, q.y / 0.075)) - 1.0) * 0.075;
+        d = max(d, -sd_box(q - vec3<f32>(0.0, 0.0, 0.6), vec3<f32>(0.24, 0.3, 0.32)));
+        return min(d, sd_ellipsoid(q - vec3<f32>(0.0, 0.07, -0.42), vec3<f32>(0.2, 0.08, 0.14)));
+    }
+    // A cube.
+    return sd_box(p, vec3<f32>(0.62));
+}
+
+// Each design's hull colour, weapons' colour and shield's colour.
+fn faction_hull(f: i32) -> vec3<f32> {
+    var c = array<vec3<f32>, 6>(
+        vec3<f32>(0.55, 0.57, 0.6), vec3<f32>(0.5, 0.5, 0.52), vec3<f32>(0.26, 0.29, 0.22),
+        vec3<f32>(0.24, 0.36, 0.27), vec3<f32>(0.46, 0.32, 0.18), vec3<f32>(0.11, 0.12, 0.11),
+    );
+    return c[clamp(f, 0, 5)];
+}
+
+fn faction_fire(f: i32) -> vec3<f32> {
+    var c = array<vec3<f32>, 6>(
+        vec3<f32>(1.0, 0.5, 0.12), vec3<f32>(0.3, 1.0, 0.3), vec3<f32>(0.45, 1.0, 0.25),
+        vec3<f32>(0.3, 1.0, 0.55), vec3<f32>(1.0, 0.8, 0.2), vec3<f32>(0.25, 1.0, 0.4),
+    );
+    return c[clamp(f, 0, 5)];
+}
+
+fn faction_shield(f: i32) -> vec3<f32> {
+    var c = array<vec3<f32>, 6>(
+        vec3<f32>(0.4, 0.7, 1.0), vec3<f32>(0.7, 0.8, 1.0), vec3<f32>(0.7, 1.0, 0.4),
+        vec3<f32>(0.3, 1.0, 0.5), vec3<f32>(1.0, 0.7, 0.3), vec3<f32>(0.3, 1.0, 0.4),
+    );
+    return c[clamp(f, 0, 5)];
+}
+
+// Half the length of each design's capital ship and escorts, in units.
+fn faction_size(f: i32, capital: bool) -> f32 {
+    var big = array<f32, 6>(13.0, 32.0, 9.5, 27.0, 9.5, 40.0);
+    var small = array<f32, 6>(7.0, 4.0, 2.4, 13.0, 6.5, 9.0);
+    return select(small[clamp(f, 0, 5)], big[clamp(f, 0, 5)], capital);
+}
+
+fn ship_faction(i: i32) -> i32 {
+    return i32(select(ev_obj(1).x, ev_obj(1).y, i >= 4));
+}
+
+fn battle_lost() -> i32 {
+    return i32(ev_obj(2).w);
+}
+
+// Ship `i` of the battle at `t` (0-3 one fleet, 4-7 the other), as it
+// would fly with nothing blowing up: where it is, its size; which way it
+// heads.
+fn battle_course(i: i32, t: f32) -> array<vec4<f32>, 2> {
     let o = ev_obj(0);
     let seed = params.ev[9].x;
     let fi = f32(i);
     let fleet = select(1.0, -1.0, i >= 4);
+    let capital = i == 0 || i == 4;
     let h = vec4<f32>(
         hash_cell(vec3<f32>(fi, seed, 1.0)),
         hash_cell(vec3<f32>(fi, seed, 2.0)),
         hash_cell(vec3<f32>(fi, seed, 3.0)),
         hash_cell(vec3<f32>(fi, seed, 4.0)),
     );
-    // The two fleets wheel round each other, each on its own side.
-    let rate = (0.06 + 0.05 * h.x) * fleet;
-    let a = t * rate + h.y * TAU + select(0.0, PI, i >= 4);
-    let r = o.w * (0.35 + 0.55 * h.z);
-    let y = (h.w - 0.5) * o.w * 0.45 + sin(t * 0.4 + fi) * 6.0;
+    let size = faction_size(ship_faction(i), capital);
+    // The capitals hold their fleet's side, slowly; escorts wheel round.
+    let rate = select((0.06 + 0.05 * h.x) * fleet, 0.015 * fleet, capital);
+    let a = t * rate + select(h.y * TAU, 0.0, capital) + select(0.0, PI, i >= 4) + 0.6;
+    let r = select(o.w * (0.4 + 0.5 * h.z), o.w * 0.55, capital);
+    let y = select((h.w - 0.5) * o.w * 0.45, (h.w - 0.5) * o.w * 0.15, capital) + sin(t * 0.4 + fi) * 3.0;
     let p = o.xyz + vec3<f32>(cos(a) * r, y, sin(a) * r * 0.65);
-    let heading = normalize(vec3<f32>(-sin(a) * fleet, 0.05 * cos(t * 0.4 + fi), cos(a) * 0.65 * fleet));
-    // A capital ship each, the rest escorts.
-    let size = select(7.0 + 5.0 * h.x, 22.0, i == 0 || i == 4);
-    return array<vec4<f32>, 2>(vec4<f32>(p, size), vec4<f32>(heading, h.y));
+    var heading = normalize(vec3<f32>(-sin(a) * fleet, 0.05 * cos(t * 0.4 + fi), cos(a) * 0.65 * fleet));
+    if (capital) {
+        // Broadside on to the other fleet.
+        heading = normalize(vec3<f32>(-sin(a), 0.0, cos(a)));
+    }
+    return array<vec4<f32>, 2>(vec4<f32>(p, size), vec4<f32>(heading, 0.0));
 }
 
-fn fleet_colour(i: i32) -> vec3<f32> {
-    return hue_of(select(ev_obj(1).x, ev_obj(1).y, i >= 4));
+// The blast: where, when, and how far its shock has come at `t`.
+fn blast_at() -> vec3<f32> {
+    return params.ev[8].xyz;
 }
 
-// Which ship was lost, and when.
-fn battle_lost() -> i32 {
-    return 1 + i32(hash_cell(vec3<f32>(params.ev[9].x, 5.0, 5.0)) * 2.99) + select(0, 4, hash_cell(vec3<f32>(params.ev[9].x, 6.0, 6.0)) > 0.5);
+fn shock_radius(t: f32) -> f32 {
+    return max(t - ev_obj(1).z, 0.0) * params.ev[8].w;
+}
+
+// Ship `i` at `t`, as `battle_course`, the lost one flown to the blast as it
+// dies, the rest shoved aside by its shock as it passes them; w of the
+// second row, how hard the shock is striking it now, 0..1.
+fn battle_ship(i: i32, t: f32) -> array<vec4<f32>, 2> {
+    var s = battle_course(i, t);
+    let kill = ev_obj(1).z;
+    let blast = blast_at();
+    if (i == battle_lost()) {
+        s[0] = vec4<f32>(s[0].xyz + blast - battle_course(i, kill)[0].xyz, s[0].w);
+        return s;
+    }
+    let away = s[0].xyz - blast;
+    let dist = length(away);
+    let age = t - kill - dist / params.ev[8].w;
+    let strength = 26.0 / (1.0 + s[0].w / 6.0) * exp(-dist / 260.0);
+    let shove = normalize(away) * strength * smoothstep01(0.0, 2.2, age);
+    let jolt = exp(-sq(age / 0.5)) * step(-1.0, age);
+    // Thrown off its heading a little, and back.
+    let heading = normalize(s[1].xyz + normalize(away) * 0.35 * jolt);
+    return array<vec4<f32>, 2>(vec4<f32>(s[0].xyz + shove, s[0].w), vec4<f32>(heading, jolt));
+}
+
+// The lights each design carries: nacelles, engines, windows, wingtips.
+fn hull_lights(q: vec3<f32>, kind_: i32, fire: vec3<f32>, t: f32) -> vec3<f32> {
+    let m = vec3<f32>(abs(q.x), q.y, q.z);
+    var light = vec3<f32>(0.0);
+    if (kind_ == 0) {
+        let nacelle = sd_capsule(m, vec3<f32>(0.34, 0.17, -0.22), vec3<f32>(0.34, 0.17, -1.0), 0.06);
+        if (nacelle < 0.012) {
+            light += select(vec3<f32>(0.3, 0.6, 1.0) * 1.4 * step(0.5, fract(q.z * 14.0)) + vec3<f32>(0.2, 0.4, 1.0) * 0.4, vec3<f32>(1.0, 0.25, 0.1) * 2.2, q.z > -0.3);
+        }
+        let rim = length(vec2<f32>(q.x, q.z - 0.42));
+        light += vec3<f32>(1.0, 0.9, 0.7) * step(0.5, fract(atan2(q.x, q.z - 0.42) * 30.0)) * bump((rim - 0.48) / 0.015) * 0.6;
+        light += vec3<f32>(0.4, 0.7, 1.0) * bump(length(q - vec3<f32>(0.0, -0.17, 0.14)) / 0.05) * 1.5;
+    } else if (kind_ == 1) {
+        light += vec3<f32>(0.6, 0.8, 1.0) * smoothstep01(-0.96, -1.0, q.z) * 2.5;
+        light += vec3<f32>(1.0, 0.95, 0.8) * step(0.985, hash_cell(floor(q * 60.0))) * 1.2;
+    } else if (kind_ == 2) {
+        light += vec3<f32>(1.0, 0.3, 0.15) * smoothstep01(-0.4, -0.47, q.z) * step(abs(q.x), 0.15) * 1.5;
+        light += fire * bump(length(m - vec3<f32>(0.86, -0.36, 0.0)) / 0.05) * 2.0;
+        light += vec3<f32>(1.0, 0.4, 0.2) * bump(length(q - vec3<f32>(0.0, 0.02, 0.92)) / 0.05);
+    } else if (kind_ == 3) {
+        light += vec3<f32>(0.3, 1.0, 0.6) * bump(length(q - vec3<f32>(0.0, -0.08, 0.86)) / 0.07) * 1.6;
+        light += vec3<f32>(0.4, 1.0, 0.7) * step(0.97, fract(q.z * 12.0 + q.x * 4.0)) * 0.25;
+    } else if (kind_ == 4) {
+        light += vec3<f32>(1.0, 0.75, 0.3) * step(0.93, fract(atan2(q.x, q.z) * 9.0)) * 0.8;
+        light += vec3<f32>(1.0, 0.5, 0.2) * smoothstep01(-0.5, -0.56, q.z) * 1.2;
+    } else {
+        let g = floor((q + 0.62) * 18.0);
+        let h = hash_cell(g + vec3<f32>(3.0));
+        light += vec3<f32>(0.2, 1.0, 0.4) * step(0.9, h) * (0.6 + 0.4 * sin(t * 3.0 + h * 50.0));
+    }
+    return light;
 }
 
 // A bolt of light from `a` to `b`, `w` pixels wide.
@@ -1280,9 +1469,10 @@ fn burst(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32, age: f32) -> vec3<f32
     let across = length(v - d * z);
     let size = r * (0.25 + 0.75 * sqrt(age));
     let fade = sq(1.0 - age);
-    let core = exp(-sq(across / (size * 0.55))) * fade;
+    let churn = 0.75 + 0.25 * noise(vec3<f32>((v - d * z) / size * 2.0) + vec3<f32>(age * 3.0));
+    let core = exp(-sq(across / (size * 0.55))) * fade * churn;
     let shell = exp(-sq((across - size) / (size * 0.18))) * fade * 0.35;
-    let hot = mix(vec3<f32>(1.0, 0.95, 0.85), vec3<f32>(1.0, 0.45, 0.1), smoothstep01(0.0, 0.5, age));
+    let hot = mix(vec3<f32>(1.0, 0.95, 0.85), vec3<f32>(1.0, 0.42, 0.08), smoothstep01(0.0, 0.5, age));
     return hot * (core * 2.2 + shell) + vec3<f32>(1.0, 0.6, 0.3) * exp(-across / r) * fade * 0.04;
 }
 
@@ -1292,12 +1482,40 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
     let seed = params.ev[9].x;
     let lost = battle_lost();
     let kill = ev_obj(1).z;
+    let blast = blast_at();
     let l = normalize(vec3<f32>(0.5, 0.7, -0.35));
     var colour = vec3<f32>(0.0);
     var alpha = 0.0;
     var reach = 1e9;
-    // The ships: each a long hull traced as an ellipsoid, banded, lit, its
-    // engines glowing astern.
+    // The shock: a shell racing out from the blast, bending the stars
+    // behind its edge and glowing there, fading as it spreads.
+    let wave = shock_radius(t);
+    let wave_age = wave / (params.ev[8].w * 9.0);
+    if (wave > 0.0 && wave_age < 1.0) {
+        let v = blast - ship;
+        let tca = dot(v, d);
+        if (tca > 0.0) {
+            let b = length(v - d * tca);
+            let width = 4.0 + wave * 0.04;
+            let x = (b - wave) / width;
+            let band = bump(x) * sq(1.0 - wave_age);
+            if (band > 0.002) {
+                // The stars behind its edge pushed outward, as through a
+                // lens; a thin bright front.
+                let away = normalize(d * tca - v);
+                let bent = normalize(d + away * 0.035 * sin(x * 1.6) * band);
+                let rim = mix(vec3<f32>(0.75, 0.88, 1.0), vec3<f32>(1.0, 0.65, 0.35), wave_age);
+                // Close to the camera its front fills the view: then only the
+                // stars' bending shows, no glow.
+                let far = smoothstep01(40.0, 160.0, tca);
+                let px = (b - wave) / (tca * params.frame.z);
+                let front = exp(-sq(px / 2.5)) * 1.2 + exp(-abs(px) / 14.0) * 0.12;
+                colour = ev_sky(bent) * band * 0.8 + rim * front * sq(1.0 - wave_age) * far;
+                alpha = band * mix(0.35, 0.8, far);
+            }
+        }
+    }
+    // The ships, far to near not needed: the nearest hit along each ray.
     for (var i = 0; i < 8; i++) {
         if (i == lost && t > kill) {
             continue;
@@ -1305,54 +1523,125 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         let s = battle_ship(i, t);
         let c = s[0].xyz;
         let size = s[0].w;
+        let faction = ship_faction(i);
+        let kind_ = faction;
         let fwd = s[1].xyz;
         let side = normalize(cross(fwd, vec3<f32>(0.0, 1.0, 0.0)));
         let up = cross(side, fwd);
-        let shape = vec3<f32>(size * 0.3, size * 0.16, size);
-        let ro = ship - c;
-        let lo = vec3<f32>(dot(ro, side), dot(ro, up), dot(ro, fwd)) / shape;
-        let ld = vec3<f32>(dot(d, side), dot(d, up), dot(d, fwd)) / shape;
-        let hits = sphere_hits(lo, normalize(ld), vec3<f32>(0.0), 1.0);
-        if (hits.x > 0.0) {
-            let tl = hits.x / length(ld);
-            if (tl < reach) {
-                reach = tl;
-                let q = lo + ld * tl;
-                let n = normalize(side * q.x / shape.x + up * q.y / shape.y + fwd * q.z / shape.z);
-                let bands = 0.75 + 0.25 * step(0.5, fract(q.z * 3.0 + q.x * 0.5));
-                let tint = mix(vec3<f32>(0.3, 0.3, 0.32), fleet_colour(i) * 0.4 + vec3<f32>(0.15), 0.35);
-                colour = tint * bands * (max(dot(n, l), 0.0) * 1.1 + 0.05);
-                colour += vec3<f32>(pow(max(dot(reflect(-l, n), -d), 0.0), 24.0) * 0.5);
-                // Windows and running lights in rows down the hull.
-                let row = step(0.92, fract(q.z * 9.0)) * step(abs(q.y), 0.3);
-                colour += fleet_colour(i) * row * 0.8;
+        let bound = sphere_hits(ship, d, c, size * 1.15);
+        if (bound.y > 0.0 && bound.x < reach) {
+            let ro = (ship - c) / size;
+            let lo = vec3<f32>(dot(ro, side), dot(ro, up), dot(ro, fwd));
+            let ld = vec3<f32>(dot(d, side), dot(d, up), dot(d, fwd));
+            var tm = max(bound.x, 0.0) / size;
+            let end = bound.y / size;
+            var hit = false;
+            for (var k = 0; k < 40; k++) {
+                let dist = hull_sdf(lo + ld * tm, kind_);
+                if (dist < 0.0015 + tm * params.frame.z * 0.5) {
+                    hit = true;
+                    break;
+                }
+                tm += max(dist * 0.85, 0.002);
+                if (tm > end) {
+                    break;
+                }
+            }
+            if (hit && tm * size < reach) {
+                reach = tm * size;
+                let q = lo + ld * tm;
+                let e = 0.004;
+                let nl = normalize(vec3<f32>(
+                    hull_sdf(q + vec3<f32>(e, 0.0, 0.0), kind_) - hull_sdf(q - vec3<f32>(e, 0.0, 0.0), kind_),
+                    hull_sdf(q + vec3<f32>(0.0, e, 0.0), kind_) - hull_sdf(q - vec3<f32>(0.0, e, 0.0), kind_),
+                    hull_sdf(q + vec3<f32>(0.0, 0.0, e), kind_) - hull_sdf(q - vec3<f32>(0.0, 0.0, e), kind_),
+                ));
+                let n = side * nl.x + up * nl.y + fwd * nl.z;
+                let panels = 0.8 + 0.2 * step(0.5, fract(q.z * 7.0 + 0.3 * step(0.5, fract(q.x * 5.0))));
+                let lit = max(dot(n, l), 0.0) * 1.15 + 0.035 + max(dot(n, -l), 0.0) * 0.04;
+                colour = faction_hull(faction) * panels * lit;
+                if (kind_ == 5) {
+                    // The collective's cubes: the hive cube's machinery.
+                    let a = abs(q);
+                    var uv = q.yz;
+                    var face = select(0.0, 1.0, q.x > 0.0);
+                    if (a.y >= a.x && a.y >= a.z) {
+                        uv = q.xz;
+                        face = select(2.0, 3.0, q.y > 0.0);
+                    } else if (a.z >= a.x && a.z >= a.y) {
+                        uv = q.xy;
+                        face = select(4.0, 5.0, q.z > 0.0);
+                    }
+                    let surface = cube_face(uv / 0.62, face, seed + f32(i) * 7.0, tm * params.frame.z / 0.62, vec3<f32>(0.25, 1.0, 0.4), 0.25, q * size);
+                    colour = surface[0] * lit * 1.4 + surface[1];
+                }
+                colour += vec3<f32>(pow(max(dot(reflect(-l, n), -d), 0.0), 26.0) * 0.45);
+                colour += hull_lights(q, kind_, faction_fire(faction), t);
+                // Lit orange by the blast as its fireball burns.
+                let glare = exp(-max(t - kill, 0.0) / 1.5) * step(kill, t);
+                colour += vec3<f32>(1.0, 0.5, 0.2) * max(dot(n, normalize(blast - c)), 0.0) * glare * 0.6 * exp(-length(blast - c) / 150.0);
                 alpha = 1.0;
+            }
+        }
+        // The shield: flaring where the shock strikes it, holding most of
+        // it back, the struck side brightest and crackling.
+        let jolt = s[1].w;
+        if (jolt > 0.01) {
+            let sh = sphere_hits(ship, d, c, size * 1.45);
+            if (sh.x > 0.0 && sh.x < reach + size) {
+                let at = ship + d * sh.x;
+                let n = (at - c) / (size * 1.45);
+                let facing = max(dot(n, normalize(blast - c)), 0.0);
+                let v = c - ship;
+                let edge = length(v - d * dot(v, d)) / (size * 1.45);
+                let crackle = 0.6 + 0.4 * noise(n * 9.0 + vec3<f32>(t * 6.0));
+                let flare = (pow(facing, 10.0) * 0.7 * crackle + pow(edge, 14.0) * 0.35) * jolt;
+                colour += faction_shield(faction) * flare;
+                alpha = max(alpha, min(flare * 0.15, 1.0));
             }
         }
         // Engines.
         let engine = point_pixels(ship, d, c - fwd * size * 1.02);
-        colour += mix(fleet_colour(i), vec3<f32>(1.0), 0.5) * glint(engine, 1.2 + size * 0.04) * 1.2 * (1.0 - alpha * 0.8);
+        colour += mix(faction_shield(faction), vec3<f32>(1.0), 0.5) * glint(engine, 1.0 + size * 0.03) * 0.9 * (1.0 - alpha * 0.8);
     }
-    // Lasers: short bursts between the fleets, now and then missing.
-    for (var k = 0; k < 6; k++) {
+    // Fire between the fleets: each its own way. Beams, or bolts in short
+    // dashes for the wedge fleet.
+    for (var k = 0; k < 7; k++) {
         let fk = f32(k);
-        let clock_ = t * 1.7 + fk * 0.37;
+        let clock_ = t * 1.6 + fk * 0.37;
         let bin = floor(clock_);
         let on = fract(clock_);
-        if (on > 0.3) {
+        if (on > 0.35) {
             continue;
         }
         let h = hash_cell(vec3<f32>(bin, fk, seed));
-        let from_i = i32(h * 7.99);
-        var to_i = (from_i + 4 + i32(fract(h * 13.0) * 3.99)) % 8;
-        if ((from_i == lost || to_i == lost) && t > kill) {
+        let shooter = i32(h * 7.99);
+        let aim = (shooter / 4 * 4 + 4 + i32(fract(h * 13.0) * 3.99)) % 8;
+        if ((shooter == lost || aim == lost) && t > kill) {
             continue;
         }
-        let a = battle_ship(from_i, t)[0].xyz;
-        let b = battle_ship(to_i, t)[0];
+        let a = battle_ship(shooter, t)[0];
+        let b = battle_ship(aim, t)[0];
+        let faction = ship_faction(shooter);
         let miss = (vec3<f32>(fract(h * 31.0), fract(h * 57.0), fract(h * 91.0)) - 0.5) * b.w * 3.0 * step(0.6, fract(h * 7.0));
-        let beam = bolt(ship, d, a, b.xyz + miss, 1.3) * sin(on / 0.3 * PI);
-        colour += mix(fleet_colour(from_i), vec3<f32>(1.0), 0.45) * beam * 1.4;
+        let from_hull = a.xyz + normalize(b.xyz - a.xyz) * a.w * 0.6;
+        var beam = bolt(ship, d, from_hull, b.xyz + miss, select(1.1, 1.8, faction == 5)) * sin(on / 0.35 * PI);
+        if (faction == 1 || faction == 2) {
+            // Bolts: dashes flying along the line.
+            let span = length(b.xyz + miss - from_hull);
+            let near = ray_to_line(ship, d, from_hull, normalize(b.xyz + miss - from_hull));
+            beam *= step(fract(near.z / span * 5.0 - on * 9.0), 0.3);
+        }
+        colour += mix(faction_fire(faction), vec3<f32>(1.0), 0.4) * beam * 1.4;
+        // Where a beam lands, its target's shield flares.
+        if (fract(h * 7.0) < 0.6 && on > 0.05) {
+            let sh = sphere_hits(ship, d, b.xyz, b.w * 1.45);
+            if (sh.x > 0.0) {
+                let n = (ship + d * sh.x - b.xyz) / (b.w * 1.45);
+                let facing = max(dot(n, normalize(a.xyz - b.xyz)), 0.0);
+                colour += faction_shield(ship_faction(aim)) * pow(facing, 5.0) * 0.7 * sin(on / 0.35 * PI);
+            }
+        }
     }
     // Torpedoes: glowing slugs arcing over with their trails, bursting on
     // the target's shield.
@@ -1362,17 +1651,17 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         let bin = floor(clock_);
         let phase = fract(clock_);
         let h = hash_cell(vec3<f32>(bin, fk + 10.0, seed));
-        let from_i = i32(h * 7.99);
-        let to_i = (from_i + 4 + i32(fract(h * 17.0) * 3.99)) % 8;
-        if ((from_i == lost || to_i == lost) && t > kill - 2.0) {
+        let shooter = i32(h * 7.99);
+        let aim = (shooter / 4 * 4 + 4 + i32(fract(h * 17.0) * 3.99)) % 8;
+        if ((shooter == lost || aim == lost) && t > kill - 2.0) {
             continue;
         }
-        let a = battle_ship(from_i, t)[0].xyz;
-        let goal = battle_ship(to_i, t)[0];
+        let a = battle_ship(shooter, t)[0].xyz;
+        let goal = battle_ship(aim, t)[0];
         let flight = clamp(phase / 0.7, 0.0, 1.0);
         let arc = vec3<f32>(0.0, 1.0, 0.0) * sin(flight * PI) * 25.0;
         let p = mix(a, goal.xyz, flight) + arc;
-        let tint = select(vec3<f32>(1.0, 0.35, 0.2), vec3<f32>(0.4, 0.75, 1.0), from_i >= 4);
+        let tint = mix(faction_fire(ship_faction(shooter)), vec3<f32>(1.0, 0.25, 0.1), 0.5);
         if (phase < 0.7) {
             let pulse_ = 0.75 + 0.25 * sin(t * 30.0 + fk);
             colour += tint * glint(point_pixels(ship, d, p), 2.0) * 1.6 * pulse_;
@@ -1380,39 +1669,54 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
             colour += tint * bolt(ship, d, back, p, 1.0) * 0.35;
         } else {
             let age = (phase - 0.7) / 0.3;
-            colour += burst(ship, d, goal.xyz + normalize(a - goal.xyz) * goal.w * 1.5, goal.w * 1.2, age) * 0.6;
-            // The shield flaring round the goal.
-            let sh = sphere_hits(ship, d, goal.xyz, goal.w * 1.6);
+            let at = goal.xyz + normalize(a - goal.xyz) * goal.w * 1.45;
+            colour += burst(ship, d, at, max(goal.w * 0.7, 4.0), age) * 0.6;
+            let sh = sphere_hits(ship, d, goal.xyz, goal.w * 1.45);
             if (sh.x > 0.0) {
-                let v = goal.xyz - ship;
-                let edge = length(v - d * dot(v, d)) / (goal.w * 1.6);
-                let shield = select(vec3<f32>(0.5, 0.85, 1.0), vec3<f32>(1.0, 0.75, 0.35), to_i >= 4);
-                colour += shield * pow(edge, 8.0) * 0.7 * sq(1.0 - age);
+                let n = (ship + d * sh.x - goal.xyz) / (goal.w * 1.45);
+                let facing = max(dot(n, normalize(a - goal.xyz)), 0.0);
+                colour += faction_shield(ship_faction(aim)) * pow(facing, 4.0) * sq(1.0 - age) * 0.9;
             }
         }
     }
-    // The ship lost: a fireball, a ring of shock in its plane.
-    let wreck = battle_ship(lost, kill);
+    // Fighters weaving round the wedge fleet, bolts flicking between them.
+    if (i32(ev_obj(1).x) == 1 || i32(ev_obj(1).y) == 1) {
+        let o = ev_obj(0);
+        for (var k = 0; k < 10; k++) {
+            let fk = f32(k);
+            let h = hash_cell(vec3<f32>(fk, seed, 21.0));
+            let a = t * (0.5 + 0.4 * h) + h * TAU;
+            let p = o.xyz + vec3<f32>(cos(a) * o.w * (0.3 + 0.5 * h), sin(a * 1.7 + fk) * o.w * 0.25, sin(a) * o.w * 0.5 * (0.4 + 0.6 * fract(h * 7.0)));
+            let vel = normalize(vec3<f32>(-sin(a) * o.w, cos(a * 1.7 + fk) * 1.7 * o.w * 0.25, cos(a) * o.w * 0.5));
+            let tint = select(vec3<f32>(1.0, 0.5, 0.3), vec3<f32>(0.6, 0.85, 1.0), k < 5);
+            colour += tint * glint(point_pixels(ship, d, p), 1.0) * 1.2;
+            colour += tint * bolt(ship, d, p - vel * 8.0, p, 0.6) * 0.25;
+            let shot_on = step(fract(t * 2.0 + h * 5.0), 0.15);
+            colour += select(vec3<f32>(0.3, 1.0, 0.3), vec3<f32>(1.0, 0.25, 0.2), k < 5) * bolt(ship, d, p + vel * 2.0, p + vel * 30.0, 0.8) * shot_on;
+        }
+    }
+    // The ship lost: a flash, a fireball and a ring of shock in its plane.
     let age = (t - kill) / 5.0;
-    colour += burst(ship, d, wreck[0].xyz, wreck[0].w * 3.0, age) * 1.6;
+    colour += burst(ship, d, blast, 30.0, age) * 1.4;
+    colour += vec3<f32>(1.0, 0.95, 0.9) * glint(point_pixels(ship, d, blast), 6.0) * exp(-max(t - kill, 0.0) * 3.0) * step(kill, t) * 3.0;
     if (age > 0.0 && age < 1.0) {
         let denom = dot(d, vec3<f32>(0.0, 1.0, 0.0));
         if (abs(denom) > 1e-3) {
-            let tp = (wreck[0].y - ship.y) / denom;
-            if (tp > 0.0) {
-                let q = ship + d * tp - wreck[0].xyz;
-                let ring = bump((length(q) - age * wreck[0].w * 14.0) / (wreck[0].w * 0.8));
-                colour += vec3<f32>(0.7, 0.85, 1.0) * ring * sq(1.0 - age) * 0.8;
+            let tp = (blast.y - ship.y) / denom;
+            if (tp > 0.0 && tp < reach) {
+                let q = ship + d * tp - blast;
+                let ring = bump((length(q) - wave) / (4.0 + wave * 0.05));
+                colour += vec3<f32>(0.7, 0.85, 1.0) * ring * sq(1.0 - age) * 0.7;
             }
         }
     }
-    // Stray fire: a laser past the ship, a torpedo bursting close by.
+    // Stray fire: a beam past the ship, a torpedo bursting close by.
     let laser_at = ev_obj(2).x;
     if (t > laser_at && t < laser_at + 0.6) {
         let a = battle_ship(4, t)[0].xyz;
         let near = ship + vec3<f32>(ev_obj(1).w * 14.0, 6.0, 28.0);
         let beam = bolt(ship, d, a, near + (near - a) * 0.5, 1.8) * sin((t - laser_at) / 0.6 * PI);
-        colour += mix(fleet_colour(4), vec3<f32>(1.0), 0.5) * beam * 2.0;
+        colour += mix(faction_fire(ship_faction(4)), vec3<f32>(1.0), 0.5) * beam * 2.0;
     }
     let torpedo_at = ev_obj(2).y;
     if (t > torpedo_at && t < torpedo_at + 3.5) {
@@ -1426,7 +1730,7 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
             colour += burst(ship, d, near, 22.0, (t - torpedo_at - 1.1) / 2.4) * 1.2;
         }
     }
-    return vec4<f32>(colour * select(1.0, 1.0, alpha > 0.0), alpha);
+    return vec4<f32>(colour, alpha);
 }
 
 // Each event's draw over the sky.
@@ -1557,7 +1861,7 @@ fn fs_overlay(in: Full) -> @location(0) vec4<f32> {
         let beat = 0.55 + 0.45 * sin(t * rate);
         let tint = mix(vec3<f32>(1.0, 0.55, 0.1), vec3<f32>(1.0, 0.1, 0.06), red);
         let band = smoothstep01(0.86, 0.985, r) * (1.0 - smoothstep01(0.99, 1.01, r));
-        colour += tint * band * beat * smoothstep01(0.3, 0.55, alert) * 0.25;
+        colour += tint * band * beat * smoothstep01(0.3, 0.55, alert) * 0.18;
     }
     // A hit: a ring of hexagons rippling out from it.
     if (hit > 0.01) {

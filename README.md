@@ -84,9 +84,13 @@ Spotify **Premium** account.
   a black hole past its lensed accretion disc, crosses a nebula lit by lightning, passes a starless
   rogue planet glowing with lava cracks and aurorae, rides out a pulsar's sweeping beams, flies a
   broken derelict ring station, a comet's tails, a pod of glowing leviathans and the filaments of a
-  supernova remnant, or drops out on the edge of a battle between two fleets — lasers, torpedoes
-  bursting on shields, a ship lost in a fireball — and slips away unseen while stray fire passes
-  close ([docs/solar-battle.jpg](docs/solar-battle.jpg)). Or the next leg is a star gate, its nodes lighting as the ship lines up and its
+  supernova remnant, or drops out on the edge of a battle between two fleets and slips away unseen
+  while stray fire passes close ([docs/solar-battle.jpg](docs/solar-battle.jpg), six battles from
+  the fight through the blast). Each fleet is one of six designs at its own scale — saucer cruisers
+  on nacelles, vast wedge destroyers with fighters, winged raiders, crescent warbirds, horseshoe
+  traders, the cube collective — firing beams, pulsed bolts and torpedoes that burst on flaring
+  shields; a ship is lost, and its shock ripples out through space, bending the stars, shoving the
+  other ships aside as their shields take it on the struck side, and rocking the ship. Or the next leg is a star gate, its nodes lighting as the ship lines up and its
   field throwing it down a golden conduit, or a wormhole with another sky inside, dived into. Inside
   a leg there may be an ion storm, a convoy alongside, a tachyon echo or a shortcut
   ([docs/solar-fluxes.jpg](docs/solar-fluxes.jpg)). Every encounter comes round in a shuffled deck,

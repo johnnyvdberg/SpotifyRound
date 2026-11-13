@@ -969,53 +969,100 @@ fn wormhole(rng: &mut Rng, local: f64, duration: f64) -> Shot {
     }
 }
 
-/// A battle: dropped out on the edge of two fleets fighting, with lasers,
-/// torpedoes and shields flaring, a ship lost; not the ship's fight, it
-/// watches as it slips away, stray fire passing close, and jumps out.
-/// The fleets' ships, their fire and the wreck are worked out in the shader
-/// from the battle's centre, its draw and the time (`ev_battle`).
+/// The fleets a battle draws from, each its own design of ship (`hull_sdf`
+/// in `encounter.wgsl`): saucer cruisers on nacelles, wedge destroyers with
+/// fighters, winged raiders, crescent warbirds, horseshoe traders and the
+/// cube collective.
+pub const FACTIONS: [&str; 6] = [
+    "saucer cruisers",
+    "wedge destroyers",
+    "winged raiders",
+    "crescent warbirds",
+    "horseshoe traders",
+    "cube collective",
+];
+
+/// How fast a ship's death throws its shock out through the battle, units a
+/// second.
+pub const SHOCK_SPEED: f64 = 70.0;
+
+/// A battle: dropped out on the edge of two fleets fighting, with beams,
+/// bolts, torpedoes and shields flaring, a ship lost in a blast whose shock
+/// ripples out through space, shoving the other ships aside as their shields
+/// take it; not the ship's fight, it watches as it slips away, stray fire
+/// passing close and the shock rocking it, and jumps out. The fleets' ships
+/// and their fire are worked out in the shader from the battle's centre,
+/// its draw and the time (`ev_battle`); where and when the ship is lost, here.
 fn battle(rng: &mut Rng, local: f64, duration: f64) -> Shot {
     let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
     let centre = [
-        side * rng.range(70.0, 100.0),
-        rng.range(-10.0, 30.0),
-        rng.range(230.0, 260.0),
+        side * rng.range(60.0, 90.0),
+        rng.range(-10.0, 25.0),
+        rng.range(200.0, 230.0),
     ];
-    let spread = rng.range(80.0, 105.0);
-    let warm = rng.range(0.0, 0.12);
-    let cool = rng.range(0.45, 0.62);
-    let kill = rng.range(0.42, 0.55) * duration;
-    let stray_laser = rng.range(0.3, 0.4) * duration;
-    let stray_torpedo = rng.range(0.6, 0.68) * duration;
+    let spread = rng.range(95.0, 120.0);
+    let first = rng.int(0, 5);
+    let second = (first + rng.int(1, 5)) % 6;
+    let kill = rng.range(0.38, 0.46) * duration;
+    // An escort of either fleet, lost near the middle of the fight.
+    let lost = rng.int(1, 3) + if rng.chance(0.5) { 4 } else { 0 };
+    let blast = add(
+        centre,
+        [
+            rng.range(-0.3, 0.3) * spread,
+            rng.range(-0.15, 0.15) * spread,
+            rng.range(-0.3, 0.1) * spread,
+        ],
+    );
+    let stray_laser = rng.range(0.28, 0.34) * duration;
+    let stray_torpedo = rng.range(0.7, 0.76) * duration;
     // Drifting in on the drop-out, then easing away from the fight, off to
     // the far side and on along the heading, quicker as it goes.
-    let away = smoothstep(0.15 * duration, duration, local);
-    let ship = [
-        -side * 45.0 * away * away,
-        -10.0 * away,
-        4.0 * local + 30.0 * away * away,
-    ];
+    let at = |t: f64| {
+        let away = smoothstep(0.15 * duration, duration, t);
+        [
+            -side * 45.0 * away * away,
+            -10.0 * away,
+            4.0 * t + 30.0 * away * away,
+        ]
+    };
+    let ship = at(local);
+    // When the shock reaches the ship.
+    let mut arrival = kill + length(sub(blast, at(kill))) / SHOCK_SPEED;
+    for _ in 0..3 {
+        arrival = kill + length(sub(blast, at(arrival))) / SHOCK_SPEED;
+    }
     let to = normalize(sub(centre, ship));
     let watch = smoothstep(0.5, 4.0, local) * (1.0 - smoothstep(0.9, 1.04, local / duration));
     let near_laser = pulse(local, stray_laser, 0.1, 0.5);
     let near_torpedo = pulse(local, stray_torpedo + 1.1, 0.08, 0.7);
-    let blast = pulse(local, kill, 0.1, 1.2);
+    let flare = pulse(local, kill, 0.1, 1.2);
+    let shock = pulse(local, arrival, 0.12, 1.1);
     Shot {
         ship,
         look: blend(AHEAD, to, 0.78 * watch),
-        roll: side * 0.12 * watch + 0.08 * near_torpedo,
-        alert: (0.55 + 0.45 * near_laser.max(near_torpedo)).min(1.0) * smoothstep(0.0, 1.5, local),
-        hit: near_torpedo,
-        hit_at: [-side * 0.3, -0.25],
-        flash: 0.25 * near_torpedo + 0.12 * blast + 0.08 * near_laser,
-        shake: 0.12 + 0.75 * near_torpedo + 0.3 * blast + 0.25 * near_laser,
+        roll: side * 0.12 * watch + 0.08 * near_torpedo - side * 0.18 * shock,
+        alert: (0.55 + 0.45 * near_laser.max(near_torpedo).max(shock)).min(1.0)
+            * smoothstep(0.0, 1.5, local),
+        hit: near_torpedo.max(shock),
+        hit_at: if shock > near_torpedo {
+            [side * 0.35, 0.1]
+        } else {
+            [-side * 0.3, -0.25]
+        },
+        // Flashes brief: a long tail of white greys the whole frame.
+        flash: 0.3 * pulse(local, stray_torpedo + 1.1, 0.05, 0.25)
+            + 0.35 * pulse(local, kill, 0.05, 0.2)
+            + 0.25 * pulse(local, arrival, 0.05, 0.2),
+        shake: 0.12 + 0.75 * near_torpedo + 0.3 * flare + 0.25 * near_laser + 0.9 * shock,
         objects: [
             [centre[0], centre[1], centre[2], spread],
-            [warm, cool, kill, side],
-            [stray_laser, stray_torpedo, 0.0, 0.0],
+            [first as f64, second as f64, kill, side],
+            [stray_laser, stray_torpedo, arrival, lost as f64],
         ],
+        rot: [blast[0], blast[1], blast[2], SHOCK_SPEED],
         extra: [(rng.next() % 997) as f64, 0.0, 0.0, 0.0],
-        ..Default::default()
+        beam: 0.0,
     }
 }
 
@@ -1267,7 +1314,11 @@ pub fn hud(
             let kill = shot.objects[1][2];
             let phase = if local < 3.0 {
                 "CONTACT"
-            } else if local < shot.objects[2][1] + 2.5 && local > shot.objects[2][0] - 0.5 {
+            } else if (local - shot.objects[2][2]).abs() < 2.0 {
+                "SHOCKWAVE"
+            } else if (local > shot.objects[2][0] - 0.5 && local < shot.objects[2][0] + 2.0)
+                || (local > shot.objects[2][1] && local < shot.objects[2][1] + 3.0)
+            {
                 "STRAY FIRE"
             } else if local < duration * 0.8 {
                 "RUNNING DARK"
@@ -1277,7 +1328,14 @@ pub fn hud(
             (
                 "COMBAT ZONE",
                 vec![
-                    line("Combatants", "two fleets · unidentified".into()),
+                    line(
+                        "Combatants",
+                        format!(
+                            "{} vs {}",
+                            FACTIONS[shot.objects[1][0] as usize % 6],
+                            FACTIONS[shot.objects[1][1] as usize % 6]
+                        ),
+                    ),
                     line("Ships", if local > kill { "7 · one lost".into() } else { "8".into() }),
                     line("Status", phase.to_string()),
                     line("Range", km(range(0))),
@@ -1287,6 +1345,7 @@ pub fn hud(
                     phase,
                     match phase {
                         "CONTACT" => "Dropped out into someone else's war. Not our fight: running dark.".into(),
+                        "SHOCKWAVE" => "A ship blew apart: its shock is rippling through the battle. Bracing.".into(),
                         "STRAY FIRE" => "Stray fire! Shield up, holding course away from the line of battle.".into(),
                         "CLEAR" => "Clear of the fighting. Spooling the drive while nobody is looking.".into(),
                         _ => "Engines low, emissions masked, edging away from the fleets.".into(),
