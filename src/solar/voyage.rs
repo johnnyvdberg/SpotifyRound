@@ -150,6 +150,20 @@ impl Event {
         }
     }
 
+    /// Whether it is drawn with the model meshes (`models`), and so cannot
+    /// be met until they are built.
+    pub fn needs_models(self) -> bool {
+        matches!(
+            self,
+            Event::Asteroids
+                | Event::HiveCube
+                | Event::Derelict
+                | Event::Battle
+                | Event::Gate
+                | Event::Crystal
+        )
+    }
+
     /// A star gate or a wormhole: it throws the ship on itself, no drive.
     pub fn portal(self) -> bool {
         matches!(self, Event::Gate | Event::Wormhole)
@@ -171,10 +185,8 @@ impl Event {
     }
 
     pub fn rocks(self) -> bool {
-        matches!(
-            self,
-            Event::Asteroids | Event::Derelict | Event::Comet | Event::Battle
-        )
+        // Motes of dust and ice, as points: the rocks themselves are meshes.
+        matches!(self, Event::Asteroids | Event::Comet)
     }
 }
 
@@ -344,6 +356,37 @@ impl Passage {
             l.share = weight(l) / total;
         }
         Passage { legs, stops }
+    }
+
+    /// The same passage with every stopover that needs the model meshes
+    /// swapped for one that does not (each its own, by its draw), the legs'
+    /// looks following: for while the meshes are still being built.
+    pub fn without_models(mut self, drive: u32) -> Self {
+        const INSTEAD: [Event; 10] = [
+            Event::Nebula,
+            Event::BlackHole,
+            Event::Pulsar,
+            Event::Comet,
+            Event::Leviathans,
+            Event::Remnant,
+            Event::PlasmaStorm,
+            Event::DysonSwarm,
+            Event::RoguePlanet,
+            Event::Wormhole,
+        ];
+        for stop in &mut self.stops {
+            if stop.event.needs_models() {
+                stop.event = INSTEAD[(stop.variant % INSTEAD.len() as u64) as usize];
+            }
+        }
+        for (k, stop) in self.stops.iter().enumerate() {
+            self.legs[k + 1].look = match stop.event {
+                Event::Gate => GATE_LOOK,
+                Event::Wormhole => THROAT_LOOK,
+                _ => drive,
+            };
+        }
+        self
     }
 
     /// The look of the light the trip arrives in.
@@ -1676,6 +1719,21 @@ mod tests {
                     last = Some(s);
                     t += 1.0 / 30.0;
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn without_models_meets_nothing_drawn_with_them() {
+        for trip in 0..300 {
+            let p = Passage::plan(5, trip, 2).without_models(2);
+            for (k, stop) in p.stops.iter().enumerate() {
+                assert!(!stop.event.needs_models(), "{:?}", stop.event);
+                let expected = match stop.event {
+                    Event::Wormhole => THROAT_LOOK,
+                    _ => 2,
+                };
+                assert_eq!(p.legs[k + 1].look, expected);
             }
         }
     }

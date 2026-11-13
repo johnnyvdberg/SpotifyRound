@@ -1,22 +1,25 @@
-//! The battle's starships as real meshes, built procedurally and cached.
+//! The meshes of everything solid met between the stars, built
+//! procedurally and cached: the battle's starships, the asteroid field's
+//! rocks, star gates, the crystal entity, hive cubes, the derelict ring
+//! station, and debris.
 //!
-//! Each fleet design (`voyage::FACTIONS`) is a distance field with
-//! parameters of its own, drawn per ship from a seed, so no two variants of
-//! a design are quite alike: a saucer cruiser's saucer size, its nacelles'
-//! number, height and spread; a wedge's tiers, its deck's machinery and its
-//! engine bank; a raider's wings raised to cruise or lowered to attack; and
-//! so on. Each is meshed once by surface nets — a vertex in every cell of a
-//! lattice the surface crosses, at the mean of the crossings on its edges,
-//! then pulled onto the surface along the field's gradient — with the field's
-//! gradient for normals, the field's distance a little way out for ambient
-//! occlusion, and which part of the ship each vertex lies on (hull, windows,
-//! nacelle glow, engines) for the shader to colour.
+//! Each model is a distance field with parameters of its own, drawn per
+//! variant from a seed, so no two variants are quite alike: a saucer
+//! cruiser's saucer size, its nacelles' number, height and spread; a wedge's
+//! tiers, its deck's machinery and its engine bank; a rock's stretch, lumps
+//! and craters; a ring station's breaks. Each is meshed once by surface nets
+//! — a vertex in every cell of a lattice the surface crosses, at the mean of
+//! the crossings on its edges, then pulled onto the surface along the
+//! field's gradient — with the field's gradient for normals, the field's
+//! distance a little way out for ambient occlusion, and which part of the
+//! model each vertex lies on (hull, windows, glows, engines) for the shader
+//! to colour. Rocks come at three levels of detail.
 //!
-//! A mesh takes a second or so to build (several on the Pi), so they are
+//! Building them all takes a few seconds (longer on the Pi), so they are
 //! built on a thread of their own and cached on disk, keyed by the
 //! generator's version: once built, never again until the shapes change.
-//! Until the library is ready, the battle traces the ships per pixel as it
-//! did before (`hull_sdf` in `encounter.wgsl`).
+//! Until the library is ready, the stopovers that need it are not chosen
+//! (`voyage::Event::needs_models`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,18 +28,20 @@ use glam::Vec3;
 
 use super::system::Rng;
 
-/// Bumped whenever a design's shape changes, so stale caches are rebuilt.
-pub const GENERATOR: u32 = 4;
-/// Variants of each design and role.
+/// Bumped whenever a model's shape changes, so stale caches are rebuilt.
+pub const GENERATOR: u32 = 5;
+/// Variants of each ship design and role.
 pub const VARIANTS: u32 = 3;
-/// Designs: as `voyage::FACTIONS`.
+/// Ship designs: as `voyage::FACTIONS`.
 pub const DESIGNS: u32 = 6;
-/// The extent meshed, about the ship's middle, in its own units (a ship
-/// spans about -1..1 along its length).
-const EXTENT: f32 = 1.2;
+/// Rock shapes, and their levels of detail.
+pub const ROCKS: u32 = 8;
+pub const ROCK_LODS: u32 = 3;
+/// Debris shapes.
+pub const DEBRIS: u32 = 8;
 
-/// Which part of a ship a vertex lies on, for the shader's colours and
-/// lights (`fs_ship`).
+/// Which part of a model a vertex lies on, for the shader's colours and
+/// lights (`fs_ship`, `fs_model`).
 pub mod part {
     pub const HULL: u8 = 0;
     pub const ACCENT: u8 = 1;
@@ -47,6 +52,9 @@ pub mod part {
     pub const ENGINE: u8 = 6;
     pub const WINDOWS: u8 = 7;
     pub const GREEN: u8 = 8;
+    /// A star gate's node; a rock's fresh crater rim.
+    pub const NODE: u8 = 9;
+    pub const FRESH: u8 = 9;
 }
 
 /// A mesh vertex: where, its normal, and its occlusion, part and window
@@ -59,34 +67,168 @@ pub struct ShipVertex {
     pub extra: [u8; 4],
 }
 
-/// Which mesh: a design, a role (0 capital, 1 escort) and a variant.
+/// One placing of a mesh, per instance: where (in the encounter frame)
+/// and how big, its turn (a quaternion), and four numbers its family's
+/// shader reads its own way (`fs_model`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Instance {
+    pub place: [f32; 4],
+    pub turn: [f32; 4],
+    pub look: [f32; 4],
+}
+
+/// The families of models, each with a pipeline of its own (`MODEL` in
+/// `encounter.wgsl`): rocks, star gates, the crystal, hive cubes, ring
+/// stations and debris.
+pub const FAMILIES: [&str; 6] = ["rock", "gate", "crystal", "hive", "ring", "debris"];
+
+impl Key {
+    /// Its family's number (from 1, as `MODEL`); ships have their own
+    /// pipeline (0).
+    pub fn family(self) -> u32 {
+        match self {
+            Key::Ship { .. } => 0,
+            Key::Rock { .. } => 1,
+            Key::Gate { .. } => 2,
+            Key::Crystal { .. } => 3,
+            Key::Hive { .. } => 4,
+            Key::Ring { .. } => 5,
+            Key::Debris { .. } => 6,
+        }
+    }
+}
+
+/// Which mesh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Key {
-    pub design: u32,
-    pub role: u32,
-    pub variant: u32,
+pub enum Key {
+    /// A ship: its design, its role (0 capital, 1 escort) and a variant.
+    Ship {
+        design: u32,
+        role: u32,
+        variant: u32,
+    },
+    /// A rock shape, at a level of detail (0 the finest).
+    Rock {
+        variant: u32,
+        lod: u32,
+    },
+    /// A star gate of a style (0 a ring and nodes, 1 a blocky ring and
+    /// pylons, 2 two rings), and its part (1: the inner ring of style 2,
+    /// which turns the other way).
+    Gate {
+        style: u32,
+        part: u32,
+    },
+    Crystal {
+        variant: u32,
+    },
+    Hive {
+        variant: u32,
+    },
+    /// A derelict ring station with so many breaks.
+    Ring {
+        gaps: u32,
+        variant: u32,
+    },
+    Debris {
+        variant: u32,
+    },
 }
 
 impl Key {
-    pub fn all() -> impl Iterator<Item = Key> {
-        (0..DESIGNS).flat_map(|design| {
-            (0..2).flat_map(move |role| {
-                (0..VARIANTS).map(move |variant| Key {
-                    design,
-                    role,
-                    variant,
-                })
-            })
-        })
+    pub fn all() -> Vec<Key> {
+        let mut keys = Vec::new();
+        for design in 0..DESIGNS {
+            for role in 0..2 {
+                for variant in 0..VARIANTS {
+                    keys.push(Key::Ship {
+                        design,
+                        role,
+                        variant,
+                    });
+                }
+            }
+        }
+        for variant in 0..ROCKS {
+            for lod in 0..ROCK_LODS {
+                keys.push(Key::Rock { variant, lod });
+            }
+        }
+        for style in 0..3 {
+            keys.push(Key::Gate { style, part: 0 });
+        }
+        keys.push(Key::Gate { style: 2, part: 1 });
+        for variant in 0..3 {
+            keys.push(Key::Crystal { variant });
+            keys.push(Key::Hive { variant });
+        }
+        for gaps in 2..5 {
+            for variant in 0..2 {
+                keys.push(Key::Ring { gaps, variant });
+            }
+        }
+        for variant in 0..DEBRIS {
+            keys.push(Key::Debris { variant });
+        }
+        keys
     }
 
     fn seed(self) -> u64 {
-        0x5417_0000 ^ (self.design as u64) << 16 ^ (self.role as u64) << 8 ^ self.variant as u64
+        let (kind, a, b, c) = match self {
+            Key::Ship {
+                design,
+                role,
+                variant,
+            } => (1, design, role, variant),
+            Key::Rock { variant, .. } => (2, variant, 0, 0),
+            Key::Gate { style, part } => (3, style, part, 0),
+            Key::Crystal { variant } => (4, variant, 0, 0),
+            Key::Hive { variant } => (5, variant, 0, 0),
+            Key::Ring { gaps, variant } => (6, gaps, variant, 0),
+            Key::Debris { variant } => (7, variant, 0, 0),
+        };
+        0x5417_0000 ^ (kind as u64) << 32 ^ (a as u64) << 16 ^ (b as u64) << 8 ^ c as u64
     }
 
-    /// Lattice cells along each side: finer for capitals.
+    /// Lattice cells along each side.
     fn resolution(self) -> usize {
-        if self.role == 0 { 120 } else { 100 }
+        match self {
+            Key::Ship { role: 0, .. } => 120,
+            Key::Ship { .. } => 100,
+            Key::Rock { lod, .. } => [80, 40, 18][lod.min(2) as usize],
+            Key::Gate { .. } => 150,
+            Key::Crystal { .. } => 110,
+            Key::Hive { .. } => 150,
+            Key::Ring { .. } => 170,
+            Key::Debris { .. } => 40,
+        }
+    }
+
+    /// How far out from its middle the model reaches, in its own units.
+    fn extent(self) -> f32 {
+        match self {
+            Key::Gate { .. } => 1.45,
+            Key::Hive { .. } => 1.15,
+            Key::Ring { .. } => 1.08,
+            _ => 1.2,
+        }
+    }
+
+    fn file(self) -> String {
+        match self {
+            Key::Ship {
+                design,
+                role,
+                variant,
+            } => format!("ship-{design}-{role}-{variant}"),
+            Key::Rock { variant, lod } => format!("rock-{variant}-{lod}"),
+            Key::Gate { style, part } => format!("gate-{style}-{part}"),
+            Key::Crystal { variant } => format!("crystal-{variant}"),
+            Key::Hive { variant } => format!("hive-{variant}"),
+            Key::Ring { gaps, variant } => format!("ring-{gaps}-{variant}"),
+            Key::Debris { variant } => format!("debris-{variant}"),
+        }
     }
 }
 
@@ -111,12 +253,16 @@ impl Library {
         let mut rng = Rng::new(((seed as u64) << 8) ^ index as u64 ^ 0x5a1);
         let variant = (rng.next() % VARIANTS as u64) as u32;
         self.ranges
-            .get(&Key {
+            .get(&Key::Ship {
                 design,
                 role,
                 variant,
             })
             .copied()
+    }
+
+    pub fn get(&self, key: Key) -> Option<(u32, u32, i32)> {
+        self.ranges.get(&key).copied()
     }
 }
 
@@ -125,16 +271,11 @@ fn cache_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("SOLAR_SHIP_CACHE") {
         return Some(PathBuf::from(dir));
     }
-    directories::ProjectDirs::from("", "", "spotify-round").map(|d| d.cache_dir().join("ships"))
+    directories::ProjectDirs::from("", "", "spotify-round").map(|d| d.cache_dir().join("models"))
 }
 
 fn cache_path(key: Key) -> Option<PathBuf> {
-    cache_dir().map(|d| {
-        d.join(format!(
-            "g{GENERATOR}-d{}-r{}-v{}.mesh",
-            key.design, key.role, key.variant
-        ))
-    })
+    cache_dir().map(|d| d.join(format!("g{GENERATOR}-{}.mesh", key.file())))
 }
 
 const MAGIC: &[u8; 4] = b"SHP1";
@@ -224,11 +365,11 @@ pub fn library() -> Library {
 pub fn spawn_library() -> std::sync::mpsc::Receiver<Library> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
-        .name("ship meshes".into())
+        .name("model meshes".into())
         .spawn(move || {
             let _ = tx.send(library());
         })
-        .expect("a thread for the ship meshes");
+        .expect("a thread for the model meshes");
     rx
 }
 
@@ -311,9 +452,13 @@ struct Params {
 impl Params {
     fn new(key: Key) -> Self {
         let mut rng = Rng::new(key.seed());
+        let role = match key {
+            Key::Ship { role, .. } => role,
+            _ => 0,
+        };
         Params {
             rng: [(); 16].map(|_| rng.unit() as f32),
-            role: key.role,
+            role,
         }
     }
     /// The `i`th draw, between `a` and `b`.
@@ -325,15 +470,23 @@ impl Params {
     }
 }
 
-/// The field of design `design` with parameters `k` at `p`.
-fn field(design: u32, k: &Params, p: Vec3) -> Sample {
-    match design {
-        0 => saucer_cruiser(k, p),
-        1 => wedge_destroyer(k, p),
-        2 => raider(k, p),
-        3 => warbird(k, p),
-        4 => trader(k, p),
-        _ => collective(k, p),
+/// The field of model `key` with parameters `k` at `p`.
+fn field(key: Key, k: &Params, p: Vec3) -> Sample {
+    match key {
+        Key::Ship { design, .. } => match design {
+            0 => saucer_cruiser(k, p),
+            1 => wedge_destroyer(k, p),
+            2 => raider(k, p),
+            3 => warbird(k, p),
+            4 => trader(k, p),
+            _ => collective(k, p),
+        },
+        Key::Rock { .. } => rock(k, p),
+        Key::Gate { style, part } => gate(k, p, style, part),
+        Key::Crystal { .. } => crystal(k, p),
+        Key::Hive { .. } => hive(k, p),
+        Key::Ring { gaps, .. } => ring_station(k, p, gaps),
+        Key::Debris { .. } => debris(k, p),
     }
 }
 
@@ -791,6 +944,345 @@ fn collective(k: &Params, p: Vec3) -> Sample {
 }
 
 // ---------------------------------------------------------------------------
+// Everything else met between the stars.
+// ---------------------------------------------------------------------------
+
+/// Smooth value noise in -1..1 (a lattice of hashed values, quintic
+/// blended).
+fn noise3(p: Vec3) -> f32 {
+    let i = p.floor();
+    let f = p - i;
+    let u = f * f * f * (f * (f * 6.0 - Vec3::splat(15.0)) + Vec3::splat(10.0));
+    let h = |dx: f32, dy: f32, dz: f32| hash(i + Vec3::new(dx, dy, dz), 7.0) * 2.0 - 1.0;
+    let x00 = h(0.0, 0.0, 0.0) + (h(1.0, 0.0, 0.0) - h(0.0, 0.0, 0.0)) * u.x;
+    let x10 = h(0.0, 1.0, 0.0) + (h(1.0, 1.0, 0.0) - h(0.0, 1.0, 0.0)) * u.x;
+    let x01 = h(0.0, 0.0, 1.0) + (h(1.0, 0.0, 1.0) - h(0.0, 0.0, 1.0)) * u.x;
+    let x11 = h(0.0, 1.0, 1.0) + (h(1.0, 1.0, 1.0) - h(0.0, 1.0, 1.0)) * u.x;
+    let y0 = x00 + (x10 - x00) * u.y;
+    let y1 = x01 + (x11 - x01) * u.y;
+    y0 + (y1 - y0) * u.z
+}
+
+/// A crater's profile across `x`, its distance from the middle over its
+/// radius: a bowl, a raised rim, the ground beyond.
+fn crater_profile(x: f32) -> f32 {
+    let s = ((x - 0.85) / 0.2).clamp(0.0, 1.0);
+    let s = s * s * (3.0 - 2.0 * s);
+    let fade = ((x - 1.3) / 0.5).clamp(0.0, 1.0);
+    let fade = fade * fade * (3.0 - 2.0 * fade);
+    (x * x - 1.0) * 0.35 * (1.0 - s) + 0.14 * (-((x - 1.0) / 0.32).powi(2)).exp() * (1.0 - fade)
+}
+
+/// Craters round `q` (a surface direction scaled up) from the eight cells
+/// about it: the ground's height from them, and how fresh a rim it is on.
+fn craters(q: Vec3, seed: f32) -> (f32, f32) {
+    let base = (q - Vec3::splat(0.5)).floor();
+    let mut height = 0.0;
+    let mut fresh: f32 = 0.0;
+    for i in 0..8 {
+        let cell = base + Vec3::new((i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32);
+        let k = hash(cell, seed);
+        if k > 0.7 {
+            continue;
+        }
+        let jitter = Vec3::new(
+            hash(cell, seed + 1.0),
+            hash(cell, seed + 2.0),
+            hash(cell, seed + 3.0),
+        );
+        let centre = cell + Vec3::splat(0.5) + (jitter - Vec3::splat(0.5)) * 0.4;
+        let radius = 0.16 + 0.26 * k / 0.7;
+        let x = (q - centre).length() / radius;
+        if x > 1.8 {
+            continue;
+        }
+        height += crater_profile(x) * radius;
+        if jitter.x > 0.55 && (x - 1.05).abs() < 0.25 {
+            fresh = fresh.max(1.0);
+        }
+    }
+    (height, fresh)
+}
+
+/// A rock: a stretched ellipsoid, pushed in and out by noise warped by
+/// noise, so its lumps flow into each other like broken stone; craters at
+/// two scales cut into it, the young ones' rims fresh and pale.
+fn rock(k: &Params, p: Vec3) -> Sample {
+    let seed = k.rng[0] * 40.0;
+    let stretch = Vec3::new(k.get(1, 0.62, 0.92), k.get(2, 0.55, 0.8), 0.92);
+    let warp = Vec3::new(
+        noise3(p * 1.2 + Vec3::splat(seed)),
+        noise3(p * 1.2 + Vec3::splat(seed + 9.0)),
+        noise3(p * 1.2 + Vec3::splat(seed + 17.0)),
+    ) * 0.22;
+    let q = p + warp;
+    let lumps = noise3(q * 1.7 + Vec3::splat(seed * 0.37)) * 0.17
+        + noise3(q * 4.1 + Vec3::splat(seed * 0.71)) * 0.055
+        + noise3(q * 9.0) * 0.015;
+    let dir = p.normalize_or_zero();
+    let (big, fresh_big) = craters(dir * 3.2, seed);
+    let (small, fresh_small) = craters(dir * 8.5 + Vec3::splat(31.0), seed + 5.0);
+    let d = sd_ellipsoid(p, stretch) - lumps - big * 0.14 - small * 0.05;
+    Sample::new(
+        d * 0.8,
+        if fresh_big.max(fresh_small) > 0.5 {
+            part::FRESH
+        } else {
+            part::HULL
+        },
+    )
+}
+
+/// A star gate, radius 1 about its axis (z): a segmented ring with ribs and
+/// nine node housings (style 0); a blocky ring with three great pylons
+/// (1); or two rings, the outer with nodes, the inner (part 1) on its own.
+fn gate(_k: &Params, p: Vec3, style: u32, which: u32) -> Sample {
+    let thick = 0.06;
+    let a = p.y.atan2(p.x);
+    let radial = glam::Vec2::new(p.x, p.y).length();
+    let nodes = if style == 1 { 3.0 } else { 9.0 };
+    let step = std::f32::consts::TAU / nodes;
+    let kn = (a / step).round();
+    let (sn, cn) = (-kn * step).sin_cos();
+    let q = Vec3::new(p.x * cn - p.y * sn, p.x * sn + p.y * cn, p.z);
+    // Ribs every few degrees: the ring a little thicker on each.
+    let rib = ((a * 36.0 / std::f32::consts::TAU).fract() - 0.5).abs();
+    let ribbed = if rib < 0.08 { 0.008 } else { 0.0 };
+    match (style, which) {
+        (1, _) => {
+            let rr = radial - 1.0;
+            let mut s = Sample::new(
+                sd_box(
+                    Vec3::new(rr, 0.0, p.z),
+                    Vec3::new(thick * 1.4 + ribbed, 1.0, thick * 2.2),
+                )
+                .max(-1.0),
+                part::HULL,
+            );
+            s.d = (rr.abs() - thick * 1.4 - ribbed).max(p.z.abs() - thick * 2.2);
+            s = s.or(
+                sd_box(
+                    q - Vec3::new(1.18, 0.0, 0.0),
+                    Vec3::new(0.2, thick * 1.6, thick * 3.0),
+                ),
+                part::ACCENT,
+            );
+            s = s.or(
+                sd_box(
+                    q - Vec3::new(0.97, 0.0, 0.0),
+                    Vec3::new(0.05, thick * 1.2, thick * 1.6),
+                ),
+                part::NODE,
+            );
+            s
+        }
+        (2, 1) => {
+            let d = glam::Vec2::new(radial - 0.86, p.z + thick * 2.0).length()
+                - thick * 0.8
+                - ribbed * 0.6;
+            Sample::new(d, part::ACCENT)
+        }
+        (s2, _) => {
+            let z = if s2 == 2 { p.z - thick * 2.0 } else { p.z };
+            let mut s = Sample::new(
+                glam::Vec2::new(radial - 1.0, z).length() - thick - ribbed,
+                part::HULL,
+            );
+            // Inner face: a conduit lit when the gate is open.
+            if radial < 1.0 - thick * 0.6 && s.d < 0.01 {
+                s.part = part::WINDOWS;
+            }
+            let zq = if s2 == 2 { q.z - thick * 2.0 } else { q.z };
+            s = s.or(
+                sd_box(
+                    Vec3::new(q.x - 1.0, q.y, zq),
+                    Vec3::new(thick * 2.2, thick * 1.4, thick * 2.0),
+                ),
+                part::ACCENT,
+            );
+            s = s.or(
+                (Vec3::new(q.x - 1.0 + thick * 2.3, q.y, zq)).length() - thick * 1.1,
+                part::NODE,
+            );
+            s
+        }
+    }
+}
+
+/// The crystal entity: shards by mirror symmetry (26), each a long
+/// bipyramid, with smaller ones branching off the longest, a core between.
+fn crystal(k: &Params, p0: Vec3) -> Sample {
+    let mut p = p0.abs();
+    if p.x < p.y {
+        p = Vec3::new(p.y, p.x, p.z);
+    }
+    if p.y < p.z {
+        p = Vec3::new(p.x, p.z, p.y);
+    }
+    if p.x < p.y {
+        p = Vec3::new(p.y, p.x, p.z);
+    }
+    let shard = |p: Vec3, dir: Vec3, length: f32, width: f32| {
+        let along = p.dot(dir);
+        let rad = (p - dir * along).length();
+        let waist = length * 0.3;
+        let taper = if along < waist {
+            width * (0.5 + 0.5 * along / waist)
+        } else {
+            width * (1.0 - (along - waist) / (length - waist))
+        };
+        (rad - taper.max(0.0)).max((-along).max(along - length)) * 0.7
+    };
+    let long = k.get(0, 0.9, 1.05);
+    let mut d = shard(p, Vec3::X, long, 0.11);
+    d = d.min(shard(
+        p,
+        Vec3::new(1.0, 1.0, 0.0).normalize(),
+        k.get(1, 0.6, 0.8),
+        0.08,
+    ));
+    d = d.min(shard(p, Vec3::ONE.normalize(), k.get(2, 0.75, 0.92), 0.09));
+    let b = p - Vec3::new(long * 0.6, 0.0, 0.0);
+    d = d.min(shard(b, Vec3::new(0.6, 1.0, 0.0).normalize(), 0.3, 0.04));
+    d = d.min(shard(b, Vec3::new(0.6, 0.0, 1.0).normalize(), 0.3, 0.04));
+    Sample::new(d.min(p0.length() - 0.16), part::HULL)
+}
+
+/// A hive cube, half-size 1: each face built up of blocks of machinery at
+/// three scales standing out and sinking in, glowing slits in some, open
+/// bays sunk deep with light inside.
+fn hive(k: &Params, p: Vec3) -> Sample {
+    let mut relief = 0.0;
+    let mut glow = false;
+    for (scale, height) in [(0.33, 0.05), (0.11, 0.022), (0.037, 0.008)] {
+        let c = (p / scale).floor();
+        let h = hash(c, k.rng[0] * 50.0 + scale);
+        relief += (h - 0.45) * height;
+        if scale < 0.2 && h > 0.965 {
+            glow = true;
+        }
+    }
+    let d = sd_box(p, Vec3::splat(1.0)) - relief;
+    let mut s = Sample::new(d * 0.8, if glow { part::GREEN } else { part::HULL });
+    // Open bays: deep, square, a grille over the light inside.
+    let bay = (p / 0.33).floor();
+    if hash(bay, k.rng[1] * 30.0) < 0.07 {
+        let f = (p / 0.33).fract() - Vec3::splat(0.5);
+        let a = p.abs();
+        let face = if a.x >= a.y && a.x >= a.z {
+            glam::Vec2::new(f.y, f.z)
+        } else if a.y >= a.z {
+            glam::Vec2::new(f.x, f.z)
+        } else {
+            glam::Vec2::new(f.x, f.y)
+        };
+        if face.x.abs() < 0.38 && face.y.abs() < 0.38 {
+            let sunk = d + 0.09;
+            s = Sample::new(sunk * 0.8, part::GREEN);
+            let grille = ((face.x * 18.0).fract() - 0.5)
+                .abs()
+                .min(((face.y * 18.0).fract() - 0.5).abs());
+            if grille < 0.08 {
+                s = s.or((d + 0.02) * 0.8, part::DARK);
+            }
+        }
+    }
+    // Conduits along the largest seams.
+    let g = (p / 0.33 + Vec3::splat(0.5)).fract() - Vec3::splat(0.5);
+    let a = p.abs();
+    let seam = if a.x >= a.y && a.x >= a.z {
+        g.y.abs().min(g.z.abs())
+    } else if a.y >= a.z {
+        g.x.abs().min(g.z.abs())
+    } else {
+        g.x.abs().min(g.y.abs())
+    };
+    if seam < 0.02 && s.part == part::HULL && hash((p / 0.33).floor(), 77.0) > 0.5 {
+        s.part = part::GREEN;
+    }
+    s
+}
+
+/// A derelict ring station, radius 1 about z: a band with a deck inside
+/// and out, ribs, breaks torn through it (`gaps`), their edges jagged with
+/// ribs left standing and smouldering, windows in rows on the inner face;
+/// a hub and spokes, some broken.
+fn ring_station(k: &Params, p: Vec3, gaps: u32) -> Sample {
+    let height = k.get(0, 0.11, 0.16);
+    let radial = glam::Vec2::new(p.x, p.y).length();
+    let a = p.y.atan2(p.x);
+    let sector = ((a / std::f32::consts::TAU) * gaps as f32 + k.rng[1]).rem_euclid(1.0);
+    let jag = noise3(Vec3::new(p.z * 9.0, a * 14.0, k.rng[2] * 20.0)) * 0.05;
+    let broken = sector > 0.8 + jag;
+    let band = glam::Vec2::new(radial - 1.0, p.z);
+    let hull = (band.x.abs() - 0.022).max(band.y.abs() - height);
+    let deck = (band.x.abs() - 0.045).max(band.y.abs() - height * 0.25);
+    let rib = (((a * 40.0 / std::f32::consts::TAU).fract() - 0.5).abs() - 0.07)
+        .max(band.x.abs() - 0.04)
+        .max(band.y.abs() - height * 1.05);
+    let mut s = Sample::new(hull.min(deck) - noise3(p * 30.0) * 0.003, part::HULL);
+    if radial < 1.0 && s.d < 0.01 && band.y.abs() < height * 0.85 {
+        s.part = part::WINDOWS;
+    }
+    s = s.or(rib, part::ACCENT);
+    if broken {
+        // Torn out: only some ribs left standing, their ends smouldering.
+        let stand = hash(
+            Vec3::new((a * 40.0 / std::f32::consts::TAU).floor(), 3.0, 1.0),
+            k.rng[3] * 10.0,
+        ) > 0.6;
+        s = Sample::new(
+            if stand {
+                rib.max(band.y.abs() - height * (0.3 + 0.5 * k.rng[4]))
+            } else {
+                1.0
+            },
+            part::BUSSARD,
+        );
+    } else if sector > 0.74 + jag {
+        s.part = part::BUSSARD;
+    }
+    // The hub and spokes.
+    s = s.or(sd_cylinder_z(p, 0.12, height * 0.9), part::ACCENT);
+    let spokes = 3 + (k.rng[5] * 1.99) as u32;
+    for i in 0..spokes {
+        let ang = i as f32 * std::f32::consts::TAU / spokes as f32 + k.rng[6];
+        let to = Vec3::new(ang.cos(), ang.sin(), 0.0);
+        let length = if i == 0 && k.rng[7] > 0.5 { 0.55 } else { 0.98 };
+        s = s.or(sd_capsule(p, to * 0.12, to * length, 0.018), part::HULL);
+    }
+    s
+}
+
+/// A piece of debris: a shard of plated hull, torn off at a few planes,
+/// bent, some of it smouldering at its edges.
+fn debris(k: &Params, p: Vec3) -> Sample {
+    let mut d = sd_box(
+        p,
+        Vec3::new(
+            k.get(0, 0.5, 0.95),
+            k.get(1, 0.08, 0.35),
+            k.get(2, 0.4, 0.9),
+        ),
+    );
+    for i in 0..4 {
+        let n = Vec3::new(
+            k.rng[3 + i] - 0.5,
+            k.rng[7 + i] - 0.5,
+            k.rng[(11 + i) % 16] - 0.5,
+        )
+        .normalize_or_zero();
+        d = d.max(p.dot(n) - k.get(12 + i % 4, 0.15, 0.5));
+    }
+    d -= noise3(p * 6.0 + Vec3::splat(k.rng[0] * 9.0)) * 0.04;
+    let mut s = Sample::new(d * 0.8, part::HULL);
+    if noise3(p * 4.0 + Vec3::splat(k.rng[1] * 7.0)) > 0.35 {
+        s.part = part::BUSSARD;
+    }
+    s
+}
+
+// ---------------------------------------------------------------------------
 // Meshing.
 // ---------------------------------------------------------------------------
 
@@ -798,11 +1290,12 @@ fn collective(k: &Params, p: Vec3) -> Sample {
 pub fn build(key: Key) -> Mesh {
     let params = Params::new(key);
     let n = key.resolution();
-    let step = 2.0 * EXTENT / n as f32;
+    let extent = key.extent();
+    let step = 2.0 * extent / n as f32;
     let at = |i: usize, j: usize, k: usize| {
-        Vec3::new(i as f32, j as f32, k as f32) * step - Vec3::splat(EXTENT)
+        Vec3::new(i as f32, j as f32, k as f32) * step - Vec3::splat(extent)
     };
-    let f = |p: Vec3| field(key.design, &params, p);
+    let f = |p: Vec3| field(key, &params, p);
     let side = n + 1;
     // The field at every lattice point, a slab of z per thread; whole blocks
     // far from the surface filled from their middle alone.
@@ -997,10 +1490,13 @@ mod tests {
 
     #[test]
     fn every_design_meshes_closed_and_sound() {
-        for key in Key::all().filter(|k| k.variant == 0) {
+        for key in Key::all()
+            .into_iter()
+            .filter(|k| !matches!(k, Key::Ship { variant: 1.., .. } | Key::Rock { lod: 0, .. }))
+        {
             let mesh = build(key);
             assert!(
-                mesh.indices.len() > 3000,
+                mesh.indices.len() > 600,
                 "{key:?}: {} indices",
                 mesh.indices.len()
             );
@@ -1012,9 +1508,7 @@ mod tests {
             );
             for v in &mesh.vertices {
                 assert!(
-                    v.position
-                        .iter()
-                        .all(|x| x.is_finite() && x.abs() <= EXTENT + 0.01),
+                    v.position.iter().all(|x| x.is_finite() && x.abs() <= 1.5),
                     "{key:?}"
                 );
                 let n = Vec3::from_array(v.normal);
@@ -1026,12 +1520,12 @@ mod tests {
     #[test]
     fn variants_differ() {
         for design in 0..DESIGNS {
-            let a = build(Key {
+            let a = build(Key::Ship {
                 design,
                 role: 0,
                 variant: 0,
             });
-            let b = build(Key {
+            let b = build(Key::Ship {
                 design,
                 role: 0,
                 variant: 1,
@@ -1046,11 +1540,7 @@ mod tests {
         // SAFETY: set before any other thread reads it in this test binary's
         // use of the cache, and only to a directory of this test's own.
         unsafe { std::env::set_var("SOLAR_SHIP_CACHE", &dir) };
-        let key = Key {
-            design: 4,
-            role: 1,
-            variant: 2,
-        };
+        let key = Key::Debris { variant: 2 };
         let built = mesh(key);
         let loaded = load(key).expect("cached");
         assert_eq!(built.vertices.len(), loaded.vertices.len());

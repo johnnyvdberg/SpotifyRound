@@ -17,8 +17,8 @@
 //! quad per body, far to near, so a pixel only pays for the bodies over it.
 
 pub mod labels;
+pub mod models;
 pub mod scan;
-pub mod ships;
 pub mod stream;
 pub mod system;
 pub mod tour;
@@ -92,12 +92,21 @@ struct Params {
 }
 
 /// The starship meshes on the GPU: every one in one buffer, and where each
-/// lies (`ships::Library::ranges`).
-struct ShipMeshes {
+/// lies (`models::Library::ranges`).
+struct Models {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
-    library: ships::Library,
+    /// The frame's placings of the models, grouped by mesh.
+    instances: wgpu::Buffer,
+    library: models::Library,
 }
+
+/// A draw of one mesh's placings: its family, where the mesh lies
+/// (`models::Library::ranges`), and which instances.
+type ModelDraw = (u32, (u32, u32, i32), std::ops::Range<u32>);
+
+/// The most model placings drawn in a frame.
+const MODEL_INSTANCES: usize = 1024;
 
 /// Rows of the stopover's parameters (`Params::ev`).
 const EV_ROWS: usize = 12;
@@ -280,8 +289,8 @@ pub(crate) struct Solar {
     bind_group: Option<wgpu::BindGroup>,
     /// The battle's starship meshes: on their way from the thread building
     /// (or loading) them, then on the GPU, with where each one lies.
-    ship_library: Option<std::sync::mpsc::Receiver<ships::Library>>,
-    ship_meshes: Option<ShipMeshes>,
+    model_library: Option<std::sync::mpsc::Receiver<models::Library>>,
+    models: Option<Models>,
     /// Each ringed planet's ring density by radius, a row per planet, and the
     /// system it was painted for.
     rings: wgpu::Texture,
@@ -339,9 +348,19 @@ fn relay(base: u64, visit: u64) -> bool {
 /// The tour of visit `visit`: a whole one or a relay's crossing, the jump at
 /// its end making for the next visit's star, through it and any relays
 /// after to the next real visit.
-fn tour_for(base: u64, visit: u64) -> Tour {
-    let passage =
-        |visit: u64, next: &System| voyage::Passage::plan(base, visit, tour::drive_to(next).0);
+/// Until the model meshes are `ready`, its jump meets nothing drawn with
+/// them. It arrives in the light `arrival` (the last trip's last leg's), or
+/// what that trip would have had.
+fn tour_for(base: u64, visit: u64, ready: bool, arrival: Option<u32>) -> Tour {
+    let passage = |visit: u64, next: &System| {
+        let drive = tour::drive_to(next).0;
+        let plan = voyage::Passage::plan(base, visit, drive);
+        if ready {
+            plan
+        } else {
+            plan.without_models(drive)
+        }
+    };
     let mut route = Vec::new();
     let mut ahead = visit + 1;
     loop {
@@ -359,10 +378,10 @@ fn tour_for(base: u64, visit: u64) -> Tour {
     let (leg, legs) = ((visit - began + 1) as usize, (ahead - began) as usize);
     let system = system_for(base, visit);
     // The light the ship arrives in: the last trip's last leg's.
-    let arrival = match visit {
+    let arrival = arrival.unwrap_or_else(|| match visit {
         0 => tour::drive_to(&system).0,
         _ => passage(visit - 1, &system).arrival_look(),
-    };
+    });
     let plan = passage(visit, &route[0]);
     Tour::plan(system, route, relay(base, visit), leg, legs, plan, arrival)
 }
@@ -797,7 +816,7 @@ impl Solar {
         let ship_attributes =
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Unorm8x4];
         let ship_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<ships::ShipVertex>() as u64,
+            array_stride: std::mem::size_of::<models::ShipVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &ship_attributes,
         };
@@ -836,6 +855,60 @@ impl Solar {
             "ships".to_string(),
             ("Solar ships".to_string(), ship_pipeline),
         );
+        // Every other model family's meshes, instanced: a pipeline each.
+        let instance_attributes =
+            wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
+        for (f, name) in models::FAMILIES.iter().enumerate() {
+            let family = f as u32 + 1;
+            let mesh_layout = wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<models::ShipVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &ship_attributes,
+            };
+            let instance_layout = wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<models::Instance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &instance_attributes,
+            };
+            let constants = [("MODEL", family as f64)];
+            let options = wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            };
+            let label = format!("Solar model {name}");
+            let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(&label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_model"),
+                    buffers: &[Some(mesh_layout), Some(instance_layout)],
+                    compilation_options: options.clone(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_model"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: options,
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            pipelines.insert(format!("model{family}"), (label, made));
+        }
         pipelines.insert(
             "overlay".to_string(),
             make(
@@ -1096,7 +1169,7 @@ impl Solar {
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let tour = tour_for(seed, 0);
+        let tour = tour_for(seed, 0, false, None);
         let rings = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Solar ring profiles"),
             size: wgpu::Extent3d {
@@ -1119,8 +1192,8 @@ impl Solar {
             grid,
             sampler,
             bind_group: None,
-            ship_library: Some(ships::spawn_library()),
-            ship_meshes: None,
+            model_library: Some(models::spawn_library()),
+            models: None,
             rings,
             rings_for: u64::MAX,
             bound: (u64::MAX, usize::MAX, usize::MAX),
@@ -1186,7 +1259,13 @@ impl Solar {
         while seconds - self.visit_start >= self.tour.total {
             self.visit_start += self.tour.total;
             self.visit += 1;
-            self.tour = tour_for(self.base_seed, self.visit);
+            let arrival = self.tour.passage.arrival_look();
+            self.tour = tour_for(
+                self.base_seed,
+                self.visit,
+                self.models.is_some(),
+                Some(arrival),
+            );
             tracing::info!(
                 star = %self.tour.system.star.name,
                 relay = self.tour.transit,
@@ -1727,12 +1806,6 @@ impl Solar {
             ],
             ev: {
                 let mut ev = encounter_rows(&view);
-                // The ships as meshes once they are ready, rather than traced.
-                if view.scene.is_some_and(|s| s.event == voyage::Event::Battle)
-                    && self.ship_meshes.is_some()
-                {
-                    ev[9][3] = 1.0;
-                }
                 if let Some((faction, index)) = self.showcase {
                     ev[9][1] = 1.0;
                     ev[9][2] = index as f32;
@@ -1803,7 +1876,7 @@ impl Solar {
 
     fn draw(&mut self, gpu: &Graphics, t: f64, frame: usize) {
         self.drift_dust(t);
-        self.receive_ships(gpu);
+        self.receive_models(gpu);
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1876,6 +1949,34 @@ impl Solar {
         }
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&params));
+        // The stopover's models, grouped by mesh: their placings into the
+        // instance buffer, and a draw for each group.
+        let mut model_draws: Vec<ModelDraw> = Vec::new();
+        if let Some(meshes) = &self.models {
+            let mut placed = model_instances(&self.view(t));
+            placed.truncate(MODEL_INSTANCES);
+            placed.sort_by_key(|(key, _)| (key.family(), format!("{key:?}")));
+            let mut flat = Vec::with_capacity(placed.len());
+            for (key, instance) in &placed {
+                let at = flat.len() as u32;
+                flat.push(*instance);
+                let Some(range) = meshes.library.get(*key) else {
+                    continue;
+                };
+                match model_draws.last_mut() {
+                    Some((family, last, instances))
+                        if *family == key.family() && *last == range =>
+                    {
+                        instances.end = at + 1
+                    }
+                    _ => model_draws.push((key.family(), range, at..at + 1)),
+                }
+            }
+            if !flat.is_empty() {
+                gpu.queue
+                    .write_buffer(&meshes.instances, 0, bytemuck::cast_slice(&flat));
+            }
+        }
         let Some(group) = &self.bind_group else {
             return;
         };
@@ -1962,8 +2063,7 @@ impl Solar {
                 // The battle's ships, each its fleet's design in a variant of
                 // its own, the one lost gone once it blows up.
                 if e == voyage::Event::Battle
-                    && params.ev[9][3] > 0.5
-                    && let Some(meshes) = &self.ship_meshes
+                    && let Some(meshes) = &self.models
                 {
                     pass.set_pipeline(&self.pipelines["ships"].1);
                     pass.set_vertex_buffer(0, meshes.vertices.slice(..));
@@ -1984,6 +2084,22 @@ impl Solar {
                         {
                             pass.draw_indexed(first..first + count, base, i..i + 1);
                         }
+                    }
+                    pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
+                }
+                // The other models: rocks, gates, the crystal, hive cubes,
+                // ring stations, debris.
+                if let Some(meshes) = self.models.as_ref().filter(|_| !model_draws.is_empty()) {
+                    pass.set_vertex_buffer(0, meshes.vertices.slice(..));
+                    pass.set_vertex_buffer(1, meshes.instances.slice(..));
+                    pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    let mut bound = 0;
+                    for (family, (first, count, base), instances) in &model_draws {
+                        if *family != bound {
+                            pass.set_pipeline(&self.pipelines[&format!("model{family}")].1);
+                            bound = *family;
+                        }
+                        pass.draw_indexed(*first..*first + *count, *base, instances.clone());
                     }
                     pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
                 }
@@ -2102,8 +2218,10 @@ impl Solar {
     }
 
     /// The starship meshes onto the GPU, once their thread has them.
-    fn receive_ships(&mut self, gpu: &Graphics) {
-        let Some(rx) = &self.ship_library else { return };
+    fn receive_models(&mut self, gpu: &Graphics) {
+        let Some(rx) = &self.model_library else {
+            return;
+        };
         let Ok(library) = rx.try_recv() else { return };
         use wgpu::util::DeviceExt;
         let vertices = gpu
@@ -2120,17 +2238,24 @@ impl Solar {
                 contents: bytemuck::cast_slice(&library.indices),
                 usage: wgpu::BufferUsages::INDEX,
             });
-        let library = ships::Library {
+        let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Solar model instances"),
+            size: (MODEL_INSTANCES * std::mem::size_of::<models::Instance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let library = models::Library {
             vertices: Vec::new(),
             indices: Vec::new(),
             ranges: library.ranges,
         };
-        self.ship_meshes = Some(ShipMeshes {
+        self.models = Some(Models {
             vertices,
             indices,
+            instances,
             library,
         });
-        self.ship_library = None;
+        self.model_library = None;
     }
 
     /// The look of the light to draw for look `k` of the tour
@@ -2461,6 +2586,273 @@ fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &System) {
 /// from a body of `radius` at `at`: only then is its eclipse pass drawn.
 /// The label on a stopover's main object, where it is in view and clear of
 /// the panels: its name and range, a leader up from its edge.
+/// Every model the stopover in view has, placed for this moment: the
+/// asteroid field's rocks (each at the level of detail its size on the
+/// frame calls for, too small ones left out), a star gate, the crystal, a
+/// hive cube and its escorts, a ring station and its debris, a battle's
+/// wreckage. Each a mesh and where it goes (`fs_model`).
+fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
+    use glam::{Mat3, Quat, Vec3};
+    use models::{Instance, Key};
+    let Some(scene) = &view.scene else {
+        return Vec::new();
+    };
+    if scene.fade < 0.01 {
+        return Vec::new();
+    }
+    let shot = &scene.shot;
+    let v3 = |a: [f64; 4]| Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32);
+    let ship = Vec3::new(
+        shot.ship[0] as f32,
+        shot.ship[1] as f32,
+        shot.ship[2] as f32,
+    );
+    let t = scene.local as f32;
+    // A pixel's angle, for the levels of detail.
+    let pixel = (2.0 * view.half_fov / SIZE as f64) as f32;
+    let seed = (scene.variant * 1e6) as u64;
+    let mut out = Vec::new();
+    let unit = |rng: &mut system::Rng| rng.unit() as f32;
+    let tumble = |rng: &mut system::Rng, rate: f32| {
+        let axis =
+            Vec3::new(unit(rng) - 0.5, unit(rng) - 0.5, unit(rng) - 0.5).normalize_or(Vec3::Y);
+        Quat::from_axis_angle(
+            axis,
+            unit(rng) * std::f32::consts::TAU + t * rate * (0.5 + unit(rng)),
+        )
+    };
+    let instance = |at: Vec3, size: f32, turn: Quat, look: [f32; 4]| Instance {
+        place: [at.x, at.y, at.z, size],
+        turn: turn.to_array(),
+        look,
+    };
+    // The level of detail for a rock of `radius` at `at`: none if it would
+    // be under a pixel.
+    let lod = |at: Vec3, radius: f32| {
+        let px = radius / (at - ship).length().max(1.0) / pixel;
+        if px < 0.6 {
+            None
+        } else if px > 60.0 {
+            Some(0)
+        } else if px > 10.0 {
+            Some(1)
+        } else {
+            Some(2)
+        }
+    };
+    let o = |k: usize| shot.objects[k];
+    match scene.event {
+        voyage::Event::Asteroids => {
+            let kind = shot.extra[0] as f32;
+            let look = [kind, 0.0, 0.0, 0.0];
+            for k in 0..3 {
+                let at = v3(o(k));
+                let radius = o(k)[3] as f32;
+                let mut rng = system::Rng::new(seed ^ 0x4e40 ^ k as u64);
+                if let Some(level) = lod(at, radius) {
+                    let key = Key::Rock {
+                        variant: (k as u32 + 3) % models::ROCKS,
+                        lod: level,
+                    };
+                    out.push((key, instance(at, radius, tumble(&mut rng, 0.05), look)));
+                }
+            }
+            let span = Vec3::new(460.0, 280.0, 820.0);
+            let density = shot.extra[1] as f32;
+            for i in 3..220u64 {
+                let mut rng = system::Rng::new(seed ^ i.wrapping_mul(0x9e37_79b9));
+                let h = [
+                    unit(&mut rng),
+                    unit(&mut rng),
+                    unit(&mut rng),
+                    unit(&mut rng),
+                ];
+                let radius = 0.7 + 12.3 * h[3] * h[3] * h[3];
+                let mut xy =
+                    glam::Vec2::new(h[0] - 0.5, h[1] - 0.5) * glam::Vec2::new(span.x, span.y);
+                let clear = radius + 12.0 + 26.0 * h[2];
+                if xy.length() < clear {
+                    xy = xy.normalize_or(glam::Vec2::X) * clear;
+                }
+                let z = ship.z - 60.0
+                    + ((h[2] * span.z - ship.z + 60.0) / span.z).rem_euclid(1.0) * span.z;
+                let at = Vec3::new(xy.x, xy.y, z);
+                // Rocks gather in clumps, thinning out between them.
+                let cell = |scale: f32| {
+                    let c = (at / scale).floor();
+                    system::Rng::new(
+                        seed ^ ((c.x as i64 as u64).wrapping_mul(73_856_093)
+                            ^ (c.y as i64 as u64).wrapping_mul(19_349_663)
+                            ^ (c.z as i64 as u64).wrapping_mul(83_492_791)),
+                    )
+                    .unit() as f32
+                };
+                let clump = cell(150.0) * 0.6 + cell(70.0) * 0.4;
+                if unit(&mut rng) > density * (0.35 + 1.15 * clump) {
+                    continue;
+                }
+                if let Some(level) = lod(at, radius) {
+                    let key = Key::Rock {
+                        variant: (i % models::ROCKS as u64) as u32,
+                        lod: level,
+                    };
+                    out.push((key, instance(at, radius, tumble(&mut rng, 0.08), look)));
+                }
+            }
+        }
+        voyage::Event::Gate => {
+            let style = (shot.extra[0] as u32).min(2);
+            let normal =
+                Vec3::new(shot.rot[0] as f32, shot.rot[1] as f32, shot.rot[2] as f32).normalize();
+            let spin = shot.rot[3] as f32;
+            let e1 = normal.cross(Vec3::Y).normalize_or(Vec3::X);
+            let e2 = normal.cross(e1);
+            let frame = |spin: f32| {
+                let (s, c) = spin.sin_cos();
+                Quat::from_mat3(&Mat3::from_cols(e1 * c + e2 * s, -e1 * s + e2 * c, normal))
+            };
+            let look = [
+                style as f32,
+                shot.extra[1] as f32,
+                shot.extra[2] as f32,
+                0.0,
+            ];
+            out.push((
+                Key::Gate { style, part: 0 },
+                instance(v3(o(0)), o(0)[3] as f32, frame(spin), look),
+            ));
+            if style == 2 {
+                out.push((
+                    Key::Gate { style, part: 1 },
+                    instance(v3(o(0)), o(0)[3] as f32, frame(-spin * 2.0), look),
+                ));
+            }
+        }
+        voyage::Event::Crystal => {
+            let axis =
+                Vec3::new(shot.rot[0] as f32, shot.rot[1] as f32, shot.rot[2] as f32).normalize();
+            let turn = Quat::from_axis_angle(axis, shot.rot[3] as f32);
+            let look = [shot.extra[0] as f32, o(1)[0] as f32, 0.0, 0.0];
+            out.push((
+                Key::Crystal {
+                    variant: (shot.extra[1] as u32) % 3,
+                },
+                instance(v3(o(0)), o(0)[3] as f32, turn, look),
+            ));
+        }
+        voyage::Event::HiveCube => {
+            let axis =
+                Vec3::new(shot.rot[0] as f32, shot.rot[1] as f32, shot.rot[2] as f32).normalize();
+            let look = [shot.extra[0] as f32, shot.extra[1] as f32, 0.0, 0.0];
+            for k in 0..3 {
+                if o(k)[3] <= 0.0 {
+                    continue;
+                }
+                let turn = Quat::from_axis_angle(axis, shot.rot[3] as f32 * (1.0 + k as f32 * 0.6));
+                let key = Key::Hive {
+                    variant: (shot.extra[3] as u32 + k as u32) % 3,
+                };
+                out.push((key, instance(v3(o(k)), o(k)[3] as f32, turn, look)));
+            }
+        }
+        voyage::Event::Derelict => {
+            let axis =
+                Vec3::new(shot.rot[0] as f32, shot.rot[1] as f32, shot.rot[2] as f32).normalize();
+            let spin = shot.rot[3] as f32;
+            let e1 = axis.cross(Vec3::Y).normalize_or(Vec3::X);
+            let e2 = axis.cross(e1);
+            let (s, c) = spin.sin_cos();
+            let turn = Quat::from_mat3(&Mat3::from_cols(e1 * c + e2 * s, -e1 * s + e2 * c, axis));
+            let gaps = (o(1)[1] as u32).clamp(2, 4);
+            let look = [
+                shot.extra[0] as f32,
+                shot.extra[1] as f32,
+                shot.extra[2] as f32,
+                0.0,
+            ];
+            let centre = v3(o(0));
+            let radius = o(0)[3] as f32;
+            out.push((
+                Key::Ring {
+                    gaps,
+                    variant: (shot.extra[3] as u32) % 2,
+                },
+                instance(centre, radius, turn, look),
+            ));
+            for i in 0..80u64 {
+                let mut rng = system::Rng::new(seed ^ 0xdeb ^ i.wrapping_mul(0x51af));
+                let h = [
+                    unit(&mut rng),
+                    unit(&mut rng),
+                    unit(&mut rng),
+                    unit(&mut rng),
+                ];
+                let a = h[0] * std::f32::consts::TAU + spin * (0.8 + 0.4 * h[2]);
+                let r = radius * (0.75 + 0.5 * h[1]);
+                let fi = i as f32;
+                let drift = Vec3::new(
+                    (t * 0.1 + fi).sin(),
+                    (t * 0.13 + fi * 1.7).cos(),
+                    (t * 0.07 + fi * 2.3).sin(),
+                ) * 3.0;
+                let at = centre
+                    + (e1 * a.cos() + e2 * a.sin()) * r
+                    + axis * (h[2] - 0.5) * 120.0
+                    + drift;
+                let size = 0.5 + 5.0 * h[3] * h[3] * h[3];
+                if lod(at, size).is_some() {
+                    let key = Key::Debris {
+                        variant: (i % models::DEBRIS as u64) as u32,
+                    };
+                    out.push((
+                        key,
+                        instance(
+                            at,
+                            size,
+                            tumble(&mut rng, 0.15),
+                            [-1.0, 0.0, shot.extra[0] as f32, 0.0],
+                        ),
+                    ));
+                }
+            }
+        }
+        voyage::Event::Battle => {
+            let kill = o(1)[2] as f32;
+            let age = t - kill - 0.35;
+            if age > 0.0 {
+                let lost = o(2)[3] as u32;
+                let faction = if lost < 4 { o(1)[0] } else { o(1)[1] } as f32;
+                let blast = Vec3::new(shot.rot[0] as f32, shot.rot[1] as f32, shot.rot[2] as f32);
+                let heat = (-age / 4.0).exp();
+                for i in 0..60u64 {
+                    let mut rng = system::Rng::new(seed ^ 0x3ec ^ i.wrapping_mul(0x2545));
+                    let dir = Vec3::new(
+                        unit(&mut rng) - 0.5,
+                        (unit(&mut rng) - 0.5) * 0.6,
+                        unit(&mut rng) - 0.5,
+                    )
+                    .normalize_or(Vec3::X);
+                    let speed = 10.0 + 24.0 * unit(&mut rng);
+                    let at = blast + dir * speed * age;
+                    let h = unit(&mut rng);
+                    let size = 0.3 + 2.2 * h * h * h;
+                    if lod(at, size).is_some() {
+                        let key = Key::Debris {
+                            variant: (i % models::DEBRIS as u64) as u32,
+                        };
+                        out.push((
+                            key,
+                            instance(at, size, tumble(&mut rng, 0.6), [faction, heat, 0.0, 0.0]),
+                        ));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel> {
     let scene = view.scene.as_ref()?;
     if view.reveal < 1.0 || view.warp > 0.02 || scene.fade < 0.5 {
@@ -3341,7 +3733,7 @@ pub(crate) mod tests {
             "a trip of three jumps now and then"
         );
         for visit in 0..60 {
-            let tour = tour_for(base, visit);
+            let tour = tour_for(base, visit, true, None);
             assert_eq!(tour.transit, relays[visit as usize]);
             let hops = tour.route.len();
             assert!(
@@ -3653,13 +4045,13 @@ pub(crate) mod tests {
 
     /// Wait for the starship meshes (built, or loaded from the cache) and
     /// put them on the GPU.
-    fn wait_for_ships(solar: &mut Solar, gpu: &Graphics) {
-        if let Some(rx) = solar.ship_library.take() {
+    fn wait_for_models(solar: &mut Solar, gpu: &Graphics) {
+        if let Some(rx) = solar.model_library.take() {
             let library = rx.recv().expect("the ship meshes");
             let (tx, rx) = std::sync::mpsc::channel();
             tx.send(library).expect("sent");
-            solar.ship_library = Some(rx);
-            solar.receive_ships(gpu);
+            solar.model_library = Some(rx);
+            solar.receive_models(gpu);
         }
     }
 
@@ -3723,6 +4115,7 @@ pub(crate) mod tests {
         let mut sheet =
             image::RgbaImage::new(cell * moments.len() as u32, cell * events.len() as u32);
         let mut solar = Solar::with_seed(&gpu, 11);
+        wait_for_models(&mut solar, &gpu);
         for (row, event) in events.iter().enumerate() {
             solar.tour = tour_through(
                 11,
@@ -3783,6 +4176,7 @@ pub(crate) mod tests {
         let cell = 270;
         let mut sheet = image::RgbaImage::new(cell * 4, cell * 2);
         let mut solar = Solar::with_seed(&gpu, 11);
+        wait_for_models(&mut solar, &gpu);
         for v in 0..8u64 {
             let stop = voyage::Stopover {
                 event: voyage::Event::HiveCube,
@@ -3828,6 +4222,7 @@ pub(crate) mod tests {
         let cell = 360;
         let mut sheet = image::RgbaImage::new(cell * 3, cell * 3);
         let mut solar = Solar::with_seed(&gpu, 11);
+        wait_for_models(&mut solar, &gpu);
         let mut found = 0;
         let mut variant = 0u64;
         while found < 3 {
@@ -3992,7 +4387,7 @@ pub(crate) mod tests {
         let cell = 360;
         let mut sheet = image::RgbaImage::new(cell * 2, cell * voyage::FACTIONS.len() as u32);
         let mut solar = Solar::with_seed(&gpu, 11);
-        wait_for_ships(&mut solar, &gpu);
+        wait_for_models(&mut solar, &gpu);
         let stop = voyage::Stopover {
             event: voyage::Event::Battle,
             variant: 17,
@@ -4046,7 +4441,7 @@ pub(crate) mod tests {
         let after = [-3.0, 0.25, 0.9, 1.8];
         let mut sheet = image::RgbaImage::new(cell * after.len() as u32, cell * 6);
         let mut solar = Solar::with_seed(&gpu, 11);
-        wait_for_ships(&mut solar, &gpu);
+        wait_for_models(&mut solar, &gpu);
         for v in 0..6u64 {
             let stop = voyage::Stopover {
                 event: voyage::Event::Battle,
@@ -4093,6 +4488,7 @@ pub(crate) mod tests {
         let cell = 270;
         let mut sheet = image::RgbaImage::new(cell * 4, cell * voyage::Flux::ALL.len() as u32);
         let mut solar = Solar::with_seed(&gpu, 11);
+        wait_for_models(&mut solar, &gpu);
         let stop = voyage::Stopover {
             event: voyage::Event::Asteroids,
             variant: 1,

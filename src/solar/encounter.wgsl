@@ -172,70 +172,15 @@ fn vs_rock(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
     );
     var p = vec3<f32>(0.0);
     var radius = 0.0;
-    var kind = 0.0;
     var glow = 0.0;
-    let t = ev_t();
     if (EVENT == 1) {
-        kind = params.ev[9].x;
-        if (instance < 3u) {
-            let o = ev_obj(i32(instance));
-            p = o.xyz;
-            radius = o.w;
-        } else {
-            // A box of rocks round the ship's way, wrapping round as it flies
-            // on, a corridor kept clear down the middle.
-            let span = vec3<f32>(460.0, 280.0, 820.0);
-            radius = mix(0.7, 13.0, h.w * h.w * h.w);
-            var xy = (h.xy - 0.5) * span.xy;
-            let clear = radius + 12.0 + 26.0 * h.z;
-            if (length(xy) < clear) {
-                xy = normalize(xy + vec2<f32>(1e-3, 0.0)) * clear;
-            }
-            let z = ship.z - 60.0 + fract((h.z * span.z - ship.z + 60.0) / span.z) * span.z;
-            p = vec3<f32>(xy, z);
-            // Rocks gather in clumps and thin out between them, as fields
-            // do, rather than lying evenly spread.
-            // (Hashed coarse cells: the noise volume is the fragment
-            // stage's only.)
-            let salt = vec3<f32>(params.ev[0].w * 17.0);
-            let clump = hash_cell(floor(p / 150.0) + salt) * 0.6 + hash_cell(floor(p / 70.0 + 0.5) + salt) * 0.4;
-            if (hash_cell(vec3<f32>(fi, 5.0, 3.0)) > params.ev[9].y * mix(0.35, 1.5, clump)) {
-                radius = 0.0;
-            }
-            if (instance >= 200u) {
-                // Grains of dust close round the ship, catching the light as
-                // they stream past.
-                let near = vec3<f32>(90.0, 60.0, 160.0);
-                let g = (h.xyz - vec3<f32>(0.5, 0.5, 0.0)) * near;
-                p = vec3<f32>(g.xy, ship.z - 8.0 + fract((g.z - ship.z) / near.z) * near.z);
-                radius = mix(0.04, 0.12, h.w);
-                kind = 4.0;
-                glow = 0.35 + 0.65 * h.w;
-            }
-        }
-    } else if (EVENT == 7) {
-        // Debris round the broken ring, turning with it.
-        let o = ev_obj(0);
-        let axis = params.ev[8].xyz;
-        var e1 = cross(axis, vec3<f32>(0.0, 1.0, 0.0));
-        e1 = normalize(select(e1, vec3<f32>(1.0, 0.0, 0.0), length(e1) < 1e-3));
-        let e2 = cross(axis, e1);
-        let a = h.x * TAU + params.ev[8].w * (0.8 + 0.4 * h.z);
-        let r = o.w * (0.75 + 0.5 * h.y);
-        p = o.xyz + (e1 * cos(a) + e2 * sin(a)) * r + axis * (h.z - 0.5) * 120.0;
-        p += vec3<f32>(sin(t * 0.1 + fi), cos(t * 0.13 + fi * 1.7), sin(t * 0.07 + fi * 2.3)) * 3.0;
-        radius = mix(0.5, 5.5, h.w * h.w * h.w);
-        kind = 3.0;
-    } else if (EVENT == 13) {
-        // The lost ship's wreckage, flung out from where it blew up.
-        let kill = ev_obj(1).z;
-        let wreck = battle_ship(battle_lost(), kill);
-        let dir = normalize(vec3<f32>(h.x - 0.5, (h.y - 0.5) * 0.6, h.z - 0.5) + vec3<f32>(1e-3));
-        let speed = mix(10.0, 34.0, h.z);
-        let age = max(t - kill - 0.35, 0.0);
-        p = wreck[0].xyz + dir * speed * age + wreck[1].xyz * age * 4.0;
-        radius = select(0.0, mix(0.2, 1.6, h.w * h.w * h.w), t > kill + 0.35 && instance < 90u);
-        kind = 3.0;
+        // Grains of dust close round the ship, catching the light as they
+        // stream past.
+        let near = vec3<f32>(90.0, 60.0, 160.0);
+        let g = (h.xyz - vec3<f32>(0.5, 0.5, 0.0)) * near;
+        p = vec3<f32>(g.xy, ship.z - 8.0 + fract((g.z - ship.z) / near.z) * near.z);
+        radius = select(0.0, mix(0.04, 0.12, h.w), instance < 70u);
+        glow = 0.35 + 0.65 * h.w;
     } else {
         // Ice glittering round the ship as it crosses the comet's tail.
         let span = vec3<f32>(160.0, 110.0, 300.0);
@@ -243,275 +188,38 @@ fn vs_rock(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
         let z = ship.z - 20.0 + fract((h.z * span.z - ship.z + 20.0) / span.z) * span.z;
         p = vec3<f32>(xy, z);
         radius = mix(0.15, 0.6, h.w);
-        kind = 4.0;
         glow = 0.3 + 2.5 * params.ev[2].w;
     }
     let w = from_ev(p - ship);
     let cam = vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
     out.centre = vec4<f32>(cam, radius);
-    out.look = vec4<f32>(fi + params.ev[0].w * 37.0, kind, glow, 0.0);
-    if (radius <= 0.0 || cam.z < -radius * 1.3 || cam.z > 4000.0) {
+    out.look = vec4<f32>(fi, 4.0, glow, 0.0);
+    if (radius <= 0.0 || cam.z < 1.0 || cam.z > 4000.0) {
         out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         return out;
     }
     let tan_half = params.frame.y;
-    let centre = cam.xy / (max(cam.z, 1e-3) * tan_half);
-    // Out to the sphere's silhouette, and a few pixels more for the glow.
-    var spread = radius * 1.5 / (sqrt(max(cam.z * cam.z - radius * radius, 1.0)) * tan_half) + 4.0 / params.frame.x;
-    var centre_at = centre;
-    if (cam.z < radius * 1.45 + 0.5) {
-        // Close enough to fill much of the view, or round the camera: over
-        // the whole frame, the fragment marching from the camera.
-        spread = 1.0;
-        centre_at = vec2<f32>(0.0);
-    }
+    let centre = cam.xy / (cam.z * tan_half);
+    let spread = radius * 1.5 / (cam.z * tan_half) + 4.0 / params.frame.x;
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
         vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
     );
     let corner = corners[vertex % 6u];
-    out.position = vec4<f32>(centre_at + corner * spread, clamp(max(cam.z - radius, 0.5) / (max(cam.z - radius, 0.5) + 400.0), 0.0, 0.999), 1.0);
+    out.position = vec4<f32>(centre + corner * spread, clamp(cam.z / (cam.z + 400.0), 0.0, 0.999), 1.0);
     return out;
 }
 
-// A crater's profile across `x`, its distance from the middle over its
-// radius: a bowl, a raised rim, and the ground beyond.
-fn crater_profile(x: f32) -> f32 {
-    let bowl = (x * x - 1.0) * 0.35;
-    let rim = 0.14 * exp(-sq((x - 1.0) / 0.32));
-    return mix(bowl, 0.0, smoothstep01(0.85, 1.05, x)) + rim * (1.0 - smoothstep01(1.3, 1.8, x));
-}
-
-// Craters at one scale round point `q` of a rock (its surface direction
-// scaled up): the ground's height from them, its slope, and how much of
-// it is a fresh rim, from the nearest of the eight cells about it (each
-// crater kept within half a cell of its own, so none is missed).
-fn craters(q: vec3<f32>, seed: f32) -> array<vec4<f32>, 2> {
-    let base = floor(q - 0.5);
-    var height = 0.0;
-    var slope = vec3<f32>(0.0);
-    var fresh = 0.0;
-    for (var i = 0; i < 8; i++) {
-        let cell = base + vec3<f32>(f32(i & 1), f32((i >> 1) & 1), f32((i >> 2) & 1));
-        let k = hash_cell(cell + vec3<f32>(seed, 0.0, 0.0));
-        if (k > 0.7) {
-            continue;
-        }
-        let jitter = vec3<f32>(hash_cell(cell + vec3<f32>(seed + 1.0, 3.0, 0.0)), hash_cell(cell + vec3<f32>(seed + 2.0, 0.0, 5.0)), hash_cell(cell + vec3<f32>(0.0, seed + 3.0, 7.0)));
-        let centre = cell + 0.5 + (jitter - 0.5) * 0.4;
-        let radius = mix(0.16, 0.42, k / 0.7);
-        let v = q - centre;
-        let dist = length(v);
-        let x = dist / radius;
-        if (x > 1.8) {
-            continue;
-        }
-        let depth = radius;
-        height += crater_profile(x) * depth;
-        let dx = (crater_profile(x + 0.03) - crater_profile(x - 0.03)) / 0.06;
-        slope += dx * v / max(dist, 1e-4);
-        fresh = max(fresh, step(0.45, jitter.x) * bump((x - 1.05) / 0.3));
-    }
-    return array<vec4<f32>, 2>(vec4<f32>(height, slope), vec4<f32>(fresh, 0.0, 0.0, 0.0));
-}
-
-// A rock's shape in its own frame, radius about 1: a stretched ellipsoid,
-// its surface pushed in and out by noise whose input is warped by the
-// noise's own slope, so the lumps flow into each other like broken stone
-// rather than sitting as round blobs.
-fn rock_shape(p: vec3<f32>, seed: f32, stretch: vec3<f32>) -> f32 {
-    let warp = noised(p * 1.2 + vec3<f32>(seed)).yzw * 0.22;
-    let q = p + warp;
-    let lumps = noise(q * 1.7 + vec3<f32>(seed * 0.37)) * 0.17 + noise(q * 4.1 + vec3<f32>(seed * 0.71)) * 0.055;
-    return sd_ellipsoid(p, stretch) - lumps;
-}
-
+// A mote of ice or a grain of dust: a soft point, added.
 @fragment
 fn fs_rock(in: Rock) -> @location(0) vec4<f32> {
     let s = half_frame(in.position);
     let d = normalize(vec3<f32>(s * params.frame.y, 1.0));
     let c = in.centre.xyz;
-    let r = in.centre.w;
-    let kind = in.look.y;
-    let seed = in.look.x;
     let tca = dot(c, d);
-    let pixel = tca * params.frame.z;
-    if (kind > 3.5) {
-        // A mote of ice or a grain of dust: a soft point.
-        let across = length(c - d * tca);
-        let g = exp(-sq(across / max(r, pixel * 1.2)));
-        return vec4<f32>(vec3<f32>(0.6, 0.85, 1.0) * g * in.look.z, 0.0);
-    }
-    // The light, from the encounter frame into the camera's.
-    var lw = from_ev(normalize(vec3<f32>(0.55, 0.6, -0.45)));
-    if (EVENT == 1) {
-        lw = from_ev(ev_light());
-    }
-    let l = vec3<f32>(dot(lw, params.right.xyz), dot(lw, params.up.xyz), dot(lw, params.forward.xyz));
-    if (kind > 2.5) {
-        return debris(in, d, l);
-    }
-    // The rock's own frame: tumbling about its own axis, stretched its own
-    // way, the ray in units of its radius.
-    let axis = normalize(vec3<f32>(fract(seed * 0.31) - 0.5, 1.0, fract(seed * 0.71) - 0.5));
-    let spin = seed * 0.37 + ev_t() * (0.04 + 0.08 * fract(seed * 0.618));
-    let stretch = vec3<f32>(0.62 + 0.3 * fract(seed * 0.131), 0.55 + 0.25 * fract(seed * 0.377), 0.85);
-    let ro = turn(-c / r, axis, -spin);
-    let rd = turn(d, axis, -spin);
-    // Its size on the frame, in pixels (close by, as big as it gets).
-    let reach = max(tca, r * 0.5);
-    let rs = r / reach / params.frame.z;
-    // Sphere-traced from where the ray enters its bounds.
-    let bound = sphere_hits(ro, rd, vec3<f32>(0.0), 1.45);
-    if (bound.y <= 0.0) {
-        discard;
-    }
-    var t = max(bound.x, 0.0);
-    var closest = 1e9;
-    var near_t = t;
-    var hit = false;
-    let steps = select(36, 14, rs < 8.0);
-    for (var i = 0; i < steps; i++) {
-        let dist = rock_shape(ro + rd * t, seed, stretch);
-        let ratio = dist / max(t, 1e-3);
-        if (ratio < closest) {
-            closest = ratio;
-            near_t = t;
-        }
-        if (dist < 0.002 * t + 0.001) {
-            hit = true;
-            break;
-        }
-        t += dist * 0.6;
-        if (t > bound.y) {
-            break;
-        }
-    }
-    // Missed, but close: a soft edge a pixel wide, no wider.
-    let angle_px = params.frame.z * reach / r;
-    var cover = 1.0;
-    if (!hit) {
-        cover = clamp(0.5 - closest / angle_px, 0.0, 1.0);
-        if (cover <= 0.0) {
-            discard;
-        }
-        // Shaded where the ray passed closest, not where it gave up.
-        t = near_t;
-    }
-    let p = ro + rd * t;
-    // The normal from the shape, sharpened by craters and fine grain, each
-    // faded out where finer than a pixel.
-    let e = 0.012;
-    var n = normalize(vec3<f32>(
-        rock_shape(p + vec3<f32>(e, 0.0, 0.0), seed, stretch) - rock_shape(p - vec3<f32>(e, 0.0, 0.0), seed, stretch),
-        rock_shape(p + vec3<f32>(0.0, e, 0.0), seed, stretch) - rock_shape(p - vec3<f32>(0.0, e, 0.0), seed, stretch),
-        rock_shape(p + vec3<f32>(0.0, 0.0, e), seed, stretch) - rock_shape(p - vec3<f32>(0.0, 0.0, e), seed, stretch),
-    ));
-    let dir = normalize(p);
-    var bowl = 0.0;
-    var fresh = 0.0;
-    if (rs > 10.0) {
-        let big = craters(dir * 3.2, seed);
-        var dent = big[0];
-        fresh = big[1].x;
-        if (rs > 40.0) {
-            let small = craters(dir * 9.0 + 31.0, seed + 5.0);
-            dent += vec4<f32>(small[0].x * 0.35, small[0].yzw);
-            fresh = max(fresh, small[1].x * 0.6);
-        }
-        let fade = smoothstep01(10.0, 30.0, rs);
-        let g = dent.yzw - n * dot(dent.yzw, n);
-        n = normalize(n - g * 0.9 * fade);
-        bowl = dent.x * fade;
-    }
-    let grain = noised(p * 22.0 + vec3<f32>(seed));
-    n = normalize(n - grain.yzw * 0.12 * smoothstep01(25.0, 80.0, rs));
-    // Back to the camera's frame.
-    let nc = turn(n, axis, spin);
-    let lc = l;
-    let ll = turn(lc, axis, -spin);
-    // Regolith: Lommel-Seeliger blended with Lambert (a lunar-Lambert
-    // model), so a lit rock is flat and bright to its terminator rather than
-    // shading off like plastic.
-    let mu0 = max(dot(nc, lc), 0.0);
-    let mu = max(dot(nc, -d), 0.0);
-    // (Its rise toward the limb damped, or small rocks ring like bubbles.)
-    let ls = 2.0 * mu0 / (mu0 + mu + 0.15);
-    let lunar = select(0.65, 0.25, kind > 0.5 && kind < 1.5);
-    var brdf = mix(mu0, ls * 0.5, lunar);
-    // Soft shadows cast by its own lumps, from the shape along the light.
-    var shadow = 1.0;
-    if (mu0 > 0.0 && rs > 12.0) {
-        var ts = 0.04;
-        for (var k = 0; k < 6; k++) {
-            let h = rock_shape(p + ll * ts, seed, stretch);
-            shadow = min(shadow, 10.0 * h / ts);
-            ts += clamp(h, 0.04, 0.3);
-        }
-        shadow = smoothstep01(0.0, 1.0, shadow);
-    }
-    // Hollows hold less light: from the craters' bowls and the shape.
-    let ao = clamp(1.0 + bowl * 2.5, 0.45, 1.0) * clamp(0.55 + rock_shape(p + n * 0.12, seed, stretch) / 0.12 * 0.45, 0.4, 1.0);
-    // The rock's colour: its kind, mottled at two scales, crater rims fresh
-    // and paler, fine specks.
-    var albedo = vec3<f32>(0.075, 0.068, 0.062);
-    var shine = 0.0;
-    if (kind > 1.5) {
-        albedo = vec3<f32>(0.2, 0.13, 0.085);
-        shine = 0.35;
-    } else if (kind > 0.5) {
-        albedo = vec3<f32>(0.4, 0.45, 0.5);
-        shine = 0.6;
-    }
-    let mottle = noise(p * 2.3 + vec3<f32>(seed * 1.9)) * 0.5 + noise(p * 7.0 + vec3<f32>(seed)) * 0.25;
-    albedo *= 0.8 + 0.45 * mottle;
-    albedo *= 1.0 + fresh * 0.9;
-    let speck = step(0.93, hash_cell(floor(p * 70.0))) * smoothstep01(40.0, 120.0, rs);
-    albedo *= 1.0 + speck * 0.8;
-    var colour = albedo * brdf * shadow * 2.4;
-    // Faint fill from the sky and the field's other rocks, so the night
-    // side still reads as a shape.
-    colour += albedo * vec3<f32>(0.07, 0.08, 0.1) * (0.35 + 0.25 * max(dot(nc, -lc), 0.0)) * ao;
-    // No glint at grazing angles: backlit, it would ring every small rock.
-    let spec = pow(max(dot(reflect(-lc, nc), -d), 0.0), 40.0) * shine * shadow * smoothstep01(0.1, 0.45, mu) * mu0;
-    colour += vec3<f32>(spec);
-    if (kind > 0.5 && kind < 1.5) {
-        // Ice: light scattered through its edges.
-        colour += vec3<f32>(0.25, 0.45, 0.6) * pow(1.0 - mu, 4.0) * max(dot(d, lc), 0.0) * 0.06 * smoothstep01(20.0, 60.0, rs);
-    }
-    colour *= mix(1.0, ao, 0.6);
-    return vec4<f32>(colour * cover, cover);
-}
-
-// A ship's debris: flat plates and torn edges, the older lumpy impostor.
-fn debris(in: Rock, d: vec3<f32>, l: vec3<f32>) -> vec4<f32> {
-    let c = in.centre.xyz;
-    let r = in.centre.w;
-    let seed = in.look.x;
-    let tca = dot(c, d);
-    let pixel = tca * params.frame.z;
-    let d2 = dot(c, c) - tca * tca;
-    let toward = normalize(d * tca - c + vec3<f32>(1e-4, 0.0, 0.0));
-    let lump = noise(toward * 1.7 + vec3<f32>(seed * 3.1, seed * 1.3, 0.0)) * 0.13 + noise(toward * 4.3 + seed) * 0.05;
-    let rim = r * (0.86 + lump);
-    let across = sqrt(max(d2, 0.0));
-    if (across > rim + pixel) {
-        discard;
-    }
-    let th = sqrt(max(rim * rim - d2, 0.0));
-    let at = d * (tca - th);
-    var n = normalize(at - c);
-    n = normalize(floor(n * 2.2 + 0.5) + n * 0.15);
-    let g2 = noised(n * 10.0 + vec3<f32>(seed * 0.13));
-    let diffuse = max(dot(n, l), 0.0);
-    let albedo = mix(vec3<f32>(0.42, 0.44, 0.47), vec3<f32>(0.5, 0.36, 0.25), step(0.6, fract(seed * 0.17))) * (0.75 + 0.25 * g2.x);
-    let spec = pow(max(dot(reflect(-l, n), -d), 0.0), 28.0) * 0.6;
-    var colour = albedo * (diffuse * 1.25 + 0.025) + vec3<f32>(spec);
-    if (fract(seed * 0.0731) > 0.86) {
-        colour += vec3<f32>(1.0, 0.35, 0.08) * smoothstep01(0.55, 0.8, g2.x) * (0.7 + 0.3 * sin(ev_t() * 4.0 + seed));
-    }
-    let a = clamp((rim - across) / pixel + 0.5, 0.0, 1.0);
-    return vec4<f32>(colour * a, a);
+    let across = length(c - d * tca);
+    let g = exp(-sq(across / max(in.centre.w, tca * params.frame.z * 1.2)));
+    return vec4<f32>(vec3<f32>(0.6, 0.85, 1.0) * g * in.look.z, 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -520,141 +228,19 @@ fn debris(in: Rock, d: vec3<f32>, l: vec3<f32>) -> vec4<f32> {
 // small cubes keeping station and a tractor beam reaching for the ship.
 // ---------------------------------------------------------------------------
 
-// Where a ray from `o` along `d` (both in the box's own frame) meets the box
-// of half-size `h`: in and out.
-fn box_hits(o: vec3<f32>, d: vec3<f32>, h: f32) -> vec2<f32> {
-    let inv = 1.0 / select(d, vec3<f32>(1e-6), abs(d) < vec3<f32>(1e-6));
-    let t0 = (vec3<f32>(-h) - o) * inv;
-    let t1 = (vec3<f32>(h) - o) * inv;
-    let lo = min(t0, t1);
-    let hi = max(t0, t1);
-    return vec2<f32>(max(max(lo.x, lo.y), lo.z), min(min(hi.x, hi.y), hi.z));
-}
-
-// A face of the cube at `uv` (-1..1 across it), as albedo and light given
-// off: panels, seams and pipes at three scales, slits and open bays glowing
-// in its colour, scars burning at their edges. `fp` is a pixel's size in
-// `uv`, so detail finer than that fades out.
-fn cube_face(uv: vec2<f32>, face: f32, seed: f32, fp: f32, glow: vec3<f32>, damage: f32, p: vec3<f32>) -> array<vec3<f32>, 2> {
-    let t = ev_t();
-    var albedo = vec3<f32>(0.075, 0.08, 0.078);
-    var light = vec3<f32>(0.0);
-    var seams = 0.0;
-    var k = 3.0;
-    for (var level = 0; level < 3; level++) {
-        let g = (uv * 0.5 + 0.5) * k;
-        let id = floor(g);
-        let f = g - id;
-        let h = hash_cell(vec3<f32>(id, face * 7.0 + seed + f32(level) * 31.0));
-        let detail = 1.0 - smoothstep01(0.08, 0.3, fp * k);
-        let seam = (1.0 - smoothstep01(0.0, 0.06 + fp * k * 0.5, min(min(f.x, f.y), min(1.0 - f.x, 1.0 - f.y))));
-        seams = max(seams, seam * detail);
-        albedo *= mix(1.0, 0.75 + 0.5 * h, detail);
-        if (h > 0.72) {
-            // Pipes along the panel.
-            let along = select(f.x, f.y, h > 0.86);
-            albedo *= mix(1.0, 0.7 + 0.5 * abs(sin(along * 18.0)), detail);
-        }
-        if (level == 1 && h > 0.9) {
-            // A glowing slit, flickering.
-            let slit = (1.0 - smoothstep01(0.0, 0.08, abs(f.y - 0.5))) * step(0.15, f.x) * step(f.x, 0.85);
-            light += glow * slit * (0.55 + 0.45 * sin(t * 3.0 + h * 40.0)) * 0.9 * detail;
-        }
-        if (level == 0 && h < 0.1) {
-            // An open bay: the light inside, behind a grille.
-            let grille = smoothstep01(0.3, 0.5, abs(sin(f.x * 40.0)) * abs(sin(f.y * 40.0)));
-            light += glow * (0.35 + 0.25 * grille) * smoothstep01(0.05, 0.12, min(min(f.x, f.y), min(1.0 - f.x, 1.0 - f.y)));
-        }
-        if (level == 2 && h > 0.965) {
-            light += glow * 0.8 * detail * (0.5 + 0.5 * step(0.5, fract(t * 0.7 + h * 9.0)));
-        }
-        k *= 3.0;
-    }
-    albedo *= 1.0 - 0.7 * seams;
-    // Conduits of light along the largest seams.
-    let g0 = fract((uv * 0.5 + 0.5) * 3.0);
-    let conduit = 1.0 - smoothstep01(0.0, 0.012 + fp * 2.0, min(abs(g0.x - 0.5), abs(g0.y - 0.5)));
-    light += glow * conduit * 0.25 * (0.6 + 0.4 * sin(t * 1.3 + face));
-    // Scars: blasted dark, their edges smouldering.
-    if (damage > 0.05) {
-        let scar = noise(p * 0.06 + vec3<f32>(seed)) * 0.6 + noise(p * 0.17 + seed) * 0.4;
-        let cut = 1.0 - damage * 0.9;
-        let burnt = smoothstep01(cut - 0.08, cut, scar);
-        albedo *= 1.0 - 0.75 * burnt;
-        light *= 1.0 - 0.8 * burnt;
-        light += vec3<f32>(1.0, 0.35, 0.06) * bump((scar - cut) / 0.025) * 0.6 * (0.7 + 0.3 * sin(t * 2.0 + scar * 30.0));
-    }
-    return array<vec3<f32>, 2>(albedo, light);
-}
-
 fn ev_cube(d: vec3<f32>) -> vec4<f32> {
+    // The cube itself is a mesh (`fs_model`, family 4): here only the haze of
+    // its light round it, and its tractor beam.
     let ship = ev_ship();
-    let axis = normalize(params.ev[8].xyz);
-    let angle = params.ev[8].w;
-    let tone = params.ev[9].x;
-    let glow = mix(hue_of(tone), vec3<f32>(1.0), 0.12) * 1.1;
-    let damage = params.ev[9].y;
-    let seed = params.ev[9].w;
-    // The nearest of the cube and its escorts along the ray.
-    var best = 1e9;
-    var which = -1;
-    var local_o = vec3<f32>(0.0);
-    var local_d = vec3<f32>(0.0);
-    for (var k = 0; k < 3; k++) {
-        let o = ev_obj(k);
-        if (o.w <= 0.0) {
-            continue;
-        }
-        let lo = turn(ship - o.xyz, axis, -angle * (1.0 + f32(k) * 0.6));
-        let ld = turn(d, axis, -angle * (1.0 + f32(k) * 0.6));
-        let hits = box_hits(lo, ld, o.w);
-        if (hits.x < hits.y && hits.x > 0.0 && hits.x < best) {
-            best = hits.x;
-            which = k;
-            local_o = lo;
-            local_d = ld;
-        }
-    }
-    var colour = vec3<f32>(0.0);
-    var alpha = 0.0;
+    let glow = mix(hue_of(params.ev[9].x), vec3<f32>(1.0), 0.12) * 1.1;
     let primary = ev_obj(0);
-    if (which >= 0) {
-        let o = ev_obj(which);
-        let p = local_o + local_d * best;
-        let q = p / o.w;
-        let a = abs(q);
-        var normal = vec3<f32>(sign(q.x), 0.0, 0.0);
-        var uv = q.yz;
-        var face = select(0.0, 1.0, q.x > 0.0);
-        if (a.y >= a.x && a.y >= a.z) {
-            normal = vec3<f32>(0.0, sign(q.y), 0.0);
-            uv = q.xz;
-            face = select(2.0, 3.0, q.y > 0.0);
-        } else if (a.z >= a.x && a.z >= a.y) {
-            normal = vec3<f32>(0.0, 0.0, sign(q.z));
-            uv = q.xy;
-            face = select(4.0, 5.0, q.z > 0.0);
-        }
-        let fp = best * params.frame.z / o.w;
-        let surface = cube_face(uv, face, seed + f32(which) * 13.0, fp, glow, damage, p);
-        let n = turn(normal, axis, angle * (1.0 + f32(which) * 0.6));
-        let l = normalize(vec3<f32>(0.45, 0.75, -0.45));
-        let lit = max(dot(n, l), 0.0) * 0.9 + 0.08 + max(dot(n, -l), 0.0) * 0.05;
-        colour = surface[0] * lit * vec3<f32>(0.8, 0.9, 1.0) + surface[1] + glow * 0.012;
-        // The edges catch the light.
-        let edge = smoothstep01(0.985, 1.0, max(max(min(a.x, a.y), min(a.y, a.z)), min(a.x, a.z)));
-        colour += vec3<f32>(0.6, 0.7, 0.75) * edge * 0.15 * lit;
-        alpha = 1.0;
-    }
-    // The haze of its light round it.
+    var colour = vec3<f32>(0.0);
     let v = primary.xyz - ship;
     let tca = dot(v, d);
     if (tca > 0.0) {
         let across = length(v - d * tca);
-        colour += glow * exp(-max(across - primary.w * 1.05, 0.0) / (primary.w * 0.3)) * 0.025 * (1.0 - alpha);
+        colour += glow * exp(-max(across - primary.w * 1.05, 0.0) / (primary.w * 0.3)) * 0.025;
     }
-    // The tractor beam: from the face toward the ship to just below the
-    // camera, widening as it nears, light running along it.
     let beam = params.ev[3].w;
     if (beam > 0.001) {
         let start = primary.xyz + normalize(ship - primary.xyz) * primary.w;
@@ -664,18 +250,17 @@ fn ev_cube(d: vec3<f32>) -> vec4<f32> {
         let m = along / span;
         let near = ray_to_line(ship, d, start, m);
         let f = clamp(near.z / span, 0.0, 1.0);
-        if (near.y > 0.0 && near.z > 0.0 && near.y < best) {
+        if (near.y > 0.0 && near.z > 0.0) {
             let width = mix(primary.w * 0.2, 1.6, f * f);
             let core = exp(-sq(near.x / width));
             var stripes = 0.6 + 0.4 * sin(near.z * 0.35 - ev_t() * 14.0);
             if (params.ev[9].z > 0.5) {
-                // A lattice of light, not a plain cone.
                 stripes = 0.35 + 0.65 * smoothstep01(0.5, 0.95, abs(sin(near.x / width * 7.0 + near.z * 0.2 - ev_t() * 4.0)));
             }
             colour += glow * core * stripes * beam * (0.45 + 0.3 * f) * (1.0 - smoothstep01(0.9, 1.0, f));
         }
     }
-    return vec4<f32>(colour, alpha);
+    return vec4<f32>(colour, 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -950,96 +535,18 @@ fn ev_pulsar(d: vec3<f32>) -> vec4<f32> {
 // ---------------------------------------------------------------------------
 
 fn ev_derelict(d: vec3<f32>) -> vec4<f32> {
+    // The station itself is a mesh (`fs_model`, family 5): here only its
+    // beacon, blinking red on the rim as it turns.
     let ship = ev_ship();
     let o = ev_obj(0);
-    let centre = o.xyz;
-    let radius = o.w;
-    let height = ev_obj(1).x;
-    let gaps = ev_obj(1).y;
     let axis = normalize(params.ev[8].xyz);
-    let spin = params.ev[8].w;
-    let seed = params.ev[9].w;
-    let t = ev_t();
     var e1 = cross(axis, vec3<f32>(0.0, 1.0, 0.0));
     e1 = normalize(select(e1, vec3<f32>(1.0, 0.0, 0.0), length(e1) < 1e-3));
     let e2 = cross(axis, e1);
-    let ro = ship - centre;
-    let lo = vec3<f32>(dot(ro, e1), dot(ro, e2), dot(ro, axis));
-    let ld = vec3<f32>(dot(d, e1), dot(d, e2), dot(d, axis));
-    let a = ld.x * ld.x + ld.y * ld.y;
-    let b = lo.x * ld.x + lo.y * ld.y;
-    let c = lo.x * lo.x + lo.y * lo.y - radius * radius;
-    let h = b * b - a * c;
-    var colour = vec3<f32>(0.0);
-    var alpha = 0.0;
-    var found = -1.0;
-    var at = vec3<f32>(0.0);
-    var phi = 0.0;
-    var sector = 0.0;
-    if (h > 0.0 && a > 1e-6) {
-        let q = sqrt(h);
-        for (var k = 0; k < 2; k++) {
-            let tk = (-b + select(q, -q, k == 0)) / a;
-            if (tk > 0.0 && found < 0.0) {
-                let p = lo + ld * tk;
-                if (abs(p.z) < height) {
-                    let ph = atan2(p.y, p.x) - spin;
-                    let sec = fract(ph / TAU * gaps + seed * 0.013);
-                    let jag = 0.05 * noise(vec3<f32>(p.z * 0.12, ph * 14.0, seed));
-                    if (sec < 0.8 + jag) {
-                        found = tk;
-                        at = p;
-                        phi = ph;
-                        sector = sec;
-                    }
-                }
-            }
-        }
-    }
-    if (found > 0.0) {
-        let outward = normalize(vec3<f32>(at.x, at.y, 0.0));
-        let inner = dot(outward, ld) > 0.0;
-        let n = select(outward, -outward, inner);
-        let l = normalize(vec3<f32>(dot(vec3<f32>(0.6, 0.5, -0.6), e1), dot(vec3<f32>(0.6, 0.5, -0.6), e2), dot(vec3<f32>(0.6, 0.5, -0.6), axis)));
-        let lit = max(dot(n, l), 0.0);
-        let around = phi * radius;
-        let fp = found * params.frame.z;
-        // Hull plates and their seams.
-        let cell = vec2<f32>(around / 9.0, at.z / 5.0);
-        let id = floor(cell);
-        let f = cell - id;
-        let plate = hash_cell(vec3<f32>(id, seed));
-        let seam = 1.0 - smoothstep01(0.0, 0.05 + fp / 9.0, min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)));
-        var albedo = mix(vec3<f32>(0.15, 0.155, 0.165), vec3<f32>(0.2, 0.17, 0.14), params.ev[9].x) * (0.7 + 0.5 * plate) * (1.0 - 0.6 * seam);
-        // Scorch and age.
-        albedo *= 0.6 + 0.4 * smoothstep01(-0.4, 0.4, noise(vec3<f32>(around * 0.02, at.z * 0.05, seed)));
-        colour = albedo * (lit * 1.1 + 0.03);
-        // Ribs where it broke.
-        let broke = smoothstep01(0.7, 0.8, sector);
-        colour = mix(colour, albedo * 0.3 * (0.5 + 0.5 * abs(sin(around * 0.6))), broke);
-        colour += vec3<f32>(1.0, 0.4, 0.08) * broke * smoothstep01(0.45, 0.8, noise(vec3<f32>(around * 0.1, at.z * 0.2, t * 0.6))) * 0.9;
-        // Windows on the inner face, a few still lit, flickering.
-        if (inner) {
-            let w = vec2<f32>(around / 3.0, at.z / 2.6);
-            let wid = floor(w);
-            let wf = w - wid;
-            let wh = hash_cell(vec3<f32>(wid, seed + 3.0));
-            let pane = step(0.25, wf.x) * step(wf.x, 0.75) * step(0.3, wf.y) * step(wf.y, 0.7);
-            let on = step(wh, params.ev[9].z * 0.35) * (0.7 + 0.3 * step(0.1, fract(t * (0.3 + wh * 2.0) + wh * 17.0)));
-            let warm = mix(vec3<f32>(1.0, 0.72, 0.38), vec3<f32>(0.7, 0.86, 1.0), params.ev[9].y);
-            colour += warm * pane * on * 1.4 * (1.0 - broke) * (1.0 - smoothstep01(0.3, 1.0, fp));
-            colour += warm * on * 0.04 * (1.0 - broke);
-        }
-        let edge = (height - abs(at.z)) / fp;
-        alpha = clamp(edge + 0.5, 0.0, 1.0);
-        colour *= alpha;
-    }
-    // A beacon on the rim, blinking red.
-    let ba = 0.6 - spin;
-    let beacon = centre + (e1 * cos(ba) + e2 * sin(ba)) * radius + axis * height;
-    let blink = step(0.85, fract(t * 0.7));
-    colour += vec3<f32>(1.0, 0.15, 0.1) * glint(point_pixels(ship, d, beacon), 1.4) * blink * 1.5;
-    return vec4<f32>(colour, alpha);
+    let ba = 0.6 + params.ev[8].w;
+    let beacon = o.xyz + (e1 * cos(ba) + e2 * sin(ba)) * o.w + axis * o.w * 0.13;
+    let blink = step(0.85, fract(ev_t() * 0.7));
+    return vec4<f32>(vec3<f32>(1.0, 0.15, 0.1) * glint(point_pixels(ship, d, beacon), 1.4) * blink * 1.5, 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,41 +702,6 @@ fn ev_remnant(d: vec3<f32>) -> vec4<f32> {
 // chasing light down the approach.
 // ---------------------------------------------------------------------------
 
-// The gate's distance field, in its own frame (z its axis), and which node
-// is nearest, as an angle step.
-fn gate_field(p: vec3<f32>, radius: f32, style: f32, spin: f32) -> vec2<f32> {
-    let thick = radius * 0.06;
-    let nodes = select(9.0, 3.0, style > 0.5 && style < 1.5);
-    let a = atan2(p.y, p.x);
-    let step_ = TAU / nodes;
-    let k = round(a / step_);
-    let c = cos(-k * step_);
-    let s = sin(-k * step_);
-    let q = vec3<f32>(p.x * c - p.y * s, p.x * s + p.y * c, p.z);
-    var dist = 1e9;
-    if (style < 0.5) {
-        // A ring and its nodes.
-        dist = length(vec2<f32>(length(p.xy) - radius, p.z)) - thick;
-        dist = min(dist, length(q - vec3<f32>(radius, 0.0, 0.0)) - thick * 1.9);
-    } else if (style < 1.5) {
-        // A blocky ring, three pylons out from it.
-        let rr = length(p.xy) - radius;
-        dist = max(abs(rr) - thick * 1.4, abs(p.z) - thick * 2.2);
-        let pylon = abs(q - vec3<f32>(radius * 1.18, 0.0, 0.0)) - vec3<f32>(radius * 0.2, thick * 1.6, thick * 3.0);
-        dist = min(dist, length(max(pylon, vec3<f32>(0.0))) + min(max(pylon.x, max(pylon.y, pylon.z)), 0.0));
-    } else {
-        // Two rings, turning against each other, nodes on the outer.
-        let c2 = cos(spin * 2.0);
-        let s2 = sin(spin * 2.0);
-        let p2 = vec3<f32>(p.x * c2 - p.y * s2, p.x * s2 + p.y * c2, p.z);
-        let wob = sin(atan2(p2.y, p2.x) * 12.0) * thick * 0.3;
-        dist = length(vec2<f32>(length(p.xy) - radius, p.z - thick * 2.0)) - thick;
-        dist = min(dist, length(vec2<f32>(length(p.xy) - radius * 0.86, p.z + thick * 2.0)) - thick * 0.8 - wob);
-        dist = min(dist, length(q - vec3<f32>(radius, 0.0, thick * 2.0)) - thick * 1.6);
-    }
-    return vec2<f32>(dist, (k + nodes) % nodes);
-}
-
 fn ev_gate(d: vec3<f32>) -> vec4<f32> {
     let ship = ev_ship();
     let o = ev_obj(0);
@@ -1254,56 +726,7 @@ fn ev_gate(d: vec3<f32>) -> vec4<f32> {
     var colour = vec3<f32>(0.0);
     var alpha = 0.0;
     var reach = 1e9;
-    let bound = sphere_hits(lo, ld, vec3<f32>(0.0), radius * 1.45);
-    if (bound.y > 0.0) {
-        var tm = max(bound.x, 0.0);
-        var node = 0.0;
-        var hit = false;
-        for (var i = 0; i < 56; i++) {
-            let f = gate_field(lo + ld * tm, radius, style, spin);
-            if (f.x < 0.0015 * tm + 0.02) {
-                hit = true;
-                node = f.y;
-                break;
-            }
-            tm += f.x * 0.9;
-            if (tm > bound.y) {
-                break;
-            }
-        }
-        if (hit) {
-            reach = tm;
-            let p = lo + ld * tm;
-            let e = 0.02 * radius;
-            let n = normalize(vec3<f32>(
-                gate_field(p + vec3<f32>(e, 0.0, 0.0), radius, style, spin).x - gate_field(p - vec3<f32>(e, 0.0, 0.0), radius, style, spin).x,
-                gate_field(p + vec3<f32>(0.0, e, 0.0), radius, style, spin).x - gate_field(p - vec3<f32>(0.0, e, 0.0), radius, style, spin).x,
-                gate_field(p + vec3<f32>(0.0, 0.0, e), radius, style, spin).x - gate_field(p - vec3<f32>(0.0, 0.0, e), radius, style, spin).x,
-            ));
-            // Lit from the side and a little behind, so its curves show.
-            let lw = normalize(vec3<f32>(0.8, 0.45, 0.4));
-            let l = vec3<f32>(dot(lw, f1), dot(lw, f2), dot(lw, normal));
-            let a = atan2(p.y, p.x);
-            let panels = 0.7 + 0.3 * step(0.5, fract(a * radius / 5.0)) * step(0.3, fract(a * radius / 23.0));
-            let albedo = vec3<f32>(0.1, 0.105, 0.115) * panels;
-            let lit = max(dot(n, l), 0.0) * 1.3 + 0.02;
-            let spec = pow(max(dot(reflect(-l, n), -ld), 0.0), 30.0) * 0.9;
-            colour = albedo * lit + vec3<f32>(spec) * panels;
-            // Running lights round its face, in its colour.
-            let strip = bump((fract(a * radius / 7.0) - 0.5) / 0.08) * smoothstep01(0.6, 0.9, abs(n.z));
-            colour += hue * strip * (0.15 + 0.6 * smoothstep01(0.2, 0.5, u)) * step(0.5, fract(a * radius / 7.0 * 0.5 + t * 0.4));
-            // The nodes light one after another as it powers up, and the
-            // ring's inner face takes their light.
-            let nodes = select(9.0, 3.0, style > 0.5 && style < 1.5);
-            let on = smoothstep01(0.25 + node / nodes * 0.25, 0.3 + node / nodes * 0.25, u);
-            let node_at = vec3<f32>(cos(node * TAU / nodes), sin(node * TAU / nodes), 0.0) * radius * select(1.0, 1.18, style > 0.5 && style < 1.5);
-            let near_node = smoothstep01(radius * 0.2, radius * 0.06, length(p - node_at));
-            colour += hue * near_node * mix(0.06, 2.2 + 0.6 * sin(t * 6.0 + node), on);
-            let inner_face = smoothstep01(0.0, -0.6, dot(n.xy, normalize(p.xy)));
-            colour += hue * inner_face * smoothstep01(0.45, 0.65, u) * 0.35;
-            alpha = 1.0;
-        }
-    }
+    // The ring itself is a mesh (`fs_model`, family 2), drawn over this.
     // The field opening across the middle: rippling light over the stars
     // seen through it, bent.
     if (abs(ld.z) > 1e-4) {
@@ -1439,125 +862,6 @@ fn sd_box2(p: vec2<f32>, b: vec2<f32>) -> f32 {
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
 }
 
-// Hull plating: panels a cell of a lattice each, their own height 0..1 and
-// sunk at their seams, so a hull's skin carries plates and panel lines in its
-// shape, not only in its colour.
-fn plating(q: vec3<f32>, scale: f32) -> f32 {
-    let g = q * scale;
-    let f = fract(g) - 0.5;
-    let inner = 1.0 - smoothstep(0.4, 0.5, max(max(abs(f.x), abs(f.y)), abs(f.z)));
-    return (0.35 + 0.65 * hash_cell(floor(g))) * inner;
-}
-
-fn sd_cylinder_z(p: vec3<f32>, r: f32, h: f32) -> f32 {
-    let d = vec2<f32>(length(p.xy) - r, abs(p.z) - h);
-    return min(max(d.x, d.y), 0.0) + length(max(d, vec2<f32>(0.0)));
-}
-
-// A wedge's tier: tip at `tip` ahead, `half_width` either side at the stern
-// (z = -1), its deck `top` high, sloping down to its edges.
-fn wedge_tier(p: vec3<f32>, tip: f32, half_width: f32, top: f32, floor_: f32) -> f32 {
-    let m = vec2<f32>(abs(p.x), p.z);
-    let n = normalize(vec2<f32>(1.0 + tip, half_width));
-    let edge = dot(m - vec2<f32>(0.0, tip), n);
-    let back = -p.z - 1.0;
-    let deck = p.y - (top - abs(p.x) * 0.18);
-    return max(max(max(edge, back), deck), floor_ - p.y);
-}
-
-// A hull of design `kind_`, in its own frame (x to starboard, y up, z
-// ahead), spanning about -1..1 along z.
-fn hull_sdf(p: vec3<f32>, kind_: i32) -> f32 {
-    let m = vec3<f32>(abs(p.x), p.y, p.z);
-    if (kind_ == 0) {
-        // A saucer in two decks, a bridge dome on top and a rim stepped
-        // below; on a neck, the engineering hull with its deflector dish
-        // ahead and a shuttle bay astern; nacelles high and aft on thin
-        // swept pylons, their bussard caps forward.
-        let sc = p - vec3<f32>(0.0, 0.06, 0.42);
-        var saucer = sd_ellipsoid(sc, vec3<f32>(0.56, 0.05, 0.56));
-        saucer = min(saucer, sd_ellipsoid(sc - vec3<f32>(0.0, 0.035, 0.0), vec3<f32>(0.38, 0.045, 0.38)));
-        saucer = min(saucer, sd_ellipsoid(sc - vec3<f32>(0.0, -0.03, 0.0), vec3<f32>(0.42, 0.04, 0.42)));
-        saucer = min(saucer, sd_ellipsoid(sc - vec3<f32>(0.0, 0.085, 0.0), vec3<f32>(0.085, 0.035, 0.085)));
-        saucer -= plating(p, 22.0) * 0.004;
-        var hull = sd_capsule(p, vec3<f32>(0.0, -0.17, 0.1), vec3<f32>(0.0, -0.14, -0.52), 0.085);
-        hull = max(hull, -sd_box(p - vec3<f32>(0.0, -0.13, -0.6), vec3<f32>(0.045, 0.035, 0.07)));
-        hull = min(hull, sd_ellipsoid(p - vec3<f32>(0.0, -0.17, 0.17), vec3<f32>(0.065, 0.065, 0.025)));
-        hull -= plating(p, 26.0) * 0.004;
-        let neck = sd_box(p - vec3<f32>(0.0, -0.05, 0.13), vec3<f32>(0.03, 0.075, 0.11));
-        let nacelle = sd_capsule(m, vec3<f32>(0.34, 0.17, -0.2), vec3<f32>(0.34, 0.17, -1.0), 0.05);
-        let bussard = sd_ellipsoid(m - vec3<f32>(0.34, 0.17, -0.19), vec3<f32>(0.052, 0.052, 0.06));
-        let pylon = sd_capsule(m, vec3<f32>(0.03, -0.11, -0.36), vec3<f32>(0.34, 0.15, -0.5), 0.016);
-        return min(min(saucer, min(hull, neck)), min(min(nacelle, bussard), pylon));
-    } else if (kind_ == 1) {
-        // A wedge in three tiers, each plated, a dorsal spine; the bridge
-        // tower at the stern with its two sensor globes; a bank of engines
-        // across the stern.
-        var d = wedge_tier(p, 1.0, 0.6, 0.06 + 0.07 * (1.0 - p.z) * 0.5, -0.05);
-        d = min(d, wedge_tier(p, 0.25, 0.34, 0.15, 0.0));
-        d = min(d, wedge_tier(p, -0.3, 0.2, 0.2, 0.0));
-        d = min(d, sd_box(p - vec3<f32>(0.0, 0.08 - p.z * 0.04, -0.1), vec3<f32>(0.012, 0.03, 0.6)));
-        d -= plating(p, 34.0) * 0.007;
-        d = min(d, sd_box(p - vec3<f32>(0.0, 0.25, -0.8), vec3<f32>(0.05, 0.06, 0.05)));
-        d = min(d, sd_box(p - vec3<f32>(0.0, 0.31, -0.81), vec3<f32>(0.19, 0.022, 0.04)));
-        d = min(d, length(m - vec3<f32>(0.15, 0.355, -0.81)) - 0.026);
-        let engines = min(sd_cylinder_z(m - vec3<f32>(0.0, 0.07, -1.02), 0.07, 0.04), sd_cylinder_z(m - vec3<f32>(0.2, 0.06, -1.02), 0.05, 0.04));
-        return min(d * 0.7, min(engines, sd_cylinder_z(m - vec3<f32>(0.34, 0.04, -1.01), 0.03, 0.03)));
-    } else if (kind_ == 2) {
-        // A raider: an armoured head on a long neck, a body with its engine
-        // block, and wings swept down, their trailing edges cut into
-        // feathers, cannons at their tips.
-        let head = sd_ellipsoid(p - vec3<f32>(0.0, 0.0, 0.78), vec3<f32>(0.11, 0.07, 0.17));
-        let brow = sd_ellipsoid(p - vec3<f32>(0.0, 0.05, 0.74), vec3<f32>(0.07, 0.03, 0.1));
-        let neck = sd_capsule(p, vec3<f32>(0.0, 0.03, 0.64), vec3<f32>(0.0, 0.06, 0.08), 0.042);
-        var body = sd_ellipsoid(p - vec3<f32>(0.0, 0.05, -0.15), vec3<f32>(0.25, 0.09, 0.32));
-        body = min(body, sd_box(p - vec3<f32>(0.0, 0.03, -0.42), vec3<f32>(0.12, 0.05, 0.08)));
-        body -= plating(p, 24.0) * 0.006;
-        let w = m - vec3<f32>(0.12, 0.0, -0.18);
-        let c = cos(0.38);
-        let sn = sin(0.38);
-        let along = w.x * c + w.y * sn;
-        let across = -w.x * sn + w.y * c;
-        var wing = sd_box(vec3<f32>(along - 0.42, across, w.z + along * 0.12), vec3<f32>(0.44, 0.016, 0.22 - along * 0.12));
-        let feather = abs(fract(along * 9.0) - 0.5);
-        wing = max(wing, -(max(feather - 0.06, -(w.z + along * 0.12 + 0.12 - along * 0.12))));
-        let root = sd_ellipsoid(w - vec3<f32>(0.08, 0.0, 0.0), vec3<f32>(0.1, 0.05, 0.16));
-        let tip = sd_capsule(m, vec3<f32>(0.86, -0.36, 0.08), vec3<f32>(0.86, -0.36, -0.3), 0.024);
-        return min(min(min(head, brow), min(neck, body)), min(min(wing, root), tip));
-    } else if (kind_ == 3) {
-        // A warbird: seen from the side, two great wings arching above and
-        // below with open space between, broadest at their middles and
-        // narrowing to the joins fore and aft, thin at their edges; a long
-        // neck to the command section ahead, nacelles under the lower wing.
-        let q = p - vec3<f32>(0.0, 0.0, -0.25);
-        let ang = atan2(q.y * 1.15, q.z * 0.85);
-        let around = length(vec2<f32>(q.y * 1.15, q.z * 0.85)) - 0.52;
-        let span = 0.7 * (0.25 + 0.75 * abs(sin(ang)));
-        let thin = 0.035 * (1.0 - 0.7 * sq(clamp(q.x / span, -1.0, 1.0)));
-        var wings = sd_box2(vec2<f32>(around, q.x), vec2<f32>(thin, span)) * 0.75;
-        wings -= plating(p, 20.0) * 0.004;
-        let neck = sd_capsule(p, vec3<f32>(0.0, 0.0, 0.2), vec3<f32>(0.0, -0.01, 0.8), 0.045);
-        let command = sd_ellipsoid(p - vec3<f32>(0.0, -0.01, 0.86), vec3<f32>(0.15, 0.075, 0.12));
-        let dome = sd_ellipsoid(p - vec3<f32>(0.0, 0.05, 0.86), vec3<f32>(0.06, 0.03, 0.05));
-        let nacelle = sd_capsule(m, vec3<f32>(0.5, -0.47, -0.1), vec3<f32>(0.5, -0.47, -0.55), 0.035);
-        return min(min(wings, neck), min(min(command, dome), nacelle));
-    } else if (kind_ == 4) {
-        // A trader: a broad horseshoe in two decks, open ahead, its prongs
-        // ending in claws; a raised bridge astern, engines behind it.
-        let q = p - vec3<f32>(0.0, 0.0, -0.05);
-        let open = sd_box(q - vec3<f32>(0.0, 0.0, 0.6), vec3<f32>(0.24, 0.3, 0.32));
-        let lower = max((length(vec2<f32>((length(q.xz) - 0.52) / 0.25, q.y / 0.075)) - 1.0) * 0.07, -open);
-        let upper = max((length(vec2<f32>((length(q.xz) - 0.46) / 0.17, (q.y - 0.075) / 0.05)) - 1.0) * 0.045, -open - 0.04);
-        var d = min(lower, upper) - plating(p, 26.0) * 0.005;
-        let claw = sd_ellipsoid(vec3<f32>(abs(q.x), q.y, q.z) - vec3<f32>(0.4, -0.01, 0.4), vec3<f32>(0.07, 0.05, 0.12));
-        let bridge = sd_ellipsoid(q - vec3<f32>(0.0, 0.12, -0.42), vec3<f32>(0.2, 0.07, 0.14));
-        let engines = sd_cylinder_z(vec3<f32>(abs(q.x), q.y, q.z) - vec3<f32>(0.14, 0.02, -0.66), 0.05, 0.05);
-        return min(min(d, claw), min(bridge, engines));
-    }
-    // A cube, its faces cut into recessed panels at two scales.
-    return sd_box(p, vec3<f32>(0.62)) + plating(p, 9.0) * 0.022 + plating(p, 23.0) * 0.008 - 0.02;
-}
-
 // Each design's hull colour, weapons' colour and shield's colour.
 fn faction_hull(f: i32) -> vec3<f32> {
     var c = array<vec3<f32>, 6>(
@@ -1665,50 +969,6 @@ fn battle_ship(i: i32, t: f32) -> array<vec4<f32>, 2> {
     // Thrown off its heading a little, and back.
     let heading = normalize(s[1].xyz + normalize(away) * 0.35 * jolt);
     return array<vec4<f32>, 2>(vec4<f32>(s[0].xyz + shove, s[0].w), vec4<f32>(heading, jolt));
-}
-
-// The lights each design carries: nacelles, engines, windows, wingtips,
-// and the markings painted on it (a factor on its hull's colour).
-fn hull_lights(q: vec3<f32>, kind_: i32, fire: vec3<f32>, t: f32) -> vec3<f32> {
-    let m = vec3<f32>(abs(q.x), q.y, q.z);
-    var light = vec3<f32>(0.0);
-    // Rows of windows: lit in short runs along a band of the hull.
-    let windows = step(0.55, fract(q.x * 60.0 + q.z * 60.0)) * step(0.35, hash_cell(floor(q * 18.0)));
-    if (kind_ == 0) {
-        let nacelle = sd_capsule(m, vec3<f32>(0.34, 0.17, -0.2), vec3<f32>(0.34, 0.17, -1.0), 0.056);
-        if (nacelle < 0.01) {
-            let inboard = smoothstep(0.2, 0.6, abs(q.x - sign(q.x) * 0.34) / 0.05);
-            light += vec3<f32>(0.3, 0.6, 1.0) * (0.5 + 0.9 * step(0.5, fract(q.z * 20.0))) * inboard * step(q.z, -0.3) * step(-0.95, q.z);
-            light += vec3<f32>(1.0, 0.25, 0.08) * 2.4 * smoothstep(-0.26, -0.17, q.z);
-        }
-        let rim = length(vec2<f32>(q.x, q.z - 0.42));
-        light += vec3<f32>(1.0, 0.9, 0.7) * windows * (bump((rim - 0.5) / 0.012) + bump((rim - 0.34) / 0.01) * 0.6) * step(abs(q.y - 0.06), 0.06) * 0.9;
-        light += vec3<f32>(0.4, 0.7, 1.0) * bump(length(q - vec3<f32>(0.0, -0.17, 0.19)) / 0.05) * 2.0;
-        light += vec3<f32>(1.0, 0.15, 0.08) * bump(length(m - vec3<f32>(0.06, 0.07, -0.13)) / 0.025) * 1.5;
-        light += vec3<f32>(1.0, 0.9, 0.7) * windows * step(abs(q.y + 0.15), 0.02) * step(q.z, 0.05) * step(-0.45, q.z) * 0.7;
-    } else if (kind_ == 1) {
-        light += vec3<f32>(0.65, 0.82, 1.0) * smoothstep(-1.04, -1.06, q.z) * 3.0;
-        light += vec3<f32>(1.0, 0.95, 0.85) * step(0.97, hash_cell(floor(q * 70.0))) * 0.8;
-        light += vec3<f32>(1.0, 0.95, 0.85) * windows * step(abs(q.y - 0.26), 0.012) * 0.8;
-    } else if (kind_ == 2) {
-        light += vec3<f32>(1.0, 0.3, 0.12) * smoothstep(-0.48, -0.51, q.z) * step(abs(q.x), 0.12) * 1.8;
-        light += fire * bump(length(m - vec3<f32>(0.86, -0.36, 0.1)) / 0.04) * 2.0;
-        light += vec3<f32>(1.0, 0.4, 0.2) * windows * step(abs(q.y), 0.02) * step(0.72, q.z) * 1.4;
-    } else if (kind_ == 3) {
-        light += vec3<f32>(0.3, 1.0, 0.6) * bump(length(q - vec3<f32>(0.0, -0.08, 0.86)) / 0.07) * 1.6;
-        light += vec3<f32>(0.4, 1.0, 0.6) * smoothstep(-0.52, -0.56, q.z) * step(0.48, abs(q.x)) * step(q.y, -0.43) * 2.0;
-        light += vec3<f32>(0.7, 1.0, 0.85) * windows * step(abs(q.y + 0.01), 0.02) * step(0.82, q.z) * 1.2;
-    } else if (kind_ == 4) {
-        let rim = length(q.xz - vec2<f32>(0.0, -0.05));
-        light += vec3<f32>(1.0, 0.75, 0.3) * windows * bump((rim - 0.75) / 0.02) * step(abs(q.y), 0.03) * 1.2;
-        light += vec3<f32>(1.0, 0.55, 0.2) * smoothstep(-0.71, -0.74, q.z) * step(abs(q.y - 0.02), 0.06) * 2.0;
-        light += vec3<f32>(0.8, 1.0, 0.6) * bump(length(m - vec3<f32>(0.4, 0.0, 0.53)) / 0.03) * 1.5;
-    } else {
-        let g = floor((q + 0.62) * 18.0);
-        let h = hash_cell(g + vec3<f32>(3.0));
-        light += vec3<f32>(0.2, 1.0, 0.4) * step(0.9, h) * (0.6 + 0.4 * sin(t * 3.0 + h * 50.0));
-    }
-    return light;
 }
 
 // Painted markings, a factor on a hull's colour: the warbird's feathers.
@@ -1844,6 +1104,225 @@ fn fs_ship(in: ShipOut) -> @location(0) vec4<f32> {
     return vec4<f32>(colour, 1.0);
 }
 
+// ---------------------------------------------------------------------------
+// Every other model (`models.rs`), instanced: each vertex in its model's own
+// frame, turned by its instance's quaternion, scaled and placed in the
+// encounter frame. One pipeline per family (`MODEL`): 1 rocks, 2 star
+// gates, 3 the crystal, 4 hive cubes, 5 ring stations, 6 debris.
+// ---------------------------------------------------------------------------
+
+override MODEL: i32 = 0;
+
+struct ModelIn {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) extra: vec4<f32>,
+    @location(3) place: vec4<f32>,
+    @location(4) turn: vec4<f32>,
+    @location(5) look: vec4<f32>,
+};
+
+struct ModelOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) local: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) ao: f32,
+    @location(3) @interpolate(flat) part: f32,
+    @location(4) @interpolate(flat) look: vec4<f32>,
+    @location(5) toward: vec3<f32>,
+    @location(6) @interpolate(flat) size: f32,
+};
+
+fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    let t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+@vertex
+fn vs_model(v: ModelIn) -> ModelOut {
+    var out: ModelOut;
+    let rel = quat_rotate(v.turn, v.position) * v.place.w + v.place.xyz - ev_ship();
+    let w = from_ev(rel);
+    let cam = vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
+    let depth = clamp(cam.z / (cam.z + 400.0), 0.0, 0.999);
+    out.clip = vec4<f32>(cam.x / params.frame.y, cam.y / params.frame.y, depth * cam.z, cam.z);
+    out.local = v.position;
+    out.normal = quat_rotate(v.turn, v.normal);
+    out.ao = v.extra.x;
+    out.part = v.extra.y * 255.0;
+    out.look = v.look;
+    out.toward = -rel;
+    out.size = v.place.w;
+    return out;
+}
+
+// Panels and their seams on a model's skin, on the two axes most across it:
+// a shade each, the seams darker, faded where finer than a pixel.
+fn skin(q: vec3<f32>, n: vec3<f32>, scale: f32, seed: f32) -> f32 {
+    let a = abs(n);
+    var uv = q.xz;
+    if (a.x > a.y && a.x > a.z) {
+        uv = q.yz;
+    } else if (a.z > a.y) {
+        uv = q.xy;
+    }
+    let pixel = length(fwidth(q)) * scale + 1e-5;
+    let g = uv * scale;
+    let f = abs(fract(g) - 0.5);
+    let seam = (1.0 - smoothstep01(0.44, 0.5, max(f.x, f.y))) * 0.3 * (1.0 - smoothstep01(0.05, 0.3, pixel));
+    return (0.82 + 0.3 * hash_cell(vec3<f32>(floor(g), seed))) * (1.0 - seam);
+}
+
+@fragment
+fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
+    let n = normalize(in.normal);
+    let v = normalize(in.toward);
+    let q = in.local;
+    let part = i32(in.part + 0.5);
+    let look = in.look;
+    let t = ev_t();
+    var colour = vec3<f32>(0.0);
+    if (MODEL == 1) {
+        // Rocks: regolith (Lommel-Seeliger blended with Lambert), mottled at
+        // two scales, fresh crater rims paler, a fine grain in the normal
+        // where it is bigger than a pixel.
+        let kind = look.x;
+        let l = ev_light();
+        let pixel = length(fwidth(q));
+        let grain = noised(q * 22.0 + vec3<f32>(in.size));
+        let nn = normalize(n - (grain.yzw - n * dot(grain.yzw, n)) * 0.12 * (1.0 - smoothstep01(0.02, 0.06, pixel)));
+        let mu0 = max(dot(nn, l), 0.0);
+        let mu = max(dot(nn, v), 0.0);
+        let ls = 2.0 * mu0 / (mu0 + mu + 0.15);
+        var albedo = vec3<f32>(0.075, 0.068, 0.062);
+        var shine = 0.0;
+        var lunar = 0.65;
+        if (kind > 1.5) {
+            albedo = vec3<f32>(0.2, 0.13, 0.085);
+            shine = 0.35;
+        } else if (kind > 0.5) {
+            albedo = vec3<f32>(0.4, 0.45, 0.5);
+            shine = 0.6;
+            lunar = 0.25;
+        }
+        let mottle = noise(q * 2.3 + vec3<f32>(in.size * 1.7)) * 0.5 + noise(q * 7.0) * 0.25;
+        albedo *= 0.8 + 0.45 * mottle;
+        if (part == 9) {
+            albedo *= 1.8;
+        }
+        albedo *= 1.0 + step(0.93, hash_cell(floor(q * 70.0))) * 0.8 * (1.0 - smoothstep01(0.005, 0.02, pixel));
+        let brdf = mix(mu0, ls * 0.5, lunar);
+        colour = albedo * brdf * 2.4 * mix(1.0, in.ao, 0.6);
+        colour += albedo * vec3<f32>(0.07, 0.08, 0.1) * (0.35 + 0.25 * max(dot(nn, -l), 0.0)) * in.ao;
+        colour += vec3<f32>(pow(max(dot(reflect(-l, nn), v), 0.0), 40.0) * shine * smoothstep01(0.1, 0.45, mu) * mu0);
+    } else if (MODEL == 2) {
+        // A star gate: dark plated metal lit from the side; its nodes lit
+        // one after another as it powers up, its inner face glowing as the
+        // field opens.
+        let style = look.x;
+        let hue = mix(vec3<f32>(1.0, 0.72, 0.3), select(vec3<f32>(0.75, 0.45, 1.0), vec3<f32>(0.4, 0.85, 1.0), look.y < 0.66), step(0.33, look.y));
+        let u = look.z;
+        let l = normalize(vec3<f32>(0.8, 0.45, 0.4));
+        let albedo = vec3<f32>(0.24, 0.25, 0.27) * skin(q, n, 40.0, 3.0) * select(1.0, 0.7, part == 1);
+        let lit = max(dot(n, l), 0.0) * 1.3 + 0.025;
+        colour = albedo * lit * mix(1.0, in.ao, 0.7) + vec3<f32>(pow(max(dot(reflect(-l, n), v), 0.0), 30.0) * 0.8 * lit);
+        // Its edges catch the field's light from inside.
+        colour += hue * pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.12 * (0.3 + smoothstep01(0.3, 0.6, u));
+        let nodes = select(9.0, 3.0, style > 0.5 && style < 1.5);
+        let node = (round(atan2(q.y, q.x) / (TAU / nodes)) + nodes) % nodes;
+        let on = smoothstep01(0.25 + node / nodes * 0.25, 0.3 + node / nodes * 0.25, u);
+        if (part == 9) {
+            colour += hue * mix(0.05, 2.4 + 0.6 * sin(t * 6.0 + node), on);
+        } else if (part == 7) {
+            colour += hue * smoothstep01(0.45, 0.65, u) * (0.25 + 0.15 * sin(atan2(q.y, q.x) * 36.0 - t * 4.0));
+        }
+    } else if (MODEL == 3) {
+        // The crystal: the stars behind bent through it a colour at a time
+        // into rainbows, the sky reflected off its faces, its heart's light
+        // running through it as it notices the ship.
+        let tint = mix(vec3<f32>(0.55, 0.9, 1.0), mix(vec3<f32>(0.8, 0.65, 1.0), vec3<f32>(0.65, 1.0, 0.8), step(0.5, look.x)), step(0.33, look.x));
+        let notice = look.y;
+        let d = -v;
+        let mu = max(dot(n, v), 0.0);
+        let fresnel = 0.06 + 0.94 * pow(1.0 - mu, 5.0);
+        let rr = ev_sky(normalize(refract(d, n, 0.84))).r;
+        let gg = ev_sky(normalize(refract(d, n, 0.8))).g;
+        let bb = ev_sky(normalize(refract(d, n, 0.76))).b;
+        let through = vec3<f32>(rr, gg, bb) * 2.5 * tint + tint * 0.05;
+        let mirror = ev_sky(reflect(d, n)) * 2.0 + tint * 0.04;
+        let inner = tint * (0.04 + 0.5 * notice * (0.6 + 0.4 * sin(t * 4.0 - length(q) * 12.0))) * (1.0 - smoothstep01(0.0, 1.0, length(q)));
+        let facet = pow(max(dot(n, normalize(vec3<f32>(0.3, 1.0, 0.2))), 0.0), 12.0) * tint * 0.4;
+        colour = mix(through, mirror, fresnel) + inner + pow(1.0 - mu, 3.0) * tint * 0.45 + facet;
+    } else if (MODEL == 4) {
+        // A hive cube: dark machinery, panels a shade each, light in its
+        // colour from slits and bays, flickering; scars blasted dark with
+        // smouldering edges.
+        let glow = mix(hue_of(look.x), vec3<f32>(1.0), 0.12) * 1.1;
+        let l = normalize(vec3<f32>(0.45, 0.75, -0.45));
+        var albedo = vec3<f32>(0.075, 0.08, 0.078) * skin(q, n, 27.0, 5.0);
+        if (part == 2) {
+            albedo *= 0.4;
+        }
+        let lit = max(dot(n, l), 0.0) * 0.9 + 0.08 + max(dot(n, -l), 0.0) * 0.05;
+        colour = albedo * lit * vec3<f32>(0.8, 0.9, 1.0) * mix(1.0, in.ao, 0.8) + glow * 0.012;
+        if (part == 8) {
+            let h = hash_cell(floor(q * 9.0));
+            colour += glow * (0.55 + 0.45 * sin(t * 3.0 + h * 40.0)) * 0.9 * in.ao;
+        }
+        let damage = look.y;
+        if (damage > 0.05) {
+            let scar = noise(q * 2.2 * 6.0 + vec3<f32>(look.x * 10.0)) * 0.6 + noise(q * 17.0) * 0.4;
+            let cut = 1.0 - damage * 0.9;
+            let burnt = smoothstep01(cut - 0.08, cut, scar);
+            colour *= 1.0 - 0.75 * burnt;
+            colour += vec3<f32>(1.0, 0.35, 0.06) * bump((scar - cut) / 0.025) * 0.6 * (0.7 + 0.3 * sin(t * 2.0 + scar * 30.0));
+        }
+    } else if (MODEL == 5) {
+        // A ring station: plated hull aged and scorched, ribs darker, rows
+        // of windows on its inner face with a few still lit and flickering,
+        // its breaks smouldering.
+        let l = normalize(vec3<f32>(0.6, 0.5, -0.6));
+        var albedo = mix(vec3<f32>(0.15, 0.155, 0.165), vec3<f32>(0.2, 0.17, 0.14), look.x) * skin(q, n, 60.0, 9.0);
+        albedo *= 0.6 + 0.4 * smoothstep01(-0.4, 0.4, noise(q * 6.0));
+        if (part == 1) {
+            albedo *= 0.6;
+        }
+        let lit = max(dot(n, l), 0.0) * 1.1 + 0.03;
+        colour = albedo * lit * mix(1.0, in.ao, 0.7);
+        if (part == 7) {
+            let a = atan2(q.y, q.x);
+            let w = vec2<f32>(a * 260.0, q.z * 160.0);
+            let wid = floor(w);
+            let wf = fract(w);
+            let wh = hash_cell(vec3<f32>(wid, 3.0));
+            let pane = step(0.25, wf.x) * step(wf.x, 0.75) * step(0.3, wf.y) * step(wf.y, 0.7);
+            let on = step(wh, look.z * 0.35) * (0.7 + 0.3 * step(0.1, fract(t * (0.3 + wh * 2.0) + wh * 17.0)));
+            let warm = mix(vec3<f32>(1.0, 0.72, 0.38), vec3<f32>(0.7, 0.86, 1.0), look.y);
+            let pixel = length(fwidth(w));
+            // Panes finer than a pixel blur to their average.
+            let shown = mix(pane, 0.25, smoothstep01(0.3, 1.0, pixel));
+            colour += warm * (shown * on * 0.9 + on * 0.03);
+        } else if (part == 4) {
+            colour += vec3<f32>(1.0, 0.4, 0.08) * smoothstep01(0.4, 0.8, noise(q * 14.0 + vec3<f32>(t * 0.6))) * 0.9;
+        }
+    } else {
+        // Debris: torn plates of hull, the derelict's grey or a fleet's own
+        // colour, edges smouldering, hotter the newer.
+        let l = normalize(vec3<f32>(0.55, 0.6, -0.45));
+        var albedo = vec3<f32>(0.3, 0.31, 0.33);
+        if (look.x >= 0.0) {
+            albedo = faction_hull(i32(look.x + 0.5));
+        }
+        albedo *= skin(q, n, 6.0, in.size);
+        let lit = max(dot(n, l), 0.0) * 1.2 + 0.03;
+        colour = albedo * lit * mix(1.0, in.ao, 0.6) + vec3<f32>(pow(max(dot(reflect(-l, n), v), 0.0), 26.0) * 0.4);
+        if (part == 4) {
+            colour += vec3<f32>(1.0, 0.35, 0.08) * (0.25 + 1.2 * look.y) * (0.7 + 0.3 * sin(t * 4.0 + in.size * 9.0));
+        }
+    }
+    return vec4<f32>(colour, 1.0);
+}
+
 // A bolt of light from `a` to `b`, `w` pixels wide.
 fn bolt(o: vec3<f32>, d: vec3<f32>, a: vec3<f32>, b: vec3<f32>, w: f32) -> f32 {
     let span = length(b - a);
@@ -1929,64 +1408,7 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         let fwd = s[1].xyz;
         let side = normalize(cross(fwd, vec3<f32>(0.0, 1.0, 0.0)));
         let up = cross(side, fwd);
-        let bound = sphere_hits(ship, d, c, size * 1.15);
-        // Traced only until the meshes are ready (`vs_ship`).
-        if (bound.y > 0.0 && bound.x < reach && params.ev[9].w < 0.5) {
-            let ro = (ship - c) / size;
-            let lo = vec3<f32>(dot(ro, side), dot(ro, up), dot(ro, fwd));
-            let ld = vec3<f32>(dot(d, side), dot(d, up), dot(d, fwd));
-            var tm = max(bound.x, 0.0) / size;
-            let end = bound.y / size;
-            var hit = false;
-            for (var k = 0; k < 72; k++) {
-                let dist = hull_sdf(lo + ld * tm, kind_);
-                if (dist < 0.0006 + tm * params.frame.z * 0.35) {
-                    hit = true;
-                    break;
-                }
-                tm += max(dist * 0.8, 0.0008);
-                if (tm > end) {
-                    break;
-                }
-            }
-            if (hit && tm * size < reach) {
-                reach = tm * size;
-                let q = lo + ld * tm;
-                let e = max(0.0012, tm * params.frame.z * 0.5);
-                let nl = normalize(vec3<f32>(
-                    hull_sdf(q + vec3<f32>(e, 0.0, 0.0), kind_) - hull_sdf(q - vec3<f32>(e, 0.0, 0.0), kind_),
-                    hull_sdf(q + vec3<f32>(0.0, e, 0.0), kind_) - hull_sdf(q - vec3<f32>(0.0, e, 0.0), kind_),
-                    hull_sdf(q + vec3<f32>(0.0, 0.0, e), kind_) - hull_sdf(q - vec3<f32>(0.0, 0.0, e), kind_),
-                ));
-                let n = side * nl.x + up * nl.y + fwd * nl.z;
-                // Plates each a shade of their own, and hollows darker.
-                let panels = 0.82 + 0.3 * hash_cell(floor(q * 22.0));
-                let ao = clamp(hull_sdf(q + nl * 0.03, kind_) / 0.03, 0.35, 1.0);
-                let lit = (max(dot(n, l), 0.0) * 1.15 + 0.035 + max(dot(n, -l), 0.0) * 0.04) * ao;
-                colour = faction_hull(faction) * hull_markings(q, kind_) * panels * lit;
-                if (kind_ == 5) {
-                    // The collective's cubes: the hive cube's machinery.
-                    let a = abs(q);
-                    var uv = q.yz;
-                    var face = select(0.0, 1.0, q.x > 0.0);
-                    if (a.y >= a.x && a.y >= a.z) {
-                        uv = q.xz;
-                        face = select(2.0, 3.0, q.y > 0.0);
-                    } else if (a.z >= a.x && a.z >= a.y) {
-                        uv = q.xy;
-                        face = select(4.0, 5.0, q.z > 0.0);
-                    }
-                    let surface = cube_face(uv / 0.62, face, seed + f32(i) * 7.0, tm * params.frame.z / 0.62, vec3<f32>(0.25, 1.0, 0.4), 0.25, q * size);
-                    colour = surface[0] * lit * 1.4 + surface[1];
-                }
-                colour += vec3<f32>(pow(max(dot(reflect(-l, n), -d), 0.0), 26.0) * 0.45);
-                colour += hull_lights(q, kind_, faction_fire(faction), t);
-                // Lit orange by the blast as its fireball burns.
-                let glare = exp(-max(t - kill, 0.0) / 1.5) * step(kill, t);
-                colour += vec3<f32>(1.0, 0.5, 0.2) * max(dot(n, normalize(blast - c)), 0.0) * glare * 0.6 * exp(-length(blast - c) / 150.0);
-                alpha = 1.0;
-            }
-        }
+        // The hull itself is a mesh (`vs_ship`), drawn over this.
         // The shield: flaring where the shock strikes it, holding most of
         // it back, the struck side brightest and crackling.
         let jolt = s[1].w;
@@ -2322,105 +1744,15 @@ fn star_disc(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32) -> vec3<f32> {
 // reflecting the sky, its heart pulsing brighter as it notices the ship.
 // ---------------------------------------------------------------------------
 
-// A shard: a long bipyramid along unit `dir`, `length_` out from the
-// middle, `width` across at its waist, pointed at its tip.
-fn shard(p: vec3<f32>, dir: vec3<f32>, length_: f32, width: f32) -> f32 {
-    let along = dot(p, dir);
-    let rad = length(p - dir * along);
-    let waist = length_ * 0.3;
-    let taper = select(width * (1.0 - (along - waist) / (length_ - waist)), width * (0.5 + 0.5 * along / waist), along < waist);
-    return max(rad - max(taper, 0.0), max(-along, along - length_)) * 0.7;
-}
-
-// The crystal: folded into one twenty-fourth of itself by its mirror
-// symmetry, three families of shards there (to the faces, edges and corners
-// of a cube: 26 in all), each with a smaller pair branching off it.
-fn crystal_sdf(p0: vec3<f32>) -> f32 {
-    var p = abs(p0);
-    if (p.x < p.y) {
-        p = p.yxz;
-    }
-    if (p.y < p.z) {
-        p = p.xzy;
-    }
-    if (p.x < p.y) {
-        p = p.yxz;
-    }
-    var d = shard(p, vec3<f32>(1.0, 0.0, 0.0), 1.0, 0.11);
-    d = min(d, shard(p, normalize(vec3<f32>(1.0, 1.0, 0.0)), 0.72, 0.08));
-    d = min(d, shard(p, normalize(vec3<f32>(1.0, 1.0, 1.0)), 0.85, 0.09));
-    // Branches off the longest shards, two thirds of the way out.
-    let b = p - vec3<f32>(0.6, 0.0, 0.0);
-    d = min(d, shard(b, normalize(vec3<f32>(0.6, 1.0, 0.0)), 0.3, 0.04));
-    d = min(d, shard(b, normalize(vec3<f32>(0.6, 0.0, 1.0)), 0.3, 0.04));
-    return min(d, length(p0) - 0.16);
-}
-
 fn ev_crystal(d: vec3<f32>) -> vec4<f32> {
+    // The crystal itself is a mesh (`fs_model`, family 3): here its light
+    // round it, brighter as it notices the ship.
     let ship = ev_ship();
-    let o = ev_obj(0);
-    let centre = o.xyz;
-    let size = o.w;
-    let axis = normalize(params.ev[8].xyz);
-    let angle = params.ev[8].w;
-    let notice = ev_obj(1).x;
-    // Icy: cyan, violet or green-white.
     let tint = mix(vec3<f32>(0.55, 0.9, 1.0), mix(vec3<f32>(0.8, 0.65, 1.0), vec3<f32>(0.65, 1.0, 0.8), step(0.5, params.ev[9].x)), step(0.33, params.ev[9].x));
-    let t = ev_t();
-    let bound = sphere_hits(ship, d, centre, size * 1.05);
-    if (bound.y <= 0.0) {
-        // Its light round it.
-        let px = point_pixels(ship, d, centre);
-        return vec4<f32>(tint * exp(-px * 0.01) * (0.04 + 0.12 * notice), 0.0);
-    }
-    let lo = turn((ship - centre) / size, axis, -angle);
-    let ld = turn(d, axis, -angle);
-    var tm = max(bound.x, 0.0) / size;
-    let end = bound.y / size;
-    var hit = false;
-    var closest = 1e9;
-    for (var i = 0; i < 56; i++) {
-        let dist = crystal_sdf(lo + ld * tm);
-        closest = min(closest, dist);
-        if (dist < 0.0015 + tm * params.frame.z * 0.4) {
-            hit = true;
-            break;
-        }
-        tm += max(dist * 0.8, 0.003);
-        if (tm > end) {
-            break;
-        }
-    }
-    let px = point_pixels(ship, d, centre);
-    let heart = tint * (exp(-px * 0.03) * (0.25 + 1.2 * notice) * (0.8 + 0.2 * sin(t * 3.0)));
-    if (!hit) {
-        // Close misses glow faintly, the light caught in the lattice; and
-        // the glow round it, as outside its bounds.
-        return vec4<f32>(tint * exp(-px * 0.01) * (0.04 + 0.12 * notice) + heart * 0.4 + tint * exp(-closest * 40.0) * 0.05, 0.0);
-    }
-    let q = lo + ld * tm;
-    let e = 0.003;
-    let nl = normalize(vec3<f32>(
-        crystal_sdf(q + vec3<f32>(e, 0.0, 0.0)) - crystal_sdf(q - vec3<f32>(e, 0.0, 0.0)),
-        crystal_sdf(q + vec3<f32>(0.0, e, 0.0)) - crystal_sdf(q - vec3<f32>(0.0, e, 0.0)),
-        crystal_sdf(q + vec3<f32>(0.0, 0.0, e)) - crystal_sdf(q - vec3<f32>(0.0, 0.0, e)),
-    ));
-    let n = turn(nl, axis, angle);
-    let mu = max(dot(n, -d), 0.0);
-    let fresnel = 0.06 + 0.94 * pow(1.0 - mu, 5.0);
-    // Through it, each colour bent its own amount: a rainbow at every edge.
-    let rr = ev_sky(normalize(refract(d, n, 0.84))).r;
-    let gg = ev_sky(normalize(refract(d, n, 0.8))).g;
-    let bb = ev_sky(normalize(refract(d, n, 0.76))).b;
-    let through = vec3<f32>(rr, gg, bb) * 2.5 * tint + tint * 0.05;
-    let mirror = ev_sky(reflect(d, n)) * 2.0 + tint * 0.04;
-    // Light running through it from its heart, brighter as it notices.
-    let inner = tint * (0.04 + 0.5 * notice * (0.6 + 0.4 * sin(t * 4.0 - length(q) * 12.0))) * (1.0 - smoothstep01(0.0, 1.0, length(q)));
-    let edge = pow(1.0 - mu, 3.0) * tint * 0.45;
-    // Facets catching the faint light of the galaxy above.
-    let facet = pow(max(dot(n, normalize(vec3<f32>(0.3, 1.0, 0.2))), 0.0), 12.0) * tint * 0.4;
-    let colour = mix(through, mirror, fresnel) + inner + edge + facet + heart * 0.3;
-    return vec4<f32>(colour, 0.85);
+    let notice = ev_obj(1).x;
+    let px = point_pixels(ship, d, ev_obj(0).xyz);
+    let heart = tint * exp(-px * 0.03) * (0.25 + 1.2 * notice) * (0.8 + 0.2 * sin(ev_t() * 3.0));
+    return vec4<f32>(tint * exp(-px * 0.01) * (0.04 + 0.12 * notice) + heart * 0.4, 0.0);
 }
 
 // Each event's draw over the sky.
