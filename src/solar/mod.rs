@@ -18,6 +18,7 @@
 
 pub mod labels;
 pub mod scan;
+pub mod ships;
 pub mod stream;
 pub mod system;
 pub mod tour;
@@ -88,6 +89,14 @@ struct Params {
     /// (`EV_*` in `encounter.wgsl`).
     ev: [[f32; 4]; EV_ROWS],
     bodies: [Body; MAX_BODIES],
+}
+
+/// The starship meshes on the GPU: every one in one buffer, and where each
+/// lies (`ships::Library::ranges`).
+struct ShipMeshes {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    library: ships::Library,
 }
 
 /// Rows of the stopover's parameters (`Params::ev`).
@@ -269,6 +278,10 @@ pub(crate) struct Solar {
     grid: wgpu::Buffer,
     sampler: wgpu::Sampler,
     bind_group: Option<wgpu::BindGroup>,
+    /// The battle's starship meshes: on their way from the thread building
+    /// (or loading) them, then on the GPU, with where each one lies.
+    ship_library: Option<std::sync::mpsc::Receiver<ships::Library>>,
+    ship_meshes: Option<ShipMeshes>,
     /// Each ringed planet's ring density by radius, a row per planet, and the
     /// system it was painted for.
     rings: wgpu::Texture,
@@ -779,6 +792,50 @@ impl Solar {
                 pipeline(&label, "vs_background", "fs_flux", add, &constants),
             );
         }
+        // The battle's starships as meshes (`ships`): from a vertex buffer,
+        // placed by the shader's own battle (`vs_ship`), writing the depth.
+        let ship_attributes =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Unorm8x4];
+        let ship_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ships::ShipVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &ship_attributes,
+        };
+        let ship_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Solar ships"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_ship"),
+                buffers: &[Some(ship_layout)],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_ship"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        pipelines.insert(
+            "ships".to_string(),
+            ("Solar ships".to_string(), ship_pipeline),
+        );
         pipelines.insert(
             "overlay".to_string(),
             make(
@@ -1062,6 +1119,8 @@ impl Solar {
             grid,
             sampler,
             bind_group: None,
+            ship_library: Some(ships::spawn_library()),
+            ship_meshes: None,
             rings,
             rings_for: u64::MAX,
             bound: (u64::MAX, usize::MAX, usize::MAX),
@@ -1668,6 +1727,12 @@ impl Solar {
             ],
             ev: {
                 let mut ev = encounter_rows(&view);
+                // The ships as meshes once they are ready, rather than traced.
+                if view.scene.is_some_and(|s| s.event == voyage::Event::Battle)
+                    && self.ship_meshes.is_some()
+                {
+                    ev[9][3] = 1.0;
+                }
                 if let Some((faction, index)) = self.showcase {
                     ev[9][1] = 1.0;
                     ev[9][2] = index as f32;
@@ -1738,6 +1803,7 @@ impl Solar {
 
     fn draw(&mut self, gpu: &Graphics, t: f64, frame: usize) {
         self.drift_dust(t);
+        self.receive_ships(gpu);
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1893,6 +1959,34 @@ impl Solar {
                 let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                // The battle's ships, each its fleet's design in a variant of
+                // its own, the one lost gone once it blows up.
+                if e == voyage::Event::Battle
+                    && params.ev[9][3] > 0.5
+                    && let Some(meshes) = &self.ship_meshes
+                {
+                    pass.set_pipeline(&self.pipelines["ships"].1);
+                    pass.set_vertex_buffer(0, meshes.vertices.slice(..));
+                    pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    let (local, kill) = (params.ev[0][1], params.ev[6][2]);
+                    let lost = params.ev[7][3] as i32;
+                    let seed = params.ev[9][0] as u32;
+                    for i in 0..8u32 {
+                        if i as i32 == lost && local > kill {
+                            continue;
+                        }
+                        let design = if i < 4 {
+                            params.ev[6][0]
+                        } else {
+                            params.ev[6][1]
+                        } as u32;
+                        if let Some((first, count, base)) = meshes.library.for_ship(design, i, seed)
+                        {
+                            pass.draw_indexed(first..first + count, base, i..i + 1);
+                        }
+                    }
+                    pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
+                }
                 if e.rocks() {
                     let (label, pipeline) = &self.pipelines[&format!("rocks{}", e.id())];
                     pass.set_pipeline(pipeline);
@@ -2005,6 +2099,38 @@ impl Solar {
             }
         }
         gpu.submit(encoder.finish());
+    }
+
+    /// The starship meshes onto the GPU, once their thread has them.
+    fn receive_ships(&mut self, gpu: &Graphics) {
+        let Some(rx) = &self.ship_library else { return };
+        let Ok(library) = rx.try_recv() else { return };
+        use wgpu::util::DeviceExt;
+        let vertices = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Solar ship vertices"),
+                contents: bytemuck::cast_slice(&library.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let indices = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Solar ship indices"),
+                contents: bytemuck::cast_slice(&library.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        let library = ships::Library {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            ranges: library.ranges,
+        };
+        self.ship_meshes = Some(ShipMeshes {
+            vertices,
+            indices,
+            library,
+        });
+        self.ship_library = None;
     }
 
     /// The look of the light to draw for look `k` of the tour
@@ -3525,6 +3651,18 @@ pub(crate) mod tests {
             .expect("a sheet");
     }
 
+    /// Wait for the starship meshes (built, or loaded from the cache) and
+    /// put them on the GPU.
+    fn wait_for_ships(solar: &mut Solar, gpu: &Graphics) {
+        if let Some(rx) = solar.ship_library.take() {
+            let library = rx.recv().expect("the ship meshes");
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(library).expect("sent");
+            solar.ship_library = Some(rx);
+            solar.receive_ships(gpu);
+        }
+    }
+
     /// Visit 0 of the tour seeded `base`, its jump through `stops` alone.
     fn tour_through(base: u64, stops: Vec<voyage::Stopover>) -> Tour {
         let system = system_for(base, 0);
@@ -3854,6 +3992,7 @@ pub(crate) mod tests {
         let cell = 360;
         let mut sheet = image::RgbaImage::new(cell * 2, cell * voyage::FACTIONS.len() as u32);
         let mut solar = Solar::with_seed(&gpu, 11);
+        wait_for_ships(&mut solar, &gpu);
         let stop = voyage::Stopover {
             event: voyage::Event::Battle,
             variant: 17,
@@ -3907,6 +4046,7 @@ pub(crate) mod tests {
         let after = [-3.0, 0.25, 0.9, 1.8];
         let mut sheet = image::RgbaImage::new(cell * after.len() as u32, cell * 6);
         let mut solar = Solar::with_seed(&gpu, 11);
+        wait_for_ships(&mut solar, &gpu);
         for v in 0..6u64 {
             let stop = voyage::Stopover {
                 event: voyage::Event::Battle,

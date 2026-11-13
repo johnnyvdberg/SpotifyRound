@@ -1723,6 +1723,127 @@ fn hull_markings(q: vec3<f32>, kind_: i32) -> vec3<f32> {
     return vec3<f32>(1.0);
 }
 
+// ---------------------------------------------------------------------------
+// The battle's ships as meshes (`ships.rs`): each vertex in its ship's own
+// frame, placed where the battle has the ship (`battle_ship`), in the
+// camera's frame, with a perspective divide and the depth the rocks use.
+// ---------------------------------------------------------------------------
+
+struct ShipIn {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    // Occlusion, part (`ships::part`, over 255), window flag, unused.
+    @location(2) extra: vec4<f32>,
+};
+
+struct ShipOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) local: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) extra: vec4<f32>,
+    @location(3) @interpolate(flat) ship: vec4<f32>,
+    @location(4) toward: vec3<f32>,
+    @location(5) blast_way: vec3<f32>,
+    // Which part a triangle is of: whole, never blended between parts.
+    @location(6) @interpolate(flat) part: f32,
+};
+
+@vertex
+fn vs_ship(v: ShipIn, @builtin(instance_index) instance: u32) -> ShipOut {
+    var out: ShipOut;
+    let i = i32(instance);
+    let s = battle_ship(i, ev_t());
+    let c = s[0].xyz;
+    let size = s[0].w;
+    let fwd = s[1].xyz;
+    let side = normalize(cross(fwd, vec3<f32>(0.0, 1.0, 0.0)));
+    let up = cross(side, fwd);
+    let rel = (side * v.position.x + up * v.position.y + fwd * v.position.z) * size + c - ev_ship();
+    let w = from_ev(rel);
+    let cam = vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
+    let depth = clamp(cam.z / (cam.z + 400.0), 0.0, 0.999);
+    out.clip = vec4<f32>(cam.x / params.frame.y, cam.y / params.frame.y, depth * cam.z, cam.z);
+    out.local = v.position;
+    out.normal = side * v.normal.x + up * v.normal.y + fwd * v.normal.z;
+    out.extra = v.extra;
+    out.part = v.extra.y * 255.0;
+    out.ship = vec4<f32>(f32(i), f32(ship_faction(i)), size, s[1].w);
+    out.toward = normalize(-rel);
+    out.blast_way = blast_at() - (rel + ev_ship());
+    return out;
+}
+
+// Each part's colour, by the ship's design.
+fn ship_glow(part: i32, faction: i32) -> vec3<f32> {
+    if (part == 3) {
+        return select(vec3<f32>(0.35, 0.6, 1.0), vec3<f32>(0.4, 1.0, 0.6), faction == 3) * 1.6;
+    } else if (part == 4) {
+        return vec3<f32>(1.0, 0.22, 0.06) * 2.2;
+    } else if (part == 5) {
+        return vec3<f32>(0.35, 0.7, 1.0) * 2.0;
+    } else if (part == 6) {
+        return mix(faction_shield(faction), vec3<f32>(1.0), 0.35) * 2.6;
+    } else if (part == 8) {
+        return vec3<f32>(0.3, 1.0, 0.45) * 0.8;
+    }
+    return vec3<f32>(0.0);
+}
+
+@fragment
+fn fs_ship(in: ShipOut) -> @location(0) vec4<f32> {
+    let faction = i32(in.ship.y);
+    let part = i32(in.part + 0.5);
+    let ao = in.extra.x;
+    let n = normalize(in.normal);
+    let v = normalize(in.toward);
+    let l = normalize(vec3<f32>(0.5, 0.7, -0.35));
+    let q = in.local;
+    // Plating: panels a shade each, their seams darker, laid out on the
+    // two axes most across the surface.
+    let a = abs(n);
+    var uv = q.xz;
+    if (a.x > a.y && a.x > a.z) {
+        uv = q.yz;
+    } else if (a.z > a.y) {
+        uv = q.xy;
+    }
+    let pixel = length(fwidth(q)) + 1e-5;
+    let g = uv * vec2<f32>(26.0, 14.0);
+    let f = abs(fract(g) - 0.5);
+    let seam = (1.0 - smoothstep01(0.44, 0.5, max(f.x, f.y))) * 0.25 * (1.0 - smoothstep01(0.01, 0.04, pixel));
+    let panel = 0.82 + 0.3 * hash_cell(vec3<f32>(floor(g), f32(part)));
+    var albedo = faction_hull(faction) * hull_markings(q, faction) * panel * (1.0 - seam);
+    if (part == 1) {
+        albedo *= vec3<f32>(0.82, 0.84, 0.88);
+    } else if (part == 2) {
+        albedo = vec3<f32>(0.05, 0.05, 0.055);
+    } else if (faction == 5) {
+        albedo = vec3<f32>(0.1, 0.11, 0.1) * panel;
+    }
+    let diffuse = max(dot(n, l), 0.0);
+    let spec = pow(max(dot(reflect(-l, n), v), 0.0), 30.0) * 0.4 * diffuse;
+    var colour = albedo * (diffuse * 1.15 + 0.03 + max(dot(n, -l), 0.0) * 0.03) * mix(1.0, ao, 0.7) + vec3<f32>(spec);
+    colour += ship_glow(part, faction);
+    if (part == 3) {
+        // Nacelle grilles: bands of glow.
+        colour *= 0.55 + 0.45 * step(0.4, fract(q.z * 40.0));
+    }
+    if (part == 7) {
+        // Windows: small lit panes in rows, some dark.
+        let w = q * vec3<f32>(90.0, 60.0, 90.0);
+        let pane = step(0.5, fract(w.x + w.z)) * step(0.35, fract(w.y));
+        let lit = step(0.35, hash_cell(floor(w * 0.5)));
+        let warm = select(vec3<f32>(1.0, 0.85, 0.6), vec3<f32>(0.6, 1.0, 0.75), faction == 3 || faction == 5);
+        colour += warm * pane * lit * 0.9 * (1.0 - smoothstep01(0.004, 0.012, pixel));
+    }
+    // Lit orange by the blast as its fireball burns.
+    let kill = ev_obj(1).z;
+    let t = ev_t();
+    let glare = exp(-max(t - kill, 0.0) / 1.5) * step(kill, t);
+    colour += vec3<f32>(1.0, 0.5, 0.2) * max(dot(n, normalize(in.blast_way)), 0.0) * glare * 0.6 * exp(-length(in.blast_way) / 150.0);
+    return vec4<f32>(colour, 1.0);
+}
+
 // A bolt of light from `a` to `b`, `w` pixels wide.
 fn bolt(o: vec3<f32>, d: vec3<f32>, a: vec3<f32>, b: vec3<f32>, w: f32) -> f32 {
     let span = length(b - a);
@@ -1809,7 +1930,8 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         let side = normalize(cross(fwd, vec3<f32>(0.0, 1.0, 0.0)));
         let up = cross(side, fwd);
         let bound = sphere_hits(ship, d, c, size * 1.15);
-        if (bound.y > 0.0 && bound.x < reach) {
+        // Traced only until the meshes are ready (`vs_ship`).
+        if (bound.y > 0.0 && bound.x < reach && params.ev[9].w < 0.5) {
             let ro = (ship - c) / size;
             let lo = vec3<f32>(dot(ro, side), dot(ro, up), dot(ro, fwd));
             let ld = vec3<f32>(dot(d, side), dot(d, up), dot(d, fwd));
