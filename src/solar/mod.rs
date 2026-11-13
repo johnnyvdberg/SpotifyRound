@@ -2336,6 +2336,7 @@ fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel
         voyage::Event::Leviathans => "Leviathan pod".into(),
         voyage::Event::Gate => "Star gate".into(),
         voyage::Event::Wormhole => "Wormhole".into(),
+        voyage::Event::Battle => "Battle".into(),
     };
     let [x, y, z] = scene.basis;
     let rel = sub([o[0], o[1], o[2]], shot.ship);
@@ -2345,6 +2346,7 @@ fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel
         voyage::Event::HiveCube => o[3] * 1.4,
         voyage::Event::Leviathans => 40.0,
         voyage::Event::Comet => 12.0,
+        voyage::Event::Battle => 30.0,
         _ => o[3],
     };
     let ahead = dot(world, view.forward);

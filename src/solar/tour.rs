@@ -2798,7 +2798,7 @@ impl Tour {
                 let (n, drive) = self.drive();
                 let next = &self.next.star.name;
                 let stop = self.passage.stops[k as usize];
-                let name = if stop.event == Event::HiveCube {
+                let name = if matches!(stop.event, Event::HiveCube | Event::Battle) {
                     "Emergency jump"
                 } else {
                     drive

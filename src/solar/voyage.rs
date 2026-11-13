@@ -70,10 +70,11 @@ pub enum Event {
     Remnant,
     Gate,
     Wormhole,
+    Battle,
 }
 
 impl Event {
-    pub const ALL: [Event; 12] = [
+    pub const ALL: [Event; 13] = [
         Event::Asteroids,
         Event::HiveCube,
         Event::BlackHole,
@@ -86,6 +87,7 @@ impl Event {
         Event::Remnant,
         Event::Gate,
         Event::Wormhole,
+        Event::Battle,
     ];
 
     /// Its number in the shaders (`EVENT` in `encounter.wgsl`), from 1.
@@ -108,6 +110,7 @@ impl Event {
             Event::Remnant => "remnant",
             Event::Gate => "gate",
             Event::Wormhole => "wormhole",
+            Event::Battle => "battle",
         }
     }
 
@@ -131,6 +134,7 @@ impl Event {
             Event::Remnant => 30.0,
             Event::Gate => 26.0,
             Event::Wormhole => 24.0,
+            Event::Battle => 32.0,
         }
     }
 
@@ -143,7 +147,7 @@ impl Event {
     pub fn rejump(self) -> f64 {
         match self {
             Event::Gate | Event::Wormhole => 0.0,
-            Event::HiveCube => EMERGENCY,
+            Event::HiveCube | Event::Battle => EMERGENCY,
             _ => REJUMP,
         }
     }
@@ -155,7 +159,10 @@ impl Event {
     }
 
     pub fn rocks(self) -> bool {
-        matches!(self, Event::Asteroids | Event::Derelict | Event::Comet)
+        matches!(
+            self,
+            Event::Asteroids | Event::Derelict | Event::Comet | Event::Battle
+        )
     }
 }
 
@@ -429,6 +436,7 @@ pub fn shot(stop: &Stopover, local: f64) -> Shot {
         Event::Remnant => remnant(&mut rng, local, duration),
         Event::Gate => gate(&mut rng, local, duration),
         Event::Wormhole => wormhole(&mut rng, local, duration),
+        Event::Battle => battle(&mut rng, local, duration),
     };
     // Past the stopover, the drive re-engaging: back onto the heading, the
     // star the jump makes for, over its first seconds.
@@ -961,6 +969,56 @@ fn wormhole(rng: &mut Rng, local: f64, duration: f64) -> Shot {
     }
 }
 
+/// A battle: dropped out on the edge of two fleets fighting, with lasers,
+/// torpedoes and shields flaring, a ship lost; not the ship's fight, it
+/// watches as it slips away, stray fire passing close, and jumps out.
+/// The fleets' ships, their fire and the wreck are worked out in the shader
+/// from the battle's centre, its draw and the time (`ev_battle`).
+fn battle(rng: &mut Rng, local: f64, duration: f64) -> Shot {
+    let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+    let centre = [
+        side * rng.range(70.0, 100.0),
+        rng.range(-10.0, 30.0),
+        rng.range(230.0, 260.0),
+    ];
+    let spread = rng.range(80.0, 105.0);
+    let warm = rng.range(0.0, 0.12);
+    let cool = rng.range(0.45, 0.62);
+    let kill = rng.range(0.42, 0.55) * duration;
+    let stray_laser = rng.range(0.3, 0.4) * duration;
+    let stray_torpedo = rng.range(0.6, 0.68) * duration;
+    // Drifting in on the drop-out, then easing away from the fight, off to
+    // the far side and on along the heading, quicker as it goes.
+    let away = smoothstep(0.15 * duration, duration, local);
+    let ship = [
+        -side * 45.0 * away * away,
+        -10.0 * away,
+        4.0 * local + 30.0 * away * away,
+    ];
+    let to = normalize(sub(centre, ship));
+    let watch = smoothstep(0.5, 4.0, local) * (1.0 - smoothstep(0.9, 1.04, local / duration));
+    let near_laser = pulse(local, stray_laser, 0.1, 0.5);
+    let near_torpedo = pulse(local, stray_torpedo + 1.1, 0.08, 0.7);
+    let blast = pulse(local, kill, 0.1, 1.2);
+    Shot {
+        ship,
+        look: blend(AHEAD, to, 0.78 * watch),
+        roll: side * 0.12 * watch + 0.08 * near_torpedo,
+        alert: (0.55 + 0.45 * near_laser.max(near_torpedo)).min(1.0) * smoothstep(0.0, 1.5, local),
+        hit: near_torpedo,
+        hit_at: [-side * 0.3, -0.25],
+        flash: 0.25 * near_torpedo + 0.12 * blast + 0.08 * near_laser,
+        shake: 0.12 + 0.75 * near_torpedo + 0.3 * blast + 0.25 * near_laser,
+        objects: [
+            [centre[0], centre[1], centre[2], spread],
+            [warm, cool, kill, side],
+            [stray_laser, stray_torpedo, 0.0, 0.0],
+        ],
+        extra: [(rng.next() % 997) as f64, 0.0, 0.0, 0.0],
+        ..Default::default()
+    }
+}
+
 fn sq(x: f64) -> f64 {
     x * x
 }
@@ -1202,6 +1260,37 @@ pub fn hud(
                 (
                     "STAR GATE",
                     format!("{name}: lining up on the ring, the gate's field throws the ship on toward {to}."),
+                ),
+            )
+        }
+        Event::Battle => {
+            let kill = shot.objects[1][2];
+            let phase = if local < 3.0 {
+                "CONTACT"
+            } else if local < shot.objects[2][1] + 2.5 && local > shot.objects[2][0] - 0.5 {
+                "STRAY FIRE"
+            } else if local < duration * 0.8 {
+                "RUNNING DARK"
+            } else {
+                "CLEAR"
+            };
+            (
+                "COMBAT ZONE",
+                vec![
+                    line("Combatants", "two fleets · unidentified".into()),
+                    line("Ships", if local > kill { "7 · one lost".into() } else { "8".into() }),
+                    line("Status", phase.to_string()),
+                    line("Range", km(range(0))),
+                    line("Shield", format!("{:.0}%", 100.0 - 18.0 * smoothstep(0.6, 0.75, u))),
+                ],
+                (
+                    phase,
+                    match phase {
+                        "CONTACT" => "Dropped out into someone else's war. Not our fight: running dark.".into(),
+                        "STRAY FIRE" => "Stray fire! Shield up, holding course away from the line of battle.".into(),
+                        "CLEAR" => "Clear of the fighting. Spooling the drive while nobody is looking.".into(),
+                        _ => "Engines low, emissions masked, edging away from the fleets.".into(),
+                    },
                 ),
             )
         }
