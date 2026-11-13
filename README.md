@@ -75,7 +75,22 @@ Spotify **Premium** account.
   ([docs/solar-warps.jpg](docs/solar-warps.jpg): Lumen Drift a blaze of blue rays, Fold Drive a starfield streaming past warped space, Bubble Drive a lensing bubble round the ship, the stars inside churned by its warp) — and in orbit round about one world in ten a scanner surveys it
   with progress bars and results in real units: atmosphere (pressure and gas mix), gravimetry,
   climate, magnetic field, surface radiation and a search for biosignatures
-  ([docs/solar-scanner.jpg](docs/solar-scanner.jpg)). Planet maps stream in on the GPU a few rows
+  ([docs/solar-scanner.jpg](docs/solar-scanner.jpg)). A jump is no longer one long stretch of
+  light: it is two or three legs of under half a minute, and between them the ship meets something
+  out in the deep ([docs/solar-encounters.jpg](docs/solar-encounters.jpg), a row each, from the
+  drop-out to the drive re-engaging): it threads an asteroid field, is pulled out of the jump by a
+  hive cube whose tractor beam it has to tear free of (each cube its own: size, colour, scarring,
+  escorts, beam and breakaway, [docs/solar-hive-cubes.jpg](docs/solar-hive-cubes.jpg)), slings round
+  a black hole past its lensed accretion disc, crosses a nebula lit by lightning, passes a starless
+  rogue planet glowing with lava cracks and aurorae, rides out a pulsar's sweeping beams, flies a
+  broken derelict ring station, a comet's tails, a pod of glowing leviathans and the filaments of a
+  supernova remnant. Or the next leg is a star gate, its nodes lighting as the ship lines up and its
+  field throwing it down a golden conduit, or a wormhole with another sky inside, dived into. Inside
+  a leg there may be an ion storm, a convoy alongside, a tachyon echo or a shortcut
+  ([docs/solar-fluxes.jpg](docs/solar-fluxes.jpg)). Every encounter comes round in a shuffled deck,
+  never twice running, the alarm goes amber or red round the rim and on the panel, and the trip
+  between stars is shorter than the old 150-second jump (`SOLAR_ENCOUNTER=<name>` forces one;
+  `cargo test --release solar::tests::encounters -- --ignored` shoots them all). Planet maps stream in on the GPU a few rows
   a frame while it travels (`SOLAR_SEED`, `SOLAR_GEN_ROWS`; screenshots of every key moment:
   `SOLAR_SHOTS_SEEDS=5,11 cargo test --release solar::tests::screenshots -- --ignored`, and of
   every drive: `solar::tests::warps`). Swipe down on the player

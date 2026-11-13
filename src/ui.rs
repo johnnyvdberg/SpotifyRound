@@ -463,6 +463,7 @@ impl WindowExt for AppWindow {
         idle.set_man_stage_progress(through);
         idle.set_man_drive(manoeuvre.drive as i32);
         idle.set_man_charge(manoeuvre.charge);
+        idle.set_alert(hud.alert);
         let target = hud.target.clone().unwrap_or_default();
         idle.set_target_shown(target.shown);
         idle.set_target_lock(target.lock);

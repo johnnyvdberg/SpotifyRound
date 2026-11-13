@@ -177,6 +177,8 @@ export global Idle {
     // its colours), and how charged it is, 0..1. Its stages are `man-stages`.
     in-out property <int> man-drive: 0;
     in-out property <float> man-charge: 0;
+    // The ship's alarm between the stars, 0..1: amber from 0.3, red from 0.7.
+    in-out property <float> alert: 0;
     // The star the next jump makes for, marked on the frame: how brightly,
     // how far locked on, 0..1, where (frame pixels) and its name.
     in-out property <float> target-shown: 0;

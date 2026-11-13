@@ -4,8 +4,9 @@
 //! planets of different kinds, and moons of the kinds our own system has. The
 //! camera follows a timeline ([`tour`]): it drops out of a hyperjump, crosses
 //! to three of the planets in turn, orbits each high up and then low over its
-//! horizon, and after the last turns toward the next star and jumps, which
-//! takes a couple of minutes, into the next system. The HUD names the
+//! horizon, and after the last turns toward the next star and jumps into the
+//! next system: two or three short legs, something met between each two
+//! (an encounter, a star gate or a wormhole, [`voyage`]). The HUD names the
 //! destination and shows the ETA, distances and real orbital speeds.
 //!
 //! **Built for the Pi 5's VideoCore VII.** The planet maps are painted on the
@@ -20,6 +21,7 @@ pub mod scan;
 pub mod stream;
 pub mod system;
 pub mod tour;
+pub mod voyage;
 
 use anyhow::Result;
 use slint::wgpu_30::wgpu;
@@ -82,8 +84,18 @@ struct Params {
     /// The drive spooling up: x how far through its preparation, y how much
     /// of its start-up effect shows.
     spool: [f32; 4],
+    /// The stopover between legs of the jump, or what is seen inside one
+    /// (`EV_*` in `encounter.wgsl`).
+    ev: [[f32; 4]; EV_ROWS],
     bodies: [Body; MAX_BODIES],
 }
+
+/// Rows of the stopover's parameters (`Params::ev`).
+const EV_ROWS: usize = 12;
+/// Rocks or debris drawn round the ship in a stopover (`vs_rock`).
+const ROCKS: u32 = 260;
+/// Vertices of the ship's own effects' quad (`vs_overlay`).
+const OVERLAY_VERTICES: u32 = 3;
 
 /// Motes of dust streaking past in a burn (`DUST` in the shader), the sides
 /// of the engines' glow round the rim (`RIM_SIDES`), how fast the dust
@@ -197,6 +209,8 @@ pub struct Hud {
     pub manoeuvre: Option<tour::Manoeuvre>,
     /// The star the next jump makes for, where it is in view.
     pub target: Option<Target>,
+    /// The ship's alarm between the stars, 0..1 (`voyage::Shot::alert`).
+    pub alert: f32,
 }
 
 /// The next jump's star, marked on the frame.
@@ -297,7 +311,9 @@ fn system_for(base: u64, visit: u64) -> System {
 /// never more than two in a row.
 fn relay(base: u64, visit: u64) -> bool {
     let roll = |v: u64| {
-        v > 0 && system::Rng::new(base ^ v.wrapping_mul(0x51af_d7ed_558c_cd1b) ^ 0x4e1a).unit() < tour::RELAY_CHANCE
+        v > 0
+            && system::Rng::new(base ^ v.wrapping_mul(0x51af_d7ed_558c_cd1b) ^ 0x4e1a).unit()
+                < tour::RELAY_CHANCE
     };
     roll(visit) && !(roll(visit - 1) && roll(visit.saturating_sub(2)))
 }
@@ -306,6 +322,8 @@ fn relay(base: u64, visit: u64) -> bool {
 /// its end making for the next visit's star, through it and any relays
 /// after to the next real visit.
 fn tour_for(base: u64, visit: u64) -> Tour {
+    let passage =
+        |visit: u64, next: &System| voyage::Passage::plan(base, visit, tour::drive_to(next).0);
     let mut route = Vec::new();
     let mut ahead = visit + 1;
     loop {
@@ -321,7 +339,14 @@ fn tour_for(base: u64, visit: u64) -> Tour {
         began -= 1;
     }
     let (leg, legs) = ((visit - began + 1) as usize, (ahead - began) as usize);
-    Tour::plan(system_for(base, visit), route, relay(base, visit), leg, legs)
+    let system = system_for(base, visit);
+    // The light the ship arrives in: the last trip's last leg's.
+    let arrival = match visit {
+        0 => tour::drive_to(&system).0,
+        _ => passage(visit - 1, &system).arrival_look(),
+    };
+    let plan = passage(visit, &route[0]);
+    Tour::plan(system, route, relay(base, visit), leg, legs, plan, arrival)
 }
 
 impl Solar {
@@ -362,6 +387,7 @@ impl Solar {
         let mut source = String::from(include_str!("noise.wgsl"));
         source.push_str(crate::noise3d::WGSL);
         source.push_str(include_str!("frame.wgsl"));
+        source.push_str(include_str!("encounter.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Solar frame"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -607,7 +633,13 @@ impl Solar {
         // glare added over it round the star.
         pipelines.insert(
             "spacebaked".to_string(),
-            pipeline("Solar space baked", "vs_background", "fs_space_baked", None, &[]),
+            pipeline(
+                "Solar space baked",
+                "vs_background",
+                "fs_space_baked",
+                None,
+                &[],
+            ),
         );
         for (name, label, vs) in [
             ("glare", "Solar glare", "vs_glare"),
@@ -634,19 +666,39 @@ impl Solar {
         // point.
         pipelines.insert(
             "target".to_string(),
-            pipeline("Solar space target", "vs_background", "fs_space_target", None, &[]),
+            pipeline(
+                "Solar space target",
+                "vs_background",
+                "fs_space_target",
+                None,
+                &[],
+            ),
         );
         // Each drive's light over the whole frame, and with the flare at the
         // heading for the jump's last second.
-        for (k, name) in tour::DRIVES.iter().enumerate() {
+        for (k, name) in voyage::LOOKS.iter().enumerate() {
             let k = k as u32 + 1;
             // Its start-up at the jump point, over the sky, rising into its
-            // light.
-            let made = pipeline(&format!("Solar spool {name}"), "vs_background", "fs_spool", None, &[("WARP", k as f64)]);
-            pipelines.insert(format!("spool{k}"), made);
+            // light: the drives' only, a gate or wormhole throwing the ship
+            // on itself.
+            if (k as usize) <= tour::DRIVES.len() {
+                let constants = [("WARP", k as f64)];
+                let made = pipeline(
+                    &format!("Solar spool {name}"),
+                    "vs_background",
+                    "fs_spool",
+                    None,
+                    &constants,
+                );
+                pipelines.insert(format!("spool{k}"), made);
+            }
             for (key, label, flare) in [
                 (format!("warp{k}"), format!("Solar warp {name}"), 0.0),
-                (format!("warpflare{k}"), format!("Solar warp flare {name}"), 1.0),
+                (
+                    format!("warpflare{k}"),
+                    format!("Solar warp flare {name}"),
+                    1.0,
+                ),
             ] {
                 let constants = [("WARP", k as f64), ("FLARE", flare)];
                 let made = pipeline(&label, "vs_background", "fs_warp", None, &constants);
@@ -658,7 +710,16 @@ impl Solar {
             // front blended over everything drawn.
             let constants = [("WARP", k as f64)];
             let (label, all) = (format!("Solar drop ahead {name}"), wgpu::ColorWrites::ALL);
-            let ahead = make(&label, "vs_drop_ahead", "fs_drop_ahead", None, &constants, Some(true), all, false);
+            let ahead = make(
+                &label,
+                "vs_drop_ahead",
+                "fs_drop_ahead",
+                None,
+                &constants,
+                Some(true),
+                all,
+                false,
+            );
             pipelines.insert(format!("dropahead{k}"), ahead);
             pipelines.insert(
                 format!("dropout{k}"),
@@ -671,6 +732,61 @@ impl Solar {
                 ),
             );
         }
+        // Between the legs of a jump: each stopover's own draw over the sky
+        // (`fs_event`, or in place of it, `fs_event_sky`), rocks or debris
+        // round the ship for some; what is seen inside a leg over the
+        // drive's light (`fs_flux`); and the ship's own effects over
+        // everything (`fs_overlay`): the alarm, hits on the shield and
+        // flashes.
+        for event in voyage::Event::ALL {
+            let constants = [("EVENT", event.id() as f64)];
+            let (key, label) = (
+                format!("event{}", event.id()),
+                format!("Solar event {}", event.slug()),
+            );
+            let (vs, fs, blend) = if event.replaces_sky() {
+                ("vs_background", "fs_event_sky", None)
+            } else {
+                ("vs_background", "fs_event", over)
+            };
+            pipelines.insert(key, pipeline(&label, vs, fs, blend, &constants));
+            if event.rocks() {
+                let label = format!("Solar rocks {}", event.slug());
+                let all = wgpu::ColorWrites::ALL;
+                let made = make(
+                    &label,
+                    "vs_rock",
+                    "fs_rock",
+                    over,
+                    &constants,
+                    Some(true),
+                    all,
+                    false,
+                );
+                pipelines.insert(format!("rocks{}", event.id()), made);
+            }
+        }
+        for flux in voyage::Flux::ALL {
+            let constants = [("EVENT", flux.id() as f64)];
+            let label = format!("Solar flux {}", flux.slug());
+            pipelines.insert(
+                format!("flux{}", flux.id()),
+                pipeline(&label, "vs_background", "fs_flux", add, &constants),
+            );
+        }
+        pipelines.insert(
+            "overlay".to_string(),
+            make(
+                "Solar ship overlay",
+                "vs_overlay",
+                "fs_overlay",
+                over,
+                &[],
+                Some(false),
+                wgpu::ColorWrites::ALL,
+                false,
+            ),
+        );
         for (name, entry, blend) in [
             ("eclipse", "fs_eclipse", multiply),
             ("ringshadow", "fs_ring_shadow", multiply),
@@ -1026,7 +1142,8 @@ impl Solar {
             .collect();
         // Out to the jump point and on: the next visit's first stop, if it
         // has stops, and its sky.
-        let leaving = matches!(segment.phase, Phase::Cruise { .. } | Phase::Spool | Phase::Jump);
+        let leaving =
+            matches!(segment.phase, Phase::Cruise { .. } | Phase::Spool) || segment.phase.deep();
         let departing = matches!(segment.phase, Phase::Depart(_));
         if (leaving || (departing && wanted.len() < 2))
             && let Some(first) = self.tour.next_first()
@@ -1288,7 +1405,7 @@ impl Solar {
         let f32x4 = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
 
         let star_rel = rel([0.0; 3]);
-        let hidden = view.warp > 0.3;
+        let hidden = view.warp > 0.3 || view.deep;
         let mut bodies: Vec<(f64, Body, Vec<String>)> = Vec::new();
         if !hidden {
             let mut star = Body {
@@ -1536,7 +1653,13 @@ impl Solar {
                 let top = c[0].max(c[1]).max(c[2]).max(1e-3);
                 [c[0] / top, c[1] / top, c[2] / top, 0.0]
             },
-            spool: [view.spool as f32, view.spool_light as f32, 0.0, 0.0],
+            spool: [
+                view.spool as f32,
+                view.spool_light as f32,
+                self.look(view.look) as f32,
+                self.look(view.drop_look) as f32,
+            ],
+            ev: encounter_rows(&view),
             bodies: list,
         };
         // The meshes' windows and grids, from the frame's pixel size.
@@ -1609,12 +1732,24 @@ impl Solar {
         let (params, draws) = self.params(t);
         let baked = self.starfield_slot(self.tour.system.seed).is_some()
             && std::env::var_os("SOLAR_PROCEDURAL_STARS").is_none();
+        let (look, drop_look) = (params.spool[2] as u32, params.spool[3] as u32);
+        let event = voyage::Event::ALL
+            .into_iter()
+            .find(|e| e.id() == params.ev[0][0] as u32);
+        let deep = params.ev[1][3] > 0.5;
+        // A stopover that replaces the sky, at full strength: nothing under it
+        // to draw.
+        let covered = event.is_some_and(|e| e.replaces_sky())
+            && params.ev[10][1] >= 1.0
+            && params.warp[2] >= 1.0;
         let background = if baked && params.spool[1] > 0.001 {
             // The drive starting up, and on into the jump's first seconds.
             format!("spool{}", self.drive().0)
         } else if params.warp[0] > 0.02 {
             let flare = if params.warp[1] > 0.0 { "flare" } else { "" };
-            format!("warp{flare}{}", self.drive().0)
+            format!("warp{flare}{look}")
+        } else if covered {
+            String::new()
         } else if baked && params.target[3] > 0.0 {
             "target".to_string()
         } else if baked {
@@ -1625,6 +1760,7 @@ impl Solar {
         // The star's glare over the baked background (`fs_space` draws its
         // own; the drives none).
         let glare = match background.as_str() {
+            _ if deep => None,
             "spacebaked" | "target" => glare_pass(&params),
             b if b.starts_with("spool") && params.warp[0] < 0.3 => glare_pass(&params),
             _ => None,
@@ -1640,8 +1776,18 @@ impl Solar {
                     .collect::<Vec<_>>()
                     .join(" ")
             );
+            if let Some(e) = event {
+                let rocks = if e.rocks() {
+                    format!(" rocks{}", e.id())
+                } else {
+                    String::new()
+                };
+                self.drawn
+                    .borrow_mut()
+                    .push_str(&format!(" event{}{rocks}", e.id()));
+            }
             if params.warp[2] < 1.0 {
-                let over = format!(" dropout{}", self.arrival_drive().0);
+                let over = format!(" dropout{drop_look}");
                 self.drawn.borrow_mut().push_str(&over);
             }
         }
@@ -1715,14 +1861,40 @@ impl Solar {
             // and the bodies it hides are not shaded.
             let dropping = params.warp[2] < 1.0;
             if dropping {
-                let k = self.arrival_drive().0;
-                let (label, pipeline) = &self.pipelines[&format!("dropahead{k}")];
+                let (label, pipeline) = &self.pipelines[&format!("dropahead{drop_look}")];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..DROP_SIDES * 6, 0..1);
             }
-            let (label, pipeline) = &self.pipelines[&background];
-            pass.set_pipeline(pipeline);
-            crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+            if !background.is_empty() {
+                let (label, pipeline) = &self.pipelines[&background];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+            }
+            // A stopover: its own draw over the sky (or in place of it), and
+            // the rocks round the ship, in front of everything.
+            if let Some(e) = event.filter(|_| params.ev[10][1] > 0.001) {
+                let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                if e.rocks() {
+                    let (label, pipeline) = &self.pipelines[&format!("rocks{}", e.id())];
+                    pass.set_pipeline(pipeline);
+                    crate::gpu::counted_draw(
+                        &mut pass,
+                        label,
+                        (ROCKS * 300) as u64,
+                        0..6,
+                        0..ROCKS,
+                    );
+                }
+            }
+            // Something seen inside a leg, over the drive's light.
+            let flux = params.ev[10][2] as u32;
+            if flux > 0 && params.ev[10][3] > 0.001 && params.warp[0] > 0.5 {
+                let (label, pipeline) = &self.pipelines[&format!("flux{flux}")];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+            }
             if let Some(name) = glare {
                 let (vertices, probe) = match name {
                     "glare" => (GLARE_VERTICES, "probeglare"),
@@ -1799,13 +1971,33 @@ impl Solar {
             }
             // And behind the front, over everything drawn.
             if dropping {
-                let k = self.arrival_drive().0;
-                let (label, pipeline) = &self.pipelines[&format!("dropout{k}")];
+                let (label, pipeline) = &self.pipelines[&format!("dropout{drop_look}")];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..DROP_SIDES * 3, 0..1);
             }
+            // The ship's own effects over everything: the alarm round the
+            // rim, a hit on the shield, a flash.
+            let alarm = params.ev[10][0]
+                .max(params.ev[2][3])
+                .max(params.ev[4][3])
+                .max(params.ev[3][3]);
+            if alarm > 0.01 {
+                let (label, pipeline) = &self.pipelines["overlay"];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, full, 0..OVERLAY_VERTICES, 0..1);
+            }
         }
         gpu.submit(encoder.finish());
+    }
+
+    /// The look of the light to draw for look `k` of the tour
+    /// (`voyage::LOOKS`): the drives' overridden for the screenshots, a
+    /// gate's conduit and a wormhole's throat as they are.
+    fn look(&self, k: u32) -> u32 {
+        match self.drive_override {
+            Some(d) if (k as usize) <= tour::DRIVES.len() => d,
+            _ => k.clamp(1, voyage::LOOKS.len() as u32),
+        }
     }
 
     /// The drive this visit's jump uses: its number and name.
@@ -1813,14 +2005,6 @@ impl Solar {
         match self.drive_override {
             Some(k) => (k, tour::DRIVES[(k as usize - 1) % tour::DRIVES.len()]),
             None => self.tour.drive(),
-        }
-    }
-
-    /// The drive of the jump that arrived in this visit's system.
-    fn arrival_drive(&self) -> (u32, &'static str) {
-        match self.drive_override {
-            Some(k) => (k, tour::DRIVES[(k as usize - 1) % tour::DRIVES.len()]),
-            None => self.tour.arrival_drive(),
         }
     }
 
@@ -1845,6 +2029,7 @@ impl Solar {
             map: self.minimap(t),
             manoeuvre: self.tour.manoeuvre(t),
             target: self.target(t),
+            alert: self.tour.view(t).scene.map_or(0.0, |s| s.shot.alert as f32),
         };
     }
 
@@ -1873,9 +2058,16 @@ impl Solar {
         };
         Some(Target {
             at: [(half * (1.0 + x)) as f32, (half * (1.0 - y)) as f32],
-            label: format!("{} · {:.1} ly", self.tour.next.star.name, self.tour.next.distance),
+            label: format!(
+                "{} · {:.1} ly",
+                self.tour.next.star.name, self.tour.next.distance
+            ),
             shown: view.target_shown as f32,
-            lock: if matches!(self.tour.segment(t).0.phase, Phase::Jump) { 1.0 } else { lock as f32 },
+            lock: if matches!(self.tour.segment(t).0.phase, Phase::Jump(_)) {
+                1.0
+            } else {
+                lock as f32
+            },
         })
     }
 
@@ -1909,12 +2101,17 @@ impl Solar {
         }
         // The now-playing card, when a track is up.
         panels.push([170.0, 784.0, 910.0, 920.0]);
-        self.labels = labels::labels(&self.tour.system, &self.view(t), t, &panels);
+        let view = self.view(t);
+        self.labels = if view.deep {
+            encounter_label(&view, &panels).into_iter().collect()
+        } else {
+            labels::labels(&self.tour.system, &view, t, &panels)
+        };
     }
 
     /// The minimap at `t`: none during the jump, between systems.
     fn minimap(&self, t: f64) -> Option<Minimap> {
-        if matches!(self.tour.segment(t).0.phase, Phase::Jump) {
+        if self.tour.segment(t).0.phase.deep() {
             return None;
         }
         let current = self.tour.current(t);
@@ -1991,7 +2188,10 @@ impl Solar {
             });
         }
         // The jump point, out at the edge, once the ship is making for it.
-        if matches!(self.tour.segment(t).0.phase, Phase::Depart(_) | Phase::Cruise { .. } | Phase::Spool) {
+        if matches!(
+            self.tour.segment(t).0.phase,
+            Phase::Depart(_) | Phase::Cruise { .. } | Phase::Spool
+        ) {
             dots.push(MapDot {
                 at: project(self.tour.jump_point()),
                 size: 6.0,
@@ -2116,6 +2316,113 @@ fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &System) {
 
 /// Whether another body of `system` could pass in front of the star as seen
 /// from a body of `radius` at `at`: only then is its eclipse pass drawn.
+/// The label on a stopover's main object, where it is in view and clear of
+/// the panels: its name and range, a leader up from its edge.
+fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel> {
+    let scene = view.scene.as_ref()?;
+    if view.reveal < 1.0 || view.warp > 0.02 || scene.fade < 0.5 {
+        return None;
+    }
+    let shot = &scene.shot;
+    let o = shot.objects[0];
+    let name = match scene.event {
+        voyage::Event::Asteroids | voyage::Event::Nebula | voyage::Event::Remnant => return None,
+        voyage::Event::HiveCube => "Hive cube".to_string(),
+        voyage::Event::BlackHole => "Black hole".into(),
+        voyage::Event::RoguePlanet => "Rogue planet".into(),
+        voyage::Event::Pulsar => "Pulsar".into(),
+        voyage::Event::Derelict => "Derelict station".into(),
+        voyage::Event::Comet => "Comet nucleus".into(),
+        voyage::Event::Leviathans => "Leviathan pod".into(),
+        voyage::Event::Gate => "Star gate".into(),
+        voyage::Event::Wormhole => "Wormhole".into(),
+    };
+    let [x, y, z] = scene.basis;
+    let rel = sub([o[0], o[1], o[2]], shot.ship);
+    let world = add(add(scale(x, rel[0]), scale(y, rel[1])), scale(z, rel[2]));
+    let depth = length(world);
+    let size = match scene.event {
+        voyage::Event::HiveCube => o[3] * 1.4,
+        voyage::Event::Leviathans => 40.0,
+        voyage::Event::Comet => 12.0,
+        _ => o[3],
+    };
+    let ahead = dot(world, view.forward);
+    if ahead <= size * 1.2 || depth <= size * 1.2 {
+        return None;
+    }
+    let right = cross(view.forward, view.up);
+    let half = SIZE as f64 / 2.0;
+    let sx = dot(world, right) / ahead / view.half_fov;
+    let sy = dot(world, view.up) / ahead / view.half_fov;
+    let radius = (size / depth).asin().tan() / view.half_fov * half;
+    // Too big to point at, or off the round frame.
+    if radius > half * 0.55 || sx.hypot(sy) > 0.8 {
+        return None;
+    }
+    let centre = [half + sx * half, half - sy * half];
+    let left = centre[0] > half * 1.3;
+    let lean = std::f64::consts::FRAC_1_SQRT_2 * radius;
+    let at = [
+        centre[0] + if left { -lean } else { lean },
+        centre[1] - lean,
+    ];
+    if panels.iter().any(|p| {
+        at[0] > p[0] - 20.0 && at[0] < p[2] + 20.0 && at[1] > p[1] - 70.0 && at[1] < p[3] + 20.0
+    }) {
+        return None;
+    }
+    Some(labels::BodyLabel {
+        at: [at[0] as f32, at[1] as f32],
+        left,
+        name,
+        distance: format!("{} km", tour::thousands((depth - size).max(0.0) * 10.0)),
+    })
+}
+
+/// The stopover's parameters for the shaders (`EV_*` in `encounter.wgsl`):
+/// the event, how far into it and its draw; the ship in its frame, and the
+/// frame's axes; its objects, rotation and own numbers; the alarm, how much
+/// of it shows and what is seen inside a leg; and where a hit lands.
+fn encounter_rows(view: &View) -> [[f32; 4]; EV_ROWS] {
+    let mut ev = [[0.0f32; 4]; EV_ROWS];
+    let v4 = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
+    let x4 = |v: [f64; 4]| v.map(|x| x as f32);
+    if let Some(scene) = &view.scene {
+        let shot = &scene.shot;
+        ev[0] = [
+            scene.event.id() as f32,
+            scene.local as f32,
+            scene.duration as f32,
+            scene.variant as f32,
+        ];
+        ev[1] = v4(shot.ship, 1.0);
+        ev[2] = v4(scene.basis[0], shot.hit);
+        ev[3] = v4(scene.basis[1], shot.beam);
+        ev[4] = v4(scene.basis[2], shot.flash);
+        for (k, object) in shot.objects.iter().enumerate() {
+            ev[5 + k] = x4(*object);
+        }
+        ev[8] = x4(shot.rot);
+        ev[9] = x4(shot.extra);
+        ev[10] = [shot.alert as f32, scene.fade as f32, 0.0, 0.0];
+        ev[11] = [
+            shot.hit_at[0] as f32,
+            shot.hit_at[1] as f32,
+            shot.shake as f32,
+            0.0,
+        ];
+    }
+    if let Some((kind, amount, local)) = view.flux {
+        ev[10][2] = kind as f32;
+        ev[10][3] = amount as f32;
+        ev[11][3] = local as f32;
+    }
+    ev[4][3] = ev[4][3].max(view.flash as f32);
+    ev[1][3] = if view.deep { 1.0 } else { 0.0 };
+    ev
+}
+
 fn eclipsed(system: &System, t: f64, at: [f64; 3], radius: f64, planet: Option<usize>) -> bool {
     let to_star = normalize([-at[0], -at[1], -at[2]]);
     let star_distance = length(at);
@@ -2840,10 +3147,31 @@ pub(crate) mod tests {
                     }
                     out.push(("spool-engage".into(), end - 0.5));
                 }
-                Phase::Jump => {
-                    out.push(("jump-entry".into(), at(0.04)));
-                    out.push(("jump-cruise".into(), at(0.5)));
-                    out.push(("jump-dropout".into(), end - 2.0));
+                Phase::Jump(k) => {
+                    // The last leg keeps the names the previews ask for.
+                    let name = if k as usize + 1 == tour.passage.legs.len() {
+                        "jump".to_string()
+                    } else {
+                        format!("jump{k}")
+                    };
+                    out.push((format!("{name}-entry"), at(0.04)));
+                    out.push((format!("{name}-cruise"), at(0.5)));
+                    if tour.passage.legs[k as usize].flux.is_some() {
+                        out.push((format!("{name}-flux"), at(0.55)));
+                    }
+                    out.push((format!("{name}-dropout"), end - 2.0));
+                }
+                Phase::Stopover(k) => {
+                    let slug = tour.passage.stops[k as usize].event.slug();
+                    out.push((format!("{slug}-dropout"), segment.start + 0.8));
+                    for (i, u) in [0.15, 0.4, 0.6, 0.8, 0.97].into_iter().enumerate() {
+                        out.push((format!("{slug}-{i}"), at(u)));
+                    }
+                }
+                Phase::Rejump(k) => {
+                    let slug = tour.passage.stops[k as usize].event.slug();
+                    out.push((format!("{slug}-rejump"), at(0.5)));
+                    out.push((format!("{slug}-rejump-engage"), end - 0.4));
                 }
             }
         }
@@ -2860,14 +3188,26 @@ pub(crate) mod tests {
         let count = relays.iter().filter(|&&r| r).count();
         assert!(count > 20 && count < 100, "{count}");
         assert!(relays.windows(3).all(|w| !w.iter().all(|&r| r)));
-        assert!(relays.windows(2).any(|w| w[0] && w[1]), "a trip of three jumps now and then");
+        assert!(
+            relays.windows(2).any(|w| w[0] && w[1]),
+            "a trip of three jumps now and then"
+        );
         for visit in 0..60 {
             let tour = tour_for(base, visit);
             assert_eq!(tour.transit, relays[visit as usize]);
             let hops = tour.route.len();
-            assert!(relays[visit as usize + 1..visit as usize + hops].iter().all(|&r| r));
+            assert!(
+                relays[visit as usize + 1..visit as usize + hops]
+                    .iter()
+                    .all(|&r| r)
+            );
             assert!(!relays[visit as usize + hops]);
-            assert!(tour.leg >= 1 && tour.leg + hops - 1 == tour.legs, "{visit}: {} {hops} {}", tour.leg, tour.legs);
+            assert!(
+                tour.leg >= 1 && tour.leg + hops - 1 == tour.legs,
+                "{visit}: {} {hops} {}",
+                tour.leg,
+                tour.legs
+            );
         }
     }
 
@@ -3040,7 +3380,10 @@ pub(crate) mod tests {
             .chain([tour::SPOOL - 0.3, tour::SPOOL + 2.0, tour::SPOOL + 6.0])
             .collect();
         let cell = 216;
-        let mut sheet = image::RgbaImage::new(cell * moments.len() as u32, cell * tour::DRIVES.len() as u32);
+        let mut sheet = image::RgbaImage::new(
+            cell * moments.len() as u32,
+            cell * tour::DRIVES.len() as u32,
+        );
         for (k, name) in tour::DRIVES.iter().enumerate() {
             solar.drive_override = Some(k as u32 + 1);
             for (m, at) in moments.iter().enumerate() {
@@ -3052,7 +3395,12 @@ pub(crate) mod tests {
                     .expect("a screenshot");
                 if let Some(image) = image::RgbaImage::from_raw(SIZE, SIZE, pixels) {
                     let thumb = image::imageops::thumbnail(&image, cell, cell);
-                    image::imageops::overlay(&mut sheet, &thumb, (cell * m as u32) as i64, (cell * k as u32) as i64);
+                    image::imageops::overlay(
+                        &mut sheet,
+                        &thumb,
+                        (cell * m as u32) as i64,
+                        (cell * k as u32) as i64,
+                    );
                 }
             }
         }
@@ -3072,7 +3420,16 @@ pub(crate) mod tests {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut solar = Solar::with_seed(&gpu, 11);
         let (system, next) = (solar.tour.next.clone(), system_for(11, 2));
-        solar.tour = Tour::plan(system, vec![next.clone(), system_for(11, 3)], true, 1, 2);
+        let passage = voyage::Passage::plan(11, 2, tour::drive_to(&next).0);
+        solar.tour = Tour::plan(
+            system,
+            vec![next.clone(), system_for(11, 3)],
+            true,
+            1,
+            2,
+            passage,
+            1,
+        );
         settle(&mut solar, &gpu, 0.0);
         let moments = [0.5, 1.5, 3.0, 20.0, 40.0, 60.0, 78.0, 84.0, 100.0, 112.0];
         let cell = 216;
@@ -3093,7 +3450,7 @@ pub(crate) mod tests {
             .expect("a sheet");
     }
 
-        /// The drop-out from each drive into the next system: the jump's last
+    /// The drop-out from each drive into the next system: the jump's last
     /// second, then the next visit's first seconds, as `dropout-<drive>-<n>.png`
     /// and `dropouts-sheet.png` (a row a drive) in `SOLAR_SHOTS_DIR`.
     #[test]
@@ -3146,12 +3503,216 @@ pub(crate) mod tests {
             .expect("a sheet");
     }
 
+    /// Visit 0 of the tour seeded `base`, its jump through `stops` alone.
+    fn tour_through(base: u64, stops: Vec<voyage::Stopover>) -> Tour {
+        let system = system_for(base, 0);
+        let next = system_for(base, 1);
+        let drive = tour::drive_to(&next).0;
+        let mut rng = system::Rng::new(base ^ 0x5eed);
+        let passage = voyage::Passage::with_stops(stops, drive, &mut rng);
+        let arrival = tour::drive_to(&system).0;
+        Tour::plan(system, vec![next], false, 1, 1, passage, arrival)
+    }
+
+    /// Saves frame `pixels` as `name` in `dir` and adds it to `sheet` at
+    /// column `x`, row `y`, `cell` pixels a side.
+    fn shoot(
+        dir: &str,
+        name: &str,
+        pixels: Vec<u8>,
+        sheet: &mut image::RgbaImage,
+        cell: u32,
+        x: u32,
+        y: u32,
+    ) {
+        let path = std::path::Path::new(dir).join(format!("{name}.png"));
+        image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
+            .expect("a screenshot");
+        if let Some(image) = image::RgbaImage::from_raw(SIZE, SIZE, pixels) {
+            let thumb = image::imageops::thumbnail(&image, cell, cell);
+            image::imageops::overlay(sheet, &thumb, (cell * x) as i64, (cell * y) as i64);
+        }
+    }
+
+    /// Every encounter between the legs of a jump, gates and wormholes too:
+    /// dropping out, five moments of it and the drive re-engaging (or the
+    /// ship thrown on into the next leg), to `SOLAR_SHOTS_DIR` (default
+    /// `target/solar-shots`): `encounter-<event>-<n>.png` and
+    /// `encounters-sheet.png`, a row an event. `SOLAR_ENCOUNTERS=<slugs>`
+    /// picks some.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn encounters() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let only = std::env::var("SOLAR_ENCOUNTERS").ok();
+        let events: Vec<voyage::Event> = voyage::Event::ALL
+            .into_iter()
+            .filter(|e| {
+                only.as_ref()
+                    .is_none_or(|o| o.split(',').any(|s| s == e.slug()))
+            })
+            .collect();
+        let variant: u64 = std::env::var("SOLAR_VARIANT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(7);
+        let moments = [0.6, 0.15, 0.4, 0.6, 0.8, 0.97, 1.03];
+        let cell = 216;
+        let mut sheet =
+            image::RgbaImage::new(cell * moments.len() as u32, cell * events.len() as u32);
+        let mut solar = Solar::with_seed(&gpu, 11);
+        for (row, event) in events.iter().enumerate() {
+            solar.tour = tour_through(
+                11,
+                vec![voyage::Stopover {
+                    event: *event,
+                    variant,
+                }],
+            );
+            let stop = solar
+                .tour
+                .segments
+                .iter()
+                .find(|s| s.phase == Phase::Stopover(0))
+                .copied()
+                .expect("a stopover");
+            settle(&mut solar, &gpu, stop.start);
+            for (m, &at) in moments.iter().enumerate() {
+                let t = if m == 0 {
+                    stop.start + at
+                } else if at > 1.0 {
+                    // Re-engaging, or thrown on into the next leg.
+                    stop.start
+                        + stop.duration
+                        + if event.portal() {
+                            0.4
+                        } else {
+                            event.rejump() * 0.6
+                        }
+                } else {
+                    stop.start + stop.duration * at
+                };
+                solar.draw(&gpu, t, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                shoot(
+                    &dir,
+                    &format!("encounter-{}-{m}", event.slug()),
+                    pixels,
+                    &mut sheet,
+                    cell,
+                    m as u32,
+                    row as u32,
+                );
+            }
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("encounters-sheet.png"))
+            .expect("a sheet");
+    }
+
+    /// Hive cubes of eight draws at the same moment of their scripts, to
+    /// show each is its own: `hive-cubes-sheet.png`.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn hive_cubes() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let cell = 270;
+        let mut sheet = image::RgbaImage::new(cell * 4, cell * 2);
+        let mut solar = Solar::with_seed(&gpu, 11);
+        for v in 0..8u64 {
+            let stop = voyage::Stopover {
+                event: voyage::Event::HiveCube,
+                variant: v * 7919 + 3,
+            };
+            solar.tour = tour_through(11, vec![stop]);
+            let seg = solar
+                .tour
+                .segments
+                .iter()
+                .find(|s| s.phase == Phase::Stopover(0))
+                .copied()
+                .expect("a stopover");
+            let t = seg.start + seg.duration * 0.5;
+            settle(&mut solar, &gpu, t);
+            solar.draw(&gpu, t, 0);
+            let pixels = read_texture(&gpu, &solar.frames[0].texture);
+            shoot(
+                &dir,
+                &format!("hive-cube-{v}"),
+                pixels,
+                &mut sheet,
+                cell,
+                (v % 4) as u32,
+                (v / 4) as u32,
+            );
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("hive-cubes-sheet.png"))
+            .expect("a sheet");
+    }
+
+    /// What is seen inside a leg, each through two drives' light:
+    /// `fluxes-sheet.png`, a row a flux.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn fluxes() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let cell = 270;
+        let mut sheet = image::RgbaImage::new(cell * 4, cell * voyage::Flux::ALL.len() as u32);
+        let mut solar = Solar::with_seed(&gpu, 11);
+        let stop = voyage::Stopover {
+            event: voyage::Event::Asteroids,
+            variant: 1,
+        };
+        solar.tour = tour_through(11, vec![stop]);
+        for (row, flux) in voyage::Flux::ALL.into_iter().enumerate() {
+            solar.tour.passage.legs[0].flux = Some(flux);
+            let leg = solar
+                .tour
+                .segments
+                .iter()
+                .find(|s| s.phase == Phase::Jump(0))
+                .copied()
+                .expect("a leg");
+            settle(&mut solar, &gpu, leg.start);
+            for (m, (drive, at)) in [(1, 0.4), (1, 0.6), (3, 0.5), (6, 0.5)]
+                .into_iter()
+                .enumerate()
+            {
+                solar.drive_override = Some(drive);
+                if drive == 6 {
+                    solar.drive_override = None;
+                    solar.tour.passage.legs[0].look = 6;
+                }
+                let t = leg.start + leg.duration * at;
+                solar.draw(&gpu, t, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                shoot(
+                    &dir,
+                    &format!("flux-{}-{m}", flux.slug()),
+                    pixels,
+                    &mut sheet,
+                    cell,
+                    m as u32,
+                    row as u32,
+                );
+            }
+            solar.tour.passage.legs[0].look = solar.tour.drive().0;
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("fluxes-sheet.png"))
+            .expect("a sheet");
+    }
+
     /// One finished frame and its HUD at the first moment whose name holds
     /// `moment`, for the UI previews.
-    pub(crate) fn render_once(
-        seed: u64,
-        moment: &str,
-    ) -> (Vec<u8>, Hud, Vec<labels::BodyLabel>) {
+    pub(crate) fn render_once(seed: u64, moment: &str) -> (Vec<u8>, Hud, Vec<labels::BodyLabel>) {
         let gpu = crate::gpu::headless().expect("a GPU adapter");
         let mut solar = Solar::with_seed(&gpu, seed);
         let t = moments(&solar.tour)

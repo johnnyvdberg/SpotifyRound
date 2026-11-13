@@ -108,6 +108,9 @@ struct Params {
     // preparation (`SPOOL_STAGES` in `tour.rs`), y how much of its start-up
     // effect shows.
     spool: vec4<f32>,
+    // The stopover between legs of the jump, and what is seen inside a leg
+    // (`EV_*` in `encounter.wgsl`).
+    ev: array<vec4<f32>, 12>,
     bodies: array<Body, 16>,
 };
 
@@ -823,6 +826,46 @@ fn warp_light(r: f32, theta: f32, logr: f32, around: vec2<f32>) -> vec3<f32> {
         colour += tint * (filament + glow) * 0.8;
         colour += vec3<f32>(0.6, 1.0, 0.9) * streaks(theta, logr, 120.0, 8.0, 0.4, 19) * 0.5;
         colour += vec3<f32>(0.7, 1.0, 0.95) * exp(-r * 10.0) * 0.8;
+    } else if (WARP == 6) {
+        // Gate Conduit: thrown down a star gate's conduit. A hexagonal
+        // lattice of light lines the walls and rushes past, in the gate's
+        // gold, with bright nodes where its struts meet, a spine of light
+        // straight ahead and long rails flying out along six ribs.
+        let z = logr * 5.0 - t * 6.5;
+        let a = theta / TAU * 12.0;
+        // A lattice of struts: three sets of lines at sixty degrees.
+        let uv = vec2<f32>(a, z);
+        let l0 = abs(fract(uv.x) - 0.5);
+        let l1 = abs(fract(uv.x * 0.5 + uv.y * 0.866) - 0.5);
+        let l2 = abs(fract(-uv.x * 0.5 + uv.y * 0.866) - 0.5);
+        let strut = max(max(bump((0.5 - l0) / 0.05), bump((0.5 - l1) / 0.05)), bump((0.5 - l2) / 0.05));
+        let wall = smoothstep01(0.1, 0.55, r);
+        let pulse_ = 0.55 + 0.45 * sin(floor(z) * 1.7 - t * 3.0);
+        colour += vec3<f32>(1.0, 0.68, 0.22) * strut * wall * pulse_ * 0.55;
+        let node = bump(l0 * l1 * 40.0) * strut;
+        colour += vec3<f32>(1.0, 0.92, 0.7) * node * wall * 0.5;
+        let rib = bump(sin(theta * 3.0) / 0.03);
+        colour += vec3<f32>(1.0, 0.85, 0.5) * rib * streaks(theta, logr, 6.0, 14.0, 0.9, 23) * 2.0;
+        colour += vec3<f32>(0.9, 0.95, 1.0) * streaks(theta, logr, 200.0, 12.0, 0.7, 29) * 0.4 * wall;
+        colour += vec3<f32>(0.03, 0.015, 0.006) * (1.0 + r) + vec3<f32>(1.0, 0.95, 0.85) * exp(-r * 10.0) * 1.3;
+    } else if (WARP == 7) {
+        // Wormhole Throat: down a wormhole's throat. Its wall a tube of
+        // twisted light, violet and teal bands spiralling past, the sky of
+        // the far mouth bent into a bright ring ahead and its light pouring
+        // through.
+        let twist = theta + logr * 1.8 - t * 0.6;
+        let bands = noise(vec3<f32>(cos(twist) * 3.0, sin(twist) * 3.0, logr * 2.2 - t * 1.6));
+        let fine = noise(vec3<f32>(around * 14.0, logr * 4.0 - t * 3.0));
+        let wall = smoothstep01(0.06, 0.6, r);
+        let hue = 0.5 + 0.5 * sin(twist * 2.0 + logr * 1.3);
+        let tint = mix(vec3<f32>(0.55, 0.25, 1.0), vec3<f32>(0.1, 0.9, 0.85), hue);
+        colour += tint * (smoothstep01(-0.1, 0.7, bands) * 0.75 + smoothstep01(0.3, 0.9, fine) * 0.35) * wall;
+        let ring = bump((r - 0.16 - 0.01 * sin(theta * 5.0 + t)) / 0.025);
+        colour += vec3<f32>(0.9, 0.85, 1.0) * ring * 0.9;
+        let ahead = normalize(params.forward.xyz + (params.right.xyz * around.y - params.up.xyz * around.x) * r * 2.5 * params.frame.y);
+        colour += textureSampleLevel(starfield, map_sampler, ahead, 0.0).rgb * (1.0 - smoothstep01(0.12, 0.16, r)) * 3.0;
+        colour += vec3<f32>(0.85, 0.75, 1.0) * streaks(twist, logr, 90.0, 7.0, 0.8, 43) * 0.5 * wall;
+        colour += vec3<f32>(0.02, 0.0, 0.05) * (1.0 + r) + vec3<f32>(0.95, 0.9, 1.0) * exp(-r * 16.0);
     } else {
         // Bubble Drive: the ship rides in a bubble of warped space. Its shell
         // is a shimmering ring, split into colour at its edge; inside it the

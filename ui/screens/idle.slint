@@ -273,15 +273,17 @@ export component IdleScreen inherits Rectangle {
     // The manoeuvre under way, high in the circle where the scanner sits in
     // orbit, half the burn's height: its name, why the ship does it, and a
     // bar through it where it has one.
+    // Between the stars, it takes the alarm's colour: amber, then red.
     if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-dv <= 0 && Idle.man-drive == 0 : Rectangle {
+        property <color> ink: Idle.alert >= 0.7 ? #ff4a3a : Idle.alert >= 0.3 ? #ffb43c : Theme.accent;
         x: (parent.width - self.width) / 2;
         y: 150px;
         width: 600px;
         height: 98px;
         border-radius: 16px;
-        background: #04060cb0;
-        border-width: 1px;
-        border-color: Theme.accent.with-alpha(0.25);
+        background: Idle.alert >= 0.7 ? #1a0404c0 : #04060cb0;
+        border-width: Idle.alert >= 0.7 ? 2px : 1px;
+        border-color: ink.with-alpha(Idle.alert >= 0.3 ? 0.6 : 0.25);
         opacity: Idle.fade;
 
         Text {
@@ -289,7 +291,7 @@ export component IdleScreen inherits Rectangle {
             y: 7px;
             width: parent.width;
             text: Idle.man-name;
-            color: Theme.accent;
+            color: ink;
             font-family: Theme.font;
             font-size: 14px;
             font-weight: 700;
@@ -323,7 +325,7 @@ export component IdleScreen inherits Rectangle {
                 width: parent.width * min(Idle.man-progress, 1.0);
                 height: parent.height;
                 border-radius: 2px;
-                background: Theme.accent;
+                background: ink;
             }
         }
     }

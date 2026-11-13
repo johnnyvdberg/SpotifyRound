@@ -26,6 +26,7 @@
 use std::f64::consts::{PI, TAU};
 
 use super::system::{AU, KM, Planet, REAL_AU, Stop, System};
+use super::voyage::{self, Event, Passage, Shot};
 
 /// Seconds each part of the tour takes.
 pub const TRANSFER: f64 = 45.0;
@@ -40,10 +41,17 @@ pub const DEPART: f64 = 20.0;
 /// Out of the last stop's pull to the jump point at the system's edge.
 pub const CRUISE: f64 = 48.0;
 /// Across a relay system, from where the ship dropped out to the jump point.
-pub const CROSSING: f64 = 80.0;
+pub const CROSSING: f64 = 64.0;
 /// The drive's preparation at the jump point, in its stages (`SPOOL_STAGES`).
 pub const SPOOL: f64 = 36.0;
-pub const JUMP: f64 = 150.0;
+/// The last leg of the jump (`voyage::LEG`): the jump is now two or three
+/// short legs with something met between them (`voyage`).
+pub const JUMP: f64 = voyage::LEG;
+/// How fast the ship drifts on through a stopover between legs, units a
+/// second (for the minimap and the motion only: nothing of the system shows).
+const DEEP_DRIFT: f64 = 20.0;
+/// The start-up effect fading into the light at a leg after a re-engage.
+const REJUMP_FADE: f64 = 3.0;
 /// Where each of the drive's preparation stages begins, as a share of
 /// `SPOOL`: aligning on the target star, the drive's own three, and the
 /// engagement, in which its light rises into the jump.
@@ -54,8 +62,9 @@ const SPOOL_FADE: f64 = 9.0;
 /// How fast the ship is going into the jump: units a second.
 const JUMP_SPEED: f64 = 400.0;
 /// The chance a jump stops at a relay star on the way, and the most relays
-/// in a row.
-pub const RELAY_CHANCE: f64 = 0.35;
+/// in a row. Rarer than it was: the gates, wormholes and encounters between
+/// the legs of every jump break the trip up now.
+pub const RELAY_CHANCE: f64 = 0.18;
 /// Where a jump point lies: beyond the outermost orbit by this share, and
 /// this far beyond that again.
 const EDGE: f64 = 1.25;
@@ -67,7 +76,8 @@ const FLARE: f64 = 1.0;
 /// How long the drive's light takes to tear open on arrival, over the new
 /// system (`View::reveal`).
 pub const DROP_OUT: f64 = 2.4;
-/// The hyperjump drives, each its own look (`fs_warp` in `frame.wgsl`).
+/// The hyperjump drives, each its own look (`fs_warp` in `frame.wgsl`); a
+/// gate's conduit and a wormhole's throat follow them in `voyage::LOOKS`.
 pub const DRIVES: [&str; 5] = [
     "Lumen Drift",
     "Tachyon Tunnel",
@@ -114,7 +124,34 @@ pub enum Phase {
     },
     /// At the jump point, the drive spooling up toward the next star.
     Spool,
-    Jump,
+    /// A leg of the jump (from 0), out in the deep between the stars.
+    Jump(u8),
+    /// Between legs `k` and `k + 1`: what the ship meets there
+    /// (`voyage::Event`), dropped out into, or a gate or wormhole flown.
+    Stopover(u8),
+    /// The drive re-engaging after stopover `k`.
+    Rejump(u8),
+}
+
+impl Phase {
+    /// Out of the system, in the jump or between its legs.
+    pub fn deep(self) -> bool {
+        matches!(self, Phase::Jump(_) | Phase::Stopover(_) | Phase::Rejump(_))
+    }
+}
+
+/// A stopover at one moment, for the shaders: the event, how far into it
+/// (on past its end while the drive re-engages), how much of it shows, its
+/// script's shot, and the encounter frame's axes in the world.
+#[derive(Clone, Copy, Debug)]
+pub struct Scene {
+    pub event: Event,
+    pub local: f64,
+    pub duration: f64,
+    pub variant: f64,
+    pub fade: f64,
+    pub shot: Shot,
+    pub basis: [[f64; 3]; 3],
 }
 
 /// What a transfer swings past on the way.
@@ -160,6 +197,19 @@ pub struct View {
     /// marked, 0..1 (0: not shown).
     pub target: [f64; 3],
     pub target_shown: f64,
+    /// The look of the drive's light (`voyage::LOOKS`, from 1) in a jump or
+    /// spooling up, and of the light torn open as the ship drops out of one.
+    pub look: u32,
+    pub drop_look: u32,
+    /// Out in the deep between stars: none of the system drawn.
+    pub deep: bool,
+    /// A stopover in view, and something seen inside a leg: its kind
+    /// (`voyage::Flux`), how much shows, and how far into it.
+    pub scene: Option<Scene>,
+    pub flux: Option<(u32, f64, f64)>,
+    /// A white flash over the frame, 0..1: thrown out of a gate or wormhole
+    /// into a leg.
+    pub flash: f64,
 }
 
 /// Each drive's preparation: its three stages between aligning and
@@ -169,24 +219,42 @@ fn drive_stages(drive: u32, target: &str, here: &str) -> ([(&'static str, String
     match drive {
         1 => (
             [
-                ("PHOTON CHARGE", format!("drinking {here}'s light into the lens ring")),
-                ("LENS FOCUS", format!("the light drawn to a point on {target}")),
+                (
+                    "PHOTON CHARGE",
+                    format!("drinking {here}'s light into the lens ring"),
+                ),
+                (
+                    "LENS FOCUS",
+                    format!("the light drawn to a point on {target}"),
+                ),
                 ("CORONA", "a blue-white blaze round the bow".into()),
             ],
             format!("drifting out on the beam to {target}"),
         ),
         2 => (
             [
-                ("TACHYON SEED", "faster-than-light particles cast ahead".into()),
-                ("RING LATTICE", format!("tunnel rings forming toward {target}")),
-                ("TUNNEL SEAL", "the rings spun up and locked in phase".into()),
+                (
+                    "TACHYON SEED",
+                    "faster-than-light particles cast ahead".into(),
+                ),
+                (
+                    "RING LATTICE",
+                    format!("tunnel rings forming toward {target}"),
+                ),
+                (
+                    "TUNNEL SEAL",
+                    "the rings spun up and locked in phase".into(),
+                ),
             ],
             format!("into the tunnel to {target}"),
         ),
         3 => (
             [
                 ("MASS LOCK", format!("clear of {here}'s gravity well")),
-                ("FOLD GEOMETRY", format!("space creased between here and {target}")),
+                (
+                    "FOLD GEOMETRY",
+                    format!("space creased between here and {target}"),
+                ),
                 ("CREASE", "the sky ahead drawn in to the fold".into()),
             ],
             format!("folding space onto {target}"),
@@ -202,7 +270,10 @@ fn drive_stages(drive: u32, target: &str, here: &str) -> ([(&'static str, String
         _ => (
             [
                 ("EXOTIC MATTER", "negative energy fed to the ring".into()),
-                ("INFLATION", "a bubble of warped space round the ship".into()),
+                (
+                    "INFLATION",
+                    "a bubble of warped space round the ship".into(),
+                ),
                 ("SHELL", "the bubble's wall drawn tight and steady".into()),
             ],
             format!("space ahead contracting toward {target}"),
@@ -222,16 +293,17 @@ fn engage_word(drive: u32) -> &'static str {
 }
 
 /// The drive used for the jump to `system`: its number and name.
-fn drive_to(system: &System) -> (u32, &'static str) {
+pub(crate) fn drive_to(system: &System) -> (u32, &'static str) {
     let k = (super::system::Rng::new(system.seed ^ 0xd21e).next() % DRIVES.len() as u64) as usize;
     (k as u32 + 1, DRIVES[k])
 }
 
-/// The drive's clock `local` seconds into a jump: running at full speed,
-/// then slowing to 0.4 of it over the last `SLOWING` seconds.
-fn drive_clock(local: f64) -> f64 {
-    let x = ((local - (JUMP - SLOWING)) / SLOWING).clamp(0.0, 1.0);
-    local.min(JUMP - SLOWING) + SLOWING * (x - 0.3 * x * x)
+/// The drive's clock `local` seconds into a leg of `length` seconds:
+/// running at full speed, then slowing to 0.4 of it over the last `SLOWING`
+/// seconds.
+fn drive_clock(local: f64, length: f64) -> f64 {
+    let x = ((local - (length - SLOWING)) / SLOWING).clamp(0.0, 1.0);
+    local.min(length - SLOWING) + SLOWING * (x - 0.3 * x * x)
 }
 
 pub struct Tour {
@@ -266,6 +338,12 @@ pub struct Tour {
     outbound: [f64; 3],
     /// The crossing to the jump point: a spline through three knots.
     cruise: Cruise,
+    /// The jump itself: its legs and what is met between them; the look of
+    /// the light the ship arrived in; and the encounter frame's axes, +z
+    /// the way the jump goes.
+    pub passage: Passage,
+    arrival: u32,
+    basis: [[f64; 3]; 3],
 }
 
 /// The flight out to the jump point: a Hermite spline from where it begins
@@ -292,7 +370,13 @@ impl Cruise {
         let sigma = 2.0 * ease_between(u, self.pace[0], self.pace[1]);
         let k = (sigma.floor() as usize).min(1);
         let s = sigma - k as f64;
-        hermite(self.knots[k], self.tangents[k], self.knots[k + 1], self.tangents[k + 1], s)
+        hermite(
+            self.knots[k],
+            self.tangents[k],
+            self.knots[k + 1],
+            self.tangents[k + 1],
+            s,
+        )
     }
 
     /// Distance left to fly from `u`, along the spline.
@@ -422,7 +506,14 @@ const STAGES: [f64; 4] = [0.0, 0.08, 0.16, 0.9];
 impl Manoeuvre {
     /// A burn of `dv` km/s, `progress` of the way through, in its stages:
     /// the attitude it is flown in, what the burn does and what it leaves.
-    fn burn(name: &str, progress: f64, dv: f64, attitude: &str, burn: String, cutoff: String) -> Option<Self> {
+    fn burn(
+        name: &str,
+        progress: f64,
+        dv: f64,
+        attitude: &str,
+        burn: String,
+        cutoff: String,
+    ) -> Option<Self> {
         Some(Manoeuvre {
             name: name.into(),
             text: String::new(),
@@ -440,7 +531,14 @@ impl Manoeuvre {
 
     /// Drive `drive` (from 1) spooling up, `progress` of the way through
     /// its preparation, for the jump to `target` from `here`.
-    pub fn spool(name: &str, drive: u32, progress: f64, text: String, target: &str, here: &str) -> Option<Self> {
+    pub fn spool(
+        name: &str,
+        drive: u32,
+        progress: f64,
+        text: String,
+        target: &str,
+        here: &str,
+    ) -> Option<Self> {
         let (own, engage) = drive_stages(drive, target, here);
         let mut stages = vec![("ALIGN".to_string(), format!("bow on {target}, locked"))];
         stages.extend(own.into_iter().map(|(name, what)| (name.to_string(), what)));
@@ -474,16 +572,24 @@ impl Manoeuvre {
             return 0.0;
         }
         let p = self.progress as f64;
-        (smoothstep(STAGES[1], STAGES[2], p) * (1.0 - smoothstep(STAGES[3], STAGES[3] + 0.06, p))) as f32
+        (smoothstep(STAGES[1], STAGES[2], p) * (1.0 - smoothstep(STAGES[3], STAGES[3] + 0.06, p)))
+            as f32
     }
 
     /// The stage under way, and how far through it.
     pub fn stage(&self) -> (usize, f32) {
-        let starts: &[f64] = if self.starts.is_empty() { &STAGES } else { &self.starts };
+        let starts: &[f64] = if self.starts.is_empty() {
+            &STAGES
+        } else {
+            &self.starts
+        };
         let p = (self.progress as f64).clamp(0.0, 1.0);
         let i = starts.iter().rposition(|&s| p >= s).unwrap_or(0);
         let end = starts.get(i + 1).copied().unwrap_or(1.0);
-        (i, ((p - starts[i]) / (end - starts[i])).clamp(0.0, 1.0) as f32)
+        (
+            i,
+            ((p - starts[i]) / (end - starts[i])).clamp(0.0, 1.0) as f32,
+        )
     }
 
     /// The share of the burn's change of speed made so far: from halfway up
@@ -533,7 +639,10 @@ fn mix(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
 /// square to it.
 fn heading(v: [f64; 3], up: [f64; 3]) -> (f64, f64) {
     let (e1, e2) = level_axes(up);
-    (dot(v, e2).atan2(dot(v, e1)), dot(v, up).clamp(-1.0, 1.0).asin())
+    (
+        dot(v, e2).atan2(dot(v, e1)),
+        dot(v, up).clamp(-1.0, 1.0).asin(),
+    )
 }
 
 fn level_axes(up: [f64; 3]) -> ([f64; 3], [f64; 3]) {
@@ -636,7 +745,11 @@ impl Path {
         let span = length(sub(self.knots[k + 1], self.knots[k]));
         let cap = |m: [f64; 3]| {
             let l = length(m);
-            if l > 1.5 * span { scale(m, 1.5 * span / l) } else { m }
+            if l > 1.5 * span {
+                scale(m, 1.5 * span / l)
+            } else {
+                m
+            }
         };
         hermite(
             self.knots[k],
@@ -673,7 +786,9 @@ impl Path {
                 0 => 0.0,
                 SAMPLES => span,
                 j if j <= head => tail * crowd(head - j, head),
-                j if j <= end => tail + (span - 2.0 * tail) * (j - head) as f64 / (end - head) as f64,
+                j if j <= end => {
+                    tail + (span - 2.0 * tail) * (j - head) as f64 / (end - head) as f64
+                }
                 j => span - tail * crowd(j - end, SAMPLES - end),
             })
             .collect();
@@ -716,7 +831,11 @@ impl Path {
         };
         // The climb away and the approach get their shares of the time on
         // top.
-        let flown: f64 = ds.iter().zip(&near).map(|(d, g)| d * (1.0 + boost * g)).sum();
+        let flown: f64 = ds
+            .iter()
+            .zip(&near)
+            .map(|(d, g)| d * (1.0 + boost * g))
+            .sum();
         let share = |close: &[f64], share: f64| {
             let nearing: f64 = ds.iter().zip(close).map(|(d, g)| d * g).sum();
             if nearing > 1e-9 {
@@ -726,7 +845,8 @@ impl Path {
             }
         };
         let (approach, leaving) = (share(&close_in, APPROACH), share(&close_out, LEAVE));
-        let weight = |j: usize| 1.0 + boost * near[j] + approach * close_in[j] + leaving * close_out[j];
+        let weight =
+            |j: usize| 1.0 + boost * near[j] + approach * close_in[j] + leaving * close_out[j];
         let mut time = vec![0.0];
         let mut length = vec![0.0];
         for j in 0..SAMPLES {
@@ -784,7 +904,11 @@ impl Path {
 
     /// Distance along the path still to go from `sigma`, in units.
     fn remaining(&self, sigma: f64) -> f64 {
-        let j = self.places.partition_point(|&s| s <= sigma).saturating_sub(1).min(SAMPLES);
+        let j = self
+            .places
+            .partition_point(|&s| s <= sigma)
+            .saturating_sub(1)
+            .min(SAMPLES);
         self.length[SAMPLES] - self.length[j]
     }
 }
@@ -818,12 +942,22 @@ fn arc(a: [f64; 3], b: [f64; 3], s: f64) -> [f64; 3] {
     let ease = 0.5 - 0.5 * (PI * s).cos();
     let r = ra + (rb - ra) * ease;
     let angle = a[2].atan2(a[0]) + sweep * s;
-    [r * angle.cos(), a[1] + (b[1] - a[1]) * ease, r * angle.sin()]
+    [
+        r * angle.cos(),
+        a[1] + (b[1] - a[1]) * ease,
+        r * angle.sin(),
+    ]
 }
 
 /// `n + 1` knots along the arc from `a` to `b`, crowded toward its end or
 /// start for a tight bend there.
-fn arc_knots(a: [f64; 3], b: [f64; 3], n: usize, dense_end: bool, dense_start: bool) -> Vec<[f64; 3]> {
+fn arc_knots(
+    a: [f64; 3],
+    b: [f64; 3],
+    n: usize,
+    dense_end: bool,
+    dense_start: bool,
+) -> Vec<[f64; 3]> {
     (0..=n)
         .map(|k| {
             let mut s = k as f64 / n as f64;
@@ -863,20 +997,82 @@ fn anchors(n: usize, first: (Anchor, f64), last: (Anchor, f64)) -> Vec<(Anchor, 
     anchors
 }
 
+/// The jump's segments after the spool: each leg, and each stopover between
+/// two with the drive re-engaging after it (none after a gate or wormhole,
+/// which throw the ship on themselves).
+fn push_passage(passage: &Passage, segments: &mut Vec<Segment>, t: &mut f64) {
+    for (k, leg) in passage.legs.iter().enumerate() {
+        let k8 = k as u8;
+        segments.push(Segment {
+            phase: Phase::Jump(k8),
+            start: *t,
+            duration: leg.duration,
+        });
+        *t += leg.duration;
+        if let Some(stop) = passage.stops.get(k) {
+            let duration = stop.event.duration();
+            segments.push(Segment {
+                phase: Phase::Stopover(k8),
+                start: *t,
+                duration,
+            });
+            *t += duration;
+            let rejump = stop.event.rejump();
+            if rejump > 0.0 {
+                segments.push(Segment {
+                    phase: Phase::Rejump(k8),
+                    start: *t,
+                    duration: rejump,
+                });
+                *t += rejump;
+            }
+        }
+    }
+}
+
+/// The encounter frame's axes in the world: x to the right, y up and z the
+/// way the jump goes (`exit`), so a camera looking along z with y up has x
+/// on its right (`right = forward × up`).
+fn frame_of(exit: [f64; 3]) -> [[f64; 3]; 3] {
+    let z = normalize(exit);
+    let mut x = cross(z, [0.0, 1.0, 0.0]);
+    if length(x) < 1e-3 {
+        x = cross(z, [1.0, 0.0, 0.0]);
+    }
+    let x = normalize(x);
+    let y = cross(x, z);
+    [x, y, z]
+}
+
 impl Tour {
     /// A whole visit to `system`, the jump at its end straight to `next`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(system: System, next: System) -> Self {
-        Self::plan(system, vec![next], false, 1, 1)
+        let passage = Passage::plan(system.seed, 0, drive_to(&next).0);
+        let arrival = drive_to(&system).0;
+        Self::plan(system, vec![next], false, 1, 1, passage, arrival)
     }
 
     /// A visit to `system`, the jump at its end making for `route[0]` on
     /// the way to the last of `route` (the trip's jump `leg` of `legs`).
     /// A relay (`transit`) has no stops: only the crossing to its jump
-    /// point.
-    pub fn plan(system: System, route: Vec<System>, transit: bool, leg: usize, legs: usize) -> Self {
+    /// point. The jump at the end is `passage`'s legs and stopovers, and the
+    /// light the ship arrives in is look `arrival` (`voyage::LOOKS`).
+    pub fn plan(
+        system: System,
+        route: Vec<System>,
+        transit: bool,
+        leg: usize,
+        legs: usize,
+        passage: Passage,
+        arrival: u32,
+    ) -> Self {
         let next = route.first().cloned().expect("a jump makes for a star");
-        let itinerary = if transit { Vec::new() } else { system.itinerary() };
+        let itinerary = if transit {
+            Vec::new()
+        } else {
+            system.itinerary()
+        };
         let mut rng = super::system::Rng::new(system.seed ^ 0x0b17);
         // The jump point's own draws, so the rest of the tour is the same
         // whatever they are.
@@ -891,7 +1087,11 @@ impl Tour {
         // looking in toward the star; a relay at its edge, across from the
         // jump point.
         let exit_draw = |rng: &mut super::system::Rng| {
-            normalize([rng.range(-1.0, 1.0), rng.range(0.2, 0.6), rng.range(-1.0, 1.0)])
+            normalize([
+                rng.range(-1.0, 1.0),
+                rng.range(0.2, 0.6),
+                rng.range(-1.0, 1.0),
+            ])
         };
         if transit {
             let exit = exit_draw(&mut rng);
@@ -904,11 +1104,15 @@ impl Tour {
             for (phase, duration) in [
                 (Phase::Cruise { from: None }, CROSSING),
                 (Phase::Spool, SPOOL),
-                (Phase::Jump, JUMP),
             ] {
-                segments.push(Segment { phase, start: t, duration });
+                segments.push(Segment {
+                    phase,
+                    start: t,
+                    duration,
+                });
                 t += duration;
             }
+            push_passage(&passage, &mut segments, &mut t);
             let mut tour = Tour {
                 system,
                 next,
@@ -926,7 +1130,14 @@ impl Tour {
                 legs,
                 jump_point,
                 outbound: exit,
-                cruise: Cruise { knots: [[0.0; 3]; 3], tangents: [[0.0; 3]; 3], pace: [1.0, 1.0] },
+                cruise: Cruise {
+                    knots: [[0.0; 3]; 3],
+                    tangents: [[0.0; 3]; 3],
+                    pace: [1.0, 1.0],
+                },
+                basis: frame_of(exit),
+                passage,
+                arrival,
             };
             tour.cruise = tour.build_cruise();
             return tour;
@@ -964,7 +1175,7 @@ impl Tour {
         push(Phase::Depart(last), DEPART, &mut t);
         push(Phase::Cruise { from: Some(last) }, CRUISE, &mut t);
         push(Phase::Spool, SPOOL, &mut t);
-        push(Phase::Jump, JUMP, &mut t);
+        push_passage(&passage, &mut segments, &mut t);
 
         let orbits = itinerary
             .iter()
@@ -987,7 +1198,11 @@ impl Tour {
         // The jump point: at the system's edge, past the last stop and out
         // toward the next star, so the ship leaves the way it is going and
         // never back across the system.
-        let depart = segments[segments.len() - 4].start;
+        let depart = segments
+            .iter()
+            .find(|s| matches!(s.phase, Phase::Depart(_)))
+            .expect("a tour departs its last stop")
+            .start;
         let leaving = system.centre(last, depart);
         let flat = |v: [f64; 3]| normalize([v[0], 0.0, v[2]]);
         let mut side = add(flat(leaving), flat(exit));
@@ -1025,7 +1240,14 @@ impl Tour {
             legs,
             jump_point,
             outbound,
-            cruise: Cruise { knots: [[0.0; 3]; 3], tangents: [[0.0; 3]; 3], pace: [1.0, 1.0] },
+            cruise: Cruise {
+                knots: [[0.0; 3]; 3],
+                tangents: [[0.0; 3]; 3],
+                pace: [1.0, 1.0],
+            },
+            basis: frame_of(exit),
+            passage,
+            arrival,
         };
         tour.stage_moons();
         // Each orbit is entered the way the transfer reaching it comes in,
@@ -1153,11 +1375,20 @@ impl Tour {
             Phase::Cruise { from: Some(_) } => {
                 let settled = segment.start + 0.25 * segment.duration;
                 let way = heading_change(self.outbound, motion(settled), [0.0, 1.0, 0.0]);
-                swing(self.outbound, motion(t), smoothstep(0.0, 0.25, u), [0.0, 1.0, 0.0], way)
+                swing(
+                    self.outbound,
+                    motion(t),
+                    smoothstep(0.0, 0.25, u),
+                    [0.0, 1.0, 0.0],
+                    way,
+                )
             }
             _ => {
                 let star = normalize(scale(self.cruising(t), -1.0));
-                normalize(add(motion(t), scale(star, 0.8 * (1.0 - smoothstep(0.5, 0.9, u)))))
+                normalize(add(
+                    motion(t),
+                    scale(star, 0.8 * (1.0 - smoothstep(0.5, 0.9, u))),
+                ))
             }
         };
         // Over the second half, toward the next star too, its mark in view.
@@ -1187,7 +1418,13 @@ impl Tour {
         let arrived = self.cruise_forward(end.start + end.duration);
         let up = [0.0, 1.0, 0.0];
         let way = heading_change(arrived, self.exit, up);
-        swing(arrived, self.exit, smoothstep(0.0, SPOOL_STAGES[1], u), up, way)
+        swing(
+            arrived,
+            self.exit,
+            smoothstep(0.0, SPOOL_STAGES[1], u),
+            up,
+            way,
+        )
     }
 
     /// The first stop of the visit the jump arrives in: none if that is a
@@ -1289,7 +1526,10 @@ impl Tour {
                 sweeps[k] = sweep;
                 let (ra, rb) = (flat_radius(a), flat_radius(b));
                 // Any planet along the way but the two ends will do.
-                let ends = [k.checked_sub(1).map(|j| itinerary[j].planet), Some(stop.planet)];
+                let ends = [
+                    k.checked_sub(1).map(|j| itinerary[j].planet),
+                    Some(stop.planet),
+                ];
                 let assist = (0..system.planets.len())
                     .filter(|i| !ends.contains(&Some(*i)))
                     .filter_map(|i| {
@@ -1477,7 +1717,10 @@ impl Tour {
         let out = normalize(sub(p0, self.system.centre(stop, start)));
         let distance = self.world(stop).radius * 30.0;
         let s = smootherstep(u);
-        add(self.orbiting(stop, t).0, scale(normalize(add(out, self.outbound)), distance * s * s))
+        add(
+            self.orbiting(stop, t).0,
+            scale(normalize(add(out, self.outbound)), distance * s * s),
+        )
     }
 
     /// The way to look from `position` at `t` to frame `stop` as its high
@@ -1518,7 +1761,10 @@ impl Tour {
         let segment = self.transfer_to(stop);
         let t1 = segment.start + segment.duration;
         let rel = |t: f64| sub(self.on_path(k, segment, t).0, self.system.centre(stop, t));
-        normalize(sub(rel(t1 - 0.1 * segment.duration), rel(t1 - 0.25 * segment.duration)))
+        normalize(sub(
+            rel(t1 - 0.1 * segment.duration),
+            rel(t1 - 0.25 * segment.duration),
+        ))
     }
 
     /// When the transfer to stop `k` ends.
@@ -1532,7 +1778,11 @@ impl Tour {
     fn plane_axes(&self, stop: Stop, orbit: Orbit, t: f64) -> ([f64; 3], [f64; 3]) {
         let sun = normalize(scale(self.system.centre(stop, t), -1.0));
         let flat = sub(sun, scale(orbit.n, dot(sun, orbit.n)));
-        let u = if length(flat) > 1e-6 { normalize(flat) } else { orbit.u };
+        let u = if length(flat) > 1e-6 {
+            normalize(flat)
+        } else {
+            orbit.u
+        };
         (u, cross(orbit.n, u))
     }
 
@@ -1679,9 +1929,65 @@ impl Tour {
         drive_to(&self.next)
     }
 
-    /// The drive the jump that arrived here used: the last visit's.
-    pub fn arrival_drive(&self) -> (u32, &'static str) {
-        drive_to(&self.system)
+    /// Where the camera is out in the deep at `t`, past the jump point: on
+    /// along the jump's way, at the jump's speed in its legs and a drift
+    /// between them.
+    fn deep_position(&self, t: f64) -> [f64; 3] {
+        let mut travelled = 0.0;
+        for segment in self.segments.iter().filter(|s| s.phase.deep()) {
+            let spent = (t - segment.start).clamp(0.0, segment.duration);
+            let speed = if matches!(segment.phase, Phase::Jump(_)) {
+                JUMP_SPEED
+            } else {
+                DEEP_DRIFT
+            };
+            travelled += spent * speed;
+        }
+        add(self.spooling(SPOOL), scale(self.exit, travelled))
+    }
+
+    /// The stopover `k` of the jump `local` seconds in (on past its end
+    /// while the drive re-engages), as the shaders take it.
+    pub fn scene(&self, k: usize, local: f64, fade: f64) -> Scene {
+        let stop = self.passage.stops[k];
+        Scene {
+            event: stop.event,
+            local,
+            duration: stop.event.duration(),
+            variant: (stop.variant % 1000) as f64 / 1000.0,
+            fade,
+            shot: voyage::shot(&stop, local),
+            basis: self.basis,
+        }
+    }
+
+    /// A direction in the encounter frame, in the world.
+    fn frame_to_world(&self, v: [f64; 3]) -> [f64; 3] {
+        let [x, y, z] = self.basis;
+        add(add(scale(x, v[0]), scale(y, v[1])), scale(z, v[2]))
+    }
+
+    /// The camera in a stopover: looking where its shot looks, banked and
+    /// shaken.
+    fn stopover_frame(&self, shot: &Shot, t: f64) -> ([f64; 3], [f64; 3]) {
+        let mut forward = self.frame_to_world(shot.look);
+        let up0 = voyage::rotate(self.basis[1], forward, shot.roll);
+        let right = normalize(cross(forward, up0));
+        let up = cross(right, forward);
+        if shot.shake > 0.0 {
+            let n = |a: f64, b: f64, c: f64| {
+                (t * a).sin() + 0.6 * (t * b + 1.3).sin() + 0.3 * (t * c + 0.4).sin()
+            };
+            let amount = 0.0045 * shot.shake;
+            forward = normalize(add(
+                forward,
+                add(
+                    scale(right, n(23.0, 41.0, 67.0) * amount),
+                    scale(up, n(29.0, 47.0, 71.0) * amount),
+                ),
+            ));
+        }
+        (forward, up)
     }
 
     /// The segment at `t`, and how far into it.
@@ -1697,10 +2003,7 @@ impl Tour {
     }
 
     fn index_of(&self, stop: Stop) -> usize {
-        self.itinerary
-            .iter()
-            .position(|&s| s == stop)
-            .unwrap_or(0)
+        self.itinerary.iter().position(|&s| s == stop).unwrap_or(0)
     }
 
     /// The body at a stop, as a planet.
@@ -1719,7 +2022,6 @@ impl Tour {
             .find(|s| s.phase == Phase::High(stop))
             .map_or(0.0, |s| s.start)
     }
-
 
     /// The orbit's distance from the body's centre.
     fn height(planet: &Planet) -> f64 {
@@ -1758,13 +2060,21 @@ impl Tour {
         let mut obstacles = Vec::new();
         for (i, p) in self.system.planets.iter().enumerate() {
             let centre = p.position(t);
-            obstacles.push((centre, p.radius * if p.kind.is_giant() { 2.8 } else { 2.0 }, false));
+            obstacles.push((
+                centre,
+                p.radius * if p.kind.is_giant() { 2.8 } else { 2.0 },
+                false,
+            ));
             for m in 0..p.moons.len().min(super::stream::MOONS as usize) {
                 let stop = Stop {
                     planet: i,
                     moon: Some(m),
                 };
-                obstacles.push((self.system.centre(stop, t), p.moons[m].radius * MOON_FLOOR, true));
+                obstacles.push((
+                    self.system.centre(stop, t),
+                    p.moons[m].radius * MOON_FLOOR,
+                    true,
+                ));
             }
         }
         obstacles.push(([0.0; 3], self.system.star.radius * 3.0, false));
@@ -1787,7 +2097,10 @@ impl Tour {
                 continue;
             }
             if let (Anchor::Stop(stop), placed) = path.anchors[knot] {
-                let drift = sub(self.system.centre(stop, t), self.system.centre(stop, placed));
+                let drift = sub(
+                    self.system.centre(stop, t),
+                    self.system.centre(stop, placed),
+                );
                 position = add(position, scale(drift, weight));
             }
         }
@@ -1798,7 +2111,10 @@ impl Tour {
         if let Some(w) = path.waypoint
             && let (Anchor::Stop(stop), placed) = path.anchors[w]
         {
-            let drift = sub(self.system.centre(stop, t), self.system.centre(stop, placed));
+            let drift = sub(
+                self.system.centre(stop, t),
+                self.system.centre(stop, placed),
+            );
             let span = 0.15 * segment.duration;
             let x = (t - placed) / span;
             let weight = (1.0 - x * x).max(0.0).powi(2);
@@ -1828,7 +2144,11 @@ impl Tour {
         if spread > 0.0 {
             for (n, weight) in MOON_SPAN.iter().enumerate() {
                 let when = t + MOON_SMOOTH * (n as f64 - 3.0) / 4.0;
-                let push = if n == 3 { now } else { self.keep_away(k, segment, when, Some(true)) };
+                let push = if n == 3 {
+                    now
+                } else {
+                    self.keep_away(k, segment, when, Some(true))
+                };
                 dodge = add(dodge, scale(push, weight * spread));
             }
         }
@@ -1853,7 +2173,10 @@ impl Tour {
             .map(|&knot| match path.anchors[knot] {
                 (Anchor::Stop(stop), placed) => add(
                     path.knots[knot],
-                    sub(self.system.centre(stop, t), self.system.centre(stop, placed)),
+                    sub(
+                        self.system.centre(stop, t),
+                        self.system.centre(stop, placed),
+                    ),
                 ),
                 (Anchor::Fixed, _) => path.knots[knot],
             })
@@ -1881,7 +2204,11 @@ impl Tour {
     /// Where the flyby of transfer `k` passes, at `t`, and its name.
     fn flyby_body(&self, k: usize, t: f64) -> Option<([f64; 3], f64, String)> {
         match self.paths[k].flyby? {
-            Flyby::Star => Some(([0.0; 3], self.system.star.radius, self.system.star.name.clone())),
+            Flyby::Star => Some((
+                [0.0; 3],
+                self.system.star.radius,
+                self.system.star.name.clone(),
+            )),
             Flyby::Planet(i) => {
                 let p = &self.system.planets[i];
                 Some((p.position(t), p.radius, p.name.clone()))
@@ -1896,16 +2223,21 @@ impl Tour {
         let mut warp = 0.0;
         let (mut flare, mut reveal, mut clock) = (0.0, 1.0, 0.0);
         let (mut spool, mut spool_light, mut target_shown) = (0.0, 0.0, 0.0);
-        // Dropping out: the jump's light tears open over the new system,
-        // its drive slowing on from 0.4 to 0.15.
-        let drop_out = |local: f64| {
+        let (mut look, mut drop_look) = (self.drive().0, self.arrival);
+        let (mut deep, mut scene, mut flux, mut flash) = (segment.phase.deep(), None, None, 0.0);
+        // Dropping out: the jump's light tears open over the new system (or
+        // a stopover, after a leg of `length` seconds), its drive slowing on
+        // from 0.4 to 0.15.
+        let drop_out = |local: f64, length: f64| {
             let p = local / DROP_OUT;
-            (p, (1.0 - p).powi(3), drive_clock(JUMP) + DROP_OUT * (0.4 * p - 0.125 * p * p))
+            (
+                p,
+                (1.0 - p).powi(3),
+                drive_clock(length, length) + DROP_OUT * (0.4 * p - 0.125 * p * p),
+            )
         };
         let (position, forward, up) = match segment.phase {
-            Phase::High(p) => {
-                self.orbiting(p, t)
-            }
+            Phase::High(p) => self.orbiting(p, t),
             Phase::Transfer { from, to } => {
                 let k = self.index_of(to);
                 let t0 = segment.start;
@@ -1940,13 +2272,21 @@ impl Tour {
                         Some(p) => self.framed(p, there, at, t0),
                         None => f0,
                     };
-                    heading_change(start, normalize(sub(self.system.centre(to, at), there)), up0)
+                    heading_change(
+                        start,
+                        normalize(sub(self.system.centre(to, at), there)),
+                        up0,
+                    )
                 };
                 let mut forward = swing(start, aim, smoothstep(0.0, 0.18, u), up0, way);
-                forward = normalize(mix(forward, self.framed(to, position, t, t1), smoothstep(0.82, 1.0, u)));
+                forward = normalize(mix(
+                    forward,
+                    self.framed(to, position, t, t1),
+                    smoothstep(0.82, 1.0, u),
+                ));
                 let up = normalize(mix(up0, up1, smoothstep(0.1, 0.9, u)));
                 if from.is_none() && local < DROP_OUT {
-                    (reveal, flare, clock) = drop_out(local);
+                    (reveal, flare, clock) = drop_out(local, JUMP);
                 }
                 (position, forward, up)
             }
@@ -1962,7 +2302,7 @@ impl Tour {
             Phase::Cruise { from } => {
                 // Out to the jump point, the next star marked once clear.
                 if from.is_none() && local < DROP_OUT {
-                    (reveal, flare, clock) = drop_out(local);
+                    (reveal, flare, clock) = drop_out(local, JUMP);
                 }
                 target_shown = smoothstep(0.05, 0.2, u);
                 (self.cruising(t), self.cruise_forward(t), [0.0, 1.0, 0.0])
@@ -1978,20 +2318,70 @@ impl Tour {
                 clock = local - SPOOL;
                 (self.spooling(local), self.spool_forward(u), [0.0, 1.0, 0.0])
             }
-            Phase::Jump => {
-                // Out beyond the jump point, heading for the next star.
-                let start = self.spooling(SPOOL);
-                let position = add(start, scale(self.exit, local * JUMP_SPEED));
-                // At full light to the end: the next visit takes it over
-                // (`reveal`), slowing, the flare at its brightest. The
-                // drive's start-up effect fades into it.
-                warp = 0.25 + 0.75 * smoothstep(0.0, 0.07, u);
+            Phase::Jump(k) => {
+                // A leg of the jump, out along its way toward the next star.
+                let k = k as usize;
+                let leg = self.passage.legs[k];
+                look = leg.look;
+                // At full light to the end: the next visit or stopover takes
+                // it over (`reveal`), slowing, the flare at its brightest. Into
+                // the first leg, and after a stopover, the drive's start-up
+                // effect fades into it; out of a gate or a wormhole, the ship
+                // is thrown into it at full light, in a flash.
+                let thrown = k > 0 && self.passage.stops[k - 1].event.portal();
+                if thrown {
+                    warp = 1.0;
+                    flash = (-local / 0.22).exp();
+                } else {
+                    warp = 0.25 + 0.75 * smoothstep(0.0, 0.07, u);
+                    let fade = if k == 0 { SPOOL_FADE } else { REJUMP_FADE };
+                    spool_light = 1.0 - smoothstep(0.0, fade, local);
+                }
                 spool = 1.0;
-                spool_light = 1.0 - smoothstep(0.0, SPOOL_FADE, local);
                 target_shown = spool_light;
                 flare = smoothstep(segment.duration - FLARE, segment.duration, local);
-                clock = drive_clock(local);
-                (position, self.exit, [0.0, 1.0, 0.0])
+                clock = drive_clock(local, segment.duration);
+                deep = k > 0;
+                flux = leg.flux.map(|f| (f.id(), leg.flux_amount(local), local));
+                (self.deep_position(t), self.exit, [0.0, 1.0, 0.0])
+            }
+            Phase::Stopover(k) => {
+                // Dropped out of the jump (or come to a gate or a wormhole):
+                // the stopover's own script, in its frame, the leg's light
+                // torn open over it.
+                let k = k as usize;
+                let made = self.scene(k, local, 1.0);
+                drop_look = self.passage.legs[k].look;
+                look = drop_look;
+                if local < DROP_OUT {
+                    (reveal, flare, clock) = drop_out(local, self.passage.legs[k].duration);
+                }
+                let (forward, up) = self.stopover_frame(&made.shot, t);
+                scene = Some(made);
+                (self.deep_position(t), forward, up)
+            }
+            Phase::Rejump(k) => {
+                // The drive re-engaging, quickly, in its stages: turned back
+                // onto the next star, what was met still in view behind its
+                // start-up, until its light rises over everything.
+                let k = k as usize;
+                let stop = self.passage.stops[k];
+                // A stopover in place of the sky gives it back first, so the
+                // drive's start-up shows; the others fade as its light rises.
+                let fade = if stop.event.replaces_sky() {
+                    1.0 - smoothstep(0.0, 0.3, u)
+                } else {
+                    1.0 - smoothstep(SPOOL_STAGES[4], 1.0, u)
+                };
+                let made = self.scene(k, stop.event.duration() + local, fade);
+                spool = u;
+                spool_light = smoothstep(SPOOL_STAGES[1] * 0.5, 1.0, u);
+                target_shown = smoothstep(0.0, 0.3, u);
+                warp = 0.25 * smoothstep(SPOOL_STAGES[4], 1.0, u);
+                clock = local - segment.duration;
+                let (forward, up) = self.stopover_frame(&made.shot, t);
+                scene = Some(made);
+                (self.deep_position(t), forward, up)
             }
         };
         // Keep the frame orthonormal.
@@ -2010,6 +2400,12 @@ impl Tour {
             spool_light,
             target: self.exit,
             target_shown,
+            look,
+            drop_look,
+            deep,
+            scene,
+            flux,
+            flash,
         }
     }
 
@@ -2029,19 +2425,19 @@ impl Tour {
             self.itinerary.get(k + 1).copied()
         };
         match segment.phase {
-            Phase::Transfer { from: Some(from), to } if self.in_sight(from, t) => {
-                (Some(to), Some(from))
-            }
+            Phase::Transfer {
+                from: Some(from),
+                to,
+            } if self.in_sight(from, t) => (Some(to), Some(from)),
             Phase::Transfer { to, .. } => (Some(to), second(to)),
-            Phase::High(p) => {
-                (Some(p), second(p))
-            }
-            Phase::Depart(p) => (
-                Some(p),
-                p.moon.map(|_| Stop::planet(p.planet)),
-            ),
+            Phase::High(p) => (Some(p), second(p)),
+            Phase::Depart(p) => (Some(p), p.moon.map(|_| Stop::planet(p.planet))),
             Phase::Cruise { from: Some(p) } if self.in_sight(p, t) => (Some(p), None),
-            Phase::Cruise { .. } | Phase::Spool | Phase::Jump => (None, None),
+            Phase::Cruise { .. }
+            | Phase::Spool
+            | Phase::Jump(_)
+            | Phase::Stopover(_)
+            | Phase::Rejump(_) => (None, None),
         }
     }
 
@@ -2095,7 +2491,11 @@ impl Tour {
         match self.segment(t).0.phase {
             Phase::Transfer { to, .. } => Some(to),
             Phase::High(p) | Phase::Depart(p) => Some(p),
-            Phase::Cruise { .. } | Phase::Spool | Phase::Jump => None,
+            Phase::Cruise { .. }
+            | Phase::Spool
+            | Phase::Jump(_)
+            | Phase::Stopover(_)
+            | Phase::Rejump(_) => None,
         }
     }
 
@@ -2104,7 +2504,10 @@ impl Tour {
         if self.route.len() < 2 {
             return String::new();
         }
-        let relays: Vec<&str> = self.route[..self.route.len() - 1].iter().map(|s| s.star.name.as_str()).collect();
+        let relays: Vec<&str> = self.route[..self.route.len() - 1]
+            .iter()
+            .map(|s| s.star.name.as_str())
+            .collect();
         format!(" via {}", relays.join(", "))
     }
 
@@ -2189,7 +2592,9 @@ impl Tour {
                 if origin.is_none() && u < 0.1 {
                     return make(
                         "DROP-OUT",
-                        format!("Out of the jump and falling sunward toward {dest}, engines quiet."),
+                        format!(
+                            "Out of the jump and falling sunward toward {dest}, engines quiet."
+                        ),
                         -1.0,
                     );
                 }
@@ -2243,7 +2648,11 @@ impl Tour {
                                 format!(
                                     "Coasting on to {dest} with the {:.1} km/s {name} {} us.",
                                     burns.assist_dv.abs(),
-                                    if burns.assist_dv >= 0.0 { "lent" } else { "took from" }
+                                    if burns.assist_dv >= 0.0 {
+                                        "lent"
+                                    } else {
+                                        "took from"
+                                    }
                                 ),
                                 -1.0,
                             )
@@ -2256,7 +2665,10 @@ impl Tour {
                                 (near + window) / (2.0 * window),
                                 burns.oberth_burn,
                                 "prograde at perihelion",
-                                format!("+{:.1} km/s while moving at {:.0} km/s", burns.oberth_burn, burns.oberth_speed),
+                                format!(
+                                    "+{:.1} km/s while moving at {:.0} km/s",
+                                    burns.oberth_burn, burns.oberth_speed
+                                ),
                                 format!("worth {:.0} km/s far from {star}", burns.oberth_equal),
                             )
                         } else if near < 0.0 {
@@ -2312,7 +2724,9 @@ impl Tour {
             Phase::Depart(p) => {
                 let world = self.world(p);
                 let mu = super::system::GM_EARTH * world.mass;
-                let r = length(sub(self.view(t).position, self.system.centre(p, t))).max(world.radius) * KM;
+                let r = length(sub(self.view(t).position, self.system.centre(p, t)))
+                    .max(world.radius)
+                    * KM;
                 // From orbital speed to escape speed, at the orbit left.
                 let r0 = Self::height(world) * KM;
                 fire(
@@ -2320,7 +2734,10 @@ impl Tour {
                     u,
                     (2.0f64.sqrt() - 1.0) * (mu / r0).sqrt(),
                     "prograde",
-                    format!("past escape velocity, {:.1} km/s here", (2.0 * mu / r).sqrt()),
+                    format!(
+                        "past escape velocity, {:.1} km/s here",
+                        (2.0 * mu / r).sqrt()
+                    ),
                     format!("clear of {}, out to the jump point", world.name),
                 )
             }
@@ -2331,7 +2748,9 @@ impl Tour {
                 if from.is_none() && u < 0.08 {
                     return make(
                         "DROP-OUT",
-                        format!("Out of the jump at the edge of {star}, a relay star on the way to {goal}."),
+                        format!(
+                            "Out of the jump at the edge of {star}, a relay star on the way to {goal}."
+                        ),
                         -1.0,
                     );
                 }
@@ -2348,7 +2767,11 @@ impl Tour {
                         "RELAY CROSSING",
                         format!(
                             "Crossing {star} to a jump point at its far edge, {au:.2} AU out: the {drive} hops on to {to}{}.",
-                            if self.route.len() > 1 { String::new() } else { ", the last hop".into() }
+                            if self.route.len() > 1 {
+                                String::new()
+                            } else {
+                                ", the last hop".into()
+                            }
                         ),
                         u,
                     ),
@@ -2370,6 +2793,41 @@ impl Tour {
                     next,
                     star,
                 )
+            }
+            Phase::Rejump(k) => {
+                let (n, drive) = self.drive();
+                let next = &self.next.star.name;
+                let stop = self.passage.stops[k as usize];
+                let name = if stop.event == Event::HiveCube {
+                    "Emergency jump"
+                } else {
+                    drive
+                };
+                Manoeuvre::spool(
+                    name,
+                    n,
+                    u,
+                    format!(
+                        "{next} · {:.1} ly left · leg {} of {}",
+                        self.ly_left(k as usize),
+                        k + 2,
+                        self.passage.legs.len()
+                    ),
+                    next,
+                    "the deep",
+                )
+            }
+            Phase::Stopover(k) => {
+                let stop = self.passage.stops[k as usize];
+                let (_, _, (name, text, progress)) =
+                    voyage::hud(&stop, local, &self.next.star.name, self.ly_left(k as usize));
+                make(&name, text, progress)
+            }
+            Phase::Jump(k) => {
+                let leg = self.passage.legs[k as usize];
+                let f = leg.flux.filter(|_| leg.flux_amount(local) > 0.05)?;
+                let (name, text) = voyage::flux_hud(f);
+                make(name, text.to_string(), leg.flux_amount(local))
             }
             _ => None,
         }
@@ -2404,7 +2862,11 @@ impl Tour {
     fn describe(&self, stop: Stop) -> String {
         let p = self.world(stop);
         if stop.moon.is_some() {
-            return format!("{} · {:.1}× Earth · a giant's moon", p.kind.name(), p.radius);
+            return format!(
+                "{} · {:.1}× Earth · a giant's moon",
+                p.kind.name(),
+                p.radius
+            );
         }
         let moons = match p.moons.len() {
             0 => String::new(),
@@ -2465,10 +2927,7 @@ impl Tour {
                         _ => format!("{name} · {} km", thousands((d - radius).max(0.0) * KM)),
                     };
                     let value = if u < closest - 0.18 {
-                        format!(
-                            "{name} in {}",
-                            clock((closest - u) * segment.duration)
-                        )
+                        format!("{name} in {}", clock((closest - u) * segment.duration))
                     } else {
                         value
                     };
@@ -2554,63 +3013,146 @@ impl Tour {
                 let u = local / segment.duration;
                 let remaining = self.cruise.remaining(u);
                 let mut lines = vec![
-                    ("Jump point".into(), format!("{:.2} AU · {}", remaining / AU, clock(left))),
-                    ("Escape speed".into(), format!("{:.1} km/s from {}", self.escape_speed(view.position), star.name)),
+                    (
+                        "Jump point".into(),
+                        format!("{:.2} AU · {}", remaining / AU, clock(left)),
+                    ),
+                    (
+                        "Escape speed".into(),
+                        format!(
+                            "{:.1} km/s from {}",
+                            self.escape_speed(view.position),
+                            star.name
+                        ),
+                    ),
                     ("Next star".into(), self.making_for()),
                     ("Drive".into(), self.drive().1.to_string()),
                 ];
                 if self.legs > 1 {
                     lines.push((
                         "Route".into(),
-                        format!("jump {} of {} to {}", self.leg, self.legs, self.destination().star.name),
+                        format!(
+                            "jump {} of {} to {}",
+                            self.leg,
+                            self.legs,
+                            self.destination().star.name
+                        ),
                     ));
                 }
-                let title = if from.is_some() { "TO JUMP POINT" } else { "RELAY" };
+                let title = if from.is_some() {
+                    "TO JUMP POINT"
+                } else {
+                    "RELAY"
+                };
                 (title.into(), lines)
             }
             Phase::Spool => {
                 let manoeuvre = self.manoeuvre(t).unwrap_or_default();
                 let (stage, through) = manoeuvre.stage();
-                let stage = manoeuvre.stages.get(stage).map_or(String::new(), |s| s.0.clone());
+                let stage = manoeuvre
+                    .stages
+                    .get(stage)
+                    .map_or(String::new(), |s| s.0.clone());
                 (
                     "DRIVE SPOOL".into(),
                     vec![
                         ("Drive".into(), self.drive().1.to_string()),
                         ("Stage".into(), format!("{stage} · {:.0}%", through * 100.0)),
                         ("Target".into(), self.making_for()),
-                        ("Distance".into(), format!("{:.1} ly{}", self.next.distance, self.via())),
+                        (
+                            "Distance".into(),
+                            format!("{:.1} ly{}", self.next.distance, self.via()),
+                        ),
                         ("Jump in".into(), clock(left)),
                     ],
                 )
             }
-            Phase::Jump => {
+            Phase::Jump(k) => {
+                let k = k as usize;
+                let leg = self.passage.legs[k];
                 let years = self.next.distance;
-                let covered = years * smoothstep(0.0, 1.0, local / segment.duration);
-                // Light years per second of jump, as a multiple of light speed.
-                let c = years * 365.25 * 86_400.0 / segment.duration;
+                let before: f64 = self.passage.legs[..k].iter().map(|l| l.share).sum();
+                let covered =
+                    years * (before + leg.share * smoothstep(0.0, 1.0, local / segment.duration));
+                // Light years per second of the leg, as a multiple of light speed.
+                let c = years * leg.share * 365.25 * 86_400.0 / segment.duration;
+                let eta = self.total - t;
+                let mut lines = vec![
+                    (
+                        "Drive".into(),
+                        voyage::LOOKS[leg.look as usize - 1].to_string(),
+                    ),
+                    ("Destination".into(), self.making_for()),
+                    ("ETA".into(), clock(eta)),
+                    ("Distance".into(), format!("{covered:.1} of {years:.1} ly")),
+                    ("Speed".into(), format!("{:.1} million c", c / 1e6)),
+                ];
+                if self.passage.legs.len() > 1 {
+                    let next = self.passage.stops.get(k).map_or_else(
+                        || "drop-out".to_string(),
+                        |s| match s.event {
+                            Event::Gate | Event::Wormhole => voyage::name_of(s),
+                            _ => "deep space".into(),
+                        },
+                    );
+                    lines.push((
+                        "Leg".into(),
+                        format!("{} of {} · to {next}", k + 1, self.passage.legs.len()),
+                    ));
+                }
+                if let Some(f) = leg.flux.filter(|_| leg.flux_amount(local) > 0.05) {
+                    lines.push(("Alert".into(), voyage::flux_hud(f).0.to_string()));
+                } else if self.legs > 1 {
+                    lines.push((
+                        "Route".into(),
+                        format!(
+                            "jump {} of {} to {}",
+                            self.leg,
+                            self.legs,
+                            self.destination().star.name
+                        ),
+                    ));
+                }
+                ("HYPERJUMP".into(), lines)
+            }
+            Phase::Stopover(k) => {
+                let stop = self.passage.stops[k as usize];
+                let (title, lines, _) =
+                    voyage::hud(&stop, local, &self.next.star.name, self.ly_left(k as usize));
+                (title, lines)
+            }
+            Phase::Rejump(k) => {
+                let manoeuvre = self.manoeuvre(t).unwrap_or_default();
+                let (stage, through) = manoeuvre.stage();
+                let stage = manoeuvre
+                    .stages
+                    .get(stage)
+                    .map_or(String::new(), |s| s.0.clone());
                 (
-                    "HYPERJUMP".into(),
+                    "DRIVE SPOOL".into(),
                     vec![
                         ("Drive".into(), self.drive().1.to_string()),
-                        ("Destination".into(), self.making_for()),
-                        ("ETA".into(), clock(left)),
+                        ("Stage".into(), format!("{stage} · {:.0}%", through * 100.0)),
+                        ("Target".into(), self.making_for()),
                         (
-                            "Distance".into(),
-                            format!("{:.1} of {years:.1} ly", covered),
+                            "Remaining".into(),
+                            format!("{:.1} ly", self.ly_left(k as usize)),
                         ),
-                        ("Speed".into(), format!("{:.1} million c", c / 1e6)),
-                    ]
-                    .into_iter()
-                    .chain((self.legs > 1).then(|| {
                         (
-                            "Route".into(),
-                            format!("jump {} of {} to {}", self.leg, self.legs, self.destination().star.name),
-                        )
-                    }))
-                    .collect(),
+                            "Leg".into(),
+                            format!("{} of {}", k + 2, self.passage.legs.len()),
+                        ),
+                        ("Jump in".into(), clock(left)),
+                    ],
                 )
             }
         }
+    }
+
+    /// Light years still to go after leg `k` of the jump.
+    fn ly_left(&self, k: usize) -> f64 {
+        let done: f64 = self.passage.legs[..=k].iter().map(|l| l.share).sum();
+        self.next.distance * (1.0 - done)
     }
 }
 
@@ -2663,7 +3205,11 @@ mod tests {
         let mut bodies: Vec<(usize, f64, Box<dyn Fn(f64) -> [f64; 3] + '_>)> = Vec::new();
         let stop_body = |stop: Stop| {
             let radius = tour.world(stop).radius;
-            (stop.key() as usize, radius, Box::new(move |t: f64| tour.system.centre(stop, t)) as Box<dyn Fn(f64) -> [f64; 3]>)
+            (
+                stop.key() as usize,
+                radius,
+                Box::new(move |t: f64| tour.system.centre(stop, t)) as Box<dyn Fn(f64) -> [f64; 3]>,
+            )
         };
         match segment.phase {
             Phase::Transfer { from, to } => {
@@ -2674,16 +3220,22 @@ mod tests {
                 let k = tour.index_of(to);
                 if let Some(Flyby::Planet(i)) = tour.paths[k].flyby {
                     let planet = &tour.system.planets[i];
-                    bodies.push((1000 + i, planet.radius, Box::new(move |t: f64| planet.position(t))));
+                    bodies.push((
+                        1000 + i,
+                        planet.radius,
+                        Box::new(move |t: f64| planet.position(t)),
+                    ));
                 }
             }
-            Phase::Jump => return None,
+            Phase::Jump(_) | Phase::Stopover(_) | Phase::Rejump(_) => return None,
             _ => bodies.push(stop_body(tour.current(t)?)),
         }
         bodies
             .into_iter()
             .min_by(|a, b| {
-                let d = |c: &(usize, f64, Box<dyn Fn(f64) -> [f64; 3] + '_>)| length(sub(at, (c.2)(t))) / c.1;
+                let d = |c: &(usize, f64, Box<dyn Fn(f64) -> [f64; 3] + '_>)| {
+                    length(sub(at, (c.2)(t))) / c.1
+                };
                 d(a).total_cmp(&d(b))
             })
             .map(|(id, _, centre)| (id, centre))
@@ -2692,14 +3244,17 @@ mod tests {
     #[test]
     fn the_camera_never_stops_or_turns_back() {
         let h = 1.0 / 30.0;
-        let systems = std::env::var("SOLAR_TEST_SYSTEMS").map_or(40, |v| v.parse().expect("a count"));
+        let systems =
+            std::env::var("SOLAR_TEST_SYSTEMS").map_or(40, |v| v.parse().expect("a count"));
         let mut turns = Vec::new();
         for seed in 0..systems {
             let tour = Tour::new(System::generate(seed), System::generate(seed + 1));
             let mut t = h;
             let mut last: Option<(usize, [f64; 3])> = None;
             while t < tour.total - JUMP - h {
-                let Some((id, centre)) = frame_body(&tour, t) else { break };
+                let Some((id, centre)) = frame_body(&tour, t) else {
+                    break;
+                };
                 let rel = |t: f64| sub(tour.view(t).position, centre(t));
                 let v = sub(rel(t + h), rel(t - h));
                 assert!(length(v) > 1e-6, "seed {seed}: stopped at {t:.2}");
@@ -2745,7 +3300,10 @@ mod tests {
                 let d = length(sub(view.position, planet.position(t)));
                 assert!(d > planet.radius * 1.05, "inside planet {i} at {t}: {d}");
                 for m in 0..planet.moons.len().min(crate::solar::stream::MOONS as usize) {
-                    let stop = Stop { planet: i, moon: Some(m) };
+                    let stop = Stop {
+                        planet: i,
+                        moon: Some(m),
+                    };
                     let d = length(sub(view.position, tour.system.centre(stop, t)));
                     assert!(
                         d > planet.moons[m].radius * 1.05,
@@ -2792,8 +3350,15 @@ mod flyby_tests {
         let mut planet_flybys = 0;
         for seed in 0..40 {
             let tour = Tour::new(System::generate(seed), System::generate(seed + 1));
-            assert!(tour.paths.iter().any(|p| p.flyby == Some(Flyby::Star)), "seed {seed}");
-            planet_flybys += tour.paths.iter().filter(|p| matches!(p.flyby, Some(Flyby::Planet(_)))).count();
+            assert!(
+                tour.paths.iter().any(|p| p.flyby == Some(Flyby::Star)),
+                "seed {seed}"
+            );
+            planet_flybys += tour
+                .paths
+                .iter()
+                .filter(|p| matches!(p.flyby, Some(Flyby::Planet(_))))
+                .count();
             worlds += tour.itinerary.iter().filter(|s| s.moon.is_some()).count();
             // The star flyby passes close: within ten star radii.
             for (k, path) in tour.paths.iter().enumerate() {
@@ -2813,7 +3378,10 @@ mod flyby_tests {
                     })
                     .fold(f64::MAX, f64::min);
                 let r = tour.system.star.radius;
-                assert!(nearest < (r * 10.0).max(20.0), "seed {seed}: {nearest} vs {r}");
+                assert!(
+                    nearest < (r * 10.0).max(20.0),
+                    "seed {seed}: {nearest} vs {r}"
+                );
             }
         }
         assert!(worlds >= 8, "{worlds}");
@@ -2835,11 +3403,18 @@ mod manoeuvre_tests {
                 let (segment, _) = tour.segment(t);
                 let m = tour.manoeuvre(t);
                 match segment.phase {
-                    Phase::Transfer { .. } | Phase::Depart(_) | Phase::Cruise { .. } | Phase::Spool => {
+                    Phase::Transfer { .. }
+                    | Phase::Depart(_)
+                    | Phase::Cruise { .. }
+                    | Phase::Spool => {
                         let m = m.expect("a manoeuvre while travelling");
                         // A coast says why in a sentence, a burn in its stages.
                         let said = if m.dv > 0.0 {
-                            m.stages.iter().map(|(name, what)| format!("{name}: {what}")).collect::<Vec<_>>().join(" / ")
+                            m.stages
+                                .iter()
+                                .map(|(name, what)| format!("{name}: {what}"))
+                                .collect::<Vec<_>>()
+                                .join(" / ")
                         } else {
                             m.text.clone()
                         };
@@ -2849,8 +3424,21 @@ mod manoeuvre_tests {
                             println!("{t:6.1} {}: {said}", m.name);
                         }
                         assert!(!said.is_empty() && !said.contains("NaN"), "{m:?}");
-                        assert!(m.dv <= 0.0 || m.stages.iter().all(|(_, what)| !what.is_empty()), "{m:?}");
+                        assert!(
+                            m.dv <= 0.0 || m.stages.iter().all(|(_, what)| !what.is_empty()),
+                            "{m:?}"
+                        );
                         names.insert(m.name);
+                    }
+                    // Between the stars: a stopover's panel, or an event in
+                    // a leg's.
+                    phase if phase.deep() => {
+                        if let Some(m) = m {
+                            assert!(
+                                !m.name.is_empty() && !m.text.is_empty() && !m.text.contains("NaN"),
+                                "{m:?}"
+                            );
+                        }
                     }
                     _ => assert!(m.is_none()),
                 }
@@ -2878,18 +3466,37 @@ mod jump_point_tests {
 
     /// A relay tour of `seed`, hopping on to `seed + 1`.
     fn relay(seed: u64) -> Tour {
-        Tour::plan(System::generate(seed), vec![System::generate(seed + 1), System::generate(seed + 2)], true, 2, 3)
+        {
+            let next = System::generate(seed + 1);
+            let passage = Passage::plan(seed, 1, drive_to(&next).0);
+            Tour::plan(
+                System::generate(seed),
+                vec![next, System::generate(seed + 2)],
+                true,
+                2,
+                3,
+                passage,
+                1,
+            )
+        }
     }
 
     #[test]
     fn every_jump_leaves_from_the_edge_toward_its_star() {
         for seed in 0..40 {
-            for tour in [Tour::new(System::generate(seed), System::generate(seed + 1)), relay(seed)] {
+            for tour in [
+                Tour::new(System::generate(seed), System::generate(seed + 1)),
+                relay(seed),
+            ] {
                 let outer = tour.system.planets.last().map_or(0.0, |p| p.orbit);
                 let spool = tour.segment_of(|p| p == Phase::Spool);
                 // At the jump point, beyond the outermost orbit.
                 let at = tour.view(spool.start).position;
-                assert!(length(at) > outer * 1.2, "seed {seed}: {} inside {outer}", length(at));
+                assert!(
+                    length(at) > outer * 1.2,
+                    "seed {seed}: {} inside {outer}",
+                    length(at)
+                );
                 // Aligned on the next star once the first stage is done, and
                 // its mark shown.
                 let aligned = tour.view(spool.start + SPOOL * SPOOL_STAGES[1] + 0.1);
@@ -2914,7 +3521,10 @@ mod jump_point_tests {
             assert!(tour.view(0.0).reveal < 0.01);
             let (title, lines) = tour.hud(CROSSING * 0.5);
             assert_eq!(title, "RELAY");
-            assert!(lines.iter().any(|(_, v)| v.contains("jump 2 of 3")), "{lines:?}");
+            assert!(
+                lines.iter().any(|(_, v)| v.contains("jump 2 of 3")),
+                "{lines:?}"
+            );
             camera_moves_smoothly(&tour, 0.0);
         }
     }
@@ -2923,14 +3533,18 @@ mod jump_point_tests {
     /// jerked and never stopped.
     fn camera_moves_smoothly(tour: &Tour, from: f64) {
         let h = 1.0 / 30.0;
-        let end = tour.total - JUMP + 2.0;
+        let end = tour.segment_of(|p| p == Phase::Jump(0)).start + 2.0;
         let mut t = from + h;
         let at = |t: f64| tour.view(t).position;
         while t < end {
             let v0 = scale(sub(at(t), at(t - h)), 1.0 / h);
             let v1 = scale(sub(at(t + h), at(t)), 1.0 / h);
             let speed = length(v0).max(length(v1));
-            assert!(length(v1) > 1e-3, "seed {}: stopped at {t:.2}", tour.system.seed);
+            assert!(
+                length(v1) > 1e-3,
+                "seed {}: stopped at {t:.2}",
+                tour.system.seed
+            );
             // No kick bigger than a fifth of the speed in a frame, or than
             // the surge into the jump gives.
             let kick = length(sub(v1, v0));
@@ -2961,7 +3575,15 @@ mod jump_point_tests {
     fn every_drive_spools_up_in_its_own_stages() {
         let mut names = std::collections::BTreeSet::new();
         for drive in 1..=DRIVES.len() as u32 {
-            let m = Manoeuvre::spool(DRIVES[drive as usize - 1], drive, 0.5, "x".into(), "Vega", "Sol").unwrap();
+            let m = Manoeuvre::spool(
+                DRIVES[drive as usize - 1],
+                drive,
+                0.5,
+                "x".into(),
+                "Vega",
+                "Sol",
+            )
+            .unwrap();
             assert_eq!(m.stages.len(), SPOOL_STAGES.len());
             assert_eq!(m.stages[0].0, "ALIGN");
             assert_eq!(m.throttle(), 0.0, "a drive is no burn");
