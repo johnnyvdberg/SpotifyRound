@@ -146,7 +146,9 @@ impl Kind {
             Kind::Ocean => [0.050, 0.110, 0.250],
             Kind::Desert => [0.050, 0.034, 0.022],
             Kind::Ice => [0.020, 0.040, 0.080],
-            Kind::Lava => [0.140, 0.070, 0.030],
+            // A thin haze of rock vapour: thicker, it washed the dark basalt
+            // out to beige from orbit.
+            Kind::Lava => [0.060, 0.034, 0.018],
             Kind::GasGiant => [0.030, 0.036, 0.050],
             Kind::IceGiant => [0.020, 0.070, 0.090],
             Kind::Hazy => [0.260, 0.150, 0.050],
@@ -731,29 +733,77 @@ impl System {
         let roll = rng.unit();
         let (kind, class, temperature, radius, mass) = if roll < 0.26 {
             let t = rng.range(2800.0, 3700.0);
-            (StarKind::Main, 'M', t, rng.range(0.35, 0.6), rng.range(0.2, 0.55))
+            (
+                StarKind::Main,
+                'M',
+                t,
+                rng.range(0.35, 0.6),
+                rng.range(0.2, 0.55),
+            )
         } else if roll < 0.48 {
             let t = rng.range(3900.0, 5200.0);
-            (StarKind::Main, 'K', t, rng.range(0.7, 0.9), rng.range(0.6, 0.85))
+            (
+                StarKind::Main,
+                'K',
+                t,
+                rng.range(0.7, 0.9),
+                rng.range(0.6, 0.85),
+            )
         } else if roll < 0.68 {
             let t = rng.range(5300.0, 6000.0);
-            (StarKind::Main, 'G', t, rng.range(0.9, 1.15), rng.range(0.9, 1.1))
+            (
+                StarKind::Main,
+                'G',
+                t,
+                rng.range(0.9, 1.15),
+                rng.range(0.9, 1.1),
+            )
         } else if roll < 0.78 {
             let t = rng.range(6100.0, 7400.0);
-            (StarKind::Main, 'F', t, rng.range(1.2, 1.5), rng.range(1.15, 1.45))
+            (
+                StarKind::Main,
+                'F',
+                t,
+                rng.range(1.2, 1.5),
+                rng.range(1.15, 1.45),
+            )
         } else if roll < 0.84 {
             let t = rng.range(7600.0, 9800.0);
-            (StarKind::Main, 'A', t, rng.range(1.6, 2.2), rng.range(1.6, 2.4))
+            (
+                StarKind::Main,
+                'A',
+                t,
+                rng.range(1.6, 2.2),
+                rng.range(1.6, 2.4),
+            )
         } else if roll < 0.89 {
             let t = rng.range(12_000.0, 24_000.0);
-            (StarKind::Main, 'B', t, rng.range(3.0, 6.0), rng.range(3.0, 12.0))
+            (
+                StarKind::Main,
+                'B',
+                t,
+                rng.range(3.0, 6.0),
+                rng.range(3.0, 12.0),
+            )
         } else if roll < 0.95 {
             let t = rng.range(3400.0, 4600.0);
             let class = if t < 3900.0 { 'M' } else { 'K' };
-            (StarKind::RedGiant, class, t, rng.range(12.0, 30.0), rng.range(0.9, 2.5))
+            (
+                StarKind::RedGiant,
+                class,
+                t,
+                rng.range(12.0, 30.0),
+                rng.range(0.9, 2.5),
+            )
         } else {
             let t = rng.range(9000.0, 26_000.0);
-            (StarKind::WhiteDwarf, 'D', t, rng.range(0.009, 0.014), rng.range(0.5, 0.9))
+            (
+                StarKind::WhiteDwarf,
+                'D',
+                t,
+                rng.range(0.009, 0.014),
+                rng.range(0.5, 0.9),
+            )
         };
         let luminosity = radius * radius * (temperature / 5772.0).powi(4);
         let catalogue = catalogue_name(&mut rng);
@@ -1041,9 +1091,7 @@ impl System {
             }
         }
         chosen.sort_unstable();
-        let host = chosen
-            .iter()
-            .position(|&i| self.world_moon(i).is_some());
+        let host = chosen.iter().position(|&i| self.world_moon(i).is_some());
         if let Some(k) = host {
             let giant = chosen.remove(k);
             chosen.push(giant);
@@ -1092,7 +1140,11 @@ mod tests {
                 assert_eq!(tour[n - 1].planet, tour[n - 2].planet);
             }
             let planets: Vec<usize> = tour.iter().map(|s| s.planet).collect();
-            assert!(planets[..3].iter().all(|p| planets[..3].iter().filter(|q| *q == p).count() == 1));
+            assert!(
+                planets[..3]
+                    .iter()
+                    .all(|p| planets[..3].iter().filter(|q| *q == p).count() == 1)
+            );
         }
         // Every kind turns up somewhere across the seeds.
         assert_eq!(kinds.len(), 20, "{kinds:?}");
@@ -1103,14 +1155,27 @@ mod tests {
         let mut seen = std::collections::BTreeMap::new();
         for seed in 0..400u64 {
             let system = System::generate(seed);
-            let worlds = system.itinerary().iter().filter(|s| s.moon.is_some()).count();
+            let worlds = system
+                .itinerary()
+                .iter()
+                .filter(|s| s.moon.is_some())
+                .count();
             seen.entry(system.star.describe())
                 .or_insert_with(Vec::new)
                 .push((seed, worlds));
         }
         for (sort, seeds) in &seen {
-            let with: Vec<u64> = seeds.iter().filter(|s| s.1 > 0).map(|s| s.0).take(4).collect();
-            println!("{sort}: {} systems, e.g. {:?}, with a big moon {with:?}", seeds.len(), &seeds[..3.min(seeds.len())]);
+            let with: Vec<u64> = seeds
+                .iter()
+                .filter(|s| s.1 > 0)
+                .map(|s| s.0)
+                .take(4)
+                .collect();
+            println!(
+                "{sort}: {} systems, e.g. {:?}, with a big moon {with:?}",
+                seeds.len(),
+                &seeds[..3.min(seeds.len())]
+            );
         }
         assert_eq!(seen.len(), 8, "{:?}", seen.keys());
     }

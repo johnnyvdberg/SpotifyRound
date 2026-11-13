@@ -18,6 +18,19 @@ V3D, with where each is used. Before and after shots of changes are kept in `doc
 | **No grazing glints** — specular faded toward the limb | Backlit small rocks ringing like bubbles | — | `fs_rock` |
 | **Clustered placement** — density modulated at two coarse scales | Evenly sprinkled fields look synthetic | 2 hashes per instance (vertex) | `vs_rock` |
 
+## Planet maps (`generate.wgsl`)
+
+| Change | Why |
+|---|---|
+| **Voronoi crust** (`cell_edges`, the exact distance to the bisector of the two nearest points) on a domain-warped lattice, some plates shattered smaller | Lava worlds' crust read as noise "worms" round tan blobs; real crusts crack into irregular polygonal plates |
+| **Seams each their own heat**, the molten glow on a **blackbody ramp** (deep red → orange → yellow-white, `molten_heat`) | Uniformly bright orange lines look cartoonish; most seams are nearly crusted over |
+| **Basalt day colours** (black to charcoal, older plates browner, ash on heights) and a thinner rock-vapour haze | The thick orange haze washed the dark crust to beige |
+| **Volcano flows** (`volcano_flows`): streams running out from vents, fading as they cool | Molten rock comes from somewhere |
+| **Lineae** (`lineae`): long wavering arcs of great circles, part way round, some doubled ridges, salt-stained | Ice worlds' fractures were closed noise loops; Europa's run long and cross |
+| **Living worlds' biomes** from the climate model's moisture and temperature: forest, grassland, scrub, desert, tundra; bare rock on steep and high ground; a snow line falling toward the poles; turquoise shelves | Closer to Earth from orbit |
+| **River valleys** carved into the land (warped zero-crossings at two scales), kept shallow | Drainage reads at low altitude without looking like worms |
+| **Dune seas, wind streaks and strata** on desert worlds | A flat orange plain reads as flat |
+
 ## Pitfalls met
 
 - The noise volume is bound to the fragment stage only, so vertex shaders use hashed cells.

@@ -297,6 +297,8 @@ pub(crate) struct Solar {
     /// the visit time that was worked out for.
     dust: [f64; 3],
     dust_at: Option<f64>,
+    /// A camera to use instead of the tour's, for the screenshots.
+    view_override: Option<View>,
     /// The last frame's background and draws, for the benchmarks.
     #[cfg(test)]
     drawn: std::cell::RefCell<String>,
@@ -1107,6 +1109,7 @@ impl Solar {
             labels: Vec::new(),
             dust: [0.0; 3],
             dust_at: None,
+            view_override: None,
             #[cfg(test)]
             drawn: Default::default(),
         }
@@ -1374,7 +1377,7 @@ impl Solar {
 
     /// The camera at `t`, shaken by the engines through a burn.
     fn view(&self, t: f64) -> View {
-        let mut view = self.tour.view(t);
+        let mut view = self.view_override.unwrap_or_else(|| self.tour.view(t));
         let throttle = self.throttle(t);
         if throttle > 0.0 {
             // The thrust shudders through the hull: a small, quick shake.
@@ -3716,6 +3719,113 @@ pub(crate) mod tests {
         }
         sheet
             .save(std::path::Path::new(&dir).join("asteroids-sheet.png"))
+            .expect("a sheet");
+    }
+
+    /// A planet of each of the main kinds with ground, the first such stop
+    /// found in the tours seeded 0 up, each high in orbit and low over its
+    /// horizon: fixed moments, so shots before and after a change line up
+    /// (`planets-sheet.png`, `planet-<kind>-<n>.png`). `SOLAR_PLANET_KINDS`
+    /// picks some (by name, as `Kind::name` gives them, lower case).
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn planet_gallery() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let only = std::env::var("SOLAR_PLANET_KINDS").ok();
+        let kinds: Vec<Kind> = [
+            Kind::Terran,
+            Kind::Ocean,
+            Kind::Jungle,
+            Kind::Desert,
+            Kind::Lava,
+            Kind::Ice,
+            Kind::Barren,
+        ]
+        .into_iter()
+        .filter(|k| {
+            only.as_ref()
+                .is_none_or(|o| o.split(',').any(|s| s == k.name().to_lowercase()))
+        })
+        .collect();
+        let cell = 360;
+        let mut sheet = image::RgbaImage::new(cell * 3, cell * kinds.len() as u32);
+        for (row, kind) in kinds.iter().enumerate() {
+            let found = (0..400u64).find_map(|seed| {
+                let tour = Tour::new(System::generate(seed), System::generate(seed + 1));
+                let stop =
+                    tour.itinerary.iter().copied().find(|s| {
+                        s.moon.is_none() && tour.system.planets[s.planet].kind == *kind
+                    })?;
+                Some((seed, stop))
+            });
+            let Some((seed, stop)) = found else { continue };
+            let mut solar = Solar::with_seed(&gpu, seed);
+            solar.tour = Tour::new(System::generate(seed), System::generate(seed + 1));
+            let high = solar
+                .tour
+                .segments
+                .iter()
+                .find(|s| s.phase == Phase::High(stop))
+                .copied()
+                .expect("an orbit");
+            let t = high.start + high.duration * 0.5;
+            settle(&mut solar, &gpu, t);
+            let centre = solar.tour.system.centre(stop, t);
+            let radius = solar.tour.world(stop).radius;
+            let sun = normalize(scale(centre, -1.0));
+            let up = [0.0, 1.0, 0.0];
+            let side = normalize(cross(sun, up));
+            // From the day side, a little round toward the terminator: a lit
+            // three-quarter disc; then low over the lit ground, looking along
+            // the horizon.
+            let from = normalize(add(scale(sun, 0.8), scale(side, 0.6)));
+            let whole = tour::View {
+                position: add(centre, scale(from, radius * 2.9)),
+                forward: scale(from, -1.0),
+                up,
+                ..solar.tour.view(t)
+            };
+            let ground = normalize(add(
+                scale(sun, 0.75),
+                add(scale(side, 0.45), scale(up, 0.45)),
+            ));
+            let along = normalize(sub(
+                scale(side, -1.0),
+                scale(ground, dot(scale(side, -1.0), ground)),
+            ));
+            let low = tour::View {
+                position: add(centre, scale(ground, radius * 1.18)),
+                forward: normalize(add(along, scale(ground, -0.42))),
+                up: ground,
+                ..solar.tour.view(t)
+            };
+            let orbit = solar.tour.view(t);
+            for (m, view) in [whole, low, orbit].into_iter().enumerate() {
+                let mut view = view;
+                view.up = normalize(cross(normalize(cross(view.forward, view.up)), view.forward));
+                (view.warp, view.reveal, view.target_shown, view.spool_light) =
+                    (0.0, 1.0, 0.0, 0.0);
+                solar.view_override = Some(view);
+                settle(&mut solar, &gpu, t);
+                solar.draw(&gpu, t, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                let name = kind.name().to_lowercase().replace(' ', "-");
+                shoot(
+                    &dir,
+                    &format!("planet-{name}-{m}"),
+                    pixels,
+                    &mut sheet,
+                    cell,
+                    m as u32,
+                    row as u32,
+                );
+            }
+            solar.view_override = None;
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("planets-sheet.png"))
             .expect("a sheet");
     }
 

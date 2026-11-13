@@ -1534,8 +1534,7 @@ fn fs_glow(in: Quad) -> @location(0) vec4<f32> {
         } else if (params.bodies[i].look.w > 1.5) {
             // Molten rock glows on both sides, more visibly in the dark.
             let night = extra_texel(uv, lod + 0.6).r;
-            let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), night * night);
-            colour += heat * night * (0.15 + 0.55 * darkness);
+            colour += molten_heat(night) * (0.15 + 0.55 * darkness);
         }
         let air = through(i, h);
         colour *= air;
@@ -1899,8 +1898,7 @@ fn fs_globe(in: Globe) -> @location(0) vec4<f32> {
     } else if (NIGHT == 2) {
         let night = globe_extra(in.uv.xy, BIAS + 0.6).r;
         let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
-        let heat = mix(vec3<f32>(1.0, 0.25, 0.04), vec3<f32>(1.0, 0.75, 0.3), night * night);
-        rgb += heat * in.thru * (night * (0.15 + 0.55 * darkness));
+        rgb += molten_heat(night) * in.thru * (0.15 + 0.55 * darkness);
     }
     if (RINGS) {
         rgb *= globe_ring_shadow(in);
@@ -1914,6 +1912,17 @@ fn globe_ring_shadow(in: Globe) -> f32 {
     let x = in.slope.w;
     let density = textureSampleLevel(ring_profile, map_sampler, vec2<f32>(x, in.shift.w), 0.0).r;
     return 1.0 - density * in.shift.z * step(0.0, x) * step(x, 1.0);
+}
+
+// Molten rock's light by how hot it is, 0..1: along a blackbody's colours,
+// a dull deep red where it has nearly crusted over, through orange, to
+// yellow-white in the hottest seams.
+fn molten_heat(night: f32) -> vec3<f32> {
+    let red = vec3<f32>(0.7, 0.07, 0.01);
+    let orange = vec3<f32>(1.0, 0.36, 0.05);
+    let white = vec3<f32>(1.0, 0.82, 0.5);
+    let tint = mix(mix(red, orange, smoothstep01(0.15, 0.55, night)), white, smoothstep01(0.6, 1.0, night));
+    return tint * night * (0.6 + 0.8 * night);
 }
 
 // The night side's city lights, before the air toward the viewer.

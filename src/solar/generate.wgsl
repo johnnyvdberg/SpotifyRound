@@ -164,6 +164,108 @@ fn craters(p: vec3<f32>, scale: f32, density: f32, seed: i32) -> vec2<f32> {
     return vec2<f32>(h / scale, rays);
 }
 
+// The edges of cells round points scattered one to a lattice cell (a
+// Voronoi diagram): how far `x` is from its cell's nearest edge (the true
+// distance, to the bisector of its two nearest points, so edges are straight
+// and even, as crusts and ice crack) and a value of its own for each cell.
+fn cell_edges(x: vec3<f32>, seed: i32) -> vec2<f32> {
+    let cell = vec3<i32>(floor(x));
+    let f = x - floor(x);
+    var nearest = vec3<f32>(0.0);
+    var best = 9.0;
+    var id = cell;
+    for (var k = 0; k < 27; k++) {
+        let o = vec3<i32>(k % 3 - 1, (k / 3) % 3 - 1, k / 9 - 1);
+        let c = cell + o;
+        let r = vec3<f32>(o) + vec3<f32>(hash3(c + vec3<i32>(seed, 1, 0)), hash3(c + vec3<i32>(seed, 2, 0)), hash3(c + vec3<i32>(seed, 3, 0))) * 0.8 + 0.1 - f;
+        let d = dot(r, r);
+        if (d < best) {
+            best = d;
+            nearest = r;
+            id = c;
+        }
+    }
+    var edge = 9.0;
+    for (var k = 0; k < 27; k++) {
+        let o = vec3<i32>(k % 3 - 1, (k / 3) % 3 - 1, k / 9 - 1);
+        let c = cell + o;
+        let r = vec3<f32>(o) + vec3<f32>(hash3(c + vec3<i32>(seed, 1, 0)), hash3(c + vec3<i32>(seed, 2, 0)), hash3(c + vec3<i32>(seed, 3, 0))) * 0.8 + 0.1 - f;
+        let between = r - nearest;
+        if (dot(between, between) > 1e-6) {
+            edge = min(edge, dot(0.5 * (nearest + r), normalize(between)));
+        }
+    }
+    return vec2<f32>(edge, hash3(id + vec3<i32>(seed, 9, 9)));
+}
+
+// Lava flows from volcanoes: a few vents in cells `scale` to a radius,
+// streams running out from each, branching and fading as they cool. The
+// glow 0..1.
+fn volcano_flows(p: vec3<f32>, scale: f32, seed: i32) -> f32 {
+    let x = p * scale;
+    let cell = vec3<i32>(floor(x));
+    var glow = 0.0;
+    for (var k = 0; k < 27; k++) {
+        let id = cell + vec3<i32>(k % 3 - 1, (k / 3) % 3 - 1, k / 9 - 1);
+        if (hash3(id + vec3<i32>(seed, 7, 1)) > 0.45) {
+            continue;
+        }
+        let centre = vec3<f32>(id) + vec3<f32>(hash3(id + vec3<i32>(seed, 1, 5)), hash3(id + vec3<i32>(seed, 2, 5)), hash3(id + vec3<i32>(seed, 3, 5)));
+        let v = x - centre;
+        let d = length(v);
+        let reach = 0.35 + 0.4 * hash3(id + vec3<i32>(seed, 4, 5));
+        if (d > reach) {
+            continue;
+        }
+        let way = v / max(d, 1e-4);
+        // Streams: thin where the noise round the vent crosses zero, wiggling
+        // as they run out, fewer the farther out.
+        let stream = 1.0 - smoothstep(0.0, 0.09 + 0.05 * d, abs(noise(way * 7.0 + vec3<f32>(d * 2.5) + vec3<f32>(f32(seed)))));
+        let fade = 1.0 - smoothstep(reach * 0.3, reach, d);
+        let vent = exp(-d * d / 0.004);
+        glow = max(glow, stream * fade * (0.5 + 0.5 * fade) + vent);
+    }
+    return clamp(glow, 0.0, 1.0);
+}
+
+// A lava world's crust: plates of cooled basalt (cells of a warped
+// lattice, so they are irregular, some large, some broken small), and how
+// hot the seam is where `p` lies on one: each seam its own, many nearly
+// crusted over, a few running hot. x: distance to the plate's edge (0 on
+// a seam), y: the plate's own value, z: the seam's heat.
+fn lava_crust(p: vec3<f32>) -> vec3<f32> {
+    let o = gen.offsets;
+    let warp = vec3<f32>(fbm(p * 3.0 + o[2].xyz, 3), fbm(p * 3.0 + o[3].xyz, 3), fbm(p * 3.0 + o[1].zyx, 3)) * 0.9;
+    let big = cell_edges(p * 6.0 + warp + o[0].xyz, 7);
+    let broken = cell_edges(p * 15.0 + warp * 2.0 + o[1].xyz, 11);
+    // Some plates shattered into smaller ones.
+    let shatter = step(0.62, big.y);
+    let edge = select(big.x, min(big.x, broken.x * 0.45), shatter > 0.5);
+    let heat = smoothstep(0.25, 0.95, noise(p * 9.0 + o[2].zxy) * 0.5 + 0.5 + big.y * 0.25);
+    return vec3<f32>(edge, select(big.y, broken.y, shatter > 0.5), heat);
+}
+
+// Long fractures crossing an ice shell, as Europa's lineae: arcs of great
+// circles about scattered poles, each wavering, some doubled ridges.
+// x: the nearest fracture's band (1 on it), y: its ridges.
+fn lineae(p: vec3<f32>) -> vec2<f32> {
+    let o = gen.offsets;
+    var band = 0.0;
+    var ridge = 0.0;
+    for (var i = 0; i < 14; i++) {
+        let fi = f32(i);
+        let pole = normalize(vec3<f32>(hash3(vec3<i32>(i, 1, 77)) - 0.5, hash3(vec3<i32>(i, 2, 77)) - 0.5, hash3(vec3<i32>(i, 3, 77)) - 0.5) + o[0].xyz * 0.01);
+        let wave = noise(p * 5.0 + vec3<f32>(fi * 3.7) + o[1].xyz) * 0.035;
+        let d = abs(dot(p, pole) + wave + (hash3(vec3<i32>(i, 4, 77)) - 0.5) * 0.6);
+        // Each runs only part way round.
+        let along = smoothstep(-0.3, 0.2, noise(p * 1.3 + vec3<f32>(fi * 5.1)));
+        let width = 0.006 + 0.012 * hash3(vec3<i32>(i, 5, 77));
+        band = max(band, (1.0 - smoothstep(0.0, width, d)) * along);
+        ridge = max(ridge, exp(-pow((d - width * 1.6) / (width * 0.5), 2.0)) * along * step(0.5, hash3(vec3<i32>(i, 6, 77))));
+    }
+    return vec2<f32>(band, ridge);
+}
+
 // Kinds whose ground is shaped: everything but the giants and the worlds
 // hidden under haze or cloud.
 fn has_ground(k: i32) -> bool {
@@ -245,7 +347,17 @@ fn fs_erosion(in: Varying) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
     let s = shape(sphere_at(in.position.xy / gen.size.xy));
-    let detail = eroded(s.q * 9.0 + gen.offsets[2].zxy, 7) * (0.05 + 0.10 * smoothstep(-0.15, 0.25, s.base)) * (1.0 - 0.4 * gen.flags.z);
+    let landish = smoothstep(-0.15, 0.25, s.base);
+    var detail = eroded(s.q * 9.0 + gen.offsets[2].zxy, 7) * (0.05 + 0.10 * landish) * (1.0 - 0.4 * gen.flags.z);
+    if (living(k)) {
+        // River valleys: narrow, branching channels cut into the land, a
+        // broad set and finer ones feeding them, where the warped noise
+        // crosses zero; shallower on the plains.
+        let warp = vec3<f32>(fbm(s.q * 5.0 + gen.offsets[1].xyz, 3)) * 0.35;
+        let trunk = 1.0 - smoothstep(0.0, 0.06, abs(noise(s.q * 11.0 + warp + gen.offsets[3].xyz)));
+        let branch = 1.0 - smoothstep(0.0, 0.08, abs(noise(s.q * 29.0 + warp * 2.0 + gen.offsets[0].xyz)));
+        detail -= (trunk * 0.009 + branch * 0.004) * landish * smoothstep(0.0, 0.12, s.base + 0.1);
+    }
     return vec4<f32>(detail, 0.0, 0.0, 0.0);
 }
 
@@ -580,32 +692,42 @@ fn features(position: vec2<f32>) -> vec2<f32> {
     return textureLoad(terrain, vec2<i32>(position), 0).gb;
 }
 
-// The day colour of a living world.
+// The day colour of a living world, as Earth's reads from orbit: dark
+// forest where it is warm and wet, olive grassland and scrub drier, ochre
+// and pale sand in the deserts, grey-brown tundra in the cold; bare rock on
+// steep and high ground, snow by latitude and by height; the sea turquoise
+// over the shelves, navy over the deeps, ice where it is cold enough.
 fn living_day(c: Climate, steep: f32) -> vec3<f32> {
     let o = gen.offsets;
     let p = c.p;
-    let moisture = c.moisture;
+    let moisture = clamp(c.moisture * 1.1 + 0.1, 0.0, 1.0);
     let temperature = c.temperature;
-    let sand = mix(srgb(218.0, 184.0, 136.0), srgb(170.0, 118.0, 78.0), 0.45 * smoothstep(-0.2, 0.3, fbm(p * 14.0 + o[0].yxz, 4)));
-    let dry = mix(sand, srgb(150.0, 136.0, 94.0), smoothstep(0.10, 0.32, moisture));
-    let warm_green = mix(srgb(122.0, 114.0, 66.0), srgb(26.0, 54.0, 20.0), smoothstep(0.48, 0.80, moisture));
-    let green = mix(srgb(32.0, 48.0, 34.0), mix(srgb(48.0, 70.0, 32.0), warm_green, smoothstep(0.62, 0.85, temperature)), smoothstep(0.42, 0.58, temperature));
-    var ground = mix(dry, green, smoothstep(0.25, 0.62, moisture));
-    ground = mix(ground, srgb(108.0, 102.0, 88.0), smoothstep(0.46, 0.34, temperature));
-    ground = mix(ground, srgb(100.0, 88.0, 76.0), max(smoothstep(0.12, 0.40, steep) * 0.75, smoothstep(0.16, 0.34, c.e) * 0.55));
-    ground = mix(ground, srgb(236.0, 240.0, 245.0), smoothstep(0.26, 0.15, temperature));
+    let variety = fbm(p * 14.0 + o[0].yxz, 4);
+    let sand = mix(srgb(214.0, 184.0, 140.0), srgb(176.0, 120.0, 76.0), 0.5 * smoothstep(-0.2, 0.3, variety));
+    let scrub = srgb(146.0, 128.0, 88.0);
+    let grass = srgb(104.0, 108.0, 58.0);
+    let temperate = srgb(40.0, 64.0, 32.0);
+    let tropical = srgb(24.0, 50.0, 20.0);
+    let tundra = srgb(104.0, 98.0, 84.0);
+    var ground = mix(sand, scrub, smoothstep(0.12, 0.3, moisture));
+    ground = mix(ground, grass, smoothstep(0.28, 0.48, moisture));
+    let forest = mix(temperate, tropical, smoothstep(0.62, 0.85, temperature));
+    ground = mix(ground, forest, smoothstep(0.45, 0.68, moisture) * smoothstep(0.38, 0.5, temperature));
+    ground = mix(ground, tundra, smoothstep(0.44, 0.32, temperature));
+    // Bare rock on steep slopes and high ground, darker for the shadowed
+    // folds the map's slope cannot hold.
+    let rock = mix(srgb(96.0, 86.0, 76.0), srgb(70.0, 64.0, 60.0), smoothstep(-0.2, 0.3, variety));
+    ground = mix(ground, rock, clamp(smoothstep(0.1, 0.32, steep) * 0.85 + smoothstep(0.1, 0.3, c.e) * 0.6, 0.0, 0.9));
+    // Snow: in the cold, and on the peaks, its line lower toward the poles.
+    let snow_line = 0.46 - 0.2 * smoothstep(0.3, 1.0, abs(c.lat) / 1.5708);
+    let snow = max(smoothstep(0.24, 0.14, temperature), smoothstep(snow_line, snow_line + 0.05, c.e) * smoothstep(0.85, 0.5, temperature) * smoothstep(0.06, 0.2, steep));
+    ground = mix(ground, srgb(236.0, 240.0, 245.0), snow * (1.0 - 0.4 * smoothstep(0.2, 0.4, steep)));
     ground *= 0.86 + 0.28 * (fbm(p * 60.0 + o[1].yxz, 4) + 0.5);
     let depth = max(-c.e, 0.0);
-    var sea = mix(srgb(30.0, 82.0, 112.0), srgb(10.0, 28.0, 66.0), smoothstep(0.0, 0.035, depth));
-    sea = mix(sea, srgb(5.0, 13.0, 40.0), smoothstep(0.035, 0.22, depth));
+    var sea = mix(srgb(36.0, 116.0, 136.0), srgb(14.0, 46.0, 84.0), smoothstep(0.0, 0.022, depth));
+    sea = mix(sea, srgb(5.0, 14.0, 42.0), smoothstep(0.03, 0.2, depth));
     sea = mix(sea, srgb(218.0, 226.0, 236.0), sea_ice(c));
     return mix(sea, ground, c.land);
-}
-
-// How much of a lava sea glows: plates of crust parted by molten seams.
-fn lava_seams(p: vec3<f32>) -> f32 {
-    let o = gen.offsets;
-    return 0.6 + 0.4 * cracks(p * 23.0 + o[3].xyz, 0.06);
 }
 
 // The day colour of every other kind with ground.
@@ -620,23 +742,52 @@ fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
         var ground = mix(pal(0), pal(2), tone * 0.6);
         ground = mix(ground, pal(1), low * 0.7 + smoothstep(0.1, 0.35, steep) * 0.3);
         ground = mix(ground, pal(3), smoothstep(0.2, 0.6, fbm(p * 18.0 + o[2].xyz, 4)) * 0.25);
+        // Seas of dunes in the lowlands, their crests along the wind (east
+        // to west, wavering), paler sand on them; dark streaks blown out
+        // from the heights; layered rock where the ground is high and steep.
+        let wind = vec3<f32>(p.x, p.y * 6.0, p.z) * 40.0;
+        let crest = 0.5 + 0.5 * sin(dot(p, vec3<f32>(0.0, 90.0, 0.0)) + noise(wind * 0.25 + o[1].zxy) * 6.0);
+        let dunes = smoothstep(0.1, 0.4, low + smoothstep(-0.2, 0.2, fbm(p * 3.0 + o[2].zyx, 3)) * 0.5);
+        ground = mix(ground, mix(ground, pal(0) * 1.25, crest * 0.5), dunes * 0.7);
+        let streak = smoothstep(0.3, 0.65, fbm(vec3<f32>(p.x * 22.0, p.y * 5.0, p.z * 22.0) + o[3].zxy, 4));
+        ground = mix(ground, pal(1) * 0.8, streak * 0.3 * (1.0 - dunes));
+        let strata = 0.5 + 0.5 * sin(c.e * 160.0 + noise(p * 9.0) * 2.0);
+        ground *= mix(1.0, 0.8 + 0.35 * strata, smoothstep(0.08, 0.3, steep) * smoothstep(0.0, 0.15, c.e));
         let cap = smoothstep(0.2, 0.12, c.warmth + 0.05 * fbm(p * 12.0, 3));
         ground = mix(ground, srgb(236.0, 232.0, 226.0), cap);
         return ground * (0.88 + 0.24 * (grain + 0.5));
     } else if (k == ICE) {
-        let lines = max(cracks(p * 9.0 + o[0].xyz, 0.035), cracks(p * 23.0 + o[1].xyz, 0.03) * 0.6);
+        // An ice shell cracked into plates, as Europa's: long straight-ish
+        // fractures (the edges of cells), the big ones doubled ridges with
+        // a reddish-brown band of salts between, finer ones crossing them,
+        // and patches of jumbled chaos ice stained the same.
+        let lines = lineae(p);
+        let small = cell_edges(p * 11.0 + o[1].xyz, 9);
+        let stain = srgb(150.0, 104.0, 78.0);
+        let fine = (1.0 - smoothstep(0.0, 0.02, small.x)) * 0.5;
+        let chaos = smoothstep(0.35, 0.6, fbm(p * 4.0 + o[3].xyz, 4)) * smoothstep(0.5, 0.9, small.y);
         var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 6.0 + o[2].xyz, 4)));
-        ground = mix(ground, pal(1), low * 0.6);
-        ground = mix(ground, pal(3), lines * 0.6);
+        ground = mix(ground, pal(1), low * 0.5);
+        ground = mix(ground, stain, clamp(lines.x * 0.8 + fine * 0.3 + chaos * 0.45, 0.0, 0.85));
+        ground = mix(ground, ground * 1.15 + vec3<f32>(0.04), lines.y * 0.6);
         return ground * (0.94 + 0.12 * (grain + 0.5));
     } else if (k == LAVA) {
-        let lines = max(cracks(p * 7.0 + o[0].xyz, 0.03), cracks(p * 19.0 + o[1].xyz, 0.025) * 0.7);
-        let crust = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 12.0 + o[2].xyz, 4)));
-        // By day the lava reads as dark red rock with a crust on it; its
-        // light is mostly the emissive glow, which shows best at night. The
-        // seas are crusted over too, in plates parted by bright seams.
-        let sea = mix(crust * 0.6, pal(1) * 0.25, lava_seams(p));
-        return mix(crust * (0.8 + 0.4 * (grain + 0.5)), mix(pal(1) * 0.25, sea, low), max(low, lines * c.land));
+        // Basalt, black and charcoal, each plate cooled its own while
+        // (browner the older), pale ash and sulphur on the heights; the
+        // seams between dull red by day (their glow is the night map's). The
+        // magma seas are crusted in floes, molten rock showing between them.
+        let crust_at = lava_crust(p);
+        let tone = smoothstep(-0.3, 0.4, fbm(p * 14.0 + o[2].xyz, 4));
+        var crust = mix(srgb(18.0, 16.0, 15.0), srgb(50.0, 45.0, 42.0), tone);
+        crust = mix(crust, srgb(74.0, 60.0, 50.0), crust_at.y * 0.4);
+        let ash = smoothstep(0.12, 0.35, c.e) * smoothstep(0.1, 0.6, fbm(p * 6.0 + o[3].xyz, 3));
+        crust = mix(crust, srgb(124.0, 112.0, 84.0), ash * 0.4);
+        let seam = (1.0 - smoothstep(0.0, 0.03, crust_at.x)) * (0.3 + 0.7 * crust_at.z);
+        let flows = volcano_flows(p, 5.0, 3);
+        let ground = mix(crust, srgb(96.0, 24.0, 8.0), clamp(seam * 0.8 + flows * 0.7, 0.0, 1.0));
+        let floes = 1.0 - smoothstep(0.01, 0.07, crust_at.x * (0.5 + crust_at.y));
+        let sea = mix(crust * 0.8, srgb(140.0, 36.0, 10.0), floes);
+        return mix(ground * (0.85 + 0.3 * (grain + 0.5)), sea, low);
     } else if (k == VOLCANIC) {
         // Sulphur yellow and orange, white frost, black calderas with red rims.
         var ground = mix(pal(0), pal(1), smoothstep(-0.1, 0.35, fbm(p * 5.0 + o[0].xyz, 5)));
@@ -757,12 +908,19 @@ fn fs_lights(in: Varying) -> @location(0) vec4<f32> {
         let o = gen.offsets;
         let c = climate(in.position.xy);
         var molten = 0.0;
+        let crust_at = lava_crust(p);
         if (GROUP == 1) {
-            molten = max((1.0 - c.land) * lava_seams(p), cracks(p * 7.0 + o[0].xyz, 0.03) * c.land);
+            // The seas between their floes, hottest where the gaps are
+            // widest; and the flows from the vents.
+            let gap = 1.0 - smoothstep(0.0, 0.08, crust_at.x * (0.5 + crust_at.y));
+            let sea = (1.0 - c.land) * (0.2 + 0.8 * gap * (0.4 + 0.6 * crust_at.z));
+            molten = max(sea, volcano_flows(p, 5.0, 3) * c.land * 0.95);
         } else {
-            molten = max(cracks(p * 19.0 + o[1].xyz, 0.025) * 0.7, cracks(p * 47.0 + o[2].zxy, 0.02) * 0.35) * c.land;
+            // The seams between the plates on land, each as hot as it is.
+            let seam = (1.0 - smoothstep(0.0, 0.022, crust_at.x)) * (0.1 + 0.8 * crust_at.z * crust_at.z);
+            molten = seam * c.land;
         }
-        light = molten * (0.6 + 0.4 * fbm(p * 30.0, 3) + 0.4);
+        light = molten * (0.75 + 0.25 * fbm(p * 30.0, 3));
     } else if (GROUP == 2) {
         light = giant(p, k).night;
     }
