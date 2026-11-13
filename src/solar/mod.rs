@@ -909,6 +909,21 @@ impl Solar {
             });
             pipelines.insert(format!("model{family}"), (label, made));
         }
+        // A battle's effects over its meshes, each pixel at the depth of the
+        // nearest effect in it (`fs_battle_fx`).
+        pipelines.insert(
+            "battlefx".to_string(),
+            make(
+                "Solar battle effects",
+                "vs_background",
+                "fs_battle_fx",
+                add,
+                &[],
+                Some(false),
+                wgpu::ColorWrites::ALL,
+                false,
+            ),
+        );
         pipelines.insert(
             "overlay".to_string(),
             make(
@@ -2102,6 +2117,13 @@ impl Solar {
                         pass.draw_indexed(*first..*first + *count, *base, instances.clone());
                     }
                     pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
+                }
+                if e == voyage::Event::Battle {
+                    // Its fire, shields and blasts, after the ships and wreckage, tested
+                    // against them at their own depths.
+                    let (label, pipeline) = &self.pipelines["battlefx"];
+                    pass.set_pipeline(pipeline);
+                    crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
                 }
                 if e.rocks() {
                     let (label, pipeline) = &self.pipelines[&format!("rocks{}", e.id())];

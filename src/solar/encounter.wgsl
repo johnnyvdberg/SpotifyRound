@@ -1436,21 +1436,16 @@ fn burst(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32, age: f32) -> vec3<f32
 }
 
 fn ev_battle(d: vec3<f32>) -> vec4<f32> {
+    // The background alone: the shock bending the stars behind its edge.
+    // Everything lit in the battle is `battle_fx`, drawn after the meshes.
     let ship = ev_ship();
     let t = ev_t();
-    let seed = params.ev[9].x;
-    let lost = battle_lost();
-    let kill = ev_obj(1).z;
     let blast = blast_at();
-    let l = normalize(vec3<f32>(0.5, 0.7, -0.35));
     var colour = vec3<f32>(0.0);
     var alpha = 0.0;
-    var reach = 1e9;
-    // The shock: a shell racing out from the blast, bending the stars
-    // behind its edge and glowing there, fading as it spreads.
     let wave = shock_radius(t);
     let wave_age = wave / (params.ev[8].w * 9.0);
-    if (wave > 0.0 && wave_age < 1.0) {
+    if (wave > 0.0 && wave_age < 1.0 && params.ev[9].y < 0.5) {
         let v = blast - ship;
         let tca = dot(v, d);
         if (tca > 0.0) {
@@ -1474,7 +1469,31 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
             }
         }
     }
-    // The ships, far to near not needed: the nearest hit along each ray.
+    return vec4<f32>(colour, alpha);
+}
+
+// Light added to a battle's effects, `at` along the ray: kept, and the
+// nearest distance along the ray at which anything shows (`w`), for the
+// depth the effects are tested at against the meshes.
+fn fx(acc: ptr<function, vec4<f32>>, light: vec3<f32>, at: f32) {
+    (*acc) = vec4<f32>((*acc).xyz + light, (*acc).w);
+    if (max(light.x, max(light.y, light.z)) > 0.015 && at > 0.0) {
+        (*acc).w = min((*acc).w, at);
+    }
+}
+
+// Everything lit in a battle: engines, shields flaring, beams and bolts,
+// torpedoes and their bursts, fighters, the lost ship's blast, stray fire.
+// Its colour, and the distance along the ray to the nearest of it.
+fn battle_fx(d: vec3<f32>) -> vec4<f32> {
+    let ship = ev_ship();
+    let t = ev_t();
+    let seed = params.ev[9].x;
+    let lost = battle_lost();
+    let kill = ev_obj(1).z;
+    let blast = blast_at();
+    let wave = shock_radius(t);
+    var acc = vec4<f32>(0.0, 0.0, 0.0, 1e9);
     for (var i = 0; i < 8; i++) {
         if (i == lost && t > kill) {
             continue;
@@ -1483,34 +1502,29 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         let c = s[0].xyz;
         let size = s[0].w;
         let faction = ship_faction(i);
-        let kind_ = faction;
         let fwd = s[1].xyz;
-        let side = normalize(cross(fwd, vec3<f32>(0.0, 1.0, 0.0)));
-        let up = cross(side, fwd);
-        // The hull itself is a mesh (`vs_ship`), drawn over this.
         // The shield: flaring where the shock strikes it, holding most of
         // it back, the struck side brightest and crackling.
         let jolt = s[1].w;
         if (jolt > 0.01) {
             let sh = sphere_hits(ship, d, c, size * 1.45);
-            if (sh.x > 0.0 && sh.x < reach + size) {
-                let at = ship + d * sh.x;
-                let n = (at - c) / (size * 1.45);
+            if (sh.x > 0.0) {
+                let n = (ship + d * sh.x - c) / (size * 1.45);
                 let facing = max(dot(n, normalize(blast - c)), 0.0);
                 let v = c - ship;
                 let edge = length(v - d * dot(v, d)) / (size * 1.45);
                 let crackle = 0.6 + 0.4 * noise(n * 9.0 + vec3<f32>(t * 6.0));
                 let flare = (pow(facing, 10.0) * 0.7 * crackle + pow(edge, 14.0) * 0.35) * jolt;
-                colour += faction_shield(faction) * flare;
-                alpha = max(alpha, min(flare * 0.15, 1.0));
+                fx(&acc, faction_shield(faction) * flare, sh.x);
             }
         }
         // Engines.
-        let engine = point_pixels(ship, d, c - fwd * size * 1.02);
-        colour += mix(faction_shield(faction), vec3<f32>(1.0), 0.5) * glint(engine, 1.0 + size * 0.03) * 0.9 * (1.0 - alpha * 0.8);
+        let engine_at = c - fwd * size * 1.02;
+        let engine = point_pixels(ship, d, engine_at);
+        fx(&acc, mix(faction_shield(faction), vec3<f32>(1.0), 0.5) * glint(engine, 1.0 + size * 0.03) * 0.9, dot(engine_at - ship, d));
     }
     if (params.ev[9].y > 0.5) {
-        return vec4<f32>(colour, alpha);
+        return acc;
     }
     // Fire between the fleets: each its own way. Beams, or bolts in short
     // dashes for the wedge fleet.
@@ -1533,21 +1547,21 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         let faction = ship_faction(shooter);
         let miss = (vec3<f32>(fract(h * 31.0), fract(h * 57.0), fract(h * 91.0)) - 0.5) * b.w * 3.0 * step(0.6, fract(h * 7.0));
         let from_hull = a.xyz + normalize(b.xyz - a.xyz) * a.w * 0.6;
-        var beam = bolt(ship, d, from_hull, b.xyz + miss, select(1.1, 1.8, faction == 5)) * sin(on / 0.35 * PI);
+        let to = b.xyz + miss;
+        let near = ray_to_line(ship, d, from_hull, normalize(to - from_hull));
+        var beam = bolt(ship, d, from_hull, to, select(1.1, 1.8, faction == 5)) * sin(on / 0.35 * PI);
         if (faction == 1 || faction == 2) {
             // Bolts: dashes flying along the line.
-            let span = length(b.xyz + miss - from_hull);
-            let near = ray_to_line(ship, d, from_hull, normalize(b.xyz + miss - from_hull));
-            beam *= step(fract(near.z / span * 5.0 - on * 9.0), 0.3);
+            beam *= step(fract(near.z / length(to - from_hull) * 5.0 - on * 9.0), 0.3);
         }
-        colour += mix(faction_fire(faction), vec3<f32>(1.0), 0.4) * beam * 1.4;
+        fx(&acc, mix(faction_fire(faction), vec3<f32>(1.0), 0.4) * beam * 1.4, near.y);
         // Where a beam lands, its target's shield flares.
         if (fract(h * 7.0) < 0.6 && on > 0.05) {
             let sh = sphere_hits(ship, d, b.xyz, b.w * 1.45);
             if (sh.x > 0.0) {
                 let n = (ship + d * sh.x - b.xyz) / (b.w * 1.45);
                 let facing = max(dot(n, normalize(a.xyz - b.xyz)), 0.0);
-                colour += faction_shield(ship_faction(aim)) * pow(facing, 5.0) * 0.7 * sin(on / 0.35 * PI);
+                fx(&acc, faction_shield(ship_faction(aim)) * pow(facing, 5.0) * 0.7 * sin(on / 0.35 * PI), sh.x);
             }
         }
     }
@@ -1572,18 +1586,18 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         let tint = mix(faction_fire(ship_faction(shooter)), vec3<f32>(1.0, 0.25, 0.1), 0.5);
         if (phase < 0.7) {
             let pulse_ = 0.75 + 0.25 * sin(t * 30.0 + fk);
-            colour += tint * glint(point_pixels(ship, d, p), 2.0) * 1.6 * pulse_;
+            fx(&acc, tint * glint(point_pixels(ship, d, p), 2.0) * 1.6 * pulse_, dot(p - ship, d));
             let back = mix(a, goal.xyz, max(flight - 0.12, 0.0)) + vec3<f32>(0.0, 1.0, 0.0) * sin(max(flight - 0.12, 0.0) * PI) * 25.0;
-            colour += tint * bolt(ship, d, back, p, 1.0) * 0.35;
+            fx(&acc, tint * bolt(ship, d, back, p, 1.0) * 0.35, dot((back + p) * 0.5 - ship, d));
         } else {
             let age = (phase - 0.7) / 0.3;
             let at = goal.xyz + normalize(a - goal.xyz) * goal.w * 1.45;
-            colour += burst(ship, d, at, max(goal.w * 0.7, 4.0), age) * 0.6;
+            fx(&acc, burst(ship, d, at, max(goal.w * 0.7, 4.0), age) * 0.6, dot(at - ship, d) - goal.w);
             let sh = sphere_hits(ship, d, goal.xyz, goal.w * 1.45);
             if (sh.x > 0.0) {
                 let n = (ship + d * sh.x - goal.xyz) / (goal.w * 1.45);
                 let facing = max(dot(n, normalize(a - goal.xyz)), 0.0);
-                colour += faction_shield(ship_faction(aim)) * pow(facing, 4.0) * sq(1.0 - age) * 0.9;
+                fx(&acc, faction_shield(ship_faction(aim)) * pow(facing, 4.0) * sq(1.0 - age) * 0.9, sh.x);
             }
         }
     }
@@ -1597,24 +1611,26 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
             let p = o.xyz + vec3<f32>(cos(a) * o.w * (0.3 + 0.5 * h), sin(a * 1.7 + fk) * o.w * 0.25, sin(a) * o.w * 0.5 * (0.4 + 0.6 * fract(h * 7.0)));
             let vel = normalize(vec3<f32>(-sin(a) * o.w, cos(a * 1.7 + fk) * 1.7 * o.w * 0.25, cos(a) * o.w * 0.5));
             let tint = select(vec3<f32>(1.0, 0.5, 0.3), vec3<f32>(0.6, 0.85, 1.0), k < 5);
-            colour += tint * glint(point_pixels(ship, d, p), 1.0) * 1.2;
-            colour += tint * bolt(ship, d, p - vel * 8.0, p, 0.6) * 0.25;
+            let at = dot(p - ship, d);
+            fx(&acc, tint * glint(point_pixels(ship, d, p), 1.0) * 1.2, at);
+            fx(&acc, tint * bolt(ship, d, p - vel * 8.0, p, 0.6) * 0.25, at);
             let shot_on = step(fract(t * 2.0 + h * 5.0), 0.15);
-            colour += select(vec3<f32>(0.3, 1.0, 0.3), vec3<f32>(1.0, 0.25, 0.2), k < 5) * bolt(ship, d, p + vel * 2.0, p + vel * 30.0, 0.8) * shot_on;
+            fx(&acc, select(vec3<f32>(0.3, 1.0, 0.3), vec3<f32>(1.0, 0.25, 0.2), k < 5) * bolt(ship, d, p + vel * 2.0, p + vel * 30.0, 0.8) * shot_on, at);
         }
     }
     // The ship lost: a flash, a fireball and a ring of shock in its plane.
     let age = (t - kill) / 5.0;
-    colour += burst(ship, d, blast, 30.0, age) * 1.4;
-    colour += vec3<f32>(1.0, 0.95, 0.9) * glint(point_pixels(ship, d, blast), 6.0) * exp(-max(t - kill, 0.0) * 3.0) * step(kill, t) * 3.0;
+    let blast_at_ray = dot(blast - ship, d);
+    fx(&acc, burst(ship, d, blast, 30.0, age) * 1.4, blast_at_ray - 30.0 * sqrt(max(age, 0.0)));
+    fx(&acc, vec3<f32>(1.0, 0.95, 0.9) * glint(point_pixels(ship, d, blast), 6.0) * exp(-max(t - kill, 0.0) * 3.0) * step(kill, t) * 3.0, blast_at_ray);
     if (age > 0.0 && age < 1.0) {
         let denom = dot(d, vec3<f32>(0.0, 1.0, 0.0));
         if (abs(denom) > 1e-3) {
             let tp = (blast.y - ship.y) / denom;
-            if (tp > 0.0 && tp < reach) {
+            if (tp > 0.0) {
                 let q = ship + d * tp - blast;
                 let ring = bump((length(q) - wave) / (4.0 + wave * 0.05));
-                colour += vec3<f32>(0.7, 0.85, 1.0) * ring * sq(1.0 - age) * 0.7;
+                fx(&acc, vec3<f32>(0.7, 0.85, 1.0) * ring * sq(1.0 - age) * 0.7, tp);
             }
         }
     }
@@ -1623,8 +1639,9 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
     if (t > laser_at && t < laser_at + 0.6) {
         let a = battle_ship(4, t)[0].xyz;
         let near = ship + vec3<f32>(ev_obj(1).w * 14.0, 6.0, 28.0);
-        let beam = bolt(ship, d, a, near + (near - a) * 0.5, 1.8) * sin((t - laser_at) / 0.6 * PI);
-        colour += mix(faction_fire(ship_faction(4)), vec3<f32>(1.0), 0.5) * beam * 2.0;
+        let end = near + (near - a) * 0.5;
+        let beam = bolt(ship, d, a, end, 1.8) * sin((t - laser_at) / 0.6 * PI);
+        fx(&acc, mix(faction_fire(ship_faction(4)), vec3<f32>(1.0), 0.5) * beam * 2.0, ray_to_line(ship, d, a, normalize(end - a)).y);
     }
     let torpedo_at = ev_obj(2).y;
     if (t > torpedo_at && t < torpedo_at + 3.5) {
@@ -1633,12 +1650,30 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         let flight = (t - torpedo_at) / 1.1;
         if (flight < 1.0) {
             let p = mix(a, near, flight);
-            colour += vec3<f32>(1.0, 0.4, 0.2) * glint(point_pixels(ship, d, p), 2.4) * 2.0;
+            fx(&acc, vec3<f32>(1.0, 0.4, 0.2) * glint(point_pixels(ship, d, p), 2.4) * 2.0, dot(p - ship, d));
         } else {
-            colour += burst(ship, d, near, 22.0, (t - torpedo_at - 1.1) / 2.4) * 1.2;
+            fx(&acc, burst(ship, d, near, 22.0, (t - torpedo_at - 1.1) / 2.4) * 1.2, dot(near - ship, d) - 10.0);
         }
     }
-    return vec4<f32>(colour, alpha);
+    return acc;
+}
+
+// A battle's effects over the meshes, each pixel at the depth of the
+// nearest effect in it: a ship in front hides a laser, one behind does not.
+struct FxOut {
+    @location(0) colour: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
+@fragment
+fn fs_battle_fx(in: Full) -> FxOut {
+    var out: FxOut;
+    let dw = normalize(in.dir);
+    let lit = battle_fx(to_ev(dw));
+    let z = lit.w * dot(dw, params.forward.xyz);
+    out.colour = vec4<f32>(lit.xyz * params.ev[10].y, 0.0);
+    out.depth = select(clamp(z / (z + 400.0), 0.0, 0.999), 1.0, lit.w > 1e8 || z <= 0.0);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
