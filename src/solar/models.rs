@@ -29,7 +29,7 @@ use glam::Vec3;
 use super::system::Rng;
 
 /// Bumped whenever a model's shape changes, so stale caches are rebuilt.
-pub const GENERATOR: u32 = 5;
+pub const GENERATOR: u32 = 6;
 /// Variants of each ship design and role.
 pub const VARIANTS: u32 = 3;
 /// Ship designs: as `voyage::FACTIONS`.
@@ -1474,10 +1474,17 @@ pub fn build(key: Key) -> Mesh {
                 + (f(p + normal * 0.09).d / 0.09).clamp(0.0, 1.0) * 0.5)
                 .clamp(0.25, 1.0);
             let part = f(p - normal * step * 0.2).part;
+            // A rock's fresh rims are a smooth amount (interpolated across
+            // its triangles), not a part (which would light whole ones).
+            let (part, fresh) = if part == part::FRESH && matches!(key, Key::Rock { .. }) {
+                (part::HULL, 255)
+            } else {
+                (part, 0)
+            };
             ShipVertex {
                 position: p.to_array(),
                 normal: normal.to_array(),
-                extra: [(ao * 255.0) as u8, part, 0, 255],
+                extra: [(ao * 255.0) as u8, part, fresh, 255],
             }
         })
         .collect();

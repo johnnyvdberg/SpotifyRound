@@ -193,8 +193,10 @@ fn vs_rock(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
     let w = from_ev(p - ship);
     let cam = vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
     out.centre = vec4<f32>(cam, radius);
-    out.look = vec4<f32>(fi, 4.0, glow, 0.0);
-    if (radius <= 0.0 || cam.z < 1.0 || cam.z > 4000.0) {
+    // Kept out of the camera's own space, faded in with the distance: so
+    // close, a grain would cover half the frame.
+    out.look = vec4<f32>(fi, 4.0, glow * smoothstep01(6.0, 16.0, cam.z), 0.0);
+    if (radius <= 0.0 || cam.z < 6.0 || cam.z > 4000.0) {
         out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         return out;
     }
@@ -1131,6 +1133,11 @@ struct ModelOut {
     @location(4) @interpolate(flat) look: vec4<f32>,
     @location(5) toward: vec3<f32>,
     @location(6) @interpolate(flat) size: f32,
+    // The model's turn, to bring slopes worked out in its own frame (bump
+    // maps) into the encounter's.
+    @location(7) @interpolate(flat) turn: vec4<f32>,
+    // How fresh a rock's ground is, interpolated (pale young crater rims).
+    @location(8) fresh: f32,
 };
 
 fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
@@ -1153,7 +1160,45 @@ fn vs_model(v: ModelIn) -> ModelOut {
     out.look = v.look;
     out.toward = -rel;
     out.size = v.place.w;
+    out.turn = v.turn;
+    out.fresh = v.extra.z;
     return out;
+}
+
+// A crater's profile across `x`, its distance from the middle over its
+// radius: a bowl, a raised rim, the ground beyond.
+fn crater_profile(x: f32) -> f32 {
+    let bowl = (x * x - 1.0) * 0.35;
+    let rim = 0.14 * exp(-sq((x - 1.0) / 0.32));
+    return mix(bowl, 0.0, smoothstep01(0.85, 1.05, x)) + rim * (1.0 - smoothstep01(1.3, 1.8, x));
+}
+
+// Craters round `q` (a surface direction scaled up), from the eight cells
+// about it, as a bump map: the ground's height from them, and its slope.
+fn crater_bump(q: vec3<f32>, seed: f32) -> vec4<f32> {
+    let base = floor(q - 0.5);
+    var height = 0.0;
+    var slope = vec3<f32>(0.0);
+    for (var i = 0; i < 8; i++) {
+        let cell = base + vec3<f32>(f32(i & 1), f32((i >> 1) & 1), f32((i >> 2) & 1));
+        let k = hash_cell(cell + vec3<f32>(seed, 0.0, 0.0));
+        if (k > 0.72) {
+            continue;
+        }
+        let jitter = vec3<f32>(hash_cell(cell + vec3<f32>(seed + 1.0, 3.0, 0.0)), hash_cell(cell + vec3<f32>(seed + 2.0, 0.0, 5.0)), hash_cell(cell + vec3<f32>(0.0, seed + 3.0, 7.0)));
+        let centre = cell + 0.5 + (jitter - 0.5) * 0.4;
+        let radius = mix(0.14, 0.42, k / 0.72);
+        let v = q - centre;
+        let dist = length(v);
+        let x = dist / radius;
+        if (x > 1.8) {
+            continue;
+        }
+        height += crater_profile(x) * radius;
+        let dx = (crater_profile(x + 0.03) - crater_profile(x - 0.03)) / 0.06;
+        slope += dx * v / max(dist, 1e-4);
+    }
+    return vec4<f32>(height, slope);
 }
 
 // Panels and their seams on a model's skin, on the two axes most across it:
@@ -1184,13 +1229,41 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
     var colour = vec3<f32>(0.0);
     if (MODEL == 1) {
         // Rocks: regolith (Lommel-Seeliger blended with Lambert), mottled at
-        // two scales, fresh crater rims paler, a fine grain in the normal
-        // where it is bigger than a pixel.
+        // two scales, fresh crater rims paler. The mesh holds the large
+        // shapes; a bump map worked out here in the rock's own frame adds
+        // what it cannot: small craters at two scales and grain at four
+        // octaves, each faded out where it is finer than a pixel.
         let kind = look.x;
         let l = ev_light();
-        let pixel = length(fwidth(q));
-        let grain = noised(q * 22.0 + vec3<f32>(in.size));
-        let nn = normalize(n - (grain.yzw - n * dot(grain.yzw, n)) * 0.12 * (1.0 - smoothstep01(0.02, 0.06, pixel)));
+        let pixel = length(fwidth(q)) + 1e-5;
+        let seed = fract(in.size * 7.31) * 50.0;
+        let dir = normalize(q);
+        var slope = vec3<f32>(0.0);
+        var bowl = 0.0;
+        for (var c = 0; c < 2; c++) {
+            let scale = select(26.0, 9.0, c == 0);
+            let fade = 1.0 - smoothstep01(0.12, 0.35, pixel * scale);
+            if (fade > 0.0) {
+                let b = crater_bump(dir * scale + vec3<f32>(f32(c) * 31.0), seed + f32(c) * 5.0);
+                slope += b.yzw * fade * select(0.7, 1.0, c == 0);
+                bowl += b.x * fade / scale;
+            }
+        }
+        var frequency = 6.0;
+        var amplitude = 0.16;
+        for (var o = 0; o < 4; o++) {
+            let fade = 1.0 - smoothstep01(0.15, 0.45, pixel * frequency);
+            if (fade > 0.0) {
+                slope += noised(q * frequency + vec3<f32>(seed + f32(o) * 13.0)).yzw * amplitude * fade;
+            }
+            frequency *= 2.3;
+            amplitude *= 0.6;
+        }
+        // Into the encounter frame, tangent to the surface, and onto the
+        // mesh's normal.
+        let world_slope = quat_rotate(in.turn, slope);
+        let nn = normalize(n - (world_slope - n * dot(world_slope, n)) * 0.55);
+        let cavity = clamp(1.0 + bowl * 30.0, 0.55, 1.0);
         let mu0 = max(dot(nn, l), 0.0);
         let mu = max(dot(nn, v), 0.0);
         let ls = 2.0 * mu0 / (mu0 + mu + 0.15);
@@ -1207,12 +1280,18 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
         }
         let mottle = noise(q * 2.3 + vec3<f32>(in.size * 1.7)) * 0.5 + noise(q * 7.0) * 0.25;
         albedo *= 0.8 + 0.45 * mottle;
-        if (part == 9) {
-            albedo *= 1.8;
-        }
-        albedo *= 1.0 + step(0.93, hash_cell(floor(q * 70.0))) * 0.8 * (1.0 - smoothstep01(0.005, 0.02, pixel));
+        albedo *= 1.0 + in.fresh * 0.8;
+        // Bright grains: round, and only while each is about a pixel or
+        // less (larger, they would read as squares, not sparkle).
+        let gq = q * 70.0;
+        let grain_dot = 1.0 - smoothstep01(0.12, 0.3, length(fract(gq) - 0.5));
+        let sparkle = step(0.93, hash_cell(floor(gq))) * grain_dot * smoothstep01(0.4, 1.0, pixel * 70.0) * (1.0 - smoothstep01(2.0, 4.0, pixel * 70.0));
+        albedo *= 1.0 + sparkle * 0.8;
         let brdf = mix(mu0, ls * 0.5, lunar);
-        colour = albedo * brdf * 2.4 * mix(1.0, in.ao, 0.6);
+        // The bump map's own shadow: where its slope turns from the light
+        // the mesh's did not, darker.
+        let micro = smoothstep01(-0.15, 0.25, dot(nn, l)) * 0.4 + 0.6;
+        colour = albedo * brdf * 2.4 * mix(1.0, in.ao, 0.6) * cavity * micro;
         colour += albedo * vec3<f32>(0.07, 0.08, 0.1) * (0.35 + 0.25 * max(dot(nn, -l), 0.0)) * in.ao;
         colour += vec3<f32>(pow(max(dot(reflect(-l, nn), v), 0.0), 40.0) * shine * smoothstep01(0.1, 0.45, mu) * mu0);
     } else if (MODEL == 2) {
@@ -1957,12 +2036,16 @@ fn fs_overlay(in: Full) -> @location(0) vec4<f32> {
         let dist = length(s - at);
         let front = (1.0 - hit) * 0.8 + 0.06;
         let ring = bump((dist - front) / 0.05) * (1.0 - smoothstep01(0.97, 1.0, r));
-        let g = s * 12.0;
-        let row = floor(g.y / 0.866);
-        let shifted = vec2<f32>(g.x + 0.5 * (row % 2.0), g.y / 0.866);
-        let cell = fract(shifted) - 0.5;
-        let hex = smoothstep01(0.36, 0.48, max(abs(cell.x), abs(cell.y) * 0.9 + abs(cell.x) * 0.35));
-        colour += vec3<f32>(0.35, 0.75, 1.0) * ring * (0.2 + 0.8 * hex) * hit * 0.55;
+        // A true hexagonal lattice: the nearer of two offset grids' cell
+        // middles, the hexagon's own distance to it; only its edges lit.
+        let g = s * 14.0;
+        let pitch = vec2<f32>(1.0, 1.732);
+        let a = g - pitch * floor(g / pitch) - pitch * 0.5;
+        let b = (g - pitch * 0.5) - pitch * floor((g - pitch * 0.5) / pitch) - pitch * 0.5;
+        let local = select(b, a, dot(a, a) < dot(b, b));
+        let hex_d = max(abs(local.x) * 0.866 + abs(local.y) * 0.5, abs(local.y));
+        let edge = smoothstep01(0.4, 0.48, hex_d);
+        colour += vec3<f32>(0.35, 0.75, 1.0) * ring * (0.1 + 0.9 * edge) * hit * 0.55;
         colour += vec3<f32>(0.6, 0.85, 1.0) * exp(-dist * 14.0) * hit * 0.2;
     }
     // The tractor beam's hold: its colour washing in, scan lines rolling.
