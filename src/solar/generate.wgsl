@@ -236,12 +236,12 @@ fn volcano_flows(p: vec3<f32>, scale: f32, seed: i32) -> f32 {
 fn lava_crust(p: vec3<f32>) -> vec3<f32> {
     let o = gen.offsets;
     let warp = vec3<f32>(fbm(p * 3.0 + o[2].xyz, 3), fbm(p * 3.0 + o[3].xyz, 3), fbm(p * 3.0 + o[1].zyx, 3)) * 0.9;
-    let big = cell_edges(p * 6.0 + warp + o[0].xyz, 7);
-    let broken = cell_edges(p * 15.0 + warp * 2.0 + o[1].xyz, 11);
+    let big = cell_edges(p * 14.0 + warp * 2.0 + o[0].xyz, 7);
+    let broken = cell_edges(p * 34.0 + warp * 4.0 + o[1].xyz, 11);
     // Some plates shattered into smaller ones.
     let shatter = step(0.62, big.y);
     let edge = select(big.x, min(big.x, broken.x * 0.45), shatter > 0.5);
-    let heat = smoothstep(0.25, 0.95, noise(p * 9.0 + o[2].zxy) * 0.5 + 0.5 + big.y * 0.25);
+    let heat = smoothstep(0.35, 1.0, noise(p * 7.0 + o[2].zxy) * 0.5 + 0.5 + big.y * 0.2);
     return vec3<f32>(edge, select(big.y, broken.y, shatter > 0.5), heat);
 }
 
@@ -252,14 +252,14 @@ fn lineae(p: vec3<f32>) -> vec2<f32> {
     let o = gen.offsets;
     var band = 0.0;
     var ridge = 0.0;
-    for (var i = 0; i < 14; i++) {
+    for (var i = 0; i < 26; i++) {
         let fi = f32(i);
         let pole = normalize(vec3<f32>(hash3(vec3<i32>(i, 1, 77)) - 0.5, hash3(vec3<i32>(i, 2, 77)) - 0.5, hash3(vec3<i32>(i, 3, 77)) - 0.5) + o[0].xyz * 0.01);
-        let wave = noise(p * 5.0 + vec3<f32>(fi * 3.7) + o[1].xyz) * 0.035;
+        let wave = noise(p * 7.0 + vec3<f32>(fi * 3.7) + o[1].xyz) * 0.025;
         let d = abs(dot(p, pole) + wave + (hash3(vec3<i32>(i, 4, 77)) - 0.5) * 0.6);
         // Each runs only part way round.
         let along = smoothstep(-0.3, 0.2, noise(p * 1.3 + vec3<f32>(fi * 5.1)));
-        let width = 0.006 + 0.012 * hash3(vec3<i32>(i, 5, 77));
+        let width = 0.0018 + 0.004 * hash3(vec3<i32>(i, 5, 77));
         band = max(band, (1.0 - smoothstep(0.0, width, d)) * along);
         ridge = max(ridge, exp(-pow((d - width * 1.6) / (width * 0.5), 2.0)) * along * step(0.5, hash3(vec3<i32>(i, 6, 77))));
     }
@@ -762,14 +762,15 @@ fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
         // a reddish-brown band of salts between, finer ones crossing them,
         // and patches of jumbled chaos ice stained the same.
         let lines = lineae(p);
-        let small = cell_edges(p * 11.0 + o[1].xyz, 9);
+        let small = cell_edges(p * 28.0 + o[1].xyz, 9);
         let stain = srgb(150.0, 104.0, 78.0);
-        let fine = (1.0 - smoothstep(0.0, 0.02, small.x)) * 0.5;
-        let chaos = smoothstep(0.35, 0.6, fbm(p * 4.0 + o[3].xyz, 4)) * smoothstep(0.5, 0.9, small.y);
+        let fine = (1.0 - smoothstep(0.0, 0.012, small.x)) * 0.5;
+        let chaos = smoothstep(0.4, 0.65, fbm(p * 7.0 + o[3].xyz, 4)) * smoothstep(0.5, 0.9, small.y);
         var ground = mix(pal(0), pal(2), smoothstep(-0.2, 0.4, fbm(p * 6.0 + o[2].xyz, 4)));
         ground = mix(ground, pal(1), low * 0.5);
-        ground = mix(ground, stain, clamp(lines.x * 0.8 + fine * 0.3 + chaos * 0.45, 0.0, 0.85));
-        ground = mix(ground, ground * 1.15 + vec3<f32>(0.04), lines.y * 0.6);
+        // Subtle: stains, not drawn lines.
+        ground = mix(ground, stain, clamp(lines.x * 0.45 + fine * 0.15 + chaos * 0.3, 0.0, 0.6));
+        ground = mix(ground, ground * 1.1 + vec3<f32>(0.02), lines.y * 0.3);
         return ground * (0.94 + 0.12 * (grain + 0.5));
     } else if (k == LAVA) {
         // Basalt, black and charcoal, each plate cooled its own while
@@ -782,11 +783,14 @@ fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
         crust = mix(crust, srgb(74.0, 60.0, 50.0), crust_at.y * 0.4);
         let ash = smoothstep(0.12, 0.35, c.e) * smoothstep(0.1, 0.6, fbm(p * 6.0 + o[3].xyz, 3));
         crust = mix(crust, srgb(124.0, 112.0, 84.0), ash * 0.4);
-        let seam = (1.0 - smoothstep(0.0, 0.03, crust_at.x)) * (0.3 + 0.7 * crust_at.z);
-        let flows = volcano_flows(p, 5.0, 3);
-        let ground = mix(crust, srgb(96.0, 24.0, 8.0), clamp(seam * 0.8 + flows * 0.7, 0.0, 1.0));
-        let floes = 1.0 - smoothstep(0.01, 0.07, crust_at.x * (0.5 + crust_at.y));
-        let sea = mix(crust * 0.8, srgb(140.0, 36.0, 10.0), floes);
+        // Seams thin and mostly dull: dark red-brown, only the hot ones
+        // stand out.
+        let seam = (1.0 - smoothstep(0.0, 0.02, crust_at.x)) * (0.15 + 0.85 * crust_at.z * crust_at.z);
+        let flows = volcano_flows(p, 9.0, 3);
+        let ground = mix(crust, srgb(80.0, 22.0, 9.0), clamp(seam * 0.55 + flows * 0.5, 0.0, 1.0));
+        // The seas: crusted floes, dull molten rock in the narrow gaps.
+        let floes = (1.0 - smoothstep(0.005, 0.03, crust_at.x * (0.5 + crust_at.y))) * (0.3 + 0.7 * crust_at.z);
+        let sea = mix(crust * 0.75, srgb(110.0, 28.0, 9.0), floes * 0.7);
         return mix(ground * (0.85 + 0.3 * (grain + 0.5)), sea, low);
     } else if (k == VOLCANIC) {
         // Sulphur yellow and orange, white frost, black calderas with red rims.
@@ -912,13 +916,16 @@ fn fs_lights(in: Varying) -> @location(0) vec4<f32> {
         if (GROUP == 1) {
             // The seas between their floes, hottest where the gaps are
             // widest; and the flows from the vents.
-            let gap = 1.0 - smoothstep(0.0, 0.08, crust_at.x * (0.5 + crust_at.y));
-            let sea = (1.0 - c.land) * (0.2 + 0.8 * gap * (0.4 + 0.6 * crust_at.z));
-            molten = max(sea, volcano_flows(p, 5.0, 3) * c.land * 0.95);
+            let gap = 1.0 - smoothstep(0.0, 0.035, crust_at.x * (0.5 + crust_at.y));
+            let sea = (1.0 - c.land) * (0.06 + 0.7 * gap * crust_at.z * crust_at.z);
+            molten = max(sea, volcano_flows(p, 9.0, 3) * c.land * 0.85);
         } else {
             // The seams between the plates on land, each as hot as it is.
-            let seam = (1.0 - smoothstep(0.0, 0.022, crust_at.x)) * (0.1 + 0.8 * crust_at.z * crust_at.z);
-            molten = seam * c.land;
+            // Most seams have nearly crusted over: a faint red; a few run
+            // hot. Hairlines finer still, fainter.
+            let seam = (1.0 - smoothstep(0.0, 0.016, crust_at.x)) * (0.04 + 0.85 * crust_at.z * crust_at.z * crust_at.z);
+            let hair = (1.0 - smoothstep(0.0, 0.02, cell_edges(p * 70.0 + o[3].xyz, 17).x)) * 0.08 * crust_at.z;
+            molten = max(seam, hair) * c.land;
         }
         light = molten * (0.75 + 0.25 * fbm(p * 30.0, 3));
     } else if (GROUP == 2) {
