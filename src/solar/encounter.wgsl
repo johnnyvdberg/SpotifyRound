@@ -1439,64 +1439,123 @@ fn sd_box2(p: vec2<f32>, b: vec2<f32>) -> f32 {
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
 }
 
+// Hull plating: panels a cell of a lattice each, their own height 0..1 and
+// sunk at their seams, so a hull's skin carries plates and panel lines in its
+// shape, not only in its colour.
+fn plating(q: vec3<f32>, scale: f32) -> f32 {
+    let g = q * scale;
+    let f = fract(g) - 0.5;
+    let inner = 1.0 - smoothstep(0.4, 0.5, max(max(abs(f.x), abs(f.y)), abs(f.z)));
+    return (0.35 + 0.65 * hash_cell(floor(g))) * inner;
+}
+
+fn sd_cylinder_z(p: vec3<f32>, r: f32, h: f32) -> f32 {
+    let d = vec2<f32>(length(p.xy) - r, abs(p.z) - h);
+    return min(max(d.x, d.y), 0.0) + length(max(d, vec2<f32>(0.0)));
+}
+
+// A wedge's tier: tip at `tip` ahead, `half_width` either side at the stern
+// (z = -1), its deck `top` high, sloping down to its edges.
+fn wedge_tier(p: vec3<f32>, tip: f32, half_width: f32, top: f32, floor_: f32) -> f32 {
+    let m = vec2<f32>(abs(p.x), p.z);
+    let n = normalize(vec2<f32>(1.0 + tip, half_width));
+    let edge = dot(m - vec2<f32>(0.0, tip), n);
+    let back = -p.z - 1.0;
+    let deck = p.y - (top - abs(p.x) * 0.18);
+    return max(max(max(edge, back), deck), floor_ - p.y);
+}
+
 // A hull of design `kind_`, in its own frame (x to starboard, y up, z
 // ahead), spanning about -1..1 along z.
 fn hull_sdf(p: vec3<f32>, kind_: i32) -> f32 {
     let m = vec3<f32>(abs(p.x), p.y, p.z);
     if (kind_ == 0) {
-        // A saucer on a neck, the engineering hull below, two nacelles high
-        // astern on swept pylons.
-        let saucer = sd_ellipsoid(p - vec3<f32>(0.0, 0.07, 0.42), vec3<f32>(0.56, 0.06, 0.56));
-        let bridge = sd_ellipsoid(p - vec3<f32>(0.0, 0.14, 0.42), vec3<f32>(0.12, 0.04, 0.12));
-        let hull = sd_capsule(p, vec3<f32>(0.0, -0.17, 0.05), vec3<f32>(0.0, -0.15, -0.55), 0.09);
-        let neck = sd_box(p - vec3<f32>(0.0, -0.04, 0.1), vec3<f32>(0.035, 0.08, 0.13));
-        let nacelle = sd_capsule(m, vec3<f32>(0.34, 0.17, -0.22), vec3<f32>(0.34, 0.17, -1.0), 0.055);
-        let lean = m - vec3<f32>(0.19, 0.02, -0.45);
-        let pylon = sd_box(vec3<f32>(lean.x * 0.8 - lean.y * 0.6, lean.x * 0.6 + lean.y * 0.8, lean.z), vec3<f32>(0.17, 0.012, 0.07));
-        return min(min(min(saucer, bridge), min(hull, neck)), min(nacelle, pylon));
+        // A saucer in two decks, a bridge dome on top and a rim stepped
+        // below; on a neck, the engineering hull with its deflector dish
+        // ahead and a shuttle bay astern; nacelles high and aft on thin
+        // swept pylons, their bussard caps forward.
+        let sc = p - vec3<f32>(0.0, 0.06, 0.42);
+        var saucer = sd_ellipsoid(sc, vec3<f32>(0.56, 0.05, 0.56));
+        saucer = min(saucer, sd_ellipsoid(sc - vec3<f32>(0.0, 0.035, 0.0), vec3<f32>(0.38, 0.045, 0.38)));
+        saucer = min(saucer, sd_ellipsoid(sc - vec3<f32>(0.0, -0.03, 0.0), vec3<f32>(0.42, 0.04, 0.42)));
+        saucer = min(saucer, sd_ellipsoid(sc - vec3<f32>(0.0, 0.085, 0.0), vec3<f32>(0.085, 0.035, 0.085)));
+        saucer -= plating(p, 22.0) * 0.004;
+        var hull = sd_capsule(p, vec3<f32>(0.0, -0.17, 0.1), vec3<f32>(0.0, -0.14, -0.52), 0.085);
+        hull = max(hull, -sd_box(p - vec3<f32>(0.0, -0.13, -0.6), vec3<f32>(0.045, 0.035, 0.07)));
+        hull = min(hull, sd_ellipsoid(p - vec3<f32>(0.0, -0.17, 0.17), vec3<f32>(0.065, 0.065, 0.025)));
+        hull -= plating(p, 26.0) * 0.004;
+        let neck = sd_box(p - vec3<f32>(0.0, -0.05, 0.13), vec3<f32>(0.03, 0.075, 0.11));
+        let nacelle = sd_capsule(m, vec3<f32>(0.34, 0.17, -0.2), vec3<f32>(0.34, 0.17, -1.0), 0.05);
+        let bussard = sd_ellipsoid(m - vec3<f32>(0.34, 0.17, -0.19), vec3<f32>(0.052, 0.052, 0.06));
+        let pylon = sd_capsule(m, vec3<f32>(0.03, -0.11, -0.36), vec3<f32>(0.34, 0.15, -0.5), 0.016);
+        return min(min(saucer, min(hull, neck)), min(min(nacelle, bussard), pylon));
     } else if (kind_ == 1) {
-        // A wedge, a dagger seen from above, thicker astern, its bridge
-        // tower standing at the stern.
-        let edge = dot(vec2<f32>(m.x, p.z - 1.0), normalize(vec2<f32>(2.0, 0.6)));
-        let back = -p.z - 1.0;
-        let h = 0.025 + 0.085 * (1.0 - p.z) * 0.5 - m.x * 0.14;
-        let slab = max(p.y - h, -p.y - h * 0.5);
-        var d = max(max(edge, back), slab) * 0.7;
-        d = min(d, sd_box(p - vec3<f32>(0.0, 0.2, -0.8), vec3<f32>(0.09, 0.08, 0.07)));
-        d = min(d, sd_box(p - vec3<f32>(0.0, 0.29, -0.82), vec3<f32>(0.22, 0.022, 0.04)));
-        return d;
+        // A wedge in three tiers, each plated, a dorsal spine; the bridge
+        // tower at the stern with its two sensor globes; a bank of engines
+        // across the stern.
+        var d = wedge_tier(p, 1.0, 0.6, 0.06 + 0.07 * (1.0 - p.z) * 0.5, -0.05);
+        d = min(d, wedge_tier(p, 0.25, 0.34, 0.15, 0.0));
+        d = min(d, wedge_tier(p, -0.3, 0.2, 0.2, 0.0));
+        d = min(d, sd_box(p - vec3<f32>(0.0, 0.08 - p.z * 0.04, -0.1), vec3<f32>(0.012, 0.03, 0.6)));
+        d -= plating(p, 34.0) * 0.007;
+        d = min(d, sd_box(p - vec3<f32>(0.0, 0.25, -0.8), vec3<f32>(0.05, 0.06, 0.05)));
+        d = min(d, sd_box(p - vec3<f32>(0.0, 0.31, -0.81), vec3<f32>(0.19, 0.022, 0.04)));
+        d = min(d, length(m - vec3<f32>(0.15, 0.355, -0.81)) - 0.026);
+        let engines = min(sd_cylinder_z(m - vec3<f32>(0.0, 0.07, -1.02), 0.07, 0.04), sd_cylinder_z(m - vec3<f32>(0.2, 0.06, -1.02), 0.05, 0.04));
+        return min(d * 0.7, min(engines, sd_cylinder_z(m - vec3<f32>(0.34, 0.04, -1.01), 0.03, 0.03)));
     } else if (kind_ == 2) {
-        // A raider: a head on a long neck, a body, and wings swept down.
-        let head = sd_ellipsoid(p - vec3<f32>(0.0, 0.0, 0.78), vec3<f32>(0.1, 0.07, 0.16));
-        let neck = sd_capsule(p, vec3<f32>(0.0, 0.02, 0.65), vec3<f32>(0.0, 0.05, 0.05), 0.045);
-        let body = sd_ellipsoid(p - vec3<f32>(0.0, 0.04, -0.15), vec3<f32>(0.24, 0.09, 0.32));
+        // A raider: an armoured head on a long neck, a body with its engine
+        // block, and wings swept down, their trailing edges cut into
+        // feathers, cannons at their tips.
+        let head = sd_ellipsoid(p - vec3<f32>(0.0, 0.0, 0.78), vec3<f32>(0.11, 0.07, 0.17));
+        let brow = sd_ellipsoid(p - vec3<f32>(0.0, 0.05, 0.74), vec3<f32>(0.07, 0.03, 0.1));
+        let neck = sd_capsule(p, vec3<f32>(0.0, 0.03, 0.64), vec3<f32>(0.0, 0.06, 0.08), 0.042);
+        var body = sd_ellipsoid(p - vec3<f32>(0.0, 0.05, -0.15), vec3<f32>(0.25, 0.09, 0.32));
+        body = min(body, sd_box(p - vec3<f32>(0.0, 0.03, -0.42), vec3<f32>(0.12, 0.05, 0.08)));
+        body -= plating(p, 24.0) * 0.006;
         let w = m - vec3<f32>(0.12, 0.0, -0.18);
         let c = cos(0.38);
-        let s = sin(0.38);
-        let along = w.x * c + w.y * s;
-        let across = -w.x * s + w.y * c;
-        let wing = sd_box(vec3<f32>(along - 0.42, across, w.z + along * 0.12), vec3<f32>(0.44, 0.016, 0.22 - along * 0.12));
-        let tip = sd_capsule(m, vec3<f32>(0.86, -0.36, 0.0), vec3<f32>(0.86, -0.36, -0.3), 0.025);
-        return min(min(min(head, neck), body), min(wing, tip));
+        let sn = sin(0.38);
+        let along = w.x * c + w.y * sn;
+        let across = -w.x * sn + w.y * c;
+        var wing = sd_box(vec3<f32>(along - 0.42, across, w.z + along * 0.12), vec3<f32>(0.44, 0.016, 0.22 - along * 0.12));
+        let feather = abs(fract(along * 9.0) - 0.5);
+        wing = max(wing, -(max(feather - 0.06, -(w.z + along * 0.12 + 0.12 - along * 0.12))));
+        let root = sd_ellipsoid(w - vec3<f32>(0.08, 0.0, 0.0), vec3<f32>(0.1, 0.05, 0.16));
+        let tip = sd_capsule(m, vec3<f32>(0.86, -0.36, 0.08), vec3<f32>(0.86, -0.36, -0.3), 0.024);
+        return min(min(min(head, brow), min(neck, body)), min(min(wing, root), tip));
     } else if (kind_ == 3) {
-        // A warbird: two great wings arching above and below, open between,
-        // a long head forward.
+        // A warbird: seen from the side, two great wings arching above and
+        // below with open space between, broadest at their middles and
+        // narrowing to the joins fore and aft, thin at their edges; a long
+        // neck to the command section ahead, nacelles under the lower wing.
         let q = p - vec3<f32>(0.0, 0.0, -0.25);
+        let ang = atan2(q.y * 1.15, q.z * 0.85);
         let around = length(vec2<f32>(q.y * 1.15, q.z * 0.85)) - 0.52;
-        let wings = sd_box2(vec2<f32>(around, q.x), vec2<f32>(0.03, 0.6 - abs(q.z) * 0.25)) * 0.8;
-        let head = sd_capsule(p, vec3<f32>(0.0, 0.0, 0.2), vec3<f32>(0.0, 0.0, 0.82), 0.06);
-        let bulb = sd_ellipsoid(p - vec3<f32>(0.0, -0.02, 0.88), vec3<f32>(0.13, 0.08, 0.12));
-        return min(wings, min(head, bulb));
+        let span = 0.7 * (0.25 + 0.75 * abs(sin(ang)));
+        let thin = 0.035 * (1.0 - 0.7 * sq(clamp(q.x / span, -1.0, 1.0)));
+        var wings = sd_box2(vec2<f32>(around, q.x), vec2<f32>(thin, span)) * 0.75;
+        wings -= plating(p, 20.0) * 0.004;
+        let neck = sd_capsule(p, vec3<f32>(0.0, 0.0, 0.2), vec3<f32>(0.0, -0.01, 0.8), 0.045);
+        let command = sd_ellipsoid(p - vec3<f32>(0.0, -0.01, 0.86), vec3<f32>(0.15, 0.075, 0.12));
+        let dome = sd_ellipsoid(p - vec3<f32>(0.0, 0.05, 0.86), vec3<f32>(0.06, 0.03, 0.05));
+        let nacelle = sd_capsule(m, vec3<f32>(0.5, -0.47, -0.1), vec3<f32>(0.5, -0.47, -0.55), 0.035);
+        return min(min(wings, neck), min(min(command, dome), nacelle));
     } else if (kind_ == 4) {
-        // A trader: a broad horseshoe, open ahead, its bridge raised astern.
+        // A trader: a broad horseshoe in two decks, open ahead, its prongs
+        // ending in claws; a raised bridge astern, engines behind it.
         let q = p - vec3<f32>(0.0, 0.0, -0.05);
-        let radial = length(q.xz) - 0.52;
-        var d = (length(vec2<f32>(radial / 0.24, q.y / 0.075)) - 1.0) * 0.075;
-        d = max(d, -sd_box(q - vec3<f32>(0.0, 0.0, 0.6), vec3<f32>(0.24, 0.3, 0.32)));
-        return min(d, sd_ellipsoid(q - vec3<f32>(0.0, 0.07, -0.42), vec3<f32>(0.2, 0.08, 0.14)));
+        let open = sd_box(q - vec3<f32>(0.0, 0.0, 0.6), vec3<f32>(0.24, 0.3, 0.32));
+        let lower = max((length(vec2<f32>((length(q.xz) - 0.52) / 0.25, q.y / 0.075)) - 1.0) * 0.07, -open);
+        let upper = max((length(vec2<f32>((length(q.xz) - 0.46) / 0.17, (q.y - 0.075) / 0.05)) - 1.0) * 0.045, -open - 0.04);
+        var d = min(lower, upper) - plating(p, 26.0) * 0.005;
+        let claw = sd_ellipsoid(vec3<f32>(abs(q.x), q.y, q.z) - vec3<f32>(0.4, -0.01, 0.4), vec3<f32>(0.07, 0.05, 0.12));
+        let bridge = sd_ellipsoid(q - vec3<f32>(0.0, 0.12, -0.42), vec3<f32>(0.2, 0.07, 0.14));
+        let engines = sd_cylinder_z(vec3<f32>(abs(q.x), q.y, q.z) - vec3<f32>(0.14, 0.02, -0.66), 0.05, 0.05);
+        return min(min(d, claw), min(bridge, engines));
     }
-    // A cube.
-    return sd_box(p, vec3<f32>(0.62));
+    // A cube, its faces cut into recessed panels at two scales.
+    return sd_box(p, vec3<f32>(0.62)) + plating(p, 9.0) * 0.022 + plating(p, 23.0) * 0.008 - 0.02;
 }
 
 // Each design's hull colour, weapons' colour and shield's colour.
@@ -1608,37 +1667,60 @@ fn battle_ship(i: i32, t: f32) -> array<vec4<f32>, 2> {
     return array<vec4<f32>, 2>(vec4<f32>(s[0].xyz + shove, s[0].w), vec4<f32>(heading, jolt));
 }
 
-// The lights each design carries: nacelles, engines, windows, wingtips.
+// The lights each design carries: nacelles, engines, windows, wingtips,
+// and the markings painted on it (a factor on its hull's colour).
 fn hull_lights(q: vec3<f32>, kind_: i32, fire: vec3<f32>, t: f32) -> vec3<f32> {
     let m = vec3<f32>(abs(q.x), q.y, q.z);
     var light = vec3<f32>(0.0);
+    // Rows of windows: lit in short runs along a band of the hull.
+    let windows = step(0.55, fract(q.x * 60.0 + q.z * 60.0)) * step(0.35, hash_cell(floor(q * 18.0)));
     if (kind_ == 0) {
-        let nacelle = sd_capsule(m, vec3<f32>(0.34, 0.17, -0.22), vec3<f32>(0.34, 0.17, -1.0), 0.06);
-        if (nacelle < 0.012) {
-            light += select(vec3<f32>(0.3, 0.6, 1.0) * 1.4 * step(0.5, fract(q.z * 14.0)) + vec3<f32>(0.2, 0.4, 1.0) * 0.4, vec3<f32>(1.0, 0.25, 0.1) * 2.2, q.z > -0.3);
+        let nacelle = sd_capsule(m, vec3<f32>(0.34, 0.17, -0.2), vec3<f32>(0.34, 0.17, -1.0), 0.056);
+        if (nacelle < 0.01) {
+            let inboard = smoothstep(0.2, 0.6, abs(q.x - sign(q.x) * 0.34) / 0.05);
+            light += vec3<f32>(0.3, 0.6, 1.0) * (0.5 + 0.9 * step(0.5, fract(q.z * 20.0))) * inboard * step(q.z, -0.3) * step(-0.95, q.z);
+            light += vec3<f32>(1.0, 0.25, 0.08) * 2.4 * smoothstep(-0.26, -0.17, q.z);
         }
         let rim = length(vec2<f32>(q.x, q.z - 0.42));
-        light += vec3<f32>(1.0, 0.9, 0.7) * step(0.5, fract(atan2(q.x, q.z - 0.42) * 30.0)) * bump((rim - 0.48) / 0.015) * 0.6;
-        light += vec3<f32>(0.4, 0.7, 1.0) * bump(length(q - vec3<f32>(0.0, -0.17, 0.14)) / 0.05) * 1.5;
+        light += vec3<f32>(1.0, 0.9, 0.7) * windows * (bump((rim - 0.5) / 0.012) + bump((rim - 0.34) / 0.01) * 0.6) * step(abs(q.y - 0.06), 0.06) * 0.9;
+        light += vec3<f32>(0.4, 0.7, 1.0) * bump(length(q - vec3<f32>(0.0, -0.17, 0.19)) / 0.05) * 2.0;
+        light += vec3<f32>(1.0, 0.15, 0.08) * bump(length(m - vec3<f32>(0.06, 0.07, -0.13)) / 0.025) * 1.5;
+        light += vec3<f32>(1.0, 0.9, 0.7) * windows * step(abs(q.y + 0.15), 0.02) * step(q.z, 0.05) * step(-0.45, q.z) * 0.7;
     } else if (kind_ == 1) {
-        light += vec3<f32>(0.6, 0.8, 1.0) * smoothstep01(-0.96, -1.0, q.z) * 2.5;
-        light += vec3<f32>(1.0, 0.95, 0.8) * step(0.985, hash_cell(floor(q * 60.0))) * 1.2;
+        light += vec3<f32>(0.65, 0.82, 1.0) * smoothstep(-1.04, -1.06, q.z) * 3.0;
+        light += vec3<f32>(1.0, 0.95, 0.85) * step(0.97, hash_cell(floor(q * 70.0))) * 0.8;
+        light += vec3<f32>(1.0, 0.95, 0.85) * windows * step(abs(q.y - 0.26), 0.012) * 0.8;
     } else if (kind_ == 2) {
-        light += vec3<f32>(1.0, 0.3, 0.15) * smoothstep01(-0.4, -0.47, q.z) * step(abs(q.x), 0.15) * 1.5;
-        light += fire * bump(length(m - vec3<f32>(0.86, -0.36, 0.0)) / 0.05) * 2.0;
-        light += vec3<f32>(1.0, 0.4, 0.2) * bump(length(q - vec3<f32>(0.0, 0.02, 0.92)) / 0.05);
+        light += vec3<f32>(1.0, 0.3, 0.12) * smoothstep(-0.48, -0.51, q.z) * step(abs(q.x), 0.12) * 1.8;
+        light += fire * bump(length(m - vec3<f32>(0.86, -0.36, 0.1)) / 0.04) * 2.0;
+        light += vec3<f32>(1.0, 0.4, 0.2) * windows * step(abs(q.y), 0.02) * step(0.72, q.z) * 1.4;
     } else if (kind_ == 3) {
         light += vec3<f32>(0.3, 1.0, 0.6) * bump(length(q - vec3<f32>(0.0, -0.08, 0.86)) / 0.07) * 1.6;
-        light += vec3<f32>(0.4, 1.0, 0.7) * step(0.97, fract(q.z * 12.0 + q.x * 4.0)) * 0.25;
+        light += vec3<f32>(0.4, 1.0, 0.6) * smoothstep(-0.52, -0.56, q.z) * step(0.48, abs(q.x)) * step(q.y, -0.43) * 2.0;
+        light += vec3<f32>(0.7, 1.0, 0.85) * windows * step(abs(q.y + 0.01), 0.02) * step(0.82, q.z) * 1.2;
     } else if (kind_ == 4) {
-        light += vec3<f32>(1.0, 0.75, 0.3) * step(0.93, fract(atan2(q.x, q.z) * 9.0)) * 0.8;
-        light += vec3<f32>(1.0, 0.5, 0.2) * smoothstep01(-0.5, -0.56, q.z) * 1.2;
+        let rim = length(q.xz - vec2<f32>(0.0, -0.05));
+        light += vec3<f32>(1.0, 0.75, 0.3) * windows * bump((rim - 0.75) / 0.02) * step(abs(q.y), 0.03) * 1.2;
+        light += vec3<f32>(1.0, 0.55, 0.2) * smoothstep(-0.71, -0.74, q.z) * step(abs(q.y - 0.02), 0.06) * 2.0;
+        light += vec3<f32>(0.8, 1.0, 0.6) * bump(length(m - vec3<f32>(0.4, 0.0, 0.53)) / 0.03) * 1.5;
     } else {
         let g = floor((q + 0.62) * 18.0);
         let h = hash_cell(g + vec3<f32>(3.0));
         light += vec3<f32>(0.2, 1.0, 0.4) * step(0.9, h) * (0.6 + 0.4 * sin(t * 3.0 + h * 50.0));
     }
     return light;
+}
+
+// Painted markings, a factor on a hull's colour: the warbird's feathers.
+fn hull_markings(q: vec3<f32>, kind_: i32) -> vec3<f32> {
+    if (kind_ == 3) {
+        let qq = q - vec3<f32>(0.0, 0.0, -0.25);
+        let ang = atan2(qq.y, qq.z);
+        let feathers = smoothstep(0.35, 0.5, abs(fract(abs(qq.x) * 6.0 - ang * 1.2) - 0.5));
+        let belly = step(qq.y, -0.2);
+        return mix(vec3<f32>(1.0), mix(vec3<f32>(0.55, 0.85, 0.65), vec3<f32>(1.25, 1.2, 0.9), feathers), 0.6 * belly + 0.25);
+    }
+    return vec3<f32>(1.0);
 }
 
 // A bolt of light from `a` to `b`, `w` pixels wide.
@@ -1734,13 +1816,13 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
             var tm = max(bound.x, 0.0) / size;
             let end = bound.y / size;
             var hit = false;
-            for (var k = 0; k < 40; k++) {
+            for (var k = 0; k < 72; k++) {
                 let dist = hull_sdf(lo + ld * tm, kind_);
-                if (dist < 0.0015 + tm * params.frame.z * 0.5) {
+                if (dist < 0.0006 + tm * params.frame.z * 0.35) {
                     hit = true;
                     break;
                 }
-                tm += max(dist * 0.85, 0.002);
+                tm += max(dist * 0.8, 0.0008);
                 if (tm > end) {
                     break;
                 }
@@ -1748,16 +1830,18 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
             if (hit && tm * size < reach) {
                 reach = tm * size;
                 let q = lo + ld * tm;
-                let e = 0.004;
+                let e = max(0.0012, tm * params.frame.z * 0.5);
                 let nl = normalize(vec3<f32>(
                     hull_sdf(q + vec3<f32>(e, 0.0, 0.0), kind_) - hull_sdf(q - vec3<f32>(e, 0.0, 0.0), kind_),
                     hull_sdf(q + vec3<f32>(0.0, e, 0.0), kind_) - hull_sdf(q - vec3<f32>(0.0, e, 0.0), kind_),
                     hull_sdf(q + vec3<f32>(0.0, 0.0, e), kind_) - hull_sdf(q - vec3<f32>(0.0, 0.0, e), kind_),
                 ));
                 let n = side * nl.x + up * nl.y + fwd * nl.z;
-                let panels = 0.8 + 0.2 * step(0.5, fract(q.z * 7.0 + 0.3 * step(0.5, fract(q.x * 5.0))));
-                let lit = max(dot(n, l), 0.0) * 1.15 + 0.035 + max(dot(n, -l), 0.0) * 0.04;
-                colour = faction_hull(faction) * panels * lit;
+                // Plates each a shade of their own, and hollows darker.
+                let panels = 0.82 + 0.3 * hash_cell(floor(q * 22.0));
+                let ao = clamp(hull_sdf(q + nl * 0.03, kind_) / 0.03, 0.35, 1.0);
+                let lit = (max(dot(n, l), 0.0) * 1.15 + 0.035 + max(dot(n, -l), 0.0) * 0.04) * ao;
+                colour = faction_hull(faction) * hull_markings(q, kind_) * panels * lit;
                 if (kind_ == 5) {
                     // The collective's cubes: the hive cube's machinery.
                     let a = abs(q);
