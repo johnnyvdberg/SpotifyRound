@@ -71,10 +71,13 @@ pub enum Event {
     Gate,
     Wormhole,
     Battle,
+    PlasmaStorm,
+    DysonSwarm,
+    Crystal,
 }
 
 impl Event {
-    pub const ALL: [Event; 13] = [
+    pub const ALL: [Event; 16] = [
         Event::Asteroids,
         Event::HiveCube,
         Event::BlackHole,
@@ -88,6 +91,9 @@ impl Event {
         Event::Gate,
         Event::Wormhole,
         Event::Battle,
+        Event::PlasmaStorm,
+        Event::DysonSwarm,
+        Event::Crystal,
     ];
 
     /// Its number in the shaders (`EVENT` in `encounter.wgsl`), from 1.
@@ -111,6 +117,9 @@ impl Event {
             Event::Gate => "gate",
             Event::Wormhole => "wormhole",
             Event::Battle => "battle",
+            Event::PlasmaStorm => "plasma-storm",
+            Event::DysonSwarm => "dyson-swarm",
+            Event::Crystal => "crystal",
         }
     }
 
@@ -135,6 +144,9 @@ impl Event {
             Event::Gate => 26.0,
             Event::Wormhole => 24.0,
             Event::Battle => 32.0,
+            Event::PlasmaStorm => 30.0,
+            Event::DysonSwarm => 32.0,
+            Event::Crystal => 30.0,
         }
     }
 
@@ -173,10 +185,21 @@ pub enum Flux {
     Convoy,
     Echo,
     Shortcut,
+    Rift,
+    Whales,
+    GravityWave,
 }
 
 impl Flux {
-    pub const ALL: [Flux; 4] = [Flux::IonStorm, Flux::Convoy, Flux::Echo, Flux::Shortcut];
+    pub const ALL: [Flux; 7] = [
+        Flux::IonStorm,
+        Flux::Convoy,
+        Flux::Echo,
+        Flux::Shortcut,
+        Flux::Rift,
+        Flux::Whales,
+        Flux::GravityWave,
+    ];
 
     pub fn id(self) -> u32 {
         self as u32
@@ -188,6 +211,9 @@ impl Flux {
             Flux::Convoy => "convoy",
             Flux::Echo => "echo",
             Flux::Shortcut => "shortcut",
+            Flux::Rift => "rift",
+            Flux::Whales => "whales",
+            Flux::GravityWave => "gravity-wave",
         }
     }
 }
@@ -287,8 +313,11 @@ impl Passage {
             let mut duration = if last || count < 2 { LEG } else { SHORT_LEG };
             let flux = rng.chance(FLUX_CHANCE).then(|| {
                 // A shortcut cuts a leg short, so never the last.
-                let kinds: &[Flux] = if last { &Flux::ALL[..3] } else { &Flux::ALL };
-                *rng.pick(kinds)
+                let kinds: Vec<Flux> = Flux::ALL
+                    .into_iter()
+                    .filter(|&f| !last || f != Flux::Shortcut)
+                    .collect();
+                *rng.pick(&kinds)
             });
             if flux == Some(Flux::Shortcut) {
                 duration = SHORTCUT_LEG;
@@ -437,6 +466,9 @@ pub fn shot(stop: &Stopover, local: f64) -> Shot {
         Event::Gate => gate(&mut rng, local, duration),
         Event::Wormhole => wormhole(&mut rng, local, duration),
         Event::Battle => battle(&mut rng, local, duration),
+        Event::PlasmaStorm => plasma_storm(&mut rng, local, duration),
+        Event::DysonSwarm => dyson_swarm(&mut rng, local, duration),
+        Event::Crystal => crystal(&mut rng, local, duration),
     };
     // Past the stopover, the drive re-engaging: back onto the heading, the
     // star the jump makes for, over its first seconds.
@@ -1066,6 +1098,125 @@ fn battle(rng: &mut Rng, local: f64, duration: f64) -> Shot {
     }
 }
 
+/// A plasma storm: a vast storm cell turning in the dark, its eyewall
+/// glowing, lightning in its arms; the ship skirts its edge, rocked by its
+/// discharges.
+fn plasma_storm(rng: &mut Rng, local: f64, duration: f64) -> Shot {
+    let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+    let radius = rng.range(260.0, 340.0);
+    let eye = [
+        side * radius * 1.1,
+        rng.range(-90.0, -50.0),
+        rng.range(520.0, 600.0),
+    ];
+    let axis = normalize([rng.range(-0.25, 0.25), 1.0, rng.range(-0.4, 0.1)]);
+    let ship = [0.0, 0.0, 8.0 * local];
+    let to = normalize(sub(eye, ship));
+    let watch = smoothstep(0.5, 5.0, local) * (1.0 - smoothstep(0.88, 1.0, local / duration));
+    let mut strike = [0.0; 4];
+    let mut jolt: f64 = 0.0;
+    for _ in 0..6 {
+        let at = rng.range(0.1, 0.92) * duration;
+        let a = rng.range(0.0, TAU);
+        let r = radius * rng.range(0.3, 0.8);
+        let place = add(
+            eye,
+            [a.cos() * r, rng.range(-20.0, 30.0), a.sin() * r * 0.7],
+        );
+        let p = pulse(local, at, 0.04, 0.35);
+        if p > strike[3] {
+            strike = [place[0], place[1], place[2], p];
+        }
+        jolt = jolt.max(p * (-length(sub(place, ship)) / 400.0).exp());
+    }
+    Shot {
+        ship,
+        look: blend(AHEAD, to, 0.7 * watch),
+        roll: -side * 0.1 * watch,
+        alert: 0.45 + 0.4 * jolt,
+        hit: jolt * 0.6,
+        hit_at: [side * 0.4, 0.0],
+        flash: 0.15 * jolt,
+        shake: 0.15 + 0.6 * jolt,
+        objects: [[eye[0], eye[1], eye[2], radius], strike, [0.0; 4]],
+        rot: [axis[0], axis[1], axis[2], rng.range(0.0, 1.0)],
+        extra: [
+            rng.range(0.0, 1.0),
+            (rng.next() % 113) as f64,
+            if rng.chance(0.5) { 1.0 } else { -1.0 },
+            0.0,
+        ],
+        ..Default::default()
+    }
+}
+
+/// A Dyson swarm: a dim star wrapped in rings of collectors turning round
+/// it, its light flickering through them, passed at a distance.
+fn dyson_swarm(rng: &mut Rng, local: f64, duration: f64) -> Shot {
+    let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+    let star = [
+        side * rng.range(150.0, 220.0),
+        rng.range(-20.0, 60.0),
+        rng.range(560.0, 640.0),
+    ];
+    let radius = rng.range(110.0, 140.0);
+    let ship = [0.0, 0.0, 14.0 * local];
+    let to = normalize(sub(star, ship));
+    let watch = smoothstep(0.5, 4.0, local) * (1.0 - smoothstep(0.88, 1.0, local / duration));
+    Shot {
+        ship,
+        look: blend(AHEAD, to, 0.8 * watch),
+        roll: side * 0.06 * watch,
+        alert: 0.1,
+        objects: [[star[0], star[1], star[2], radius], [0.0; 4], [0.0; 4]],
+        extra: [
+            (rng.next() % 211) as f64,
+            rng.range(0.0, 1.0),
+            rng.range(0.6, 1.0),
+            0.0,
+        ],
+        ..Default::default()
+    }
+}
+
+/// A crystal entity: a vast drifting lattice of crystal, the stars bent
+/// through it in rainbows, its heart pulsing brighter as it turns toward
+/// the ship.
+fn crystal(rng: &mut Rng, local: f64, duration: f64) -> Shot {
+    let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+    let size = rng.range(60.0, 80.0);
+    let centre = [
+        side * rng.range(60.0, 100.0),
+        rng.range(-10.0, 30.0),
+        rng.range(330.0, 380.0),
+    ];
+    let ship = [0.0, 0.0, 8.0 * local];
+    let to = normalize(sub(centre, ship));
+    let watch = smoothstep(0.5, 4.0, local) * (1.0 - smoothstep(0.88, 1.0, local / duration));
+    let notice = smoothstep(0.35 * duration, 0.55 * duration, local)
+        * (1.0 - smoothstep(0.75 * duration, 0.95 * duration, local));
+    let axis = normalize([rng.range(-0.3, 0.3), 1.0, rng.range(-0.3, 0.3)]);
+    Shot {
+        ship,
+        look: blend(AHEAD, to, 0.82 * watch),
+        roll: side * 0.05 * watch,
+        alert: 0.2 + 0.4 * notice,
+        objects: [
+            [centre[0], centre[1], centre[2], size],
+            [notice, 0.0, 0.0, 0.0],
+            [0.0; 4],
+        ],
+        rot: [
+            axis[0],
+            axis[1],
+            axis[2],
+            local * 0.03 + rng.range(0.0, TAU),
+        ],
+        extra: [rng.range(0.0, 1.0), (rng.next() % 127) as f64, 0.0, 0.0],
+        ..Default::default()
+    }
+}
+
 fn sq(x: f64) -> f64 {
     x * x
 }
@@ -1353,6 +1504,56 @@ pub fn hud(
                 ),
             )
         }
+        Event::PlasmaStorm => (
+            "PLASMA STORM",
+            vec![
+                line("Storm", format!("{} across", km(shot.objects[0][3] * 2.0))),
+                line("Eye", km((range(0) - shot.objects[0][3] * 0.25).max(0.0))),
+                line("Discharge", if shot.objects[1][3] > 0.2 { "STRIKE".into() } else { "building".into() }),
+                left,
+                rest,
+            ],
+            (
+                "PLASMA STORM",
+                "Torn out of the jump by its field: skirting the storm's edge, shields up against its lightning.".into(),
+            ),
+        ),
+        Event::DysonSwarm => (
+            "MEGASTRUCTURE",
+            vec![
+                line("Structure", "Dyson swarm · collector rings".into()),
+                line("Star", "K dwarf, 70% enclosed".into()),
+                line("Builders", "no reply on any band".into()),
+                line("Range", km(range(0))),
+                left,
+            ],
+            (
+                "DYSON SWARM",
+                "A star wrapped in rings of collectors, built by someone, some time. Dropping out to look.".into(),
+            ),
+        ),
+        Event::Crystal => {
+            let notice = shot.objects[1][0];
+            (
+                "CONTACT",
+                vec![
+                    line("Entity", format!("crystalline · {} across", km(shot.objects[0][3] * 2.0))),
+                    line("Activity", if notice > 0.3 { "RESONATING".into() } else { "drifting".into() }),
+                    line("Range", km(range(0))),
+                    left,
+                    rest,
+                ],
+                (
+                    if notice > 0.3 { "IT HAS NOTICED US" } else { "CRYSTAL ENTITY" },
+                    if notice > 0.3 {
+                        "Its heart is brightening, its lattice turning our way. Holding still."
+                    } else {
+                        "A vast lattice of crystal drifting between the stars, bending their light."
+                    }
+                    .into(),
+                ),
+            )
+        }
         Event::Wormhole => {
             let name = name_of(stop);
             (
@@ -1391,6 +1592,18 @@ pub fn flux_hud(flux: Flux) -> (&'static str, &'static str) {
         Flux::Shortcut => (
             "SHORTCUT",
             "The field folds through a fault in space: the leg cut short.",
+        ),
+        Flux::Rift => (
+            "SPACETIME RIFT",
+            "A tear across the field, white light pouring through. Holding the drive steady past it.",
+        ),
+        Flux::Whales => (
+            "WARP WHALES",
+            "Creatures that live in the jump itself, swimming alongside, keeping pace.",
+        ),
+        Flux::GravityWave => (
+            "GRAVITY WAVE",
+            "A ripple of spacetime from some distant collision, rolling down the field.",
         ),
     }
 }

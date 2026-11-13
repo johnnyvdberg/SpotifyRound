@@ -1923,6 +1923,289 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(colour, alpha);
 }
 
+// ---------------------------------------------------------------------------
+// A plasma storm: a vast storm cell seen from its edge, marched in a few
+// widening steps through a disc of gas whose noise is turned round the eye,
+// faster near it, so it spirals; its eyewall bright, lit from inside by
+// lightning.
+// ---------------------------------------------------------------------------
+
+fn ev_storm(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
+    let ship = ev_ship();
+    let o = ev_obj(0);
+    let eye = o.xyz;
+    let radius = o.w;
+    let axis = normalize(params.ev[8].xyz);
+    let tint = mix(vec3<f32>(0.25, 0.4, 1.0), mix(vec3<f32>(1.0, 0.45, 0.15), vec3<f32>(0.35, 1.0, 0.55), step(0.66, params.ev[9].x)), step(0.33, params.ev[9].x));
+    let hot = mix(tint, vec3<f32>(1.0), 0.55);
+    let seed = params.ev[9].y;
+    let turn_way = params.ev[9].z;
+    let strike = ev_obj(1);
+    let t = ev_t();
+    var e1 = normalize(cross(axis, vec3<f32>(0.0, 0.0, 1.0)));
+    let e2 = cross(axis, e1);
+    // Through the storm's slab only: where the ray is within its thickness.
+    let thick = radius * 0.22;
+    let h0 = dot(ship - eye, axis);
+    let dv = dot(d, axis);
+    var t0 = 0.0;
+    var t1 = 2600.0;
+    if (abs(dv) > 1e-4) {
+        let a = (-thick - h0) / dv;
+        let b = (thick - h0) / dv;
+        t0 = max(min(a, b), 0.0);
+        t1 = min(max(a, b), 2600.0);
+    } else if (abs(h0) > thick) {
+        return vec4<f32>(0.0);
+    }
+    if (t1 <= t0) {
+        return vec4<f32>(0.0);
+    }
+    var through = 1.0;
+    var light = vec3<f32>(0.0);
+    let n = 12;
+    // Each pixel's steps offset by its own amount, so the steps blur into
+    // grain rather than banding.
+    let dither = hash_cell(vec3<f32>(floor(s * params.frame.x), 7.0));
+    for (var i = 0; i < n; i++) {
+        let f = (f32(i) + dither) / f32(n);
+        let tt = mix(t0, t1, f * f);
+        let span = (t1 - t0) * (2.0 * f) / f32(n);
+        let p = ship + d * tt - eye;
+        let x = dot(p, e1);
+        let y = dot(p, e2);
+        let h = dot(p, axis);
+        let r = length(vec2<f32>(x, y)) / radius;
+        // Spiralling: the angle wound on by the distance from the eye and
+        // turning with time, faster inside.
+        let a = atan2(y, x) + turn_way * (t * 0.05 / (r + 0.15) + log(r + 0.05) * 1.6);
+        let q = vec3<f32>(cos(a) * r * 3.0, sin(a) * r * 3.0, h / radius * 4.0) + vec3<f32>(seed);
+        let cloud = noise(q) * 0.65 + noise(q * 2.6 + 5.0) * 0.35;
+        let profile = smoothstep01(0.08, 0.2, r) * (1.0 - smoothstep01(0.7, 1.05, r)) * (1.0 - smoothstep01(0.4, 1.0, abs(h) / thick));
+        let wall = bump((r - 0.22) / 0.06);
+        let gas = smoothstep01(0.0, 0.55, cloud + 0.25 * bump((r - 0.22) / 0.1)) * profile;
+        let flash = exp(-length(p + eye - strike.xyz) / 90.0) * strike.w * 3.0;
+        // Darker, denser bands in the arms; hot near the wall.
+        let shade = mix(0.35, 1.0, smoothstep01(0.1, 0.8, noise(q * 5.0 + 9.0) * 0.5 + 0.5));
+        let glow = tint * gas * 0.0045 * shade + hot * wall * gas * 0.03 + vec3<f32>(0.9, 0.9, 1.0) * flash * gas * 0.02;
+        light += through * glow * span;
+        through *= exp(-gas * 0.006 * span);
+    }
+    // The strike's bolt on the frame.
+    let at = from_ev(strike.xyz - ship);
+    let z = dot(at, params.forward.xyz);
+    if (z > 0.0 && strike.w > 0.02) {
+        let c = vec2<f32>(dot(at, params.right.xyz), dot(at, params.up.xyz)) / (z * params.frame.y);
+        let k = s - c;
+        let wobble = noise(vec3<f32>(k.x * 8.0, strike.x * 0.1, floor(t * 14.0))) * 0.06 + noise(vec3<f32>(k.x * 27.0, 3.0, strike.z * 0.1)) * 0.015;
+        let reach = 1.0 - smoothstep01(0.04, 0.3, abs(k.x));
+        light += hot * (exp(-abs(k.y - wobble) * params.frame.x * 0.4) * reach * 1.5 + exp(-length(k) * 8.0) * 0.3) * strike.w;
+    }
+    return vec4<f32>(light, 1.0 - through);
+}
+
+// ---------------------------------------------------------------------------
+// A Dyson swarm: a dim star, and round it rings of collector panels on
+// three shells, each ring turning about its own tilted axis. Panels between
+// the camera and the star are dark against it, catching its light on their
+// edges; those beyond it shine with its light.
+// ---------------------------------------------------------------------------
+
+fn ev_dyson(d: vec3<f32>) -> vec4<f32> {
+    let ship = ev_ship();
+    let o = ev_obj(0);
+    let star = o.xyz;
+    let radius = o.w;
+    let seed = params.ev[9].x;
+    let t = ev_t();
+    let warm = vec3<f32>(1.0, 0.72, 0.42);
+    // The star, its glow, dimmed by what covers it.
+    let px = point_pixels(ship, d, star);
+    let disc = star_disc(ship, d, star, radius * 0.11);
+    var colour = vec3<f32>(0.0);
+    var cover = 0.0;
+    var front = vec3<f32>(0.0);
+    var front_cover = 0.0;
+    var back = vec3<f32>(0.0);
+    for (var shell = 0; shell < 3; shell++) {
+        let fs = f32(shell);
+        let rr = radius * (0.7 + 0.2 * fs);
+        let hits = sphere_hits(ship, d, star, rr);
+        for (var side = 0; side < 2; side++) {
+            let th = select(hits.y, hits.x, side == 0);
+            if (th <= 0.0) {
+                continue;
+            }
+            let n = normalize(ship + d * th - star);
+            // Rings: each shell has two, about axes of their own.
+            for (var k = 0; k < 2; k++) {
+                let fk = f32(k) + fs * 2.0;
+                let axis = normalize(vec3<f32>(hash_cell(vec3<f32>(fk, seed, 1.0)) - 0.5, 1.0, hash_cell(vec3<f32>(fk, seed, 2.0)) - 0.5) + vec3<f32>(0.0, 0.0, 0.6 * (hash_cell(vec3<f32>(fk, seed, 3.0)) - 0.5)));
+                let lat = dot(n, axis);
+                let width = 0.13 + 0.05 * hash_cell(vec3<f32>(fk, seed, 4.0));
+                if (abs(lat) > width) {
+                    continue;
+                }
+                var e1 = normalize(cross(axis, vec3<f32>(0.0, 0.0, 1.0)));
+                let e2 = cross(axis, e1);
+                let lon = atan2(dot(n, e2), dot(n, e1)) + t * (0.02 + 0.02 * fs) * select(1.0, -1.0, k == 1);
+                let cells = 90.0 + 30.0 * fs;
+                let g = lon / TAU * cells;
+                let id = floor(g);
+                let fx = fract(g) - 0.5;
+                let rows = 3.0;
+                let gy = (lat / width * 0.5 + 0.5) * rows;
+                let fy = fract(gy) - 0.5;
+                let present = step(0.15, hash_cell(vec3<f32>(id, floor(gy), fk + seed)));
+                let panel = present * step(abs(fx), 0.38) * step(abs(fy), 0.36);
+                if (panel <= 0.0) {
+                    continue;
+                }
+                let edge = smoothstep01(0.3, 0.38, max(abs(fx), abs(fy) * 1.05));
+                if (side == 0 && dot(n, -d) > 0.0) {
+                    // The near side: the panels' unlit backs, a glint of
+                    // the star on their rims.
+                    front += vec3<f32>(0.012, 0.012, 0.014) + warm * edge * 0.25 * exp(-px * 0.004);
+                    front_cover = max(front_cover, panel);
+                } else {
+                    // The far side: their faces, lit.
+                    let facing = max(dot(-n, normalize(ship - star + d * 0.0)), 0.0);
+                    back += warm * (0.35 + 0.65 * facing) * (0.6 + 0.4 * hash_cell(vec3<f32>(id, fk, 9.0))) * 0.8;
+                    cover = max(cover, panel * 0.9);
+                }
+            }
+        }
+    }
+    let glow = warm * (exp(-px * 0.02) * 0.5 + exp(-px * 0.004) * 0.12);
+    colour = disc * (1.0 - cover * 0.6) + glow * (1.0 - cover * 0.4);
+    colour = mix(colour, back, cover);
+    colour = mix(colour, front, front_cover);
+    let a = max(max(cover, front_cover), max(disc.r, 0.0) * 0.0);
+    return vec4<f32>(colour, a);
+}
+
+// The star's disc: limb-darkened, its surface churning.
+fn star_disc(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32) -> vec3<f32> {
+    let hits = sphere_hits(o, d, c, r);
+    let v = c - o;
+    let across = length(v - d * dot(v, d)) / r;
+    if (hits.x <= 0.0) {
+        return vec3<f32>(1.0, 0.7, 0.4) * exp(-max(across - 1.0, 0.0) * 6.0) * 0.6;
+    }
+    let mu = sqrt(max(1.0 - across * across, 0.0));
+    let n = normalize(o + d * hits.x - c);
+    let cells = noise(n * 9.0 + vec3<f32>(ev_t() * 0.1)) * 0.5 + 0.5;
+    return vec3<f32>(1.0, 0.68, 0.38) * (0.5 + 0.5 * mu) * (0.85 + 0.3 * cells) * 2.2;
+}
+
+// ---------------------------------------------------------------------------
+// A crystal entity: a vast lattice folded from a few shapes by mirror
+// symmetry, marched; the stars behind bent through it in rainbows (the sky
+// read three times, once a colour, each bent its own amount), its faces
+// reflecting the sky, its heart pulsing brighter as it notices the ship.
+// ---------------------------------------------------------------------------
+
+// A shard: a long bipyramid along unit `dir`, `length_` out from the
+// middle, `width` across at its waist, pointed at its tip.
+fn shard(p: vec3<f32>, dir: vec3<f32>, length_: f32, width: f32) -> f32 {
+    let along = dot(p, dir);
+    let rad = length(p - dir * along);
+    let waist = length_ * 0.3;
+    let taper = select(width * (1.0 - (along - waist) / (length_ - waist)), width * (0.5 + 0.5 * along / waist), along < waist);
+    return max(rad - max(taper, 0.0), max(-along, along - length_)) * 0.7;
+}
+
+// The crystal: folded into one twenty-fourth of itself by its mirror
+// symmetry, three families of shards there (to the faces, edges and corners
+// of a cube: 26 in all), each with a smaller pair branching off it.
+fn crystal_sdf(p0: vec3<f32>) -> f32 {
+    var p = abs(p0);
+    if (p.x < p.y) {
+        p = p.yxz;
+    }
+    if (p.y < p.z) {
+        p = p.xzy;
+    }
+    if (p.x < p.y) {
+        p = p.yxz;
+    }
+    var d = shard(p, vec3<f32>(1.0, 0.0, 0.0), 1.0, 0.11);
+    d = min(d, shard(p, normalize(vec3<f32>(1.0, 1.0, 0.0)), 0.72, 0.08));
+    d = min(d, shard(p, normalize(vec3<f32>(1.0, 1.0, 1.0)), 0.85, 0.09));
+    // Branches off the longest shards, two thirds of the way out.
+    let b = p - vec3<f32>(0.6, 0.0, 0.0);
+    d = min(d, shard(b, normalize(vec3<f32>(0.6, 1.0, 0.0)), 0.3, 0.04));
+    d = min(d, shard(b, normalize(vec3<f32>(0.6, 0.0, 1.0)), 0.3, 0.04));
+    return min(d, length(p0) - 0.16);
+}
+
+fn ev_crystal(d: vec3<f32>) -> vec4<f32> {
+    let ship = ev_ship();
+    let o = ev_obj(0);
+    let centre = o.xyz;
+    let size = o.w;
+    let axis = normalize(params.ev[8].xyz);
+    let angle = params.ev[8].w;
+    let notice = ev_obj(1).x;
+    // Icy: cyan, violet or green-white.
+    let tint = mix(vec3<f32>(0.55, 0.9, 1.0), mix(vec3<f32>(0.8, 0.65, 1.0), vec3<f32>(0.65, 1.0, 0.8), step(0.5, params.ev[9].x)), step(0.33, params.ev[9].x));
+    let t = ev_t();
+    let bound = sphere_hits(ship, d, centre, size * 1.05);
+    if (bound.y <= 0.0) {
+        // Its light round it.
+        let px = point_pixels(ship, d, centre);
+        return vec4<f32>(tint * exp(-px * 0.01) * (0.04 + 0.12 * notice), 0.0);
+    }
+    let lo = turn((ship - centre) / size, axis, -angle);
+    let ld = turn(d, axis, -angle);
+    var tm = max(bound.x, 0.0) / size;
+    let end = bound.y / size;
+    var hit = false;
+    var closest = 1e9;
+    for (var i = 0; i < 56; i++) {
+        let dist = crystal_sdf(lo + ld * tm);
+        closest = min(closest, dist);
+        if (dist < 0.0015 + tm * params.frame.z * 0.4) {
+            hit = true;
+            break;
+        }
+        tm += max(dist * 0.8, 0.003);
+        if (tm > end) {
+            break;
+        }
+    }
+    let px = point_pixels(ship, d, centre);
+    let heart = tint * (exp(-px * 0.03) * (0.25 + 1.2 * notice) * (0.8 + 0.2 * sin(t * 3.0)));
+    if (!hit) {
+        // Close misses glow faintly, the light caught in the lattice; and
+        // the glow round it, as outside its bounds.
+        return vec4<f32>(tint * exp(-px * 0.01) * (0.04 + 0.12 * notice) + heart * 0.4 + tint * exp(-closest * 40.0) * 0.05, 0.0);
+    }
+    let q = lo + ld * tm;
+    let e = 0.003;
+    let nl = normalize(vec3<f32>(
+        crystal_sdf(q + vec3<f32>(e, 0.0, 0.0)) - crystal_sdf(q - vec3<f32>(e, 0.0, 0.0)),
+        crystal_sdf(q + vec3<f32>(0.0, e, 0.0)) - crystal_sdf(q - vec3<f32>(0.0, e, 0.0)),
+        crystal_sdf(q + vec3<f32>(0.0, 0.0, e)) - crystal_sdf(q - vec3<f32>(0.0, 0.0, e)),
+    ));
+    let n = turn(nl, axis, angle);
+    let mu = max(dot(n, -d), 0.0);
+    let fresnel = 0.06 + 0.94 * pow(1.0 - mu, 5.0);
+    // Through it, each colour bent its own amount: a rainbow at every edge.
+    let rr = ev_sky(normalize(refract(d, n, 0.84))).r;
+    let gg = ev_sky(normalize(refract(d, n, 0.8))).g;
+    let bb = ev_sky(normalize(refract(d, n, 0.76))).b;
+    let through = vec3<f32>(rr, gg, bb) * 2.5 * tint + tint * 0.05;
+    let mirror = ev_sky(reflect(d, n)) * 2.0 + tint * 0.04;
+    // Light running through it from its heart, brighter as it notices.
+    let inner = tint * (0.04 + 0.5 * notice * (0.6 + 0.4 * sin(t * 4.0 - length(q) * 12.0))) * (1.0 - smoothstep01(0.0, 1.0, length(q)));
+    let edge = pow(1.0 - mu, 3.0) * tint * 0.45;
+    // Facets catching the faint light of the galaxy above.
+    let facet = pow(max(dot(n, normalize(vec3<f32>(0.3, 1.0, 0.2))), 0.0), 12.0) * tint * 0.4;
+    let colour = mix(through, mirror, fresnel) + inner + edge + facet + heart * 0.3;
+    return vec4<f32>(colour, 0.85);
+}
+
 // Each event's draw over the sky.
 @fragment
 fn fs_event(in: Full) -> @location(0) vec4<f32> {
@@ -1953,6 +2236,12 @@ fn fs_event(in: Full) -> @location(0) vec4<f32> {
         c = ev_wormhole(d);
     } else if (EVENT == 13) {
         c = ev_battle(d);
+    } else if (EVENT == 14) {
+        c = ev_storm(d, s);
+    } else if (EVENT == 15) {
+        c = ev_dyson(d);
+    } else if (EVENT == 16) {
+        c = ev_crystal(d);
     }
     return c * params.ev[10].y;
 }
@@ -2010,6 +2299,66 @@ fn fs_flux(in: Full) -> @location(0) vec4<f32> {
         let ghost = vec2<f32>(0.08 * sin(t * 0.7), 0.05 * cos(t * 0.9));
         colour += vec3<f32>(0.6, 0.85, 1.0) * glint(length(s - ghost) * params.frame.x, 4.0) * (1.2 + 0.6 * sin(t * 5.0));
         colour += vec3<f32>(0.5, 0.7, 1.0) * exp(-abs(s.y - ghost.y) * 120.0) * exp(-abs(s.x - ghost.x) * 3.0) * 0.3;
+    } else if (EVENT == 5) {
+        // A rift: a jagged tear across the field, opening and closing,
+        // white light pouring through it, its edges split into colour.
+        // Tearing open and closing again every seven seconds, each time at a
+        // new angle.
+        let cycle = fract(t / 7.0);
+        let open = smoothstep01(0.05, 0.3, cycle) * (1.0 - smoothstep01(0.7, 0.95, cycle));
+        let angle = 0.6 + hash_cell(vec3<f32>(floor(t / 7.0), 3.0, 1.0)) * 2.0;
+        let along = s.x * cos(angle) + s.y * sin(angle);
+        let across = -s.x * sin(angle) + s.y * cos(angle);
+        let jag = noise(vec3<f32>(along * 5.0, t * 0.3, 1.0)) * 0.08 + noise(vec3<f32>(along * 17.0, t * 0.5, 2.0)) * 0.025;
+        let width = (0.004 + 0.03 * open) * (1.0 - smoothstep01(0.4, 1.0, abs(along)));
+        let k = abs(across - jag) / max(width, 1e-4);
+        let core = exp(-k * k) * 2.5;
+        let fringe = vec3<f32>(bump((k - 1.6) / 0.5), bump((k - 2.0) / 0.5), bump((k - 2.4) / 0.5));
+        let glow = exp(-abs(across - jag) * 9.0) * 0.25 * open * (1.0 - smoothstep01(0.3, 1.0, abs(along)));
+        colour += vec3<f32>(1.0, 0.98, 0.95) * core * open + fringe * 0.7 * open + vec3<f32>(0.7, 0.8, 1.0) * glow;
+        // Sparks thrown off it.
+        colour += vec3<f32>(1.0, 0.9, 0.7) * streaks(theta, logr, 140.0, 9.0, 0.3, 61) * glow * 3.0;
+    } else if (EVENT == 6) {
+        // Warp whales: creatures of the jump, swimming along its walls
+        // beside the ship, each a chain of soft glowing lobes rippling as it
+        // swims, its light pulsing down its length.
+        for (var k = 0; k < 3; k++) {
+            let fk = f32(k);
+            let h = hash_cell(vec3<f32>(fk, 41.0, 7.0));
+            let lane = h * TAU + sin(t * 0.3 + fk) * 0.3;
+            let head = 0.55 + 0.15 * sin(t * 0.25 + fk * 2.0);
+            for (var j = 0; j < 7; j++) {
+                let f = f32(j) / 6.0;
+                let rr = head * (1.0 - f * 0.45);
+                let th = lane + sin(t * 1.4 - f * 4.0 + fk) * 0.06 * (0.3 + f);
+                let p = vec2<f32>(cos(th), sin(th)) * rr;
+                let size = (0.12 - 0.075 * f) * head;
+                let dd = length(s - p) / size;
+                let tint = mix(vec3<f32>(0.3, 0.95, 1.0), vec3<f32>(0.8, 0.4, 1.0), f);
+                let pulse_ = 0.5 + 0.5 * sin(t * 2.5 - f * 8.0 + fk);
+                colour += tint * (exp(-dd * dd) * (0.45 + 0.75 * pulse_) + exp(-dd * 0.5) * 0.05);
+                if (j == 1) {
+                    // Fins swept back to either side.
+                    let side = vec2<f32>(-sin(th), cos(th));
+                    let w = s - p;
+                    let fin = exp(-sq(dot(w, side) / (size * 3.2))) * exp(-sq((dot(w, vec2<f32>(cos(th), sin(th))) + abs(dot(w, side)) * 0.5) / (size * 0.4)));
+                    colour += tint * fin * 0.35 * (0.6 + 0.4 * sin(t * 1.6 + fk));
+                }
+            }
+        }
+    } else if (EVENT == 7) {
+        // A gravity wave: rings of strained space rolling outward down the
+        // field, each split into colour, the field brightening as each
+        // passes.
+        for (var k = 0; k < 3; k++) {
+            let phase = fract(t * 0.22 + f32(k) / 3.0);
+            let front = 0.08 + phase * 1.4;
+            let wobble = 0.015 * sin(theta * 4.0 + t * 2.0 + f32(k));
+            let dd = (r - front - wobble) / (0.02 + 0.04 * phase);
+            let fade = sin(phase * PI);
+            colour += vec3<f32>(bump(dd + 0.8), bump(dd), bump(dd - 0.8)) * fade * 0.7;
+            colour += vec3<f32>(0.5, 0.6, 1.0) * sin(clamp(dd, -3.0, 3.0) * 1.0) * 0.05 * fade;
+        }
     } else {
         // A shortcut: the field folding through a fault, a spiral of light
         // turning in on the heading.

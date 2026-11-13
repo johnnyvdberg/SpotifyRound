@@ -2337,6 +2337,9 @@ fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel
         voyage::Event::Gate => "Star gate".into(),
         voyage::Event::Wormhole => "Wormhole".into(),
         voyage::Event::Battle => "Battle".into(),
+        voyage::Event::PlasmaStorm => "Storm eye".into(),
+        voyage::Event::DysonSwarm => "Dyson swarm".into(),
+        voyage::Event::Crystal => "Crystal entity".into(),
     };
     let [x, y, z] = scene.basis;
     let rel = sub([o[0], o[1], o[2]], shot.ship);

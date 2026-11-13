@@ -90,9 +90,13 @@ Spotify **Premium** account.
   on nacelles, vast wedge destroyers with fighters, winged raiders, crescent warbirds, horseshoe
   traders, the cube collective — firing beams, pulsed bolts and torpedoes that burst on flaring
   shields; a ship is lost, and its shock ripples out through space, bending the stars, shoving the
-  other ships aside as their shields take it on the struck side, and rocking the ship. Or the next leg is a star gate, its nodes lighting as the ship lines up and its
+  other ships aside as their shields take it on the struck side, and rocking the ship. It may skirt
+  a plasma storm's lightning-lit eyewall, pass a Dyson swarm's rings of collectors round a dim star,
+  or a vast crystal entity that bends the stars into rainbows and brightens as it notices the ship.
+  Or the next leg is a star gate, its nodes lighting as the ship lines up and its
   field throwing it down a golden conduit, or a wormhole with another sky inside, dived into. Inside
-  a leg there may be an ion storm, a convoy alongside, a tachyon echo or a shortcut
+  a leg there may be an ion storm, a convoy alongside, a tachyon echo, a shortcut, a spacetime rift
+  tearing across the field, warp whales swimming alongside or a gravity wave rolling down it
   ([docs/solar-fluxes.jpg](docs/solar-fluxes.jpg)). Every encounter comes round in a shuffled deck,
   never twice running, the alarm goes amber or red round the rim and on the panel, and the trip
   between stars is shorter than the old 150-second jump (`SOLAR_ENCOUNTER=<name>` forces one;
