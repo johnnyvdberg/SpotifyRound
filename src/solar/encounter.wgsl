@@ -193,8 +193,24 @@ fn vs_rock(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
             }
             let z = ship.z - 60.0 + fract((h.z * span.z - ship.z + 60.0) / span.z) * span.z;
             p = vec3<f32>(xy, z);
-            if (hash_cell(vec3<f32>(fi, 5.0, 3.0)) > params.ev[9].y) {
+            // Rocks gather in clumps and thin out between them, as fields
+            // do, rather than lying evenly spread.
+            // (Hashed coarse cells: the noise volume is the fragment
+            // stage's only.)
+            let salt = vec3<f32>(params.ev[0].w * 17.0);
+            let clump = hash_cell(floor(p / 150.0) + salt) * 0.6 + hash_cell(floor(p / 70.0 + 0.5) + salt) * 0.4;
+            if (hash_cell(vec3<f32>(fi, 5.0, 3.0)) > params.ev[9].y * mix(0.35, 1.5, clump)) {
                 radius = 0.0;
+            }
+            if (instance >= 200u) {
+                // Grains of dust close round the ship, catching the light as
+                // they stream past.
+                let near = vec3<f32>(90.0, 60.0, 160.0);
+                let g = (h.xyz - vec3<f32>(0.5, 0.5, 0.0)) * near;
+                p = vec3<f32>(g.xy, ship.z - 8.0 + fract((g.z - ship.z) / near.z) * near.z);
+                radius = mix(0.04, 0.12, h.w);
+                kind = 4.0;
+                glow = 0.35 + 0.65 * h.w;
             }
         }
     } else if (EVENT == 7) {
@@ -234,21 +250,80 @@ fn vs_rock(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
     let cam = vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
     out.centre = vec4<f32>(cam, radius);
     out.look = vec4<f32>(fi + params.ev[0].w * 37.0, kind, glow, 0.0);
-    if (radius <= 0.0 || cam.z < radius * 1.3 + 0.5 || cam.z > 4000.0) {
+    if (radius <= 0.0 || cam.z < -radius * 1.3 || cam.z > 4000.0) {
         out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         return out;
     }
     let tan_half = params.frame.y;
-    let centre = cam.xy / (cam.z * tan_half);
+    let centre = cam.xy / (max(cam.z, 1e-3) * tan_half);
     // Out to the sphere's silhouette, and a few pixels more for the glow.
-    let spread = radius * 1.2 / (sqrt(cam.z * cam.z - radius * radius) * tan_half) + 4.0 / params.frame.x;
+    var spread = radius * 1.5 / (sqrt(max(cam.z * cam.z - radius * radius, 1.0)) * tan_half) + 4.0 / params.frame.x;
+    var centre_at = centre;
+    if (cam.z < radius * 1.45 + 0.5) {
+        // Close enough to fill much of the view, or round the camera: over
+        // the whole frame, the fragment marching from the camera.
+        spread = 1.0;
+        centre_at = vec2<f32>(0.0);
+    }
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
         vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
     );
     let corner = corners[vertex % 6u];
-    out.position = vec4<f32>(centre + corner * spread, clamp(cam.z / (cam.z + 400.0), 0.0, 0.999), 1.0);
+    out.position = vec4<f32>(centre_at + corner * spread, clamp(max(cam.z - radius, 0.5) / (max(cam.z - radius, 0.5) + 400.0), 0.0, 0.999), 1.0);
     return out;
+}
+
+// A crater's profile across `x`, its distance from the middle over its
+// radius: a bowl, a raised rim, and the ground beyond.
+fn crater_profile(x: f32) -> f32 {
+    let bowl = (x * x - 1.0) * 0.35;
+    let rim = 0.14 * exp(-sq((x - 1.0) / 0.32));
+    return mix(bowl, 0.0, smoothstep01(0.85, 1.05, x)) + rim * (1.0 - smoothstep01(1.3, 1.8, x));
+}
+
+// Craters at one scale round point `q` of a rock (its surface direction
+// scaled up): the ground's height from them, its slope, and how much of
+// it is a fresh rim, from the nearest of the eight cells about it (each
+// crater kept within half a cell of its own, so none is missed).
+fn craters(q: vec3<f32>, seed: f32) -> array<vec4<f32>, 2> {
+    let base = floor(q - 0.5);
+    var height = 0.0;
+    var slope = vec3<f32>(0.0);
+    var fresh = 0.0;
+    for (var i = 0; i < 8; i++) {
+        let cell = base + vec3<f32>(f32(i & 1), f32((i >> 1) & 1), f32((i >> 2) & 1));
+        let k = hash_cell(cell + vec3<f32>(seed, 0.0, 0.0));
+        if (k > 0.7) {
+            continue;
+        }
+        let jitter = vec3<f32>(hash_cell(cell + vec3<f32>(seed + 1.0, 3.0, 0.0)), hash_cell(cell + vec3<f32>(seed + 2.0, 0.0, 5.0)), hash_cell(cell + vec3<f32>(0.0, seed + 3.0, 7.0)));
+        let centre = cell + 0.5 + (jitter - 0.5) * 0.4;
+        let radius = mix(0.16, 0.42, k / 0.7);
+        let v = q - centre;
+        let dist = length(v);
+        let x = dist / radius;
+        if (x > 1.8) {
+            continue;
+        }
+        let depth = radius;
+        height += crater_profile(x) * depth;
+        let dx = (crater_profile(x + 0.03) - crater_profile(x - 0.03)) / 0.06;
+        slope += dx * v / max(dist, 1e-4);
+        fresh = max(fresh, step(0.45, jitter.x) * bump((x - 1.05) / 0.3));
+    }
+    return array<vec4<f32>, 2>(vec4<f32>(height, slope), vec4<f32>(fresh, 0.0, 0.0, 0.0));
+}
+
+// A rock's shape in its own frame, radius about 1: a stretched ellipsoid,
+// its surface pushed in and out by noise whose input is warped by the
+// noise's own slope, so the lumps flow into each other like broken stone
+// rather than sitting as round blobs.
+fn rock_shape(p: vec3<f32>, seed: f32, stretch: vec3<f32>) -> f32 {
+    let warp = noised(p * 1.2 + vec3<f32>(seed)).yzw * 0.22;
+    let q = p + warp;
+    let lumps = noise(q * 1.7 + vec3<f32>(seed * 0.37)) * 0.17 + noise(q * 4.1 + vec3<f32>(seed * 0.71)) * 0.055;
+    return sd_ellipsoid(p, stretch) - lumps;
 }
 
 @fragment
@@ -262,13 +337,160 @@ fn fs_rock(in: Rock) -> @location(0) vec4<f32> {
     let tca = dot(c, d);
     let pixel = tca * params.frame.z;
     if (kind > 3.5) {
-        // A mote of ice: a soft point.
+        // A mote of ice or a grain of dust: a soft point.
         let across = length(c - d * tca);
         let g = exp(-sq(across / max(r, pixel * 1.2)));
         return vec4<f32>(vec3<f32>(0.6, 0.85, 1.0) * g * in.look.z, 0.0);
     }
+    // The light, from the encounter frame into the camera's.
+    var lw = from_ev(normalize(vec3<f32>(0.55, 0.6, -0.45)));
+    if (EVENT == 1) {
+        lw = from_ev(ev_light());
+    }
+    let l = vec3<f32>(dot(lw, params.right.xyz), dot(lw, params.up.xyz), dot(lw, params.forward.xyz));
+    if (kind > 2.5) {
+        return debris(in, d, l);
+    }
+    // The rock's own frame: tumbling about its own axis, stretched its own
+    // way, the ray in units of its radius.
+    let axis = normalize(vec3<f32>(fract(seed * 0.31) - 0.5, 1.0, fract(seed * 0.71) - 0.5));
+    let spin = seed * 0.37 + ev_t() * (0.04 + 0.08 * fract(seed * 0.618));
+    let stretch = vec3<f32>(0.62 + 0.3 * fract(seed * 0.131), 0.55 + 0.25 * fract(seed * 0.377), 0.85);
+    let ro = turn(-c / r, axis, -spin);
+    let rd = turn(d, axis, -spin);
+    // Its size on the frame, in pixels (close by, as big as it gets).
+    let reach = max(tca, r * 0.5);
+    let rs = r / reach / params.frame.z;
+    // Sphere-traced from where the ray enters its bounds.
+    let bound = sphere_hits(ro, rd, vec3<f32>(0.0), 1.45);
+    if (bound.y <= 0.0) {
+        discard;
+    }
+    var t = max(bound.x, 0.0);
+    var closest = 1e9;
+    var near_t = t;
+    var hit = false;
+    let steps = select(36, 14, rs < 8.0);
+    for (var i = 0; i < steps; i++) {
+        let dist = rock_shape(ro + rd * t, seed, stretch);
+        let ratio = dist / max(t, 1e-3);
+        if (ratio < closest) {
+            closest = ratio;
+            near_t = t;
+        }
+        if (dist < 0.002 * t + 0.001) {
+            hit = true;
+            break;
+        }
+        t += dist * 0.6;
+        if (t > bound.y) {
+            break;
+        }
+    }
+    // Missed, but close: a soft edge a pixel wide, no wider.
+    let angle_px = params.frame.z * reach / r;
+    var cover = 1.0;
+    if (!hit) {
+        cover = clamp(0.5 - closest / angle_px, 0.0, 1.0);
+        if (cover <= 0.0) {
+            discard;
+        }
+        // Shaded where the ray passed closest, not where it gave up.
+        t = near_t;
+    }
+    let p = ro + rd * t;
+    // The normal from the shape, sharpened by craters and fine grain, each
+    // faded out where finer than a pixel.
+    let e = 0.012;
+    var n = normalize(vec3<f32>(
+        rock_shape(p + vec3<f32>(e, 0.0, 0.0), seed, stretch) - rock_shape(p - vec3<f32>(e, 0.0, 0.0), seed, stretch),
+        rock_shape(p + vec3<f32>(0.0, e, 0.0), seed, stretch) - rock_shape(p - vec3<f32>(0.0, e, 0.0), seed, stretch),
+        rock_shape(p + vec3<f32>(0.0, 0.0, e), seed, stretch) - rock_shape(p - vec3<f32>(0.0, 0.0, e), seed, stretch),
+    ));
+    let dir = normalize(p);
+    var bowl = 0.0;
+    var fresh = 0.0;
+    if (rs > 10.0) {
+        let big = craters(dir * 3.2, seed);
+        var dent = big[0];
+        fresh = big[1].x;
+        if (rs > 40.0) {
+            let small = craters(dir * 9.0 + 31.0, seed + 5.0);
+            dent += vec4<f32>(small[0].x * 0.35, small[0].yzw);
+            fresh = max(fresh, small[1].x * 0.6);
+        }
+        let fade = smoothstep01(10.0, 30.0, rs);
+        let g = dent.yzw - n * dot(dent.yzw, n);
+        n = normalize(n - g * 0.9 * fade);
+        bowl = dent.x * fade;
+    }
+    let grain = noised(p * 22.0 + vec3<f32>(seed));
+    n = normalize(n - grain.yzw * 0.12 * smoothstep01(25.0, 80.0, rs));
+    // Back to the camera's frame.
+    let nc = turn(n, axis, spin);
+    let lc = l;
+    let ll = turn(lc, axis, -spin);
+    // Regolith: Lommel-Seeliger blended with Lambert (a lunar-Lambert
+    // model), so a lit rock is flat and bright to its terminator rather than
+    // shading off like plastic.
+    let mu0 = max(dot(nc, lc), 0.0);
+    let mu = max(dot(nc, -d), 0.0);
+    // (Its rise toward the limb damped, or small rocks ring like bubbles.)
+    let ls = 2.0 * mu0 / (mu0 + mu + 0.15);
+    let lunar = select(0.65, 0.25, kind > 0.5 && kind < 1.5);
+    var brdf = mix(mu0, ls * 0.5, lunar);
+    // Soft shadows cast by its own lumps, from the shape along the light.
+    var shadow = 1.0;
+    if (mu0 > 0.0 && rs > 12.0) {
+        var ts = 0.04;
+        for (var k = 0; k < 6; k++) {
+            let h = rock_shape(p + ll * ts, seed, stretch);
+            shadow = min(shadow, 10.0 * h / ts);
+            ts += clamp(h, 0.04, 0.3);
+        }
+        shadow = smoothstep01(0.0, 1.0, shadow);
+    }
+    // Hollows hold less light: from the craters' bowls and the shape.
+    let ao = clamp(1.0 + bowl * 2.5, 0.45, 1.0) * clamp(0.55 + rock_shape(p + n * 0.12, seed, stretch) / 0.12 * 0.45, 0.4, 1.0);
+    // The rock's colour: its kind, mottled at two scales, crater rims fresh
+    // and paler, fine specks.
+    var albedo = vec3<f32>(0.075, 0.068, 0.062);
+    var shine = 0.0;
+    if (kind > 1.5) {
+        albedo = vec3<f32>(0.2, 0.13, 0.085);
+        shine = 0.35;
+    } else if (kind > 0.5) {
+        albedo = vec3<f32>(0.4, 0.45, 0.5);
+        shine = 0.6;
+    }
+    let mottle = noise(p * 2.3 + vec3<f32>(seed * 1.9)) * 0.5 + noise(p * 7.0 + vec3<f32>(seed)) * 0.25;
+    albedo *= 0.8 + 0.45 * mottle;
+    albedo *= 1.0 + fresh * 0.9;
+    let speck = step(0.93, hash_cell(floor(p * 70.0))) * smoothstep01(40.0, 120.0, rs);
+    albedo *= 1.0 + speck * 0.8;
+    var colour = albedo * brdf * shadow * 2.4;
+    // Faint fill from the sky and the field's other rocks, so the night
+    // side still reads as a shape.
+    colour += albedo * vec3<f32>(0.07, 0.08, 0.1) * (0.35 + 0.25 * max(dot(nc, -lc), 0.0)) * ao;
+    // No glint at grazing angles: backlit, it would ring every small rock.
+    let spec = pow(max(dot(reflect(-lc, nc), -d), 0.0), 40.0) * shine * shadow * smoothstep01(0.1, 0.45, mu) * mu0;
+    colour += vec3<f32>(spec);
+    if (kind > 0.5 && kind < 1.5) {
+        // Ice: light scattered through its edges.
+        colour += vec3<f32>(0.25, 0.45, 0.6) * pow(1.0 - mu, 4.0) * max(dot(d, lc), 0.0) * 0.06 * smoothstep01(20.0, 60.0, rs);
+    }
+    colour *= mix(1.0, ao, 0.6);
+    return vec4<f32>(colour * cover, cover);
+}
+
+// A ship's debris: flat plates and torn edges, the older lumpy impostor.
+fn debris(in: Rock, d: vec3<f32>, l: vec3<f32>) -> vec4<f32> {
+    let c = in.centre.xyz;
+    let r = in.centre.w;
+    let seed = in.look.x;
+    let tca = dot(c, d);
+    let pixel = tca * params.frame.z;
     let d2 = dot(c, c) - tca * tca;
-    // A lumpy silhouette: the radius out along the way to the closest point.
     let toward = normalize(d * tca - c + vec3<f32>(1e-4, 0.0, 0.0));
     let lump = noise(toward * 1.7 + vec3<f32>(seed * 3.1, seed * 1.3, 0.0)) * 0.13 + noise(toward * 4.3 + seed) * 0.05;
     let rim = r * (0.86 + lump);
@@ -279,45 +501,13 @@ fn fs_rock(in: Rock) -> @location(0) vec4<f32> {
     let th = sqrt(max(rim * rim - d2, 0.0));
     let at = d * (tca - th);
     var n = normalize(at - c);
-    // Bumps and craters from the noise's slope, fixed to the rock as it
-    // tumbles.
-    let spin = seed * 0.37 + ev_t() * (0.05 + 0.1 * fract(seed * 0.618));
-    let q = turn(n, normalize(vec3<f32>(fract(seed * 0.31) - 0.5, 1.0, fract(seed * 0.71) - 0.5)), spin) * 2.4 + vec3<f32>(seed * 0.13);
-    let g = noised(q * 1.6);
-    let g2 = noised(q * 4.4 + 7.0);
-    if (kind > 2.5) {
-        // A ship's debris: flat plates and torn edges.
-        n = normalize(floor(n * 2.2 + 0.5) + n * 0.15);
-    } else {
-        n = normalize(n - (g.yzw * 0.45 + g2.yzw * 0.2) * 0.5);
-    }
-    // The light, from the encounter frame into the camera's.
-    var lw = from_ev(normalize(vec3<f32>(0.55, 0.6, -0.45)));
-    if (EVENT == 1) {
-        lw = from_ev(ev_light());
-    }
-    let l = vec3<f32>(dot(lw, params.right.xyz), dot(lw, params.up.xyz), dot(lw, params.forward.xyz));
+    n = normalize(floor(n * 2.2 + 0.5) + n * 0.15);
+    let g2 = noised(n * 10.0 + vec3<f32>(seed * 0.13));
     let diffuse = max(dot(n, l), 0.0);
-    let crater = smoothstep01(0.35, 0.55, abs(g2.x)) * 0.4 + 0.6;
-    var albedo = vec3<f32>(0.13, 0.11, 0.095);
-    var shine = 0.0;
-    if (kind > 2.5) {
-        albedo = mix(vec3<f32>(0.42, 0.44, 0.47), vec3<f32>(0.5, 0.36, 0.25), step(0.6, fract(seed * 0.17)));
-        shine = 0.6;
-    } else if (kind > 1.5) {
-        albedo = vec3<f32>(0.34, 0.2, 0.13);
-        shine = 0.35;
-    } else if (kind > 0.5) {
-        albedo = vec3<f32>(0.62, 0.7, 0.78);
-        shine = 0.9;
-    }
-    albedo *= crater * (0.8 + 0.4 * g.x);
-    let spec = pow(max(dot(reflect(-l, n), -d), 0.0), 28.0) * shine;
+    let albedo = mix(vec3<f32>(0.42, 0.44, 0.47), vec3<f32>(0.5, 0.36, 0.25), step(0.6, fract(seed * 0.17))) * (0.75 + 0.25 * g2.x);
+    let spec = pow(max(dot(reflect(-l, n), -d), 0.0), 28.0) * 0.6;
     var colour = albedo * (diffuse * 1.25 + 0.025) + vec3<f32>(spec);
-    // Light off the far side's edge, and the faint blue of the sky.
-    colour += vec3<f32>(0.04, 0.06, 0.1) * pow(1.0 - max(dot(n, -d), 0.0), 3.0);
-    if (kind > 2.5 && fract(seed * 0.0731) > 0.86) {
-        // A smouldering edge.
+    if (fract(seed * 0.0731) > 0.86) {
         colour += vec3<f32>(1.0, 0.35, 0.08) * smoothstep01(0.55, 0.8, g2.x) * (0.7 + 0.3 * sin(ev_t() * 4.0 + seed));
     }
     let a = clamp((rim - across) / pixel + 0.5, 0.0, 1.0);

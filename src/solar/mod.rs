@@ -3657,6 +3657,65 @@ pub(crate) mod tests {
             .expect("a sheet");
     }
 
+    /// Asteroid fields of the three kinds of rock (carbon, ice, iron), each
+    /// as a big rock nears and as it passes close, and the field at large:
+    /// fixed moments, so shots before and after a change line up
+    /// (`asteroids-sheet.png`, `asteroids-<kind>-<n>.png`).
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn asteroid_fields() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let cell = 360;
+        let mut sheet = image::RgbaImage::new(cell * 3, cell * 3);
+        let mut solar = Solar::with_seed(&gpu, 11);
+        let mut found = 0;
+        let mut variant = 0u64;
+        while found < 3 {
+            variant += 1;
+            let stop = voyage::Stopover {
+                event: voyage::Event::Asteroids,
+                variant,
+            };
+            if voyage::shot(&stop, 0.0).extra[0] as usize != found {
+                continue;
+            }
+            solar.tour = tour_through(11, vec![stop]);
+            let seg = solar
+                .tour
+                .segments
+                .iter()
+                .find(|s| s.phase == Phase::Stopover(0))
+                .copied()
+                .expect("a stopover");
+            settle(&mut solar, &gpu, seg.start);
+            // The first big rock nearing and passing, and the field.
+            let pass = voyage::shot(&stop, 0.0).objects[0][2] / 55.0;
+            for (m, t) in [pass - 2.6, pass - 0.9, seg.duration * 0.45]
+                .into_iter()
+                .enumerate()
+            {
+                solar.draw(&gpu, seg.start + t, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                let kind = ["carbon", "ice", "iron"][found];
+                shoot(
+                    &dir,
+                    &format!("asteroids-{kind}-{m}"),
+                    pixels,
+                    &mut sheet,
+                    cell,
+                    m as u32,
+                    found as u32,
+                );
+            }
+            found += 1;
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("asteroids-sheet.png"))
+            .expect("a sheet");
+    }
+
     /// Battles of six draws (other fleets each), a row each: the fight,
     /// the blast, and its shock rippling out and shoving the ships aside:
     /// `battles-sheet.png`.
