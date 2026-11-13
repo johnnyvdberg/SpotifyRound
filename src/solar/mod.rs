@@ -299,6 +299,9 @@ pub(crate) struct Solar {
     dust_at: Option<f64>,
     /// A camera to use instead of the tour's, for the screenshots.
     view_override: Option<View>,
+    /// A battle's one ship to show alone, for the screenshots: its fleet's
+    /// design and which ship (0 a capital, 1 an escort).
+    showcase: Option<(u32, u32)>,
     /// The last frame's background and draws, for the benchmarks.
     #[cfg(test)]
     drawn: std::cell::RefCell<String>,
@@ -1110,6 +1113,7 @@ impl Solar {
             dust: [0.0; 3],
             dust_at: None,
             view_override: None,
+            showcase: None,
             #[cfg(test)]
             drawn: Default::default(),
         }
@@ -1662,7 +1666,17 @@ impl Solar {
                 self.look(view.look) as f32,
                 self.look(view.drop_look) as f32,
             ],
-            ev: encounter_rows(&view),
+            ev: {
+                let mut ev = encounter_rows(&view);
+                if let Some((faction, index)) = self.showcase {
+                    ev[9][1] = 1.0;
+                    ev[9][2] = index as f32;
+                    (ev[6][0], ev[6][1], ev[6][2]) = (faction as f32, faction as f32, 1e4);
+                    ev[7][3] = -1.0;
+                    (ev[10][0], ev[2][3], ev[3][3], ev[4][3]) = (0.0, 0.0, 0.0, 0.0);
+                }
+                ev
+            },
             bodies: list,
         };
         // The meshes' windows and grids, from the frame's pixel size.
@@ -3826,6 +3840,57 @@ pub(crate) mod tests {
         }
         sheet
             .save(std::path::Path::new(&dir).join("planets-sheet.png"))
+            .expect("a sheet");
+    }
+
+    /// Each fleet's design alone, its capital ship and an escort, lit
+    /// three-quarters: `fleets-sheet.png`, a row a design.
+    #[test]
+    #[ignore = "writes screenshots; needs a working GPU adapter"]
+    fn fleets() {
+        let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+        std::fs::create_dir_all(&dir).expect("a screenshot directory");
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let cell = 360;
+        let mut sheet = image::RgbaImage::new(cell * 2, cell * voyage::FACTIONS.len() as u32);
+        let mut solar = Solar::with_seed(&gpu, 11);
+        let stop = voyage::Stopover {
+            event: voyage::Event::Battle,
+            variant: 17,
+        };
+        solar.tour = tour_through(11, vec![stop]);
+        let seg = solar
+            .tour
+            .segments
+            .iter()
+            .find(|s| s.phase == Phase::Stopover(0))
+            .copied()
+            .expect("a stopover");
+        let t = seg.start + 3.0;
+        settle(&mut solar, &gpu, t);
+        let mut view = solar.tour.view(t);
+        let basis = view.scene.expect("a stopover").basis;
+        (view.forward, view.up, view.reveal) = (basis[2], basis[1], 1.0);
+        solar.view_override = Some(view);
+        for faction in 0..voyage::FACTIONS.len() as u32 {
+            for (column, index) in [0u32, 1].into_iter().enumerate() {
+                solar.showcase = Some((faction, index));
+                solar.draw(&gpu, t, 0);
+                let pixels = read_texture(&gpu, &solar.frames[0].texture);
+                let name = voyage::FACTIONS[faction as usize].replace(' ', "-");
+                shoot(
+                    &dir,
+                    &format!("fleet-{name}-{column}"),
+                    pixels,
+                    &mut sheet,
+                    cell,
+                    column as u32,
+                    faction,
+                );
+            }
+        }
+        sheet
+            .save(std::path::Path::new(&dir).join("fleets-sheet.png"))
             .expect("a sheet");
     }
 

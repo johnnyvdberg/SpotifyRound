@@ -1582,6 +1582,14 @@ fn shock_radius(t: f32) -> f32 {
 // dies, the rest shoved aside by its shock as it passes them; w of the
 // second row, how hard the shock is striking it now, 0..1.
 fn battle_ship(i: i32, t: f32) -> array<vec4<f32>, 2> {
+    if (params.ev[9].y > 0.5) {
+        // The screenshots' showcase: the one ship asked for, alone, ahead
+        // of the camera at a distance by its size, seen three-quarters.
+        let size = faction_size(ship_faction(i), i == 0 || i == 4);
+        let shown = i == i32(params.ev[9].z);
+        let at = select(ev_ship() - vec3<f32>(0.0, 0.0, 1e4), ev_ship() + vec3<f32>(0.0, 0.0, size * 3.3), shown);
+        return array<vec4<f32>, 2>(vec4<f32>(at, size), vec4<f32>(normalize(vec3<f32>(-0.78, -0.18, -0.6)), 0.0));
+    }
     var s = battle_course(i, t);
     let kill = ev_obj(1).z;
     let blast = blast_at();
@@ -1793,6 +1801,9 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
         // Engines.
         let engine = point_pixels(ship, d, c - fwd * size * 1.02);
         colour += mix(faction_shield(faction), vec3<f32>(1.0), 0.5) * glint(engine, 1.0 + size * 0.03) * 0.9 * (1.0 - alpha * 0.8);
+    }
+    if (params.ev[9].y > 0.5) {
+        return vec4<f32>(colour, alpha);
     }
     // Fire between the fleets: each its own way. Beams, or bolts in short
     // dashes for the wedge fleet.
