@@ -297,6 +297,18 @@ fn day_pipeline(kind: Kind) -> &'static str {
     }
 }
 
+/// The pipelines that fill the scratch climate map for `kind`, in order (the
+/// first clears it): lava and ice worlds keep their crust there instead
+/// (`fs_climate`).
+fn climate_pipelines(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Lava => &["climate1", "climate5", "climate2"],
+        Kind::Ice => &["climate3", "climate4"],
+        Kind::Desert => &["climate", "climate6"],
+        _ => &["climate"],
+    }
+}
+
 /// The passes that paint a planet of `kind` and its `moons`, in order.
 fn plan(kind: Kind, moons: &[Moon]) -> Vec<Pass> {
     let pass = |pipeline, target, clear| Pass {
@@ -314,6 +326,9 @@ fn plan(kind: Kind, moons: &[Moon]) -> Vec<Pass> {
     if ground {
         plan.push(pass("erosion", Target::Terrain, false));
     }
+    if matches!(kind, Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball) {
+        plan.push(pass("rivers", Target::Terrain, false));
+    }
     if cratered(kind) {
         for craters in ["craters0", "craters1", "craters2"] {
             plan.push(pass(craters, Target::Terrain, false));
@@ -322,7 +337,9 @@ fn plan(kind: Kind, moons: &[Moon]) -> Vec<Pass> {
     if let Some(last) = plan.last_mut() {
         last.mips_after.push(Target::Terrain);
     }
-    plan.push(pass("climate", Target::Climate, true));
+    for (n, climate) in climate_pipelines(kind).iter().enumerate() {
+        plan.push(pass(climate, Target::Climate, n == 0));
+    }
     plan.push(pass("relief", Target::Relief, true));
     plan.push(pass(day_pipeline(kind), Target::Day, true));
     let lights = match kind {
@@ -366,7 +383,9 @@ fn plan(kind: Kind, moons: &[Moon]) -> Vec<Pass> {
         if let Some(last) = plan.last_mut() {
             last.mips_after.push(Target::MoonTerrain);
         }
-        plan.push(moon_pass("climate", Target::MoonClimate, true));
+        for (n, climate) in climate_pipelines(moon.kind).iter().enumerate() {
+            plan.push(moon_pass(climate, Target::MoonClimate, n == 0));
+        }
         plan.push(moon_pass("relief", Target::MoonRelief(i), true));
         if moon.kind == Kind::Volcanic {
             plan.push(moon_pass("glow", Target::MoonRelief(i), false));
@@ -622,15 +641,26 @@ impl Streamer {
         let mut labels = HashMap::new();
         let red = wgpu::ColorWrites::RED;
         let green = wgpu::ColorWrites::GREEN;
+        let rgb = wgpu::ColorWrites::COLOR;
+        let alpha = wgpu::ColorWrites::ALPHA;
+        let red_green = wgpu::ColorWrites::RED | wgpu::ColorWrites::GREEN;
+        let blue_alpha = wgpu::ColorWrites::BLUE | wgpu::ColorWrites::ALPHA;
         for (name, layout, entry, format, blend, mask, group) in [
             ("probe", h, "fs_height", PROBE, None, all, 0),
             ("height", h, "fs_height", HEIGHT, None, all, 0),
             ("erosion", h, "fs_erosion", HEIGHT, Some(add), all, 0),
+            ("rivers", h, "fs_erosion", HEIGHT, Some(add), all, 1),
             ("craters0", h, "fs_craters", HEIGHT, Some(add), all, 0),
             ("craters1", h, "fs_craters", HEIGHT, Some(add), all, 1),
             ("craters2", h, "fs_craters", HEIGHT, Some(add), all, 2),
             ("sky", h, "fs_sky", SKY, None, all, 0),
             ("climate", sl, "fs_climate", CLIMATE, None, all, 0),
+            ("climate1", sl, "fs_climate", CLIMATE, None, rgb, 1),
+            ("climate2", sl, "fs_climate", CLIMATE, None, alpha, 2),
+            ("climate6", sl, "fs_climate", CLIMATE, None, rgb, 6),
+            ("climate5", sl, "fs_climate", CLIMATE, None, wgpu::ColorWrites::BLUE, 5),
+            ("climate3", sl, "fs_climate", CLIMATE, None, red_green, 3),
+            ("climate4", sl, "fs_climate", CLIMATE, None, blue_alpha, 4),
             ("relief", sl, "fs_relief", RELIEF, None, all, 0),
             ("day0", sl, "fs_day", DAY, None, all, 0),
             ("day1", sl, "fs_day", DAY, None, all, 1),

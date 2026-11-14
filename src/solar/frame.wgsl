@@ -110,7 +110,7 @@ struct Params {
     spool: vec4<f32>,
     // The stopover between legs of the jump, and what is seen inside a leg
     // (`EV_*` in `encounter.wgsl`).
-    ev: array<vec4<f32>, 12>,
+    ev: array<vec4<f32>, 28>,
     bodies: array<Body, 16>,
 };
 

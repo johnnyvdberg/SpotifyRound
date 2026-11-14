@@ -109,7 +109,10 @@ type ModelDraw = (u32, (u32, u32, i32), std::ops::Range<u32>);
 const MODEL_INSTANCES: usize = 1024;
 
 /// Rows of the stopover's parameters (`Params::ev`).
-const EV_ROWS: usize = 12;
+const EV_ROWS: usize = 12 + 2 * BATTLE_SHIPS;
+/// Ships in a battle, placed once a frame into `Params::ev` from row 12
+/// (`fleet_rows`, read by `battle_ship` in `encounter.wgsl`).
+const BATTLE_SHIPS: usize = 8;
 /// Rocks or debris drawn round the ship in a stopover (`vs_rock`).
 const ROCKS: u32 = 260;
 /// Vertices of the ship's own effects' quad (`vs_overlay`).
@@ -911,19 +914,21 @@ impl Solar {
         }
         // A battle's effects over its meshes, each pixel at the depth of the
         // nearest effect in it (`fs_battle_fx`).
-        pipelines.insert(
-            "battlefx".to_string(),
-            make(
-                "Solar battle effects",
-                "vs_background",
-                "fs_battle_fx",
-                add,
-                &[],
-                Some(false),
-                wgpu::ColorWrites::ALL,
-                false,
-            ),
-        );
+        for part in 1..=3 {
+            pipelines.insert(
+                format!("battlefx{part}"),
+                make(
+                    &format!("Solar battle effects {part}"),
+                    "vs_background",
+                    "fs_battle_fx",
+                    add,
+                    &[("FX", part as f64)],
+                    Some(false),
+                    wgpu::ColorWrites::ALL,
+                    false,
+                ),
+            );
+        }
         pipelines.insert(
             "overlay".to_string(),
             make(
@@ -1828,6 +1833,7 @@ impl Solar {
                     ev[7][3] = -1.0;
                     (ev[10][0], ev[2][3], ev[3][3], ev[4][3]) = (0.0, 0.0, 0.0, 0.0);
                 }
+                fleet_rows(&mut ev);
                 ev
             },
             bodies: list,
@@ -2121,9 +2127,12 @@ impl Solar {
                 if e == voyage::Event::Battle {
                     // Its fire, shields and blasts, after the ships and wreckage, tested
                     // against them at their own depths.
-                    let (label, pipeline) = &self.pipelines["battlefx"];
-                    pass.set_pipeline(pipeline);
-                    crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                    // In three passes, each within the V3D's registers (`FX`).
+                    for part in 1..=3 {
+                        let (label, pipeline) = &self.pipelines[&format!("battlefx{part}")];
+                        pass.set_pipeline(pipeline);
+                        crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                    }
                 }
                 if e.rocks() {
                     let (label, pipeline) = &self.pipelines[&format!("rocks{}", e.id())];
@@ -2946,6 +2955,94 @@ fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel
 /// the event, how far into it and its draw; the ship in its frame, and the
 /// frame's axes; its objects, rotation and own numbers; the alarm, how much
 /// of it shows and what is seen inside a leg; and where a hit lands.
+/// WGSL's `hash_cell` (`frame.wgsl`), to the same bits.
+fn hash_cell(p: [f32; 3]) -> f32 {
+    let fract = |x: f32| x - x.floor();
+    let mut q = [fract(p[0] * 0.1031), fract(p[1] * 0.1030), fract(p[2] * 0.0973)];
+    let k = q[0] * (q[1] + 33.33) + q[1] * (q[2] + 33.33) + q[2] * (q[0] + 33.33);
+    q = q.map(|x| x + k);
+    fract((q[0] + q[1]) * q[2])
+}
+
+/// A battle's ships where they are this frame, as `battle_ship` in
+/// `encounter.wgsl` would place them, into rows 12 on of the stopover's
+/// parameters: two rows a ship, where it is and its size, which way it heads
+/// and how hard the shock strikes it. Worked out once here rather than for
+/// every pixel and vertex.
+fn fleet_rows(ev: &mut [[f32; 4]; EV_ROWS]) {
+    if ev[0][0] as u32 != voyage::Event::Battle.id() {
+        return;
+    }
+    let t = ev[0][1];
+    let (o, seed) = (ev[5], ev[9][0]);
+    let (fa, fb) = (ev[6][0] as usize, ev[6][1] as usize);
+    let faction = |i: usize| if i >= 4 { fb } else { fa };
+    let size = |i: usize| {
+        const BIG: [f32; 6] = [13.0, 32.0, 9.5, 27.0, 9.5, 40.0];
+        const SMALL: [f32; 6] = [7.0, 4.0, 2.4, 13.0, 6.5, 9.0];
+        let f = faction(i).min(5);
+        if i == 0 || i == 4 { BIG[f] } else { SMALL[f] }
+    };
+    let norm = |v: [f32; 3]| {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9);
+        v.map(|x| x / l)
+    };
+    let course = |i: usize, t: f32| -> ([f32; 3], [f32; 3]) {
+        let fi = i as f32;
+        let fleet = if i >= 4 { -1.0 } else { 1.0 };
+        let capital = i == 0 || i == 4;
+        let h = [1.0, 2.0, 3.0, 4.0].map(|k| hash_cell([fi, seed, k]));
+        let rate = if capital { 0.015 * fleet } else { (0.06 + 0.05 * h[0]) * fleet };
+        let a = t * rate
+            + if capital { 0.0 } else { h[1] * std::f32::consts::TAU }
+            + if i >= 4 { std::f32::consts::PI } else { 0.0 }
+            + 0.6;
+        let r = if capital { o[3] * 0.55 } else { o[3] * (0.4 + 0.5 * h[2]) };
+        let y = if capital { (h[3] - 0.5) * o[3] * 0.15 } else { (h[3] - 0.5) * o[3] * 0.45 }
+            + (t * 0.4 + fi).sin() * 3.0;
+        let p = [o[0] + a.cos() * r, o[1] + y, o[2] + a.sin() * r * 0.65];
+        let heading = if capital {
+            norm([-a.sin(), 0.0, a.cos()])
+        } else {
+            norm([-a.sin() * fleet, 0.05 * (t * 0.4 + fi).cos(), a.cos() * 0.65 * fleet])
+        };
+        (p, heading)
+    };
+    let (kill, lost) = (ev[6][2], ev[7][3] as i32);
+    let (blast, speed) = ([ev[8][0], ev[8][1], ev[8][2]], ev[8][3]);
+    let ship = [ev[1][0], ev[1][1], ev[1][2]];
+    for i in 0..BATTLE_SHIPS {
+        let s = size(i);
+        let (at, heading, jolt) = if ev[9][1] > 0.5 {
+            // The screenshots' showcase: the one ship asked for, alone,
+            // ahead of the camera at a distance by its size, three-quarters.
+            let shown = i as f32 == ev[9][2];
+            let at = [ship[0], ship[1], ship[2] + if shown { s * 3.3 } else { -1e4 }];
+            (at, norm([-0.78, -0.18, -0.6]), 0.0)
+        } else if i as i32 == lost {
+            // Flown to the blast as it dies.
+            let (p, heading) = course(i, t);
+            let then = course(i, kill).0;
+            (std::array::from_fn(|k| p[k] + blast[k] - then[k]), heading, 0.0)
+        } else {
+            // Shoved aside by its shock as it passes.
+            let (p, heading) = course(i, t);
+            let away: [f32; 3] = std::array::from_fn(|k| p[k] - blast[k]);
+            let dist = (away[0] * away[0] + away[1] * away[1] + away[2] * away[2]).sqrt();
+            let away = norm(away);
+            let age = t - kill - dist / speed;
+            let strength = 26.0 / (1.0 + s / 6.0) * (-dist / 260.0).exp();
+            let x = (age / 2.2).clamp(0.0, 1.0);
+            let shove = strength * x * x * (3.0 - 2.0 * x);
+            let jolt = (-(age / 0.5).powi(2)).exp() * if age >= -1.0 { 1.0 } else { 0.0 };
+            let at = std::array::from_fn(|k| p[k] + away[k] * shove);
+            (at, norm(std::array::from_fn(|k| heading[k] + away[k] * 0.35 * jolt)), jolt)
+        };
+        ev[12 + 2 * i] = [at[0], at[1], at[2], s];
+        ev[13 + 2 * i] = [heading[0], heading[1], heading[2], jolt];
+    }
+}
+
 fn encounter_rows(view: &View) -> [[f32; 4]; EV_ROWS] {
     let mut ev = [[0.0f32; 4]; EV_ROWS];
     let v4 = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];

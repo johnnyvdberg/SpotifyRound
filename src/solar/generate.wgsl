@@ -5,12 +5,14 @@
 // It runs as many small pipelines, each within the V3D's four-thread
 // register budget, a band of rows per frame (`stream.rs`):
 //
-// - `fs_height`: the large shapes and mountains; `fs_erosion` and
-//   `fs_craters` added on top. Craters also leave their rays' brightness in
-//   the terrain's green channel and calderas or cantaloupe cells in its blue,
-//   for the day colour to read without crater loops of its own.
+// - `fs_height`: the large shapes and mountains; `fs_erosion` (and its
+//   river valleys on living worlds) and `fs_craters` added on top. Craters
+//   also leave their rays' brightness in the terrain's green channel and
+//   calderas or cantaloupe cells in its blue, for the day colour to read
+//   without crater loops of its own.
 // - `fs_climate`: temperature, moisture, the coast's nearness and warmth, into
-//   a scratch map.
+//   a scratch map; for lava and ice worlds and deserts, what their day and
+//   night colours share or need worked out ahead, instead or besides.
 // - `fs_relief`: the normal map's slopes and the water mask (for moons, the
 //   third channel is left for `fs_glow`).
 // - `fs_day`: the colour, from all of the above.
@@ -164,6 +166,19 @@ fn craters(p: vec3<f32>, scale: f32, density: f32, seed: i32) -> vec2<f32> {
     return vec2<f32>(h / scale, rays);
 }
 
+// A hash of a point, 0..1, in floats: the V3D has no 32-bit integer
+// multiply, so `hash3`'s cost it four times over in registers, enough in
+// a loop to halve its threads.
+fn sq(x: f32) -> f32 {
+    return x * x;
+}
+
+fn hashf(p: vec3<f32>) -> f32 {
+    var q = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+
 // The edges of cells round points scattered one to a lattice cell (a
 // Voronoi diagram): how far `x` is from its cell's nearest edge (the true
 // distance, to the bisector of its two nearest points, so edges are straight
@@ -229,20 +244,18 @@ fn volcano_flows(p: vec3<f32>, scale: f32, seed: i32) -> f32 {
 }
 
 // A lava world's crust: plates of cooled basalt (cells of a warped
-// lattice, so they are irregular, some large, some broken small), and how
-// hot the seam is where `p` lies on one: each seam its own, many nearly
-// crusted over, a few running hot. x: distance to the plate's edge (0 on
-// a seam), y: the plate's own value, z: the seam's heat.
-fn lava_crust(p: vec3<f32>) -> vec3<f32> {
+// lattice, so they are irregular, some large, some broken small), worked
+// out a lattice at a time (`fine` false: the large plates, true: the small
+// ones broken out of some), each in a pipeline of its own as two would cost
+// the V3D half its threads; joined by `stored_crust`. x: distance to the
+// plate's edge (0 on a seam), y: the plate's own value.
+fn lava_plates(p: vec3<f32>, fine: bool) -> vec2<f32> {
     let o = gen.offsets;
     let warp = vec3<f32>(fbm(p * 3.0 + o[2].xyz, 3), fbm(p * 3.0 + o[3].xyz, 3), fbm(p * 3.0 + o[1].zyx, 3)) * 0.9;
-    let big = cell_edges(p * 14.0 + warp * 2.0 + o[0].xyz, 7);
-    let broken = cell_edges(p * 34.0 + warp * 4.0 + o[1].xyz, 11);
-    // Some plates shattered into smaller ones.
-    let shatter = step(0.62, big.y);
-    let edge = select(big.x, min(big.x, broken.x * 0.45), shatter > 0.5);
-    let heat = smoothstep(0.35, 1.0, noise(p * 7.0 + o[2].zxy) * 0.5 + 0.5 + big.y * 0.2);
-    return vec3<f32>(edge, select(big.y, broken.y, shatter > 0.5), heat);
+    if (fine) {
+        return cell_edges(p * 34.0 + warp * 4.0 + o[1].xyz, 11);
+    }
+    return cell_edges(p * 14.0 + warp * 2.0 + o[0].xyz, 7);
 }
 
 // Long fractures crossing an ice shell, as Europa's lineae: arcs of great
@@ -252,16 +265,23 @@ fn lineae(p: vec3<f32>) -> vec2<f32> {
     let o = gen.offsets;
     var band = 0.0;
     var ridge = 0.0;
+    // The waver and reach of every fracture from one fetch, shifted by each
+    // its own amount: a fetch inside the loop, or more values carried
+    // through it, cost the V3D half its threads.
+    let n = noised(p * 3.0 + o[1].xyz);
+    // Each world's own fractures.
+    let seed = floor(o[0].x * 13.0) + 77.0;
     for (var i = 0; i < 26; i++) {
         let fi = f32(i);
-        let pole = normalize(vec3<f32>(hash3(vec3<i32>(i, 1, 77)) - 0.5, hash3(vec3<i32>(i, 2, 77)) - 0.5, hash3(vec3<i32>(i, 3, 77)) - 0.5) + o[0].xyz * 0.01);
-        let wave = noise(p * 7.0 + vec3<f32>(fi * 3.7) + o[1].xyz) * 0.025;
-        let d = abs(dot(p, pole) + wave + (hash3(vec3<i32>(i, 4, 77)) - 0.5) * 0.6);
+        let h = vec4<f32>(hashf(vec3<f32>(fi, 1.0, seed)), hashf(vec3<f32>(fi, 2.0, seed)), hashf(vec3<f32>(fi, 3.0, seed)), hashf(vec3<f32>(fi, 4.0, seed)));
+        let pole = normalize(h.xyz - 0.5);
+        let wave = dot(n.yzw, h.yzx - 0.5) * 0.012;
+        let d = abs(dot(p, pole) + wave + (h.w - 0.5) * 0.6);
         // Each runs only part way round.
-        let along = smoothstep(-0.3, 0.2, noise(p * 1.3 + vec3<f32>(fi * 5.1)));
-        let width = 0.0018 + 0.004 * hash3(vec3<i32>(i, 5, 77));
+        let along = smoothstep(-0.3, 0.2, n.x * (h.x * 2.0 - 1.0) + dot(n.yzw, h.zxy - 0.5) * 0.3);
+        let width = 0.0018 + 0.004 * fract(h.w * 13.7);
         band = max(band, (1.0 - smoothstep(0.0, width, d)) * along);
-        ridge = max(ridge, exp(-pow((d - width * 1.6) / (width * 0.5), 2.0)) * along * step(0.5, hash3(vec3<i32>(i, 6, 77))));
+        ridge = max(ridge, exp(-sq((d - width * 1.6) / (width * 0.5))) * along * step(0.5, fract(h.y * 7.3)));
     }
     return vec2<f32>(band, ridge);
 }
@@ -348,16 +368,18 @@ fn fs_erosion(in: Varying) -> @location(0) vec4<f32> {
     }
     let s = shape(sphere_at(in.position.xy / gen.size.xy));
     let landish = smoothstep(-0.15, 0.25, s.base);
-    var detail = eroded(s.q * 9.0 + gen.offsets[2].zxy, 7) * (0.05 + 0.10 * landish) * (1.0 - 0.4 * gen.flags.z);
-    if (living(k)) {
-        // River valleys: narrow, branching channels cut into the land, a
-        // broad set and finer ones feeding them, where the warped noise
-        // crosses zero; shallower on the plains.
-        let warp = vec3<f32>(fbm(s.q * 5.0 + gen.offsets[1].xyz, 3)) * 0.35;
+    if (GROUP == 1) {
+        // River valleys (`GROUP` 1, a pass of their own, planned only for
+        // living worlds, to keep the V3D's four threads): narrow, branching
+        // channels cut into the land, a broad set and finer ones feeding
+        // them, where the warped noise crosses zero; shallower on the plains.
+        let warp = noised(s.q * 5.0 + gen.offsets[1].xyz).yzw * 0.06;
         let trunk = 1.0 - smoothstep(0.0, 0.06, abs(noise(s.q * 11.0 + warp + gen.offsets[3].xyz)));
         let branch = 1.0 - smoothstep(0.0, 0.08, abs(noise(s.q * 29.0 + warp * 2.0 + gen.offsets[0].xyz)));
-        detail -= (trunk * 0.009 + branch * 0.004) * landish * smoothstep(0.0, 0.12, s.base + 0.1);
+        let cut = (trunk * 0.009 + branch * 0.004) * landish * smoothstep(0.0, 0.12, s.base + 0.1);
+        return vec4<f32>(-cut, 0.0, 0.0, 0.0);
     }
+    let detail = eroded(s.q * 9.0 + gen.offsets[2].zxy, 7) * (0.05 + 0.10 * landish) * (1.0 - 0.4 * gen.flags.z);
     return vec4<f32>(detail, 0.0, 0.0, 0.0);
 }
 
@@ -561,6 +583,9 @@ struct Climate {
     temperature: f32,
     moisture: f32,
     near_coast: f32,
+    // The climate map's texel as it is stored (deserts keep their sands in
+    // its spare channels, `desert_sands`).
+    stored: vec4<f32>,
 };
 
 // Land or not, its edge eased over about a texel so coasts and the edges of
@@ -620,11 +645,77 @@ fn work_out_climate(position: vec2<f32>) -> Climate {
 }
 
 // Temperature, moisture, the coast's nearness and warmth, encoded for an
-// 8-bit map (temperatures from -0.5 to 1.5).
+// 8-bit map (temperatures from -0.5 to 1.5) (`GROUP` 0). Lava and ice worlds,
+// which need no climate, keep there instead what their day and night maps
+// share, worked out once, a pipeline for each part so that each keeps the
+// V3D's four threads: the lava crust's large plates (1, red and green), the
+// small ones (5, blue) and the flows from the vents (2, alpha); the ice
+// shell's lineae (3, red and green) and its finer cracks (4, blue and
+// alpha), read back by `stored_crust`. Deserts keep their sands in the
+// channels besides warmth (6, `desert_sands`).
 @fragment
 fn fs_climate(in: Varying) -> @location(0) vec4<f32> {
+    if (GROUP >= 1) {
+        let p = sphere_at(in.position.xy / gen.size.xy);
+        if (GROUP == 1) {
+            let big = lava_plates(p, false);
+            return vec4<f32>(edge_code(big.x), big.y, 0.0, 0.0);
+        } else if (GROUP == 5) {
+            return vec4<f32>(0.0, 0.0, edge_code(lava_plates(p, true).x), 0.0);
+        } else if (GROUP == 2) {
+            return vec4<f32>(0.0, 0.0, 0.0, volcano_flows(p, 9.0, 3));
+        } else if (GROUP == 6) {
+            return vec4<f32>(desert_sands(p, in.position.xy), 0.0);
+        } else if (GROUP == 3) {
+            return vec4<f32>(lineae(p), 0.0, 0.0);
+        }
+        let small = cell_edges(p * 28.0 + gen.offsets[1].xyz, 9);
+        return vec4<f32>(0.0, 0.0, edge_code(small.x), small.y);
+    }
     let c = work_out_climate(in.position.xy);
     return vec4<f32>((c.temperature + 0.5) * 0.5, c.moisture, c.near_coast, (c.warmth + 0.5) * 0.5);
+}
+
+// What a desert's day colour needs worked out ahead, kept in the climate
+// map's channels a desert does not use (`GROUP` 6): how much its dune
+// crests (along the wind, east to west, wavering, in the lowlands' dune
+// seas) pale the sand, how much its dark wind streaks darken it, and how
+// much its patches of another colour show.
+fn desert_sands(p: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
+    let o = gen.offsets;
+    let low = 1.0 - land_of(textureLoad(terrain, vec2<i32>(position), 0).r - gen.size.z);
+    let wind = vec3<f32>(p.x, p.y * 6.0, p.z) * 40.0;
+    let crest = 0.5 + 0.5 * sin(dot(p, vec3<f32>(0.0, 90.0, 0.0)) + noise(wind * 0.25 + o[1].zxy) * 6.0);
+    let dunes = smoothstep(0.1, 0.4, low + smoothstep(-0.2, 0.2, fbm(p * 3.0 + o[2].zyx, 3)) * 0.5);
+    let streak = smoothstep(0.3, 0.65, fbm(vec3<f32>(p.x * 22.0, p.y * 5.0, p.z * 22.0) + o[3].zxy, 4));
+    let patches = smoothstep(0.2, 0.6, fbm(p * 18.0 + o[2].xyz, 4)) * 0.25;
+    return vec3<f32>(crest * 0.35 * dunes, streak * 0.25 * (1.0 - dunes), patches);
+}
+
+// A distance to a cell's edge in 8 bits, finest near the edge, up to 0.25.
+fn edge_code(x: f32) -> f32 {
+    return sqrt(clamp(x * 4.0, 0.0, 1.0));
+}
+
+// What `fs_climate` kept for a lava or ice world, its edge distances
+// decoded. Lava: x the distance to the plate's edge (0 on a seam), y the
+// plate's own value, z the seam's heat (each seam its own, many nearly
+// crusted over, a few running hot), w the flows. Ice: the lineae (as
+// `lineae`), the finer cracks' edge and their cells' values.
+fn stored_crust(position: vec2<f32>) -> vec4<f32> {
+    let s = textureLoad(climate_map, vec2<i32>(position), 0);
+    if (kind() == LAVA) {
+        let big = s.r * s.r * 0.25;
+        let broken = s.b * s.b * 0.25;
+        // Some plates shattered into smaller ones.
+        let shatter = s.g > 0.62;
+        let edge = select(big, min(big, broken * 0.45), shatter);
+        let plate = select(s.g, fract(s.g * 7.13 + broken * 9.0), shatter);
+        let p = sphere_at(position / gen.size.xy);
+        let heat = smoothstep(0.35, 1.0, noise(p * 7.0 + gen.offsets[2].zxy) * 0.5 + 0.5 + s.g * 0.2);
+        return vec4<f32>(edge, plate, heat, s.a);
+    }
+    return vec4<f32>(s.r, s.g, s.b * s.b * 0.25, s.a);
 }
 
 fn climate(position: vec2<f32>) -> Climate {
@@ -635,6 +726,7 @@ fn climate(position: vec2<f32>) -> Climate {
     c.land = land_of(c.e);
     c.lat = asin(clamp(c.p.y, -1.0, 1.0));
     let stored = textureLoad(climate_map, vec2<i32>(position), 0);
+    c.stored = stored;
     c.temperature = stored.r * 2.0 - 0.5;
     c.moisture = stored.g;
     c.near_coast = stored.b;
@@ -737,21 +829,17 @@ fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
     let low = 1.0 - c.land;
     let grain = fbm(p * 60.0 + o[1].yxz, 4);
     if (k == DESERT) {
-        // Rust and ochre, darker basalt lowlands, polar caps.
+        // Rust and ochre, darker basalt lowlands, polar caps; patches of
+        // another colour, paler sand on the crests of the lowlands' dune
+        // seas, dark streaks blown out from the heights (these three worked
+        // out ahead by `desert_sands`, to keep the V3D's four threads here);
+        // layered rock where the ground is high and steep.
         let tone = smoothstep(-0.3, 0.4, fbm(p * 5.0 + o[0].xyz, 5));
         var ground = mix(pal(0), pal(2), tone * 0.6);
         ground = mix(ground, pal(1), low * 0.7 + smoothstep(0.1, 0.35, steep) * 0.3);
-        ground = mix(ground, pal(3), smoothstep(0.2, 0.6, fbm(p * 18.0 + o[2].xyz, 4)) * 0.25);
-        // Seas of dunes in the lowlands, their crests along the wind (east
-        // to west, wavering), paler sand on them; dark streaks blown out
-        // from the heights; layered rock where the ground is high and steep.
-        let wind = vec3<f32>(p.x, p.y * 6.0, p.z) * 40.0;
-        let crest = 0.5 + 0.5 * sin(dot(p, vec3<f32>(0.0, 90.0, 0.0)) + noise(wind * 0.25 + o[1].zxy) * 6.0);
-        let dunes = smoothstep(0.1, 0.4, low + smoothstep(-0.2, 0.2, fbm(p * 3.0 + o[2].zyx, 3)) * 0.5);
-        ground = mix(ground, mix(ground, pal(0) * 1.25, crest * 0.5), dunes * 0.7);
-        let streak = smoothstep(0.3, 0.65, fbm(vec3<f32>(p.x * 22.0, p.y * 5.0, p.z * 22.0) + o[3].zxy, 4));
-        ground = mix(ground, pal(1) * 0.8, streak * 0.3 * (1.0 - dunes));
-        let strata = 0.5 + 0.5 * sin(c.e * 160.0 + noise(p * 9.0) * 2.0);
+        ground = mix(ground, pal(3), c.stored.b);
+        ground = mix(ground, pal(0) * 1.25, c.stored.r) * (1.0 - c.stored.g);
+        let strata = 0.5 + 0.5 * sin(c.e * 160.0 + tone * 4.0);
         ground *= mix(1.0, 0.8 + 0.35 * strata, smoothstep(0.08, 0.3, steep) * smoothstep(0.0, 0.15, c.e));
         let cap = smoothstep(0.2, 0.12, c.warmth + 0.05 * fbm(p * 12.0, 3));
         ground = mix(ground, srgb(236.0, 232.0, 226.0), cap);
@@ -761,8 +849,9 @@ fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
         // fractures (the edges of cells), the big ones doubled ridges with
         // a reddish-brown band of salts between, finer ones crossing them,
         // and patches of jumbled chaos ice stained the same.
-        let lines = lineae(p);
-        let small = cell_edges(p * 28.0 + o[1].xyz, 9);
+        let kept = stored_crust(c.uv * gen.size.xy);
+        let lines = kept.xy;
+        let small = kept.zw;
         let stain = srgb(150.0, 104.0, 78.0);
         let fine = (1.0 - smoothstep(0.0, 0.012, small.x)) * 0.5;
         let chaos = smoothstep(0.4, 0.65, fbm(p * 7.0 + o[3].xyz, 4)) * smoothstep(0.5, 0.9, small.y);
@@ -777,7 +866,8 @@ fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
         // (browner the older), pale ash and sulphur on the heights; the
         // seams between dull red by day (their glow is the night map's). The
         // magma seas are crusted in floes, molten rock showing between them.
-        let crust_at = lava_crust(p);
+        let kept = stored_crust(c.uv * gen.size.xy);
+        let crust_at = kept.xyz;
         let tone = smoothstep(-0.3, 0.4, fbm(p * 14.0 + o[2].xyz, 4));
         var crust = mix(srgb(18.0, 16.0, 15.0), srgb(50.0, 45.0, 42.0), tone);
         crust = mix(crust, srgb(74.0, 60.0, 50.0), crust_at.y * 0.4);
@@ -786,7 +876,7 @@ fn rocky_day(k: i32, c: Climate, steep: f32, feature: vec2<f32>) -> vec3<f32> {
         // Seams thin and mostly dull: dark red-brown, only the hot ones
         // stand out.
         let seam = (1.0 - smoothstep(0.0, 0.02, crust_at.x)) * (0.15 + 0.85 * crust_at.z * crust_at.z);
-        let flows = volcano_flows(p, 9.0, 3);
+        let flows = kept.w;
         let ground = mix(crust, srgb(80.0, 22.0, 9.0), clamp(seam * 0.55 + flows * 0.5, 0.0, 1.0));
         // The seas: crusted floes, dull molten rock in the narrow gaps.
         let floes = (1.0 - smoothstep(0.005, 0.03, crust_at.x * (0.5 + crust_at.y))) * (0.3 + 0.7 * crust_at.z);
@@ -912,13 +1002,14 @@ fn fs_lights(in: Varying) -> @location(0) vec4<f32> {
         let o = gen.offsets;
         let c = climate(in.position.xy);
         var molten = 0.0;
-        let crust_at = lava_crust(p);
+        let kept = stored_crust(in.position.xy);
+        let crust_at = kept.xyz;
         if (GROUP == 1) {
             // The seas between their floes, hottest where the gaps are
             // widest; and the flows from the vents.
             let gap = 1.0 - smoothstep(0.0, 0.035, crust_at.x * (0.5 + crust_at.y));
             let sea = (1.0 - c.land) * (0.06 + 0.7 * gap * crust_at.z * crust_at.z);
-            molten = max(sea, volcano_flows(p, 9.0, 3) * c.land * 0.85);
+            molten = max(sea, kept.w * c.land * 0.85);
         } else {
             // The seams between the plates on land, each as hot as it is.
             // Most seams have nearly crusted over: a faint red; a few run
