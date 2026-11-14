@@ -864,4 +864,5 @@ from a screen that is waiting on something else.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The solar tour's nebula and plasma-storm gas is ported from
+[space-3d](https://github.com/wwwtyro/space-3d) by wwwtyro, released into the public domain under the Unlicense.
