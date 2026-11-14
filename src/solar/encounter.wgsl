@@ -1351,18 +1351,6 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
     return vec4<f32>(colour, 1.0);
 }
 
-// A bolt of light from `a` to `b`, `w` pixels wide.
-fn bolt(o: vec3<f32>, d: vec3<f32>, a: vec3<f32>, b: vec3<f32>, w: f32) -> f32 {
-    let span = length(b - a);
-    let m = (b - a) / max(span, 1e-3);
-    let near = ray_to_line(o, d, a, m);
-    if (near.y <= 0.0 || near.z < 0.0 || near.z > span) {
-        return 0.0;
-    }
-    let px = near.x / (near.y * params.frame.z);
-    return exp(-px * px / (2.0 * w * w)) * 1.6 + exp(-px / (w * 5.0)) * 0.12;
-}
-
 // A burst at `c` of radius `r`, `age` 0..1 through it: a white core going
 // orange, a soft shell.
 fn burst(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32, age: f32) -> vec3<f32> {
@@ -1386,7 +1374,8 @@ fn burst(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32, age: f32) -> vec3<f32
 
 fn ev_battle(d: vec3<f32>) -> vec4<f32> {
     // The background alone: the shock bending the stars behind its edge.
-    // Everything lit in the battle is `battle_fx`, drawn after the meshes.
+    // Everything lit in the battle is its effects (`vs_fx_*`), drawn after
+    // the meshes.
     let ship = ev_ship();
     let t = ev_t();
     let blast = blast_at();
@@ -1421,219 +1410,258 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(colour, alpha);
 }
 
-// Light added to a battle's effects, `at` along the ray: kept, and the
-// nearest distance along the ray at which anything shows (`w`), for the
-// depth the effects are tested at against the meshes.
-fn fx(acc: ptr<function, vec4<f32>>, light: vec3<f32>, at: f32) {
-    (*acc) = vec4<f32>((*acc).xyz + light, (*acc).w);
-    if (max(light.x, max(light.y, light.z)) > 0.015 && at > 0.0) {
-        (*acc).w = min((*acc).w, at);
-    }
-}
+// ---------------------------------------------------------------------------
+// The battle's effects: engines, shields flaring, beams and bolts, torpedoes
+// and their bursts, fighters, the lost ship's blast and its shock, stray
+// fire. Worked out on the CPU each frame (`battle_effects` in `mod.rs`), each
+// drawn on geometry bounded to where its light falls under half a step of
+// the 8-bit frame, after the meshes: tested against them at its own depth
+// (no `frag_depth`, so the depth test runs before shading), added. A ship in
+// front hides a laser; one behind does not. Light too dim to matter (under
+// `FX_BRIGHT`) is drawn apart, behind everything (`FX_FAR`), so a glow's
+// faint reach never shows over a mesh. Each kind its own pipelines, the
+// instance's four rows read its own way (`Fx` in `mod.rs`), the last how far
+// its light reaches: pixels round it, units round it, how far its front
+// stands towards the camera, and the part of that reach its bright light
+// keeps within (drawn at its own depth):
+// - `vs_fx_line`: a beam or bolt from `a` along unit `m` for `span`, a strip
+//   widened across the frame to its glow's reach (pixels), cut into pieces
+//   along it so the depth follows it.
+// - `vs_fx_spot`: a glint, burst or shield round its centre: a quad on the
+//   frame over the cone its light reaches (pixels, or units round it), at
+//   the depth of its front.
+// - `vs_fx_ring`: the blast's shock wave, an annulus in its plane.
+// ---------------------------------------------------------------------------
 
-// Everything lit in a battle: engines, shields flaring, beams and bolts,
-// torpedoes and their bursts, fighters, the lost ship's blast, stray fire.
-// Its colour, and the distance along the ray to the nearest of it.
-// Split by `FX` into three passes, added together (1: the ships' engines
-// and shields and the beams between them; 2: torpedoes; 3: fighters, the
-// blast and stray fire), as in one the V3D ran out of registers.
-override FX: i32 = 1;
-
-fn battle_fx(d: vec3<f32>) -> vec4<f32> {
-    let ship = ev_ship();
-    let t = ev_t();
-    let seed = params.ev[9].x;
-    let lost = battle_lost();
-    let kill = ev_obj(1).z;
-    let blast = blast_at();
-    let wave = shock_radius(t);
-    var acc = vec4<f32>(0.0, 0.0, 0.0, 1e9);
-    if (FX == 1) {
-    for (var i = 0; i < 8; i++) {
-        if (i == lost && t > kill) {
-            continue;
-        }
-        let s = battle_ship(i);
-        let c = s[0].xyz;
-        let size = s[0].w;
-        let faction = ship_faction(i);
-        let fwd = s[1].xyz;
-        // The shield: flaring where the shock strikes it, holding most of
-        // it back, the struck side brightest and crackling.
-        let jolt = s[1].w;
-        if (jolt > 0.01) {
-            let sh = sphere_hits(ship, d, c, size * 1.45);
-            if (sh.x > 0.0) {
-                let n = (ship + d * sh.x - c) / (size * 1.45);
-                let facing = max(dot(n, normalize(blast - c)), 0.0);
-                let v = c - ship;
-                let edge = length(v - d * dot(v, d)) / (size * 1.45);
-                let crackle = 0.6 + 0.4 * noise(n * 9.0 + vec3<f32>(t * 6.0));
-                let flare = (pow(facing, 10.0) * 0.7 * crackle + pow(edge, 14.0) * 0.35) * jolt;
-                fx(&acc, faction_shield(faction) * flare, sh.x);
-            }
-        }
-        // Engines.
-        let engine_at = c - fwd * size * 1.02;
-        let engine = point_pixels(ship, d, engine_at);
-        fx(&acc, mix(faction_shield(faction), vec3<f32>(1.0), 0.5) * glint(engine, 1.0 + size * 0.03) * 0.9, dot(engine_at - ship, d));
-    }
-    if (params.ev[9].y > 0.5) {
-        return acc;
-    }
-    // Fire between the fleets: each its own way. Beams, or bolts in short
-    // dashes for the wedge fleet.
-    for (var k = 0; k < 7; k++) {
-        let fk = f32(k);
-        let clock_ = t * 1.6 + fk * 0.37;
-        let bin = floor(clock_);
-        let on = fract(clock_);
-        if (on > 0.35) {
-            continue;
-        }
-        let h = hash_cell(vec3<f32>(bin, fk, seed));
-        let shooter = i32(h * 7.99);
-        let aim = (shooter / 4 * 4 + 4 + i32(fract(h * 13.0) * 3.99)) % 8;
-        if ((shooter == lost || aim == lost) && t > kill) {
-            continue;
-        }
-        let a = battle_ship(shooter)[0];
-        let b = battle_ship(aim)[0];
-        let faction = ship_faction(shooter);
-        let miss = (vec3<f32>(fract(h * 31.0), fract(h * 57.0), fract(h * 91.0)) - 0.5) * b.w * 3.0 * step(0.6, fract(h * 7.0));
-        let from_hull = a.xyz + normalize(b.xyz - a.xyz) * a.w * 0.6;
-        let to = b.xyz + miss;
-        let near = ray_to_line(ship, d, from_hull, normalize(to - from_hull));
-        var beam = bolt(ship, d, from_hull, to, select(1.1, 1.8, faction == 5)) * sin(on / 0.35 * PI);
-        if (faction == 1 || faction == 2) {
-            // Bolts: dashes flying along the line.
-            beam *= step(fract(near.z / length(to - from_hull) * 5.0 - on * 9.0), 0.3);
-        }
-        fx(&acc, mix(faction_fire(faction), vec3<f32>(1.0), 0.4) * beam * 1.4, near.y);
-        // Where a beam lands, its target's shield flares.
-        if (fract(h * 7.0) < 0.6 && on > 0.05) {
-            let sh = sphere_hits(ship, d, b.xyz, b.w * 1.45);
-            if (sh.x > 0.0) {
-                let n = (ship + d * sh.x - b.xyz) / (b.w * 1.45);
-                let facing = max(dot(n, normalize(a.xyz - b.xyz)), 0.0);
-                fx(&acc, faction_shield(ship_faction(aim)) * pow(facing, 5.0) * 0.7 * sin(on / 0.35 * PI), sh.x);
-            }
-        }
-    }
-    return acc;
-    }
-    // Torpedoes: glowing slugs arcing over with their trails, bursting on
-    // the target's shield.
-    if (FX == 2) {
-    for (var k = 0; k < 5; k++) {
-        let fk = f32(k);
-        let clock_ = t / 2.6 + fk * 0.23;
-        let bin = floor(clock_);
-        let phase = fract(clock_);
-        let h = hash_cell(vec3<f32>(bin, fk + 10.0, seed));
-        let shooter = i32(h * 7.99);
-        let aim = (shooter / 4 * 4 + 4 + i32(fract(h * 17.0) * 3.99)) % 8;
-        if ((shooter == lost || aim == lost) && t > kill - 2.0) {
-            continue;
-        }
-        let a = battle_ship(shooter)[0].xyz;
-        let goal = battle_ship(aim)[0];
-        let flight = clamp(phase / 0.7, 0.0, 1.0);
-        let arc = vec3<f32>(0.0, 1.0, 0.0) * sin(flight * PI) * 25.0;
-        let p = mix(a, goal.xyz, flight) + arc;
-        let tint = mix(faction_fire(ship_faction(shooter)), vec3<f32>(1.0, 0.25, 0.1), 0.5);
-        if (phase < 0.7) {
-            let pulse_ = 0.75 + 0.25 * sin(t * 30.0 + fk);
-            fx(&acc, tint * glint(point_pixels(ship, d, p), 2.0) * 1.6 * pulse_, dot(p - ship, d));
-            let back = mix(a, goal.xyz, max(flight - 0.12, 0.0)) + vec3<f32>(0.0, 1.0, 0.0) * sin(max(flight - 0.12, 0.0) * PI) * 25.0;
-            fx(&acc, tint * bolt(ship, d, back, p, 1.0) * 0.35, dot((back + p) * 0.5 - ship, d));
-        } else {
-            let age = (phase - 0.7) / 0.3;
-            let at = goal.xyz + normalize(a - goal.xyz) * goal.w * 1.45;
-            fx(&acc, burst(ship, d, at, max(goal.w * 0.7, 4.0), age) * 0.6, dot(at - ship, d) - goal.w);
-            let sh = sphere_hits(ship, d, goal.xyz, goal.w * 1.45);
-            if (sh.x > 0.0) {
-                let n = (ship + d * sh.x - goal.xyz) / (goal.w * 1.45);
-                let facing = max(dot(n, normalize(a - goal.xyz)), 0.0);
-                fx(&acc, faction_shield(ship_faction(aim)) * pow(facing, 4.0) * sq(1.0 - age) * 0.9, sh.x);
-            }
-        }
-    }
-    return acc;
-    }
-    // Fighters weaving round the wedge fleet, bolts flicking between them.
-    if (i32(ev_obj(1).x) == 1 || i32(ev_obj(1).y) == 1) {
-        let o = ev_obj(0);
-        for (var k = 0; k < 10; k++) {
-            let fk = f32(k);
-            let h = hash_cell(vec3<f32>(fk, seed, 21.0));
-            let a = t * (0.5 + 0.4 * h) + h * TAU;
-            let p = o.xyz + vec3<f32>(cos(a) * o.w * (0.3 + 0.5 * h), sin(a * 1.7 + fk) * o.w * 0.25, sin(a) * o.w * 0.5 * (0.4 + 0.6 * fract(h * 7.0)));
-            let vel = normalize(vec3<f32>(-sin(a) * o.w, cos(a * 1.7 + fk) * 1.7 * o.w * 0.25, cos(a) * o.w * 0.5));
-            let tint = select(vec3<f32>(1.0, 0.5, 0.3), vec3<f32>(0.6, 0.85, 1.0), k < 5);
-            let at = dot(p - ship, d);
-            fx(&acc, tint * glint(point_pixels(ship, d, p), 1.0) * 1.2, at);
-            fx(&acc, tint * bolt(ship, d, p - vel * 8.0, p, 0.6) * 0.25, at);
-            let shot_on = step(fract(t * 2.0 + h * 5.0), 0.15);
-            fx(&acc, select(vec3<f32>(0.3, 1.0, 0.3), vec3<f32>(1.0, 0.25, 0.2), k < 5) * bolt(ship, d, p + vel * 2.0, p + vel * 30.0, 0.8) * shot_on, at);
-        }
-    }
-    // The ship lost: a flash, a fireball and a ring of shock in its plane.
-    let age = (t - kill) / 5.0;
-    let blast_at_ray = dot(blast - ship, d);
-    fx(&acc, burst(ship, d, blast, 30.0, age) * 1.4, blast_at_ray - 30.0 * sqrt(max(age, 0.0)));
-    fx(&acc, vec3<f32>(1.0, 0.95, 0.9) * glint(point_pixels(ship, d, blast), 6.0) * exp(-max(t - kill, 0.0) * 3.0) * step(kill, t) * 3.0, blast_at_ray);
-    if (age > 0.0 && age < 1.0) {
-        let denom = dot(d, vec3<f32>(0.0, 1.0, 0.0));
-        if (abs(denom) > 1e-3) {
-            let tp = (blast.y - ship.y) / denom;
-            if (tp > 0.0) {
-                let q = ship + d * tp - blast;
-                let ring = bump((length(q) - wave) / (4.0 + wave * 0.05));
-                fx(&acc, vec3<f32>(0.7, 0.85, 1.0) * ring * sq(1.0 - age) * 0.7, tp);
-            }
-        }
-    }
-    // Stray fire: a beam past the ship, a torpedo bursting close by.
-    let laser_at = ev_obj(2).x;
-    if (t > laser_at && t < laser_at + 0.6) {
-        let a = battle_ship(4)[0].xyz;
-        let near = ship + vec3<f32>(ev_obj(1).w * 14.0, 6.0, 28.0);
-        let end = near + (near - a) * 0.5;
-        let beam = bolt(ship, d, a, end, 1.8) * sin((t - laser_at) / 0.6 * PI);
-        fx(&acc, mix(faction_fire(ship_faction(4)), vec3<f32>(1.0), 0.5) * beam * 2.0, ray_to_line(ship, d, a, normalize(end - a)).y);
-    }
-    let torpedo_at = ev_obj(2).y;
-    if (t > torpedo_at && t < torpedo_at + 3.5) {
-        let a = battle_ship(0)[0].xyz;
-        let near = ship + vec3<f32>(-ev_obj(1).w * 22.0, -8.0, 40.0);
-        let flight = (t - torpedo_at) / 1.1;
-        if (flight < 1.0) {
-            let p = mix(a, near, flight);
-            fx(&acc, vec3<f32>(1.0, 0.4, 0.2) * glint(point_pixels(ship, d, p), 2.4) * 2.0, dot(p - ship, d));
-        } else {
-            fx(&acc, burst(ship, d, near, 22.0, (t - torpedo_at - 1.1) / 2.4) * 1.2, dot(near - ship, d) - 10.0);
-        }
-    }
-    return acc;
-}
-
-// A battle's effects over the meshes, each pixel at the depth of the
-// nearest effect in it: a ship in front hides a laser, one behind does not.
-struct FxOut {
-    @location(0) colour: vec4<f32>,
-    @builtin(frag_depth) depth: f32,
+struct FxIn {
+    @location(0) a: vec4<f32>,
+    @location(1) b: vec4<f32>,
+    @location(2) colour: vec4<f32>,
+    @location(3) reach: vec4<f32>,
 };
 
-@fragment
-fn fs_battle_fx(in: Full) -> FxOut {
+struct FxOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) @interpolate(flat) a: vec4<f32>,
+    @location(1) @interpolate(flat) b: vec4<f32>,
+    @location(2) @interpolate(flat) colour: vec4<f32>,
+};
+
+// Nearest a battle effect's geometry comes to the camera, in units.
+const FX_NEAR: f32 = 0.5;
+
+// Whether a pipeline draws the effects' dim light, at the back of the depth
+// range, or their bright light at their own depths; and the light between.
+override FX_FAR: bool = false;
+const FX_BRIGHT: f32 = 0.015;
+
+// The part of an effect's reach this pipeline draws over.
+fn fx_part(reach: vec4<f32>) -> f32 {
+    return select(reach.w, 1.0, FX_FAR);
+}
+
+// An effect's light if this pipeline draws it.
+fn fx_keep(light: vec3<f32>) -> vec4<f32> {
+    let bright = max(light.x, max(light.y, light.z)) > FX_BRIGHT;
+    return vec4<f32>(select(vec3<f32>(0.0), light * params.ev[10].y, bright != FX_FAR), 0.0);
+}
+
+// A point in the encounter frame in the camera's frame.
+fn fx_cam(p: vec3<f32>) -> vec3<f32> {
+    let w = from_ev(p - ev_ship());
+    return vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
+}
+
+// A point in the camera's frame, `across` added on the frame (in its
+// tangents), clipped as the meshes are (`vs_ship`); behind the camera, a z
+// the clipper cuts at the near side. Dim light at the back.
+fn fx_clip(c: vec3<f32>, across: vec2<f32>) -> vec4<f32> {
+    let depth = clamp(c.z / (c.z + 400.0), 0.0, 0.999);
+    let xy = c.xy / params.frame.y + across * c.z;
+    return vec4<f32>(xy, select(select(c.z, depth * c.z, c.z > 0.0), c.z, FX_FAR), c.z);
+}
+
+fn fx_out(clip: vec4<f32>, v: FxIn) -> FxOut {
     var out: FxOut;
-    let dw = normalize(in.dir);
-    let lit = battle_fx(to_ev(dw));
-    let z = lit.w * dot(dw, params.forward.xyz);
-    out.colour = vec4<f32>(lit.xyz * params.ev[10].y, 0.0);
-    out.depth = select(clamp(z / (z + 400.0), 0.0, 0.999), 1.0, lit.w > 1e8 || z <= 0.0);
+    out.clip = clip;
+    out.a = v.a;
+    out.b = v.b;
+    out.colour = v.colour;
     return out;
+}
+
+// The pixel's ray in the encounter frame.
+fn fx_ray(position: vec4<f32>) -> vec3<f32> {
+    return to_ev(ray_at(position.xy));
+}
+
+// The two triangles of a quad: (along, across) of each corner, 0..1.
+fn fx_corner(k: u32) -> vec2<f32> {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+    );
+    return corners[k];
+}
+
+// Pieces a beam is cut into along it.
+const FX_PIECES: u32 = 8u;
+
+@vertex
+fn vs_fx_line(@builtin(vertex_index) index: u32, v: FxIn) -> FxOut {
+    var ca = fx_cam(v.a.xyz);
+    var cb = fx_cam(v.a.xyz + v.b.xyz * v.b.w);
+    if (max(ca.z, cb.z) < FX_NEAR) {
+        return fx_out(vec4<f32>(0.0, 0.0, -1.0, 1.0), v);
+    }
+    // Only the part in front of the camera.
+    if (ca.z < FX_NEAR) {
+        ca = mix(ca, cb, (FX_NEAR - ca.z) / (cb.z - ca.z));
+    } else if (cb.z < FX_NEAR) {
+        cb = mix(cb, ca, (FX_NEAR - cb.z) / (ca.z - cb.z));
+    }
+    let k = fx_corner(index % 6u);
+    let s = (f32(index / 6u) + k.x) / f32(FX_PIECES);
+    let p = mix(ca, cb, s);
+    // Its way across the frame there, and the strip's sides at its reach,
+    // its ends pushed out as far.
+    let run = (cb.xy - ca.xy) * p.z - p.xy * (cb.z - ca.z);
+    let along = select(vec2<f32>(1.0, 0.0), normalize(run), dot(run, run) > 1e-12);
+    let side = vec2<f32>(-along.y, along.x);
+    let end = select(0.0, select(-1.0, 1.0, s > 0.5), s < 0.001 || s > 0.999);
+    let px = (side * (k.y * 2.0 - 1.0) + along * end) * v.reach.x * fx_part(v.reach);
+    return fx_out(fx_clip(p, px / params.frame.x), v);
+}
+
+// A beam or bolt: rows `a` (from, its width in pixels), `b` (unit way,
+// span), colour (w: dashes' phase, or -1 for a steady beam).
+@fragment
+fn fs_fx_line(in: FxOut) -> @location(0) vec4<f32> {
+    let d = fx_ray(in.clip);
+    let near = ray_to_line(ev_ship(), d, in.a.xyz, in.b.xyz);
+    if (near.y <= 0.0 || near.z < 0.0 || near.z > in.b.w) {
+        return vec4<f32>(0.0);
+    }
+    let w = in.a.w;
+    let px = near.x / (near.y * params.frame.z);
+    var light = exp(-px * px / (2.0 * w * w)) * 1.6 + exp(-px / (w * 5.0)) * 0.12;
+    if (in.colour.w >= 0.0) {
+        // Bolts: dashes flying along the line.
+        light *= step(fract(near.z / in.b.w * 5.0 - in.colour.w), 0.3);
+    }
+    return fx_keep(in.colour.rgb * light);
+}
+
+@vertex
+fn vs_fx_spot(@builtin(vertex_index) index: u32, v: FxIn) -> FxOut {
+    let c = fx_cam(v.a.xyz);
+    let dist = length(c);
+    // The cone its light reaches: pixels round it, or units round it; all
+    // round if the camera is inside.
+    let reach = v.reach.xy * fx_part(v.reach);
+    let cone = reach.x * params.frame.z + asin(min(reach.y / max(dist, 1e-3), 1.0)) + 1.5 * params.frame.z;
+    let u = c / max(dist, 1e-3);
+    var lo = vec2<f32>(-1.45);
+    var hi = vec2<f32>(1.45);
+    if (reach.y < dist * 0.999) {
+        // Its sides as seen in each of the frame's two planes through the
+        // camera's axis, wider off them.
+        let sx = asin(min(sin(cone) / sqrt(max(1.0 - u.y * u.y, 1e-6)), 1.0));
+        let sy = asin(min(sin(cone) / sqrt(max(1.0 - u.x * u.x, 1e-6)), 1.0));
+        let mid = vec2<f32>(atan2(c.x, c.z), atan2(c.y, c.z));
+        lo = max(mid - vec2<f32>(sx, sy), lo);
+        hi = min(mid + vec2<f32>(sx, sy), hi);
+        if (any(lo >= hi)) {
+            return fx_out(vec4<f32>(0.0, 0.0, -1.0, 1.0), v);
+        }
+    }
+    // At the depth of its front, a step towards the camera from its centre.
+    let z = max((dist - v.reach.z) * u.z, FX_NEAR);
+    let k = fx_corner(index);
+    let at = tan(mix(lo, hi, k));
+    return fx_out(fx_clip(vec3<f32>(0.0, 0.0, z), at / params.frame.y), v);
+}
+
+// A glint: rows `a` (where, its size), colour.
+@fragment
+fn fs_fx_glint(in: FxOut) -> @location(0) vec4<f32> {
+    let px = point_pixels(ev_ship(), fx_ray(in.clip), in.a.xyz);
+    return fx_keep(in.colour.rgb * glint(px, in.a.w));
+}
+
+// A burst: rows `a` (where, its radius), `b` (w: its age 0..1), colour.
+@fragment
+fn fs_fx_burst(in: FxOut) -> @location(0) vec4<f32> {
+    let light = burst(ev_ship(), fx_ray(in.clip), in.a.xyz, in.a.w, in.b.w);
+    return fx_keep(in.colour.rgb * light);
+}
+
+// A shield flaring where it is struck: rows `a` (its centre and radius), `b`
+// (unit way to what strikes it, how tightly round that it flares), colour.
+@fragment
+fn fs_fx_shield(in: FxOut) -> @location(0) vec4<f32> {
+    let ship = ev_ship();
+    let d = fx_ray(in.clip);
+    let sh = sphere_hits(ship, d, in.a.xyz, in.a.w);
+    if (sh.x <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let n = (ship + d * sh.x - in.a.xyz) / in.a.w;
+    let facing = max(dot(n, in.b.xyz), 0.0);
+    return fx_keep(in.colour.rgb * pow(facing, in.b.w));
+}
+
+// A shield struck by the blast's shock: holding most of it back, the struck
+// side brightest and crackling, its edge lit. Rows as `fs_fx_shield`, the
+// colour scaled by how hard the shock strikes.
+@fragment
+fn fs_fx_jolt(in: FxOut) -> @location(0) vec4<f32> {
+    let ship = ev_ship();
+    let d = fx_ray(in.clip);
+    let sh = sphere_hits(ship, d, in.a.xyz, in.a.w);
+    if (sh.x <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let n = (ship + d * sh.x - in.a.xyz) / in.a.w;
+    let facing = max(dot(n, in.b.xyz), 0.0);
+    let v = in.a.xyz - ship;
+    let edge = length(v - d * dot(v, d)) / in.a.w;
+    let crackle = 0.6 + 0.4 * noise(n * 9.0 + vec3<f32>(ev_t() * 6.0));
+    let flare = pow(facing, 10.0) * 0.7 * crackle + pow(edge, 14.0) * 0.35;
+    return fx_keep(in.colour.rgb * flare);
+}
+
+// Pieces round the shock wave's annulus.
+const FX_RING_PIECES: u32 = 64u;
+
+@vertex
+fn vs_fx_ring(@builtin(vertex_index) index: u32, v: FxIn) -> FxOut {
+    let k = fx_corner(index % 6u);
+    let turn_ = (f32(index / 6u) + k.x) / f32(FX_RING_PIECES) * TAU;
+    // Outer edge out past the circle's chords.
+    let wave = v.a.w;
+    let reach = 2.0 * v.b.x * fx_part(v.reach);
+    let r = select(max(wave - reach, 0.0), (wave + reach) / cos(PI / f32(FX_RING_PIECES)), k.y > 0.5);
+    let p = v.a.xyz + vec3<f32>(cos(turn_), 0.0, sin(turn_)) * r;
+    return fx_out(fx_clip(fx_cam(p), vec2<f32>(0.0)), v);
+}
+
+// The shock wave in the blast's plane: rows `a` (the blast, how far the wave
+// has come), `b` (x: its width), colour.
+@fragment
+fn fs_fx_ring(in: FxOut) -> @location(0) vec4<f32> {
+    let ship = ev_ship();
+    let d = fx_ray(in.clip);
+    if (abs(d.y) <= 1e-3) {
+        return vec4<f32>(0.0);
+    }
+    let tp = (in.a.y - ship.y) / d.y;
+    if (tp <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let q = ship + d * tp - in.a.xyz;
+    let ring = bump((length(q) - in.a.w) / in.b.x);
+    return fx_keep(in.colour.rgb * ring);
 }
 
 // ---------------------------------------------------------------------------
