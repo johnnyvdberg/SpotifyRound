@@ -2018,6 +2018,17 @@ fn vs_overlay(@builtin(vertex_index) index: u32) -> Full {
     return out;
 }
 
+// The overlay over the ring round the rim alone (`rim_vertex`): with only
+// the alarm showing, nothing inside the ring is lit.
+@vertex
+fn vs_overlay_rim(@builtin(vertex_index) index: u32) -> Full {
+    var out: Full;
+    out.position = vec4<f32>(rim_vertex(index), 0.0, 1.0);
+    out.dir = vec3<f32>(0.0);
+    out.face = 0u;
+    return out;
+}
+
 @fragment
 fn fs_overlay(in: Full) -> @location(0) vec4<f32> {
     let s = half_frame(in.position);

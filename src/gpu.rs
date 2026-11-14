@@ -734,12 +734,46 @@ pub fn counted_draw_indexed(
     });
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Parts of the labels of the draws left out (`skipped`).
+    static SKIP: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(
+        std::env::var("SOLAR_SKIP")
+            .map(|s| s.split(',').filter(|p| !p.is_empty()).map(String::from).collect())
+            .unwrap_or_default(),
+    );
+}
+
+/// Leave out the draws whose labels contain any of `parts` (`skipped`).
+#[cfg(test)]
+pub fn skip(parts: &[&str]) {
+    SKIP.with(|s| *s.borrow_mut() = parts.iter().map(|p| p.to_string()).collect());
+}
+
+/// Whether the benchmarks leave out the draws labelled `label`:
+/// `SOLAR_SKIP=<parts of labels>`, comma separated, or `skip`, to time each
+/// draw by what the frame is without it. Never in the app.
+pub fn skipped(label: &str) -> bool {
+    #[cfg(test)]
+    {
+        SKIP.with(|s| s.borrow().iter().any(|part| label.contains(part.as_str())))
+    }
+    #[cfg(not(test))]
+    {
+        let _ = label;
+        false
+    }
+}
+
 fn counted(
     pass: &mut wgpu::RenderPass<'_>,
     label: &str,
     covered: u64,
     draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
 ) {
+    if skipped(label) {
+        return;
+    }
     COUNTER.with(|c| {
         let mut c = c.borrow_mut();
         match c.as_mut() {

@@ -962,19 +962,24 @@ impl Solar {
                 ),
             );
         }
-        pipelines.insert(
-            "overlay".to_string(),
-            make(
-                "Solar ship overlay",
-                "vs_overlay",
-                "fs_overlay",
-                over,
-                &[],
-                Some(false),
-                wgpu::ColorWrites::ALL,
-                false,
-            ),
-        );
+        for (name, label, vertex) in [
+            ("overlay", "Solar ship overlay", "vs_overlay"),
+            ("overlayrim", "Solar ship overlay rim", "vs_overlay_rim"),
+        ] {
+            pipelines.insert(
+                name.to_string(),
+                make(
+                    label,
+                    vertex,
+                    "fs_overlay",
+                    over,
+                    &[],
+                    Some(false),
+                    wgpu::ColorWrites::ALL,
+                    false,
+                ),
+            );
+        }
         for (name, entry, blend) in [
             ("eclipse", "fs_eclipse", multiply),
             ("ringshadow", "fs_ring_shadow", multiply),
@@ -2013,9 +2018,37 @@ impl Solar {
         // instance buffer, and a draw for each group.
         let mut model_draws: Vec<ModelDraw> = Vec::new();
         if let Some(meshes) = &self.models {
-            let mut placed = model_instances(&self.view(t));
+            let view = self.view(t);
+            let mut placed = model_instances(&view);
             placed.truncate(MODEL_INSTANCES);
-            placed.sort_by_key(|(key, _)| (key.family(), format!("{key:?}")));
+            // A draw a mesh, the group with the nearest model first and the
+            // nearest first within each: the depth test then spares the
+            // pixels nearer models hide from the costly shading.
+            let ship = view.scene.as_ref().map_or([0.0; 3], |s| s.shot.ship);
+            let near = |i: &models::Instance| {
+                let d = [0, 1, 2].map(|k| i.place[k] as f64 - ship[k]);
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - i.place[3] as f64
+            };
+            let mut nearest: std::collections::HashMap<models::Key, f64> =
+                std::collections::HashMap::new();
+            for (key, instance) in &placed {
+                let d = near(instance);
+                nearest
+                    .entry(*key)
+                    .and_modify(|n| *n = n.min(d))
+                    .or_insert(d);
+            }
+            let mut order: Vec<(f64, String, f64, usize)> = placed
+                .iter()
+                .enumerate()
+                .map(|(i, (key, instance))| (nearest[key], format!("{key:?}"), near(instance), i))
+                .collect();
+            order.sort_by(|a, b| {
+                a.0.total_cmp(&b.0)
+                    .then_with(|| a.1.cmp(&b.1))
+                    .then_with(|| a.2.total_cmp(&b.2))
+            });
+            let placed: Vec<_> = order.iter().map(|o| placed[o.3]).collect();
             let mut flat = Vec::with_capacity(placed.len());
             for (key, instance) in &placed {
                 let at = flat.len() as u32;
@@ -2128,6 +2161,7 @@ impl Solar {
                 // its own, the one lost gone once it blows up.
                 if e == voyage::Event::Battle
                     && let Some(meshes) = &self.models
+                    && !crate::gpu::skipped("Solar ships")
                 {
                     pass.set_pipeline(&self.pipelines["ships"].1);
                     pass.set_vertex_buffer(0, meshes.vertices.slice(..));
@@ -2153,7 +2187,11 @@ impl Solar {
                 }
                 // The other models: rocks, gates, the crystal, hive cubes,
                 // ring stations, debris.
-                if let Some(meshes) = self.models.as_ref().filter(|_| !model_draws.is_empty()) {
+                if let Some(meshes) = self
+                    .models
+                    .as_ref()
+                    .filter(|_| !model_draws.is_empty() && !crate::gpu::skipped("Solar model"))
+                {
                     pass.set_vertex_buffer(0, meshes.vertices.slice(..));
                     pass.set_vertex_buffer(1, meshes.instances.slice(..));
                     pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -2282,10 +2320,19 @@ impl Solar {
                 .max(params.ev[2][3])
                 .max(params.ev[4][3])
                 .max(params.ev[3][3]);
-            if alarm > 0.01 {
+            // The alarm alone lights only the band round the rim (from 0.86
+            // of the radius out), and nothing below 0.3; a hit, the beam or
+            // a flash, the whole frame.
+            let whole = params.ev[2][3].max(params.ev[3][3]).max(params.ev[4][3]);
+            if whole > 0.01 {
                 let (label, pipeline) = &self.pipelines["overlay"];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..OVERLAY_VERTICES, 0..1);
+            } else if alarm > 0.3 {
+                let (label, pipeline) = &self.pipelines["overlayrim"];
+                pass.set_pipeline(pipeline);
+                let ring = full - (full as f64 * 0.82 * 0.82 * std::f64::consts::FRAC_PI_4) as u64;
+                crate::gpu::counted_draw(&mut pass, label, ring, 0..RIM_SIDES * 6, 0..1);
             }
         }
         gpu.submit(encoder.finish());
@@ -5243,6 +5290,10 @@ pub(crate) mod tests {
             .and_then(|s| s.parse().ok())
             .unwrap_or(11);
         let mut solar = Solar::with_seed(&gpu, seed);
+        // With the meshes, as the app has them seconds in: without, the
+        // stopovers that need them are swapped for others.
+        wait_for_models(&mut solar, &gpu);
+        solar.tour = tour_for(seed, 0, true, None);
         solar.drive_override = std::env::var("SWEEP_DRIVE")
             .ok()
             .and_then(|s| s.parse().ok());
@@ -5312,6 +5363,105 @@ pub(crate) mod tests {
                 "solar {label}: {:.2} ms a frame",
                 started.elapsed().as_secs_f64() * 1e3 / n as f64
             );
+        }
+    }
+
+    /// What each draw of a jump costs, in one process: for every encounter
+    /// (`SOLAR_ENCOUNTERS=<slugs>`, default all) on seed `SWEEP_SEED`
+    /// (default 23), a moment every `SWEEP_STEP` seconds (default 3) from
+    /// the drive spooling up to the next leg, timed with every draw and
+    /// then with each part of the frame left out. Prints a line a timing:
+    /// `cost <event> <phase> <t> <part> <ms>`, `all` for the whole frame.
+    #[test]
+    #[ignore = "a benchmark; needs a working GPU adapter"]
+    fn jump_costs() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let var = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(d)
+        };
+        let seed = var("SWEEP_SEED", 23.0) as u64;
+        let step = var("SWEEP_STEP", 3.0);
+        let only = std::env::var("SOLAR_ENCOUNTERS").ok();
+        let mut solar = Solar::with_seed(&gpu, seed);
+        wait_for_models(&mut solar, &gpu);
+        for event in voyage::Event::ALL {
+            if only
+                .as_ref()
+                .is_some_and(|o| !o.split(',').any(|s| s == event.slug()))
+            {
+                continue;
+            }
+            let mut parts = vec![
+                "Solar event ",
+                "Solar spool",
+                "Solar warp",
+                "Solar drop",
+                "Solar ship overlay",
+                "Solar space",
+                "Solar glare",
+                "Solar flux",
+            ];
+            match event {
+                voyage::Event::Battle => {
+                    parts.extend(["Solar ships", "Solar model", "Solar battle effects"])
+                }
+                voyage::Event::Asteroids | voyage::Event::Comet => {
+                    parts.extend(["Solar rocks", "Solar model"])
+                }
+                voyage::Event::Gate
+                | voyage::Event::HiveCube
+                | voyage::Event::Crystal
+                | voyage::Event::Derelict => parts.push("Solar model"),
+                _ => {}
+            }
+            solar.tour = tour_through(seed, vec![voyage::Stopover { event, variant: 7 }]);
+            let segments: Vec<_> = solar
+                .tour
+                .segments
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s.phase,
+                        Phase::Spool | Phase::Jump(_) | Phase::Stopover(_) | Phase::Rejump(_)
+                    )
+                })
+                .copied()
+                .collect();
+            for segment in segments {
+                let mut t = segment.start + 0.05;
+                while t < segment.start + segment.duration {
+                    settle(&mut solar, &gpu, t);
+                    let mut time = |solar: &mut Solar, skip: &[&str]| {
+                        crate::gpu::skip(skip);
+                        let n = 10;
+                        solar.draw(&gpu, t, 0);
+                        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                        let started = std::time::Instant::now();
+                        for i in 0..n {
+                            solar.draw(&gpu, t + i as f64 * 0.05, i % SLOTS);
+                        }
+                        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                        started.elapsed().as_secs_f64() * 1e3 / n as f64
+                    };
+                    let all = time(&mut solar, &[]);
+                    let phase = format!("{:?}", segment.phase);
+                    println!("cost {} {phase} {t:.1} all {all:.2}", event.slug());
+                    for part in &parts {
+                        let without = time(&mut solar, &[part]);
+                        println!(
+                            "cost {} {phase} {t:.1} {} {:.2}",
+                            event.slug(),
+                            part.trim().replace(' ', "_"),
+                            all - without
+                        );
+                    }
+                    crate::gpu::skip(&[]);
+                    t += step;
+                }
+            }
         }
     }
 }

@@ -2147,8 +2147,8 @@ struct Rim {
     @location(0) at: vec2<f32>,
 };
 
-@vertex
-fn vs_rim(@builtin(vertex_index) index: u32) -> Rim {
+// Vertex `index` of the ring round the rim, from `RIM_INNER` out.
+fn rim_vertex(index: u32) -> vec2<f32> {
     let side = index / 6u;
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
@@ -2158,7 +2158,12 @@ fn vs_rim(@builtin(vertex_index) index: u32) -> Rim {
     let angle = (f32(side) + c.x) * TAU / f32(RIM_SIDES);
     // Out past the panel's circle, so the polygon's flats cover it.
     let radius = mix(RIM_INNER * 0.98, 1.0 / cos(PI / f32(RIM_SIDES)), c.y);
-    let at = vec2<f32>(cos(angle), sin(angle)) * radius;
+    return vec2<f32>(cos(angle), sin(angle)) * radius;
+}
+
+@vertex
+fn vs_rim(@builtin(vertex_index) index: u32) -> Rim {
+    let at = rim_vertex(index);
     var out: Rim;
     out.position = vec4<f32>(at, 0.0, 1.0);
     out.at = at;
