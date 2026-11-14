@@ -18,8 +18,9 @@
 //   light, one pipeline per drive (`WARP`, `fs_warp`; with the flare at the
 //   heading in its last second, `FLARE`). Out at the jump point, the sky
 //   with the next jump's star marked (`fs_space_target`), then the drive
-//   starting up round that star, each drive in its own way, rising into its
-//   light as the jump begins (`fs_spool`). As the next visit begins, that
+//   starting up round that star, each drive in its own way, a pipeline a
+//   stage (`fs_spool`, `STAGE`), rising into its light as the jump begins
+//   (`fs_warp`, `RISING`, under it). As the next visit begins, that
 //   light over everything, torn open from the heading (`fs_drop_ahead`
 //   before the background, `fs_drop_out` after the bodies), so the jump
 //   ends without a cut.
@@ -141,6 +142,16 @@ override WARP: i32 = 1;
 // Whether a warp pipeline adds the flare at the heading: only the one drawn
 // in the jump's last second, so the rest of the jump has none of its code.
 override FLARE: bool = false;
+// Which stage of its preparation a drive's start-up pipeline draws: 1 to 3
+// the drive's own, 4 the engagement (`SPOOL_STAGES`; while it is aligning,
+// none of it shows), chosen on the CPU by how far it has come. The stages
+// before it are done and those after it not begun, so each pipeline has
+// only the terms that show then.
+override STAGE: i32 = 4;
+// Whether a warp pipeline is the drive's light rising as it engages: by how
+// far it has risen (`warp.x`), with its start-up added over it after
+// (`fs_spool`), not the calm sky.
+override RISING: bool = false;
 // Which of the stacked cloud layers drawn in low orbit (from 1): each a shell
 // a little higher, showing only the clouds dense enough to reach it.
 override LAYER: i32 = 1;
@@ -450,6 +461,9 @@ fn fs_warp(in: Full) -> @location(0) vec4<f32> {
     if (FLARE) {
         colour += flare(s, r) * params.warp.y;
     }
+    if (RISING) {
+        return vec4<f32>(colour * warp, 1.0);
+    }
     // In and out of the jump, the calm sky fades under the drive's light.
     // At full speed none of it shows: a branch the whole frame takes alike.
     var calm = vec3<f32>(0.0);
@@ -499,20 +513,34 @@ fn fs_space_target(in: Full) -> @location(0) vec4<f32> {
 }
 
 // How far each of the preparation's stages has come, 0..1: aligning, the
-// drive's own three, and the engagement (`SPOOL_STAGES`).
+// drive's own three, and the engagement (`SPOOL_STAGES`). Only the
+// pipeline's own stage is under way: those before it 1, those after it 0.
 fn spool_stages(p: f32) -> vec4<f32> {
     return vec4<f32>(
-        smoothstep01(0.16, 0.4, p),
-        smoothstep01(0.4, 0.66, p),
-        smoothstep01(0.66, 0.88, p),
-        smoothstep01(0.88, 1.0, p),
+        spool_stage(1, 0.16, 0.4, p),
+        spool_stage(2, 0.4, 0.66, p),
+        spool_stage(3, 0.66, 0.88, p),
+        spool_stage(4, 0.88, 1.0, p),
     );
+}
+
+fn spool_stage(stage: i32, e0: f32, e1: f32, p: f32) -> f32 {
+    if (STAGE > stage) {
+        return 1.0;
+    } else if (STAGE < stage) {
+        return 0.0;
+    }
+    return smoothstep01(e0, e1, p);
 }
 
 // How the drives that bend space bend the sky round the star at `r` from
 // it: the distance out to look instead, as a share of `r` (1: unbent).
 fn spool_bend(r: f32, p: f32, amount: f32) -> f32 {
     let k = spool_stages(p);
+    if (STAGE < 2) {
+        // Neither bends anything before its own stages.
+        return 1.0;
+    }
     if (WARP == 3) {
         // The fold draws the sky in toward the star.
         let pull = (0.45 * k.y + 0.4 * k.z + 0.3 * k.w) * amount;
@@ -531,7 +559,10 @@ fn spool_bend(r: f32, p: f32, amount: f32) -> f32 {
 fn bubble_shell(p: f32, theta: f32) -> f32 {
     let k = spool_stages(p);
     let t = params.warp.w;
-    let wobble = (1.0 - k.z) * 0.03 * sin(theta * 3.0 + t * 1.4) * sin(theta * 5.0 - t * 0.9);
+    var wobble = 0.0;
+    if (STAGE < 4) {
+        wobble = (1.0 - k.z) * 0.03 * sin(theta * 3.0 + t * 1.4) * sin(theta * 5.0 - t * 0.9);
+    }
     return mix(0.04, 0.78, smoothstep01(0.0, 1.0, k.y)) + wobble * k.y;
 }
 
@@ -548,66 +579,101 @@ fn spool_effect(r: f32, theta: f32, logr: f32, around: vec2<f32>, p: f32) -> vec
         // light converge, and a blue-white corona swells round it.
         let inward = streaks(theta, logr, 180.0, -5.0, 0.7, 5) * smoothstep01(0.06, 0.5, r);
         colour += vec3<f32>(0.6, 0.85, 1.0) * inward * k.x * 1.6;
-        let lens = mix(0.62, 0.1, k.y);
-        colour += vec3<f32>(0.7, 0.9, 1.0) * bump((r - lens) / 0.008) * k.y * (1.0 - 0.6 * k.w) * 0.8;
-        let fine = noise(vec3<f32>(around * 22.0, logr * 0.3 + t * 0.4));
-        colour += vec3<f32>(0.15, 0.55, 0.95) * smoothstep01(0.1, 0.8, fine) * exp(-r * 2.6) * k.z * 0.9;
-        colour += vec3<f32>(0.9, 0.97, 1.0) * exp(-r * 9.0) * (0.4 * k.y + 1.0 * k.z + 1.6 * k.w);
-        colour += vec3<f32>(0.3, 0.65, 1.0) * exp(-r * 3.0) * (0.25 * k.z + 0.5 * k.w);
+        if (STAGE >= 2) {
+            let lens = mix(0.62, 0.1, k.y);
+            colour += vec3<f32>(0.7, 0.9, 1.0) * bump((r - lens) / 0.008) * k.y * (1.0 - 0.6 * k.w) * 0.8;
+        }
+        if (STAGE >= 3) {
+            let fine = noise(vec3<f32>(around * 22.0, logr * 0.3 + t * 0.4));
+            colour += vec3<f32>(0.15, 0.55, 0.95) * smoothstep01(0.1, 0.8, fine) * exp(-r * 2.6) * k.z * 0.9;
+        }
+        if (STAGE >= 2) {
+            colour += vec3<f32>(0.9, 0.97, 1.0) * exp(-r * 9.0) * (0.4 * k.y + 1.0 * k.z + 1.6 * k.w);
+        }
+        if (STAGE >= 3) {
+            colour += vec3<f32>(0.3, 0.65, 1.0) * exp(-r * 3.0) * (0.25 * k.z + 0.5 * k.w);
+        }
     } else if (WARP == 2) {
         // Tachyon Tunnel: sparks of tachyons cast ahead, then a lattice of
         // rings running in to the star, cyan and magenta, split into
         // panels that spin up as the tunnel seals.
         let sparks = streaks(theta, logr, 150.0, -1.5, 0.12, 13) * smoothstep01(0.05, 0.35, r);
         colour += vec3<f32>(0.5, 0.95, 1.0) * sparks * k.x * (1.0 - 0.5 * k.z) * 1.2;
-        let reach = mix(1.5, 0.04, k.y);
-        // Formed from the edge inward: lit out past `reach`.
-        let rings = smoothstep01(0.75, 1.0, sin(logr * 14.0 + t * 7.0));
-        let lit = rings * smoothstep01(0.04, 0.3, r) * smoothstep01(reach - 0.1, reach + 0.1, r);
-        let panels = 0.55 + 0.45 * smoothstep01(-0.2, 0.6, cos(theta * 8.0 + logr * 1.5 + t * (0.6 + 2.4 * k.z)));
-        let hue = 0.5 + 0.5 * sin(logr * 3.0 + t * 2.0);
-        let tint = mix(vec3<f32>(0.1, 0.8, 1.0), vec3<f32>(1.0, 0.25, 0.85), hue);
-        colour += tint * lit * k.y * mix(1.0, panels, k.z) * (0.45 + 0.45 * k.z);
+        if (STAGE >= 2) {
+            let reach = mix(1.5, 0.04, k.y);
+            // Formed from the edge inward: lit out past `reach`.
+            // Only out past where they have formed to.
+            if (r > reach - 0.1) {
+                let rings = smoothstep01(0.75, 1.0, sin(logr * 14.0 + t * 7.0));
+                let lit = rings * smoothstep01(0.04, 0.3, r) * smoothstep01(reach - 0.1, reach + 0.1, r);
+                var split = 1.0;
+                if (STAGE >= 3) {
+                    let panels = 0.55 + 0.45 * smoothstep01(-0.2, 0.6, cos(theta * 8.0 + logr * 1.5 + t * (0.6 + 2.4 * k.z)));
+                    split = mix(1.0, panels, k.z);
+                }
+                let hue = 0.5 + 0.5 * sin(logr * 3.0 + t * 2.0);
+                let tint = mix(vec3<f32>(0.1, 0.8, 1.0), vec3<f32>(1.0, 0.25, 0.85), hue);
+                colour += tint * lit * k.y * split * (0.45 + 0.45 * k.z);
+            }
+        }
         colour += vec3<f32>(0.8, 0.95, 1.0) * exp(-r * 13.0) * (0.3 * k.x + 0.6 * k.z + 1.2 * k.w);
     } else if (WARP == 3) {
         // Fold Drive: a ping clearing the gravity well, then a crease of
         // bent light tightening on the star as space folds toward it, the
         // stars round it stretching in, white and reddening outward.
-        let ping = fract(t * 0.45);
-        colour += vec3<f32>(0.55, 0.65, 1.0) * bump((r - ping * 1.4) / 0.01) * (1.0 - ping) * k.x * (1.0 - k.y) * 0.7;
-        let crease = mix(1.1, 0.22, k.y);
-        let d = (r - crease) / (0.014 + 0.02 * k.z);
-        colour += vec3<f32>(bump(d + 1.2), bump(d), bump(d - 1.2)) * 0.5 * k.y;
-        colour += vec3<f32>(0.45, 0.6, 1.0) * bump(d * 0.25) * 0.25 * k.y;
-        let shift = mix(vec3<f32>(0.85, 0.92, 1.0), vec3<f32>(1.0, 0.62, 0.42), smoothstep01(0.2, 1.1, r));
-        colour += shift * streaks(theta, logr, 260.0, -2.5, 0.5, 31) * smoothstep01(0.03, 0.3, r) * k.z * 0.9;
-        colour += vec3<f32>(1.0, 0.97, 0.92) * exp(-r * 12.0) * (0.5 * k.z + 1.2 * k.w);
+        if (STAGE <= 2) {
+            let ping = fract(t * 0.45);
+            colour += vec3<f32>(0.55, 0.65, 1.0) * bump((r - ping * 1.4) / 0.01) * (1.0 - ping) * k.x * (1.0 - k.y) * 0.7;
+        }
+        if (STAGE >= 2) {
+            let crease = mix(1.1, 0.22, k.y);
+            let d = (r - crease) / (0.014 + 0.02 * k.z);
+            colour += vec3<f32>(bump(d + 1.2), bump(d), bump(d - 1.2)) * 0.5 * k.y;
+            colour += vec3<f32>(0.45, 0.6, 1.0) * bump(d * 0.25) * 0.25 * k.y;
+        }
+        if (STAGE >= 3) {
+            let shift = mix(vec3<f32>(0.85, 0.92, 1.0), vec3<f32>(1.0, 0.62, 0.42), smoothstep01(0.2, 1.1, r));
+            colour += shift * streaks(theta, logr, 260.0, -2.5, 0.5, 31) * smoothstep01(0.03, 0.3, r) * k.z * 0.9;
+            colour += vec3<f32>(1.0, 0.97, 0.92) * exp(-r * 12.0) * (0.5 * k.z + 1.2 * k.w);
+        }
     } else if (WARP == 4) {
         // Ion Slipstream: arcs crackling round the rim as the sheath
         // charges, then plasma curtains creeping in from every side and
         // streaming toward the star, teal and green.
-        let arcs = noise(vec3<f32>(around * 28.0, t * 5.0));
-        let crackle = (1.0 - smoothstep01(0.0, 0.06, abs(arcs))) * smoothstep01(0.78, 0.98, r);
-        colour += vec3<f32>(0.5, 1.0, 0.85) * crackle * k.x * (1.0 - 0.6 * k.z) * 1.4;
-        let front = mix(1.15, 0.12, smoothstep01(0.0, 1.0, k.y * 0.6 + k.z * 0.4));
-        let reached = smoothstep01(front - 0.12, front + 0.12, r);
-        let flow = noise(vec3<f32>(around * 7.0, logr * 0.9 + t * (0.4 + 1.2 * k.z)));
-        let filament = 1.0 - smoothstep01(0.0, 0.1, abs(flow));
-        let glow = (1.0 - smoothstep01(0.0, 0.45, abs(flow))) * 0.25;
-        let tint = mix(vec3<f32>(0.05, 0.95, 0.6), vec3<f32>(0.2, 0.55, 1.0), 0.5 + 0.5 * sin(theta * 2.0 + t * 0.3));
-        colour += tint * (filament + glow) * reached * k.y * 0.8;
-        colour += vec3<f32>(0.7, 1.0, 0.95) * exp(-r * 10.0) * (0.3 * k.y + 0.6 * k.z + 1.0 * k.w);
+        // Each only where it can light: the arcs past 0.78 of the half
+        // frame, the curtains past their front.
+        if (r > 0.78) {
+            let arcs = noise(vec3<f32>(around * 28.0, t * 5.0));
+            let crackle = (1.0 - smoothstep01(0.0, 0.06, abs(arcs))) * smoothstep01(0.78, 0.98, r);
+            colour += vec3<f32>(0.5, 1.0, 0.85) * crackle * k.x * (1.0 - 0.6 * k.z) * 1.4;
+        }
+        if (STAGE >= 2) {
+            let front = mix(1.15, 0.12, smoothstep01(0.0, 1.0, k.y * 0.6 + k.z * 0.4));
+            if (r > front - 0.12) {
+                let reached = smoothstep01(front - 0.12, front + 0.12, r);
+                let flow = noise(vec3<f32>(around * 7.0, logr * 0.9 + t * (0.4 + 1.2 * k.z)));
+                let filament = 1.0 - smoothstep01(0.0, 0.1, abs(flow));
+                let glow = (1.0 - smoothstep01(0.0, 0.45, abs(flow))) * 0.25;
+                let tint = mix(vec3<f32>(0.05, 0.95, 0.6), vec3<f32>(0.2, 0.55, 1.0), 0.5 + 0.5 * sin(theta * 2.0 + t * 0.3));
+                colour += tint * (filament + glow) * reached * k.y * 0.8;
+            }
+            colour += vec3<f32>(0.7, 1.0, 0.95) * exp(-r * 10.0) * (0.3 * k.y + 0.6 * k.z + 1.0 * k.w);
+        }
     } else {
         // Bubble Drive: motes of exotic matter circling the star, then the
         // bubble inflating from it out to its size for the jump, its wall a
         // ring split into colour, wobbling until drawn tight.
-        let motes = bump((r - 0.12) / 0.012) * smoothstep01(0.4, 1.0, sin(theta * 12.0 + t * 3.0));
-        colour += vec3<f32>(0.7, 0.45, 1.0) * motes * k.x * (1.0 - k.y) * 2.2;
-        let shell = bubble_shell(p, theta);
-        let ripple = 0.75 + 0.25 * sin(theta * 12.0 - t * 2.3) * sin(theta * 7.0 + t * 1.1);
-        let d = (r - shell) / 0.012;
-        let ring = vec3<f32>(bump(d - 1.0), bump(d), bump(d + 1.0));
-        colour += (ring * 1.3 + vec3<f32>(0.3, 0.45, 0.9) * bump(d * 0.3) * 0.3) * ripple * k.y;
+        if (STAGE <= 2) {
+            let motes = bump((r - 0.12) / 0.012) * smoothstep01(0.4, 1.0, sin(theta * 12.0 + t * 3.0));
+            colour += vec3<f32>(0.7, 0.45, 1.0) * motes * k.x * (1.0 - k.y) * 2.2;
+        }
+        if (STAGE >= 2) {
+            let shell = bubble_shell(p, theta);
+            let ripple = 0.75 + 0.25 * sin(theta * 12.0 - t * 2.3) * sin(theta * 7.0 + t * 1.1);
+            let d = (r - shell) / 0.012;
+            let ring = vec3<f32>(bump(d - 1.0), bump(d), bump(d + 1.0));
+            colour += (ring * 1.3 + vec3<f32>(0.3, 0.45, 0.9) * bump(d * 0.3) * 0.3) * ripple * k.y;
+        }
         colour += vec3<f32>(0.85, 0.92, 1.0) * exp(-r * 12.0) * (0.3 * k.x + 0.5 * k.z + 0.9 * k.w);
     }
     return colour;
@@ -616,7 +682,7 @@ fn spool_effect(r: f32, theta: f32, logr: f32, around: vec2<f32>, p: f32) -> vec
 // The tint the drives that bend space give the sky round the star: bluer
 // inside the bubble.
 fn spool_tint(r: f32, p: f32, amount: f32) -> vec3<f32> {
-    if (WARP == 5) {
+    if (WARP == 5 && STAGE >= 2) {
         let shell = bubble_shell(p, 0.0);
         let inside = (1.0 - smoothstep01(shell - 0.03, shell + 0.01, r)) * spool_stages(p).y * amount;
         return mix(vec3<f32>(1.0), vec3<f32>(0.75, 0.88, 1.25), inside);
@@ -625,9 +691,12 @@ fn spool_tint(r: f32, p: f32, amount: f32) -> vec3<f32> {
 }
 
 // The drive starting up at the jump point: the sky, bent by the drives that
-// bend space, the next star marked and the drive's start-up round it; and,
-// as it engages and on into the jump's first seconds, its light rising over
-// all of it from the heading.
+// bend space, the next star marked and the drive's start-up round it. As it
+// engages and on into the jump's first seconds, its light rises over all of
+// it from the heading: drawn first (`fs_warp`, `RISING`), this added over
+// it, faded as the light rises. Two draws within four threads where the
+// two in one shader needed twice the registers; added, light past what the
+// display shows saturates alike.
 @fragment
 fn fs_spool(in: Full) -> @location(0) vec4<f32> {
     let half = params.frame.x;
@@ -648,10 +717,8 @@ fn fs_spool(in: Full) -> @location(0) vec4<f32> {
         colour += target_star(q) * params.goal.w;
         colour += spool_effect(r, atan2(q.y, q.x), log(r), q / r, p) * amount;
     }
-    let warp = params.warp.x;
-    if (warp > 0.001) {
-        let rs = max(length(s), 1e-4);
-        colour = mix(colour, warp_light(rs, atan2(s.y, s.x), log(rs), s / rs), warp);
+    if (STAGE >= 4) {
+        colour *= 1.0 - params.warp.x;
     }
     return vec4<f32>(colour, 1.0);
 }

@@ -686,9 +686,21 @@ Solar burn rim #0                vs_rim         VS-bin    64   4     0   39    1
 Solar space target #0            fs_space_target FS       158   4     0   50    19        0:0    3   14
 Solar space target #0            vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar space target #0            vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar spool Lumen Drift #0       fs_spool       FS       683   2     0  244    40        0:0    1   26
-Solar spool Lumen Drift #0       vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar spool Lumen Drift #0       vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Lumen Drift stage 1 #0 fs_spool       FS       300   4     0  104    23        0:0    1   22
+Solar spool Lumen Drift stage 1 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Lumen Drift stage 1 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Lumen Drift stage 2 #0 fs_spool       FS       315   4     0  115    25        0:0    0   23
+Solar spool Lumen Drift stage 2 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Lumen Drift stage 2 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Lumen Drift stage 3 #0 fs_spool       FS       379   4     0  130    30        0:0    2   29
+Solar spool Lumen Drift stage 3 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Lumen Drift stage 3 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Lumen Drift stage 4 #0 fs_spool       FS       390   4     0  135    30        0:0    2   28
+Solar spool Lumen Drift stage 4 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Lumen Drift stage 4 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Lumen Drift light #0 fs_warp        FS       305   2     0  112    40        0:0    0    5
+Solar spool Lumen Drift light #0 vs_background  VS        32   4     0   22     7        0:0    0    1
+Solar spool Lumen Drift light #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar warp Lumen Drift #0        fs_warp        FS       333   2     0  119    43        0:0    0    4
 Solar warp Lumen Drift #0        vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar warp Lumen Drift #0        vs_background  VS-bin    31   4     0   22     7        0:0    0    0
@@ -701,9 +713,21 @@ Solar drop ahead Lumen Drift #0  vs_drop_ahead  VS-bin    79   4     0   45    1
 Solar drop out Lumen Drift #0    fs_drop_out    FS       394   2     0  142    50        0:0    0   10
 Solar drop out Lumen Drift #0    vs_drop_behind VS        71   4     0   33     9        0:0    0    7
 Solar drop out Lumen Drift #0    vs_drop_behind VS-bin    74   4     0   34     9        0:0    0    8
-Solar spool Tachyon Tunnel #0    fs_spool       FS       634   4     0  241    32        0:0    2   31
-Solar spool Tachyon Tunnel #0    vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar spool Tachyon Tunnel #0    vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Tachyon Tunnel stage 1 #0 fs_spool       FS       300   4     0  109    23        0:0    1   21
+Solar spool Tachyon Tunnel stage 1 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Tachyon Tunnel stage 1 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Tachyon Tunnel stage 2 #0 fs_spool       FS       367   4     0  126    29        0:0    1   30
+Solar spool Tachyon Tunnel stage 2 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Tachyon Tunnel stage 2 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Tachyon Tunnel stage 3 #0 fs_spool       FS       382   4     0  128    29        0:0    0   26
+Solar spool Tachyon Tunnel stage 3 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Tachyon Tunnel stage 3 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Tachyon Tunnel stage 4 #0 fs_spool       FS       385   4     0  132    30        0:0    0   31
+Solar spool Tachyon Tunnel stage 4 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Tachyon Tunnel stage 4 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Tachyon Tunnel light #0 fs_warp        FS       189   4     0   73    19        0:0    0    2
+Solar spool Tachyon Tunnel light #0 vs_background  VS        32   4     0   22     7        0:0    0    1
+Solar spool Tachyon Tunnel light #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar warp Tachyon Tunnel #0     fs_warp        FS       215   4     0   79    24        0:0    0    7
 Solar warp Tachyon Tunnel #0     vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar warp Tachyon Tunnel #0     vs_background  VS-bin    31   4     0   22     7        0:0    0    0
@@ -716,9 +740,21 @@ Solar drop ahead Tachyon Tunnel #0 vs_drop_ahead  VS-bin    79   4     0   45   
 Solar drop out Tachyon Tunnel #0 fs_drop_out    FS       298   4     0  103    30        0:0    0   12
 Solar drop out Tachyon Tunnel #0 vs_drop_behind VS        71   4     0   33     9        0:0    0    7
 Solar drop out Tachyon Tunnel #0 vs_drop_behind VS-bin    74   4     0   34     9        0:0    0    8
-Solar spool Fold Drive #0        fs_spool       FS       754   2     0  245    54        0:0    1   34
-Solar spool Fold Drive #0        vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar spool Fold Drive #0        vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Fold Drive stage 1 #0 fs_spool       FS       190   4     0   69    19        0:0    1   16
+Solar spool Fold Drive stage 1 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Fold Drive stage 1 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Fold Drive stage 2 #0 fs_spool       FS       256   4     0   80    28        0:0    0   24
+Solar spool Fold Drive stage 2 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Fold Drive stage 2 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Fold Drive stage 3 #0 fs_spool       FS       381   4     0  119    30        0:0    1   23
+Solar spool Fold Drive stage 3 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Fold Drive stage 3 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Fold Drive stage 4 #0 fs_spool       FS       394   4     0  126    29        0:0    1   30
+Solar spool Fold Drive stage 4 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Fold Drive stage 4 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Fold Drive light #0  fs_warp        FS       426   4     0  132    32        0:0    0   27
+Solar spool Fold Drive light #0  vs_background  VS        32   4     0   22     7        0:0    0    1
+Solar spool Fold Drive light #0  vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar warp Fold Drive #0         fs_warp        FS       451   4     0  144    32        0:0    0   28
 Solar warp Fold Drive #0         vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar warp Fold Drive #0         vs_background  VS-bin    31   4     0   22     7        0:0    0    0
@@ -731,9 +767,21 @@ Solar drop ahead Fold Drive #0   vs_drop_ahead  VS-bin    79   4     0   45    1
 Solar drop out Fold Drive #0     fs_drop_out    FS       546   4     0  206    32        0:0    0   36
 Solar drop out Fold Drive #0     vs_drop_behind VS        71   4     0   33     9        0:0    0    7
 Solar drop out Fold Drive #0     vs_drop_behind VS-bin    74   4     0   34     9        0:0    0    8
-Solar spool Ion Slipstream #0    fs_spool       FS       510   2     0  185    47        0:0    1   18
-Solar spool Ion Slipstream #0    vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar spool Ion Slipstream #0    vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Ion Slipstream stage 1 #0 fs_spool       FS       249   4     0   80    19        0:0    3   22
+Solar spool Ion Slipstream stage 1 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Ion Slipstream stage 1 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Ion Slipstream stage 2 #0 fs_spool       FS       371   4     0  121    23        0:0    0   32
+Solar spool Ion Slipstream stage 2 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Ion Slipstream stage 2 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Ion Slipstream stage 3 #0 fs_spool       FS       376   4     0  123    27        0:0    0   33
+Solar spool Ion Slipstream stage 3 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Ion Slipstream stage 3 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Ion Slipstream stage 4 #0 fs_spool       FS       357   4     0  119    23        0:0    0   30
+Solar spool Ion Slipstream stage 4 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Ion Slipstream stage 4 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Ion Slipstream light #0 fs_warp        FS       218   4     0   72    27        0:0    0    7
+Solar spool Ion Slipstream light #0 vs_background  VS        32   4     0   22     7        0:0    0    1
+Solar spool Ion Slipstream light #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar warp Ion Slipstream #0     fs_warp        FS       244   4     0   78    30        0:0    0    5
 Solar warp Ion Slipstream #0     vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar warp Ion Slipstream #0     vs_background  VS-bin    31   4     0   22     7        0:0    0    0
@@ -746,9 +794,21 @@ Solar drop ahead Ion Slipstream #0 vs_drop_ahead  VS-bin    79   4     0   45   
 Solar drop out Ion Slipstream #0 fs_drop_out    FS       320   4     0  109    32        0:0    0   13
 Solar drop out Ion Slipstream #0 vs_drop_behind VS        71   4     0   33     9        0:0    0    7
 Solar drop out Ion Slipstream #0 vs_drop_behind VS-bin    74   4     0   34     9        0:0    0    8
-Solar spool Bubble Drive #0      fs_spool       FS       560   2     0  183    46        0:0    1   20
-Solar spool Bubble Drive #0      vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar spool Bubble Drive #0      vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Bubble Drive stage 1 #0 fs_spool       FS       243   4     0   89    19        0:0    0   17
+Solar spool Bubble Drive stage 1 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Bubble Drive stage 1 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Bubble Drive stage 2 #0 fs_spool       FS       364   4     0  126    32        0:0    0   20
+Solar spool Bubble Drive stage 2 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Bubble Drive stage 2 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Bubble Drive stage 3 #0 fs_spool       FS       352   4     0  109    32        0:0    0   26
+Solar spool Bubble Drive stage 3 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Bubble Drive stage 3 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Bubble Drive stage 4 #0 fs_spool       FS       313   4     0  103    27        0:0    3   27
+Solar spool Bubble Drive stage 4 #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar spool Bubble Drive stage 4 #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar spool Bubble Drive light #0 fs_warp        FS       244   4     0   86    21        0:0    0    6
+Solar spool Bubble Drive light #0 vs_background  VS        32   4     0   22     7        0:0    0    1
+Solar spool Bubble Drive light #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar warp Bubble Drive #0       fs_warp        FS       265   4     0   92    24        0:0    1    7
 Solar warp Bubble Drive #0       vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar warp Bubble Drive #0       vs_background  VS-bin    31   4     0   22     7        0:0    0    0
