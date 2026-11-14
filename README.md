@@ -105,7 +105,19 @@ Spotify **Premium** account.
   `SOLAR_SHOTS_SEEDS=5,11 cargo test --release solar::tests::screenshots -- --ignored`, and of
   every drive: `solar::tests::warps`). Swipe down on the player
   to summon the visualiser, swipe left or right on the dive to travel on to the next sea or back,
-  and tap anywhere to fade back.
+  and tap anywhere to fade back. A long press on the solar tour opens the **ship's computer**, a
+  green-phosphor terminal on a curved CRT with scan lines, in the style of a freighter's mainframe
+  from the old science-fiction films (`ui/screens/ship_console.slint`, `src/solar/console.rs`).
+  It has three pages. NAVIGATION lists the worlds of this system (behind the ship, where it is, or
+  still ahead) and the next five stars out, with their distances: pick a world and the ship flies on
+  to it; pick a star and it goes to its jump point and spools up for that star (in mid-jump, the
+  jump turns toward it). ENCOUNTERS lists everything the ship can meet between the stars, or a
+  random contact, and drops the ship out into it. INCIDENTS lists what can happen aboard. The
+  terminal prints its confirmation while the tour makes its cut behind it. Incidents also happen by
+  themselves, none to two per system: a motion tracker blip, a hull breach, a coolant leak, the ship's
+  cat loose, more life signs than crew. Each shows as an incoming transmission at the left of the
+  circle, coloured by its alarm (green, amber or red). Some change course: a signal of unknown
+  origin leads to a derelict, and a tractor lock to a hive cube, at the next drop-out.
 - **Now-playing card** on every idle scene: the cover, the track, its artists and the playlist (or
   album) it plays from, with previous, play/pause and next, and an add button that shows whether
   the track is in your Liked Songs and saves or removes it. Once the visualiser is up it stays

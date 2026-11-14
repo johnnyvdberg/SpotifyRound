@@ -45,6 +45,16 @@ export struct WorldLabel {
     distance: string,
 }
 
+// A row of the solar tour's ship terminal: what it is, a line about it, its
+// state (0 ahead, 1 where the ship is or makes for, 2 behind it) and the code
+// sent back with `Idle.order` when it is chosen.
+export struct ConsoleRow {
+    label: string,
+    detail: string,
+    state: int,
+    code: int,
+}
+
 // A planet, or the star, on the solar tour's minimap.
 export struct MapDot {
     x: length,
@@ -206,6 +216,27 @@ export global Idle {
     in-out property <[string]> seas;
     in-out property <int> sea: 0;
     in-out property <bool> charting: false;
+
+    // The solar tour's ship terminal, which a long press opens
+    // (`console-open`) once the tour has filled it in (`console-ready`):
+    // the ship's status, a line each, and its pages: where it can go, what
+    // it can meet between the stars, and what can happen aboard.
+    in-out property <bool> console-ready: false;
+    in-out property <bool> console-open: false;
+    in-out property <[string]> console-status: [];
+    in-out property <[ConsoleRow]> console-destinations: [];
+    in-out property <[ConsoleRow]> console-encounters: [];
+    in-out property <[ConsoleRow]> console-incidents: [];
+    // An order from it: the page (0 navigation, 1 encounters, 2 incidents)
+    // and the chosen row's code.
+    callback order(int, int);
+
+    // An incident aboard, reported on the HUD while it lasts: its title,
+    // report, how far through its time, 0..1, and its alarm, 0..1.
+    in-out property <string> notice-title: "";
+    in-out property <string> notice-text: "";
+    in-out property <float> notice-progress: 0;
+    in-out property <float> notice-alert: 0;
 }
 
 // The frame-rate readout. `shown` starts from the configuration and the F key

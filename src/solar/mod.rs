@@ -16,6 +16,7 @@
 //! passes: a full-screen background of stars and the galaxy, then one small
 //! quad per body, far to near, so a pixel only pays for the bodies over it.
 
+pub mod console;
 pub mod labels;
 pub mod models;
 pub mod scan;
@@ -230,8 +231,11 @@ pub struct Hud {
     pub manoeuvre: Option<tour::Manoeuvre>,
     /// The star the next jump makes for, where it is in view.
     pub target: Option<Target>,
-    /// The ship's alarm between the stars, 0..1 (`voyage::Shot::alert`).
+    /// The ship's alarm between the stars, 0..1 (`voyage::Shot::alert`),
+    /// or an incident's aboard.
     pub alert: f32,
+    /// An incident's transmission, while it shows (`console`).
+    pub notice: Option<console::Notice>,
 }
 
 /// The next jump's star, marked on the frame.
@@ -314,6 +318,19 @@ pub(crate) struct Solar {
     visit: u64,
     visit_start: f64,
     tour: Tour,
+    /// Orders from the ship's terminal, carried out on the next frame.
+    pending: Vec<console::Order>,
+    /// What the terminal shows, and the next stars' rows, for the visit they
+    /// were listed from.
+    console: console::Console,
+    stars: (u64, Vec<(u64, console::Row)>),
+    /// The incidents this visit has by themselves (`console::schedule`),
+    /// for the visit and tour seed they were drawn for; one raised from the
+    /// terminal, when (in the scene's seconds) and which; and the visit
+    /// whose scheduled change of course has been made.
+    incidents: (u64, u64, Vec<(f64, usize)>),
+    raised: Option<(f64, usize)>,
+    diverted: Option<(u64, usize)>,
     hud: Hud,
     hud_at: f64,
     /// The labels on the worlds in view, worked out every frame.
@@ -1259,6 +1276,12 @@ impl Solar {
             visit: 0,
             visit_start: 0.0,
             tour,
+            pending: Vec::new(),
+            console: console::Console::default(),
+            stars: (u64::MAX, Vec::new()),
+            incidents: (u64::MAX, 0, Vec::new()),
+            raised: None,
+            diverted: None,
             hud: Hud::default(),
             hud_at: f64::NEG_INFINITY,
             labels: Vec::new(),
@@ -2329,7 +2352,10 @@ impl Solar {
             manoeuvre: self.tour.manoeuvre(t),
             target: self.target(t),
             alert: self.tour.view(t).scene.map_or(0.0, |s| s.shot.alert as f32),
+            notice: None,
         };
+        self.update_incidents(t);
+        self.update_console(t);
     }
 
     /// The next jump's star on the frame at `t`, while it is marked and in
@@ -2397,6 +2423,10 @@ impl Solar {
         }
         if hud.map.is_some() {
             panels.push([780.0, 415.0, 1030.0, 665.0]);
+        }
+        // An incident's transmission, at the left.
+        if self.hud.notice.is_some() {
+            panels.push([50.0, 440.0, 300.0, 640.0]);
         }
         // The now-playing card, when a track is up.
         panels.push([170.0, 784.0, 910.0, 920.0]);
@@ -2508,12 +2538,322 @@ impl Solar {
     }
 
     fn render(&mut self, gpu: &Graphics, seconds: f64, frame: usize) -> Result<()> {
-        let t = self.catch_up(seconds);
+        let mut t = self.catch_up(seconds);
+        if !self.pending.is_empty() {
+            for order in std::mem::take(&mut self.pending) {
+                self.obey(order, seconds);
+            }
+            t = self.catch_up(seconds);
+            self.hud_at = f64::NEG_INFINITY;
+        }
         self.stream(t);
         self.draw(gpu, t, frame);
         self.update_hud(t);
         self.update_labels(t);
         Ok(())
+    }
+}
+
+/// The ship's terminal and its incidents (`console`).
+impl Solar {
+    /// A jump's passage for trip `trip` toward a star its drive is `drive`
+    /// for, with nothing that needs the model meshes until they are built.
+    fn ready_passage(&self, passage: voyage::Passage, drive: u32) -> voyage::Passage {
+        if self.models.is_some() {
+            passage
+        } else {
+            passage.without_models(drive)
+        }
+    }
+
+    /// This visit's tour again, its jump through `passage` instead: the same
+    /// up to the first leg, so swapped in without a cut until then.
+    fn with_passage(&self, passage: voyage::Passage) -> Tour {
+        Tour::plan(
+            self.tour.system.clone(),
+            self.tour.route.clone(),
+            self.tour.transit,
+            self.tour.leg,
+            self.tour.legs,
+            passage,
+            self.tour.arrival_light(),
+        )
+    }
+
+    /// Carry out an order from the terminal, `seconds` into the scene. The
+    /// terminal covers the frame while it does, so a cut does not show.
+    fn obey(&mut self, order: console::Order, seconds: f64) {
+        let t = seconds - self.visit_start;
+        let phase = self.tour.segment(t).0.phase;
+        match order {
+            console::Order::Stop(k) => {
+                let Some(&stop) = self.tour.itinerary.get(k) else {
+                    return;
+                };
+                if phase.deep() || self.tour.current(t) == Some(stop) {
+                    return;
+                }
+                if let Some(start) = self
+                    .tour
+                    .start_of(|p| matches!(p, Phase::Transfer { to, .. } if to == stop))
+                {
+                    self.visit_start = seconds - start;
+                }
+            }
+            console::Order::Star(target) => {
+                if target <= self.visit || relay(self.base_seed, target) {
+                    return;
+                }
+                let bound = self.visit + self.tour.route.len() as u64;
+                if phase.deep() && target == bound {
+                    return;
+                }
+                let destination = system_for(self.base_seed, target);
+                let drive = tour::drive_to(&destination).0;
+                let passage = self.ready_passage(
+                    voyage::Passage::plan(self.base_seed, target - 1, drive),
+                    drive,
+                );
+                let tour = Tour::plan(
+                    self.tour.system.clone(),
+                    vec![destination],
+                    self.tour.transit,
+                    1,
+                    1,
+                    passage,
+                    self.tour.arrival_light(),
+                );
+                // Between the stars the jump turns for it at once; in a
+                // system the ship goes to its jump point and spools up.
+                let at = if phase.deep() {
+                    tour.start_of(|p| p == Phase::Jump(0))
+                } else {
+                    tour.start_of(|p| p == Phase::Spool)
+                };
+                let Some(at) = at else {
+                    return;
+                };
+                self.tour = tour;
+                self.visit = target - 1;
+                self.visit_start = seconds - at;
+            }
+            console::Order::Encounter(pick) => {
+                let mut rng = system::Rng::new(rand::random::<u64>());
+                let event = match pick {
+                    Some(k) => voyage::Event::ALL[k],
+                    None => *rng.pick(&voyage::Event::ALL),
+                };
+                let drive = tour::drive_to(&self.tour.next).0;
+                let stops = vec![voyage::Stopover {
+                    event,
+                    variant: rng.next(),
+                }];
+                let passage = voyage::Passage::with_stops(stops, drive, &mut rng);
+                let tour = self.with_passage(self.ready_passage(passage, drive));
+                // A moment before the drop-out into it.
+                let Some(at) = tour.start_of(|p| p == Phase::Stopover(0)) else {
+                    return;
+                };
+                self.tour = tour;
+                self.visit_start = seconds - (at - 2.0);
+            }
+            console::Order::Incident(pick) => {
+                let k = pick.unwrap_or_else(|| {
+                    (rand::random::<u64>() % console::INCIDENTS.len() as u64) as usize
+                });
+                self.raised = Some((seconds, k));
+                if let Some(event) = console::INCIDENTS[k].divert {
+                    self.divert(event, t);
+                }
+            }
+        }
+    }
+
+    /// Meet `event` at the next jump's first drop-out, if the ship is not in
+    /// the jump yet: the visit up to then stays as it is.
+    fn divert(&mut self, event: voyage::Event, t: f64) {
+        let Some(jump) = self.tour.start_of(|p| p == Phase::Jump(0)) else {
+            return;
+        };
+        if t >= jump || self.tour.passage.stops.is_empty() {
+            return;
+        }
+        let mut rng = system::Rng::new(self.tour.system.seed ^ (event.id() as u64) << 32 ^ 0xd17e);
+        let drive = tour::drive_to(&self.tour.next).0;
+        let mut stops = self.tour.passage.stops.clone();
+        stops[0] = voyage::Stopover {
+            event,
+            variant: rng.next(),
+        };
+        let passage = voyage::Passage::with_stops(stops, drive, &mut rng);
+        self.tour = self.with_passage(self.ready_passage(passage, drive));
+        tracing::info!(?event, "course altered by an incident");
+    }
+
+    /// The incident showing at `t` into the visit, if any, on the HUD with
+    /// its alarm; a scheduled one that changes course does so as it begins.
+    fn update_incidents(&mut self, t: f64) {
+        let seconds = t + self.visit_start;
+        if self.incidents.0 != self.visit || self.incidents.1 != self.tour.system.seed {
+            let inside = self
+                .tour
+                .start_of(|p| p == Phase::Spool)
+                .unwrap_or(self.tour.total);
+            let seed = self.tour.system.seed ^ self.visit.wrapping_mul(0x9e37_79b9);
+            self.incidents = (
+                self.visit,
+                self.tour.system.seed,
+                console::schedule(seed, inside),
+            );
+        }
+        let raised = self
+            .raised
+            .filter(|&(at, _)| (0.0..console::SHOWN).contains(&(seconds - at)))
+            .map(|(at, k)| (seconds - at, k));
+        if raised.is_none() {
+            self.raised = None;
+        }
+        let scheduled = self
+            .incidents
+            .2
+            .iter()
+            .find(|&&(at, _)| (0.0..console::SHOWN).contains(&(t - at)))
+            .map(|&(at, k)| (t - at, k));
+        let Some((into, k)) = raised.or(scheduled) else {
+            return;
+        };
+        if raised.is_none()
+            && self.diverted != Some((self.visit, k))
+            && let Some(event) = console::INCIDENTS[k].divert
+        {
+            self.diverted = Some((self.visit, k));
+            self.divert(event, t);
+        }
+        let notice = console::Notice::of(&console::INCIDENTS[k], into / console::SHOWN);
+        self.hud.alert = self.hud.alert.max(notice.alarm());
+        self.hud.notice = Some(notice);
+    }
+
+    /// What the terminal shows at `t` into the visit.
+    fn update_console(&mut self, t: f64) {
+        let phase = self.tour.segment(t).0.phase;
+        let current = self.tour.current(t);
+        let here = current.and_then(|c| self.tour.itinerary.iter().position(|&s| s == c));
+        let mut status = vec![format!(
+            "LOCATION   {} SYSTEM",
+            self.tour.system.star.name.to_uppercase()
+        )];
+        status.push(match phase {
+            Phase::Transfer { to, .. } => {
+                format!(
+                    "STATUS     IN TRANSFER TO {}",
+                    self.tour.world(to).name.to_uppercase()
+                )
+            }
+            Phase::High(stop) => format!(
+                "STATUS     IN ORBIT, {}",
+                self.tour.world(stop).name.to_uppercase()
+            ),
+            Phase::Depart(_) | Phase::Cruise { .. } => {
+                "STATUS     OUTBOUND FOR THE JUMP POINT".into()
+            }
+            Phase::Spool => "STATUS     DRIVE SPOOLING".into(),
+            Phase::Jump(_) | Phase::Rejump(_) => "STATUS     IN HYPERJUMP".into(),
+            Phase::Stopover(_) => "STATUS     DROPPED OUT. CONTACT".into(),
+        });
+        status.push(format!(
+            "COURSE     {} SYSTEM",
+            self.tour.destination().star.name.to_uppercase()
+        ));
+        let mut destinations = Vec::new();
+        if !phase.deep() {
+            // Past the last stop every world is behind the ship.
+            let passed = here.unwrap_or(match phase {
+                Phase::Transfer { .. } | Phase::High(_) | Phase::Depart(_) => 0,
+                _ => self.tour.itinerary.len(),
+            });
+            for (k, &stop) in self.tour.itinerary.iter().enumerate() {
+                let world = self.tour.world(stop);
+                let detail = match stop.moon {
+                    Some(_) => format!(
+                        "{}, moon of {}",
+                        world.kind.name(),
+                        self.tour.system.planets[stop.planet].name
+                    ),
+                    None => world.kind.name().to_string(),
+                };
+                destinations.push(console::Row {
+                    label: world.name.to_uppercase(),
+                    detail,
+                    state: if Some(k) == here {
+                        1
+                    } else if k < passed {
+                        2
+                    } else {
+                        0
+                    },
+                    code: k as i32,
+                });
+            }
+        }
+        if self.stars.0 != self.visit {
+            self.stars = (self.visit, self.stars_ahead());
+        }
+        let bound = self.tour.destination().seed;
+        destinations.extend(self.stars.1.iter().map(|(seed, row)| {
+            let mut row = row.clone();
+            if *seed == bound {
+                row.state = 1;
+            }
+            row
+        }));
+        let console = console::Console {
+            status,
+            destinations,
+            encounters: if self.console.encounters.is_empty() {
+                console::encounter_rows()
+            } else {
+                std::mem::take(&mut self.console.encounters)
+            },
+            incidents: if self.console.incidents.is_empty() {
+                console::incident_rows()
+            } else {
+                std::mem::take(&mut self.console.incidents)
+            },
+        };
+        self.console = console;
+    }
+
+    /// The next stars out from this visit's, relays left out: a row each,
+    /// with how far the ship has to go to reach it.
+    fn stars_ahead(&self) -> Vec<(u64, console::Row)> {
+        let mut rows = Vec::new();
+        let mut ly = 0.0;
+        for n in 1..=12u64 {
+            let system = system_for(self.base_seed, self.visit + n);
+            ly += system.distance;
+            if relay(self.base_seed, self.visit + n) {
+                continue;
+            }
+            rows.push((
+                system.seed,
+                console::Row {
+                    label: format!("{} SYSTEM", system.star.name.to_uppercase()),
+                    detail: format!(
+                        "{}, {} worlds, {:.1} ly",
+                        system.star.title(),
+                        system.planets.len(),
+                        ly
+                    ),
+                    state: 0,
+                    code: console::STAR_CODE + n as i32,
+                },
+            ));
+            if rows.len() == 5 {
+                break;
+            }
+        }
+        rows
     }
 }
 
@@ -2532,6 +2872,17 @@ impl Visual for Solar {
 
     fn labels(&self) -> Vec<labels::BodyLabel> {
         self.labels.clone()
+    }
+
+    fn console(&self) -> Option<console::Console> {
+        Some(self.console.clone())
+    }
+
+    fn order(&mut self, page: i32, code: i32) {
+        if let Some(order) = console::Order::from_ui(page, code, self.visit) {
+            tracing::info!(?order, "an order from the ship's terminal");
+            self.pending.push(order);
+        }
     }
 }
 
@@ -2958,7 +3309,11 @@ fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel
 /// WGSL's `hash_cell` (`frame.wgsl`), to the same bits.
 fn hash_cell(p: [f32; 3]) -> f32 {
     let fract = |x: f32| x - x.floor();
-    let mut q = [fract(p[0] * 0.1031), fract(p[1] * 0.1030), fract(p[2] * 0.0973)];
+    let mut q = [
+        fract(p[0] * 0.1031),
+        fract(p[1] * 0.1030),
+        fract(p[2] * 0.0973),
+    ];
     let k = q[0] * (q[1] + 33.33) + q[1] * (q[2] + 33.33) + q[2] * (q[0] + 33.33);
     q = q.map(|x| x + k);
     fract((q[0] + q[1]) * q[2])
@@ -2992,19 +3347,38 @@ fn fleet_rows(ev: &mut [[f32; 4]; EV_ROWS]) {
         let fleet = if i >= 4 { -1.0 } else { 1.0 };
         let capital = i == 0 || i == 4;
         let h = [1.0, 2.0, 3.0, 4.0].map(|k| hash_cell([fi, seed, k]));
-        let rate = if capital { 0.015 * fleet } else { (0.06 + 0.05 * h[0]) * fleet };
+        let rate = if capital {
+            0.015 * fleet
+        } else {
+            (0.06 + 0.05 * h[0]) * fleet
+        };
         let a = t * rate
-            + if capital { 0.0 } else { h[1] * std::f32::consts::TAU }
+            + if capital {
+                0.0
+            } else {
+                h[1] * std::f32::consts::TAU
+            }
             + if i >= 4 { std::f32::consts::PI } else { 0.0 }
             + 0.6;
-        let r = if capital { o[3] * 0.55 } else { o[3] * (0.4 + 0.5 * h[2]) };
-        let y = if capital { (h[3] - 0.5) * o[3] * 0.15 } else { (h[3] - 0.5) * o[3] * 0.45 }
-            + (t * 0.4 + fi).sin() * 3.0;
+        let r = if capital {
+            o[3] * 0.55
+        } else {
+            o[3] * (0.4 + 0.5 * h[2])
+        };
+        let y = if capital {
+            (h[3] - 0.5) * o[3] * 0.15
+        } else {
+            (h[3] - 0.5) * o[3] * 0.45
+        } + (t * 0.4 + fi).sin() * 3.0;
         let p = [o[0] + a.cos() * r, o[1] + y, o[2] + a.sin() * r * 0.65];
         let heading = if capital {
             norm([-a.sin(), 0.0, a.cos()])
         } else {
-            norm([-a.sin() * fleet, 0.05 * (t * 0.4 + fi).cos(), a.cos() * 0.65 * fleet])
+            norm([
+                -a.sin() * fleet,
+                0.05 * (t * 0.4 + fi).cos(),
+                a.cos() * 0.65 * fleet,
+            ])
         };
         (p, heading)
     };
@@ -3017,13 +3391,21 @@ fn fleet_rows(ev: &mut [[f32; 4]; EV_ROWS]) {
             // The screenshots' showcase: the one ship asked for, alone,
             // ahead of the camera at a distance by its size, three-quarters.
             let shown = i as f32 == ev[9][2];
-            let at = [ship[0], ship[1], ship[2] + if shown { s * 3.3 } else { -1e4 }];
+            let at = [
+                ship[0],
+                ship[1],
+                ship[2] + if shown { s * 3.3 } else { -1e4 },
+            ];
             (at, norm([-0.78, -0.18, -0.6]), 0.0)
         } else if i as i32 == lost {
             // Flown to the blast as it dies.
             let (p, heading) = course(i, t);
             let then = course(i, kill).0;
-            (std::array::from_fn(|k| p[k] + blast[k] - then[k]), heading, 0.0)
+            (
+                std::array::from_fn(|k| p[k] + blast[k] - then[k]),
+                heading,
+                0.0,
+            )
         } else {
             // Shoved aside by its shock as it passes.
             let (p, heading) = course(i, t);
@@ -3036,7 +3418,11 @@ fn fleet_rows(ev: &mut [[f32; 4]; EV_ROWS]) {
             let shove = strength * x * x * (3.0 - 2.0 * x);
             let jolt = (-(age / 0.5).powi(2)).exp() * if age >= -1.0 { 1.0 } else { 0.0 };
             let at = std::array::from_fn(|k| p[k] + away[k] * shove);
-            (at, norm(std::array::from_fn(|k| heading[k] + away[k] * 0.35 * jolt)), jolt)
+            (
+                at,
+                norm(std::array::from_fn(|k| heading[k] + away[k] * 0.35 * jolt)),
+                jolt,
+            )
         };
         ev[12 + 2 * i] = [at[0], at[1], at[2], s];
         ev[13 + 2 * i] = [heading[0], heading[1], heading[2], jolt];
@@ -4671,6 +5057,96 @@ pub(crate) mod tests {
             solar.hud.clone(),
             solar.labels.clone(),
         )
+    }
+
+    /// A frame at `moment` as `render_once` draws it, with incident
+    /// `incident` (`console::INCIDENTS`) raised on the HUD a few seconds
+    /// before, and what the ship's terminal shows then.
+    pub(crate) fn render_console(
+        seed: u64,
+        moment: &str,
+        incident: usize,
+    ) -> (Vec<u8>, Hud, console::Console) {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut solar = Solar::with_seed(&gpu, seed);
+        let t = moments(&solar.tour)
+            .into_iter()
+            .find(|(label, _)| label.ends_with(moment))
+            .map_or(60.0, |(_, t)| t);
+        settle(&mut solar, &gpu, t);
+        solar.draw(&gpu, t, 0);
+        solar.raised = Some((t + solar.visit_start - 3.0, incident));
+        solar.hud_at = f64::NEG_INFINITY;
+        solar.update_hud(t);
+        (
+            read_texture(&gpu, &solar.frames[0].texture),
+            solar.hud.clone(),
+            solar.console.clone(),
+        )
+    }
+
+    /// Orders from the terminal: a world ahead sets the tour on to its
+    /// transfer, a star sends the ship to its jump point spooling for it, an
+    /// encounter drops it out into that one, and an incident with a change
+    /// of course swaps the next jump's first stopover without a cut.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn the_terminal_is_obeyed() {
+        let gpu = crate::gpu::headless().expect("a GPU adapter");
+        let mut solar = Solar::with_seed(&gpu, 11);
+        let seconds = 5.0;
+        let _ = solar.catch_up(seconds);
+        solar.update_hud(seconds);
+        assert!(!solar.console.destinations.is_empty());
+        assert_eq!(solar.console.encounters.len(), voyage::Event::ALL.len() + 1);
+
+        let last = solar.tour.itinerary.len() - 1;
+        solar.obey(console::Order::Stop(last), seconds);
+        let t = seconds - solar.visit_start;
+        assert_eq!(solar.tour.current(t), Some(solar.tour.itinerary[last]));
+
+        let visit = solar.visit;
+        let target = (visit + 2..).find(|&v| !relay(solar.base_seed, v)).unwrap();
+        solar.obey(console::Order::Star(target), seconds + 1.0);
+        let t = seconds + 1.0 - solar.visit_start;
+        assert_eq!(solar.tour.segment(t).0.phase, Phase::Spool);
+        assert_eq!(
+            solar.tour.destination().seed,
+            system_for(solar.base_seed, target).seed
+        );
+        let event = voyage::Event::ALL
+            .iter()
+            .position(|&e| e == voyage::Event::Comet)
+            .unwrap();
+        solar.obey(console::Order::Encounter(Some(event)), seconds + 2.0);
+        assert_eq!(solar.tour.passage.stops[0].event, voyage::Event::Comet);
+        let t = seconds + 2.0 - solar.visit_start;
+        assert_eq!(solar.tour.segment(t).0.phase, Phase::Jump(0));
+        assert_eq!(solar.tour.segment(t + 3.0).0.phase, Phase::Stopover(0));
+        assert_eq!(
+            solar.tour.destination().seed,
+            system_for(solar.base_seed, target).seed
+        );
+        let ends = solar.visit_start + solar.tour.total;
+        let _ = solar.catch_up(ends + 0.5);
+        assert_eq!(solar.visit, target);
+        assert_eq!(
+            solar.tour.system.seed,
+            system_for(solar.base_seed, target).seed
+        );
+
+        // A distress beacon before the jump: the derelict next.
+        let beacon = console::INCIDENTS
+            .iter()
+            .position(|i| i.divert == Some(voyage::Event::Derelict))
+            .unwrap();
+        let seconds = solar.visit_start + 20.0;
+        let before = solar.tour.view(20.0).position;
+        solar.obey(console::Order::Incident(Some(beacon)), seconds);
+        assert_eq!(solar.tour.passage.stops[0].event, voyage::Event::Derelict);
+        assert_eq!(solar.tour.view(20.0).position, before);
+        solar.update_hud(20.0);
+        assert!(solar.hud.notice.is_some());
     }
 
     /// Fragment counts for the Pi estimate: every draw of one frame at each

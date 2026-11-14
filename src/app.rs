@@ -114,6 +114,7 @@ pub fn run(settings: Settings) -> Result<()> {
         shared.idle_scene.clone(),
         shared.idle_scenes.clone(),
         shared.idle_travel.clone(),
+        shared.idle_orders.clone(),
     );
 
     runtime.block_on(shared.bootstrap());
@@ -157,6 +158,9 @@ struct Shared {
     idle_scenes: Arc<AtomicU64>,
     /// Swipes on the visualizer, +1 on and -1 back, summed.
     idle_travel: Arc<AtomicI64>,
+    /// Orders from the solar tour's terminal, as page and row code, for the
+    /// visualizer to hand its scene.
+    idle_orders: Arc<std::sync::Mutex<Vec<(i32, i32)>>>,
 
     initial_auth: i32,
     poll_started: AtomicBool,
@@ -968,6 +972,7 @@ impl Shared {
             idle_scene: Arc::new(AtomicUsize::new(0)),
             idle_scenes: Arc::new(AtomicU64::new(0)),
             idle_travel: Arc::new(AtomicI64::new(0)),
+            idle_orders: Arc::new(std::sync::Mutex::new(Vec::new())),
             initial_auth,
             poll_started: AtomicBool::new(false),
             auth_running: AtomicBool::new(false),
@@ -1111,6 +1116,15 @@ impl Shared {
             let travel = self.idle_travel.clone();
             window.global::<Idle>().on_travel(move |legs| {
                 travel.fetch_add(i64::from(legs), Ordering::Relaxed);
+            });
+        }
+        {
+            let orders = self.idle_orders.clone();
+            window.global::<Idle>().on_order(move |page, code| {
+                orders
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((page, code));
             });
         }
 

@@ -394,7 +394,11 @@ fn open(adapter: &wgpu::Adapter, label: &str, headless: bool) -> Result<Graphics
     }
     // Headless, count each draw's fragments if the driver can: the Pi
     // estimate (`pi_estimate`) multiplies them by the Pi's own shader costs.
-    if headless && adapter.features().contains(wgpu::Features::PIPELINE_STATISTICS_QUERY) {
+    if headless
+        && adapter
+            .features()
+            .contains(wgpu::Features::PIPELINE_STATISTICS_QUERY)
+    {
         features |= wgpu::Features::PIPELINE_STATISTICS_QUERY;
     }
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -629,7 +633,6 @@ mod tests {
     }
 }
 
-
 /// Fragment shader invocations per draw, for estimating what a frame costs
 /// on the Pi without one: the driver here counts how many pixels each draw
 /// shades, and `deploy/v3d-shaderdb/estimate.py` multiplies them by what the
@@ -651,7 +654,10 @@ thread_local! {
 /// Start counting this thread's draws, if the device can.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn start_counting(device: &wgpu::Device) -> bool {
-    if !device.features().contains(wgpu::Features::PIPELINE_STATISTICS_QUERY) {
+    if !device
+        .features()
+        .contains(wgpu::Features::PIPELINE_STATISTICS_QUERY)
+    {
         return false;
     }
     let set = device.create_query_set(&wgpu::QuerySetDescriptor {
