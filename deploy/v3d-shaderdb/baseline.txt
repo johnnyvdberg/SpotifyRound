@@ -863,13 +863,13 @@ Solar flux gravity-wave #0       vs_background  VS-bin    31   4     0   22     
 Solar ships #0                   fs_ship        FS       508   4     0  178    32        0:0    1   32
 Solar ships #0                   vs_ship        VS       145   4     0   81    23        0:0    0    1
 Solar ships #0                   vs_ship        VS-bin   108   4     0   50    17        0:0    0    3
-Solar model rock #0              fs_model       FS       612   2     1  114    64        0:0    3   19
-Solar model rock #0              vs_model       VS       162   4     0   75    26        0:0    0    5
+Solar model rock #0              fs_model       FS       235   4     0   57    28        0:0    0    1
+Solar model rock #0              vs_model       VS       173   2     0   93    48        0:0    0    1
 Solar model rock #0              vs_model       VS-bin    96   4     0   46    18        0:0    0    6
 Solar model gate #0              fs_model       FS       239   4     0   73    27        0:0    0    5
 Solar model gate #0              vs_model       VS       132   4     0   71    24        0:0    0    2
 Solar model gate #0              vs_model       VS-bin    96   4     0   46    18        0:0    0    6
-Solar model crystal #0           fs_model       FS       227   2     0   64    48        0:0    0    1
+Solar model crystal #0           fs_model       FS       220   4     0   61    29        0:0    0    5
 Solar model crystal #0           vs_model       VS       119   4     0   64    27        0:0    0    3
 Solar model crystal #0           vs_model       VS-bin    96   4     0   46    18        0:0    0    6
 Solar model hive #0              fs_model       FS       271   4     0   68    25        0:0    0    5
@@ -890,12 +890,15 @@ Solar battle effects 2 #0        vs_background  VS-bin    31   4     0   22     
 Solar battle effects 3 #0        fs_battle_fx   FS      1179   2     1  286    64        0:0   17   89
 Solar battle effects 3 #0        vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar battle effects 3 #0        vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar ship overlay #0            fs_overlay     FS       232   4     0   86    22        0:0    1   21
+Solar ship overlay #0            fs_overlay     FS       237   4     0   87    22        0:0    0   19
 Solar ship overlay #0            vs_overlay     VS        31   4     0   21     7        0:0    0    1
 Solar ship overlay #0            vs_overlay     VS-bin    30   4     0   22     8        0:0    0    0
-Solar ship overlay rim #0        fs_overlay     FS       232   4     0   86    22        0:0    1   21
+Solar ship overlay rim #0        fs_overlay     FS       237   4     0   87    22        0:0    0   19
 Solar ship overlay rim #0        vs_overlay_rim VS        63   4     0   38    12        0:0    0    1
 Solar ship overlay rim #0        vs_overlay_rim VS-bin    64   4     0   39    12        0:0    0    0
+Solar ship overlay beam #0       fs_overlay_beam FS       159   4     0   51    15        0:0    0   12
+Solar ship overlay beam #0       vs_overlay_beam VS        63   4     0   38    12        0:0    0    1
+Solar ship overlay beam #0       vs_overlay_beam VS-bin    64   4     0   39    12        0:0    0    0
 Solar eclipse #0                 fs_eclipse     FS       277   4     1   55    26        0:0    4   27
 Solar eclipse #0                 vs_body        VS       271   4     0  125    23        0:0    1   10
 Solar eclipse #0                 vs_body        VS-bin   267   4     0  114    25        0:0    2   12
@@ -1058,3 +1061,6 @@ Solar cloud layer 0 1 #0         vs_body        VS-bin   267   4     0  114    2
 Solar cloud layer 1 1 #0         fs_cloud_layer FS       375   4     0  127    25        0:0    3   19
 Solar cloud layer 1 1 #0         vs_body        VS       271   4     0  125    23        0:0    1   10
 Solar cloud layer 1 1 #0         vs_body        VS-bin   267   4     0  114    25        0:0    2   12
+Solar rock craters #0            fs_bake_craters FS       296   2     1   50    59        0:0    1   12
+Solar rock craters #0            vs_bake_craters VS        36   4     0   24     8        0:0    0    1
+Solar rock craters #0            vs_bake_craters VS-bin    32   4     0   23     7        0:0    0    0

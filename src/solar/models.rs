@@ -123,8 +123,11 @@ pub enum Key {
     Crystal {
         variant: u32,
     },
+    /// A hive cube, at a level of detail (0 the finest; 1 for the small,
+    /// far ones, whose finest machinery is under two pixels).
     Hive {
         variant: u32,
+        lod: u32,
     },
     /// A derelict ring station with so many breaks.
     Ring {
@@ -161,7 +164,9 @@ impl Key {
         keys.push(Key::Gate { style: 2, part: 1 });
         for variant in 0..3 {
             keys.push(Key::Crystal { variant });
-            keys.push(Key::Hive { variant });
+            for lod in 0..2 {
+                keys.push(Key::Hive { variant, lod });
+            }
         }
         for gaps in 2..5 {
             for variant in 0..2 {
@@ -184,7 +189,7 @@ impl Key {
             Key::Rock { variant, .. } => (2, variant, 0, 0),
             Key::Gate { style, part } => (3, style, part, 0),
             Key::Crystal { variant } => (4, variant, 0, 0),
-            Key::Hive { variant } => (5, variant, 0, 0),
+            Key::Hive { variant, .. } => (5, variant, 0, 0),
             Key::Ring { gaps, variant } => (6, gaps, variant, 0),
             Key::Debris { variant } => (7, variant, 0, 0),
         };
@@ -199,7 +204,8 @@ impl Key {
             Key::Rock { lod, .. } => [80, 40, 18][lod.min(2) as usize],
             Key::Gate { .. } => 150,
             Key::Crystal { .. } => 110,
-            Key::Hive { .. } => 150,
+            Key::Hive { lod: 0, .. } => 150,
+            Key::Hive { .. } => 50,
             Key::Ring { .. } => 170,
             Key::Debris { .. } => 40,
         }
@@ -225,7 +231,8 @@ impl Key {
             Key::Rock { variant, lod } => format!("rock-{variant}-{lod}"),
             Key::Gate { style, part } => format!("gate-{style}-{part}"),
             Key::Crystal { variant } => format!("crystal-{variant}"),
-            Key::Hive { variant } => format!("hive-{variant}"),
+            Key::Hive { variant, lod: 0 } => format!("hive-{variant}"),
+            Key::Hive { variant, lod } => format!("hive-{variant}-{lod}"),
             Key::Ring { gaps, variant } => format!("ring-{gaps}-{variant}"),
             Key::Debris { variant } => format!("debris-{variant}"),
         }
