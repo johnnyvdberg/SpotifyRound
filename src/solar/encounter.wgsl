@@ -1525,8 +1525,10 @@ struct ModelOut {
     // normal and `toward` are too, so their bump maps need no turning per
     // pixel (that cost the V3D half its threads). Unused by the rest.
     @location(7) @interpolate(flat) turn: vec4<f32>,
-    // How fresh a rock's ground is, interpolated (pale young crater rims).
-    @location(8) fresh: f32,
+    // Rocks: their ground's shade, mottled and paler on young crater rims;
+    // and the slope of their grain's coarsest octave (`vs_model`).
+    @location(8) tone: f32,
+    @location(9) grain: vec3<f32>,
 };
 
 fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
@@ -1554,9 +1556,19 @@ fn vs_model(v: ModelIn) -> ModelOut {
         let back = vec4<f32>(-v.turn.xyz, v.turn.w);
         out.normal = v.normal;
         out.toward = quat_rotate(back, -rel);
-        out.turn = vec4<f32>(quat_rotate(back, ev_light()), 0.0);
+        // Its light in its own frame, and its kind of stone and shape
+        // (`model_instances`).
+        out.turn = vec4<f32>(v.look.xyz, 0.0);
+        let kind = floor(v.look.w / f32(ROCK_SHAPES));
+        out.look = vec4<f32>(kind, 0.0, 0.0, v.look.w - kind * f32(ROCK_SHAPES));
+        // What changes slowly across a rock, worked out at its vertices
+        // (some fourteen to an octave on the finest mesh): its mottling,
+        // its fresh rims (`extra.z`) and its coarsest grain.
+        let mottle = noise(v.position * 2.3 + vec3<f32>(v.place.w * 1.7)) * 0.6;
+        out.tone = (0.8 + 0.45 * mottle) * (1.0 + v.extra.z * 0.8);
+        let seed = fract(v.place.w * 7.31) * 50.0;
+        out.grain = noised(v.position * 6.0 + vec3<f32>(seed)).yzw;
     }
-    out.fresh = v.extra.z;
     return out;
 }
 
@@ -1596,6 +1608,61 @@ fn crater_bump(q: vec3<f32>, seed: f32) -> vec4<f32> {
     return vec4<f32>(height, slope);
 }
 
+// Texels along each side of a rock shape's crater map (`CRATER_MAP` in
+// `mod.rs`), and how many craters across a rock's directions.
+const CRATER_MAP: f32 = 512.0;
+const CRATER_SCALE: f32 = 11.0;
+// Rock shapes (`models::ROCKS`).
+const ROCK_SHAPES: u32 = 8u;
+
+// Where unit `d` lies on an octahedral map, 0..1 each way.
+fn octahedral(d: vec3<f32>) -> vec2<f32> {
+    let p = d / (abs(d.x) + abs(d.y) + abs(d.z));
+    var xy = p.xy;
+    if (p.z < 0.0) {
+        xy = (1.0 - abs(p.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), p.xy >= vec2<f32>(0.0));
+    }
+    return xy * 0.5 + 0.5;
+}
+
+// The direction at `uv` on an octahedral map.
+fn octahedral_dir(uv: vec2<f32>) -> vec3<f32> {
+    let f = uv * 2.0 - 1.0;
+    var n = vec3<f32>(f, 1.0 - abs(f.x) - abs(f.y));
+    let t = max(-n.z, 0.0);
+    n.x += select(t, -t, n.x >= 0.0);
+    n.y += select(t, -t, n.y >= 0.0);
+    return normalize(n);
+}
+
+struct CraterBake {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) layer: u32,
+};
+
+// The crater map of rock shape `instance` (`bake_craters` draws one
+// triangle a layer over the whole of it).
+@vertex
+fn vs_bake_craters(@builtin(vertex_index) index: u32, @builtin(instance_index) layer: u32) -> CraterBake {
+    var corners = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+    var out: CraterBake;
+    out.position = vec4<f32>(corners[index], 0.0, 1.0);
+    out.layer = layer;
+    return out;
+}
+
+// A rock shape's small craters along each direction, their height and
+// slope (`crater_bump`), a texel each; with its grain's middle octave
+// added to the slope (it fades out over the same footprints as the
+// craters do), as on a rock of radius 0.8.
+@fragment
+fn fs_bake_craters(in: CraterBake) -> @location(0) vec4<f32> {
+    let dir = octahedral_dir(in.position.xy / CRATER_MAP);
+    let seed = fract(f32(in.layer + 1u) * 0.6180339) * 50.0;
+    let grain = noised(dir * (0.8 * 13.8) + vec3<f32>(seed + 13.0)).yzw * 0.096;
+    return crater_bump(dir * CRATER_SCALE, seed) + vec4<f32>(0.0, grain);
+}
+
 // Panels and their seams on a model's skin, on the two axes most across it:
 // a shade each, the seams darker, faded where finer than a pixel.
 fn skin(q: vec3<f32>, n: vec3<f32>, scale: f32, seed: f32) -> f32 {
@@ -1613,13 +1680,6 @@ fn skin(q: vec3<f32>, n: vec3<f32>, scale: f32, seed: f32) -> f32 {
     return (0.82 + 0.3 * hash_cell(vec3<f32>(floor(g), seed))) * (1.0 - seam);
 }
 
-// One octave of a rock's grain: the noise's slope at `frequency`, faded out
-// where it is finer than a pixel.
-fn grain_slope(q: vec3<f32>, pixel: f32, frequency: f32, seed: f32) -> vec3<f32> {
-    let fade = 1.0 - smoothstep01(0.15, 0.45, pixel * frequency);
-    return noised(q * frequency + vec3<f32>(seed)).yzw * fade;
-}
-
 @fragment
 fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
@@ -1630,31 +1690,27 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
     let t = ev_t();
     var colour = vec3<f32>(0.0);
     if (MODEL == 1) {
-        // Rocks: regolith (Lommel-Seeliger blended with Lambert), mottled at
-        // two scales, fresh crater rims paler. The mesh holds the large
-        // shapes; a bump map worked out here in the rock's own frame adds
-        // what it cannot: small craters and grain at three octaves, each
-        // faded out where it is finer than a pixel. (A second crater scale
-        // and a fourth octave cost the V3D half its threads.)
+        // Rocks: regolith (Lommel-Seeliger blended with Lambert), mottled,
+        // fresh crater rims paler. The mesh holds the large shapes; a bump
+        // map in the rock's own frame adds what it cannot: small craters and
+        // grain at two octaves, each faded out where it is finer than a
+        // pixel. The craters and the finer octave are baked for each rock
+        // shape (`fs_bake_craters`), the coarser octave and the mottling
+        // worked out at the vertices: any second fetch here, or a third
+        // octave, cost the V3D half its threads.
         let kind = look.x;
         // All in the rock's own frame (`vs_model`).
         let l = in.turn.xyz;
         let pixel = length(fwidth(q)) + 1e-5;
-        let seed = fract(in.size * 7.31) * 50.0;
-        let dir = normalize(q);
-        var slope = vec3<f32>(0.0);
-        var bowl = 0.0;
-        let crater_fade = 1.0 - smoothstep01(0.12, 0.35, pixel * 11.0);
-        if (crater_fade > 0.0) {
-            let b = crater_bump(dir * 11.0, seed);
-            slope += b.yzw * crater_fade;
-            bowl += b.x * crater_fade / 11.0;
-        }
-        // Written out, not looped: a fetch inside a loop costs the V3D
-        // half its threads.
-        slope += grain_slope(q, pixel, 6.0, seed) * 0.16;
-        slope += grain_slope(q, pixel, 13.8, seed + 13.0) * 0.096;
-        slope += grain_slope(q, pixel, 31.74, seed + 26.0) * 0.0576;
+        // Clear of the map's outermost half texels, which would blend with
+        // the far side of a fold.
+        let edge = 0.5 / CRATER_MAP;
+        let at = clamp(octahedral(q), vec2<f32>(edge), vec2<f32>(1.0 - edge));
+        let b = textureSampleLevel(rock_craters, map_sampler, at, i32(look.w + 0.5), 0.0);
+        let crater_fade = 1.0 - smoothstep01(0.12, 0.35, pixel * CRATER_SCALE);
+        var slope = b.yzw * crater_fade;
+        let bowl = b.x * crater_fade / CRATER_SCALE;
+        slope += in.grain * (1.0 - smoothstep01(0.15, 0.45, pixel * 6.0)) * 0.16;
         // Tangent to the surface, onto the mesh's normal.
         let nn = normalize(n - (slope - n * dot(slope, n)) * 0.55);
         let cavity = clamp(1.0 + bowl * 30.0, 0.55, 1.0);
@@ -1672,9 +1728,7 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
             shine = 0.6;
             lunar = 0.25;
         }
-        let mottle = noise(q * 2.3 + vec3<f32>(in.size * 1.7)) * 0.6;
-        albedo *= 0.8 + 0.45 * mottle;
-        albedo *= 1.0 + in.fresh * 0.8;
+        albedo *= in.tone;
         // Bright grains: round, and only while each is about a pixel or
         // less (larger, they would read as squares, not sparkle).
         let gq = q * 70.0;
@@ -1718,11 +1772,22 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
         let d = -v;
         let mu = max(dot(n, v), 0.0);
         let fresnel = 0.06 + 0.94 * pow(1.0 - mu, 5.0);
-        let rr = ev_sky(normalize(refract(d, n, 0.84))).r;
-        let gg = ev_sky(normalize(refract(d, n, 0.8))).g;
-        let bb = ev_sky(normalize(refract(d, n, 0.76))).b;
+        // `refract` written out for the three colours: the part along the
+        // face is the same for each, scaled; the sky needs no normalized
+        // direction; and all four directions are in the world's frame, the
+        // sky's, from one turn of the ray and the normal. Three refracts,
+        // their normalizations and four turns (`ev_sky`) cost the V3D half
+        // its threads.
+        let dw = from_ev(d);
+        let nw = from_ev(n);
+        let c = dot(nw, dw);
+        let along = dw - nw * c;
+        let k = 1.0 - c * c;
+        let rr = textureSampleLevel(starfield, map_sampler, along * 0.84 - nw * sqrt(1.0 - 0.7056 * k), 0.0).r;
+        let gg = textureSampleLevel(starfield, map_sampler, along * 0.8 - nw * sqrt(1.0 - 0.64 * k), 0.0).g;
+        let bb = textureSampleLevel(starfield, map_sampler, along * 0.76 - nw * sqrt(1.0 - 0.5776 * k), 0.0).b;
         let through = vec3<f32>(rr, gg, bb) * 2.5 * tint + tint * 0.05;
-        let mirror = ev_sky(reflect(d, n)) * 2.0 + tint * 0.04;
+        let mirror = textureSampleLevel(starfield, map_sampler, dw - nw * (2.0 * c), 0.0).rgb * 2.0 + tint * 0.04;
         let inner = tint * (0.04 + 0.5 * notice * (0.6 + 0.4 * sin(t * 4.0 - length(q) * 12.0))) * (1.0 - smoothstep01(0.0, 1.0, length(q)));
         let facet = pow(max(dot(n, normalize(vec3<f32>(0.3, 1.0, 0.2))), 0.0), 12.0) * tint * 0.4;
         colour = mix(through, mirror, fresnel) + inner + pow(1.0 - mu, 3.0) * tint * 0.45 + facet;
@@ -2573,25 +2638,66 @@ fn vs_overlay_rim(@builtin(vertex_index) index: u32) -> Full {
     return out;
 }
 
+// The tractor beam's hold lights nothing inside this much of the radius:
+// with neither a hit nor a flash, the overlay over the ring outside it
+// alone (`fs_overlay_beam`).
+const BEAM_INNER: f32 = 0.4;
+
+@vertex
+fn vs_overlay_beam(@builtin(vertex_index) index: u32) -> Full {
+    var out: Full;
+    out.position = vec4<f32>(ring_vertex(index, BEAM_INNER), 0.0, 1.0);
+    out.dir = vec3<f32>(0.0);
+    out.face = 0u;
+    return out;
+}
+
+// The alarm round the round frame's rim.
+fn overlay_alarm(r: f32, t: f32) -> vec3<f32> {
+    let alert = params.ev[10].x;
+    if (alert <= 0.3) {
+        return vec3<f32>(0.0);
+    }
+    let red = smoothstep01(0.6, 0.8, alert);
+    let rate = mix(2.2, 5.5, red);
+    let beat = 0.55 + 0.45 * sin(t * rate);
+    let tint = mix(vec3<f32>(1.0, 0.55, 0.1), vec3<f32>(1.0, 0.1, 0.06), red);
+    let band = smoothstep01(0.86, 0.985, r) * (1.0 - smoothstep01(0.99, 1.01, r));
+    return tint * band * beat * smoothstep01(0.3, 0.55, alert) * 0.18;
+}
+
+// The tractor beam's hold: its colour washing in, scan lines rolling.
+fn overlay_beam(y: f32, r: f32, t: f32) -> vec3<f32> {
+    let beam = params.ev[3].w;
+    if (beam <= 0.01 || EVENT != 0) {
+        return vec3<f32>(0.0);
+    }
+    let tone = hue_of(params.ev[9].x);
+    let lines = 0.5 + 0.5 * sin(y * 0.5 - t * 20.0);
+    return tone * beam * (0.015 + 0.015 * lines) * smoothstep01(BEAM_INNER, 0.95, r) * (1.0 - smoothstep01(0.99, 1.01, r));
+}
+
+// The overlay with a flash over it. Squared: blended in linear light, a
+// little white reads as a lot.
+fn overlay_flash(colour: vec3<f32>) -> vec4<f32> {
+    let white = clamp(sq(params.ev[4].w), 0.0, 1.0);
+    return vec4<f32>(colour * (1.0 - white) + vec3<f32>(1.0) * white, white);
+}
+
+@fragment
+fn fs_overlay_beam(in: Full) -> @location(0) vec4<f32> {
+    let r = length(half_frame(in.position));
+    let t = params.burn.y;
+    return overlay_flash(overlay_alarm(r, t) + overlay_beam(in.position.y, r, t));
+}
+
 @fragment
 fn fs_overlay(in: Full) -> @location(0) vec4<f32> {
     let s = half_frame(in.position);
     let r = length(s);
-    let alert = params.ev[10].x;
     let hit = params.ev[2].w;
-    let beam = params.ev[3].w;
-    let flash = params.ev[4].w;
     let t = params.burn.y;
-    var colour = vec3<f32>(0.0);
-    // The alarm round the round frame's rim.
-    if (alert > 0.3) {
-        let red = smoothstep01(0.6, 0.8, alert);
-        let rate = mix(2.2, 5.5, red);
-        let beat = 0.55 + 0.45 * sin(t * rate);
-        let tint = mix(vec3<f32>(1.0, 0.55, 0.1), vec3<f32>(1.0, 0.1, 0.06), red);
-        let band = smoothstep01(0.86, 0.985, r) * (1.0 - smoothstep01(0.99, 1.01, r));
-        colour += tint * band * beat * smoothstep01(0.3, 0.55, alert) * 0.18;
-    }
+    var colour = overlay_alarm(r, t);
     // A hit: a ring of hexagons rippling out from it.
     if (hit > 0.01) {
         let at = params.ev[11].xy;
@@ -2610,13 +2716,6 @@ fn fs_overlay(in: Full) -> @location(0) vec4<f32> {
         colour += vec3<f32>(0.35, 0.75, 1.0) * ring * (0.1 + 0.9 * edge) * hit * 0.55;
         colour += vec3<f32>(0.6, 0.85, 1.0) * exp(-dist * 14.0) * hit * 0.2;
     }
-    // The tractor beam's hold: its colour washing in, scan lines rolling.
-    if (beam > 0.01 && EVENT == 0) {
-        let tone = hue_of(params.ev[9].x);
-        let lines = 0.5 + 0.5 * sin(in.position.y * 0.5 - t * 20.0);
-        colour += tone * beam * (0.015 + 0.015 * lines) * smoothstep01(0.4, 0.95, r) * (1.0 - smoothstep01(0.99, 1.01, r));
-    }
-    // Squared: blended in linear light, a little white reads as a lot.
-    let white = clamp(flash * flash, 0.0, 1.0);
-    return vec4<f32>(colour * (1.0 - white) + vec3<f32>(1.0) * white, white);
+    colour += overlay_beam(in.position.y, r, t);
+    return overlay_flash(colour);
 }

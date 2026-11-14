@@ -328,6 +328,8 @@ pub(crate) struct Solar {
     /// system it was painted for.
     rings: wgpu::Texture,
     rings_for: u64,
+    /// Each rock shape's small craters (`bake_craters`).
+    craters: (wgpu::Texture, wgpu::BindGroup),
     bound: (u64, usize, usize),
     /// The baked starfields (galaxy and stars, cube maps), for this system
     /// and the next, and whose they are: seed and rows done. Beside each,
@@ -467,6 +469,13 @@ impl Solar {
                 texture_entry(15, wgpu::TextureViewDimension::Cube),
             ],
         });
+        // The rocks' crater maps, a group of their own for the models: in the
+        // frame's group they would be the seventeenth texture a stage, over
+        // the V3D's limit of sixteen for the pipelines that add a group.
+        let crater_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Solar rock craters"),
+            entries: &[texture_entry(2, array)],
+        });
         let mut source = String::from(include_str!("noise.wgsl"));
         source.push_str(crate::noise3d::WGSL);
         source.push_str(include_str!("frame.wgsl"));
@@ -480,6 +489,31 @@ impl Solar {
             bind_group_layouts: &[Some(&layout), Some(&streamer.noise().layout)],
             immediate_size: 0,
         });
+        let model_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Solar models"),
+            bind_group_layouts: &[
+                Some(&layout),
+                Some(&streamer.noise().layout),
+                Some(&crater_layout),
+            ],
+            immediate_size: 0,
+        });
+        let craters = {
+            let texture = bake_craters(gpu, &shader, streamer.noise());
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Solar rock craters"),
+                layout: &crater_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                }],
+            });
+            (texture, group)
+        };
         // Every frame pipeline tests the depth mask (see `draw`); the mask's
         // own pipeline writes it and nothing else. Only the meshes cull.
         let make_culled = |label: &str,
@@ -1131,7 +1165,7 @@ impl Solar {
             let label = format!("Solar model {name}");
             let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(&label),
-                layout: Some(&pipeline_layout),
+                layout: Some(&model_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_model"),
@@ -1227,16 +1261,27 @@ impl Solar {
             });
             pipelines.insert(key, (label, made));
         }
-        for (name, label, vertex) in [
-            ("overlay", "Solar ship overlay", "vs_overlay"),
-            ("overlayrim", "Solar ship overlay rim", "vs_overlay_rim"),
+        for (name, label, vertex, fragment) in [
+            ("overlay", "Solar ship overlay", "vs_overlay", "fs_overlay"),
+            (
+                "overlayrim",
+                "Solar ship overlay rim",
+                "vs_overlay_rim",
+                "fs_overlay",
+            ),
+            (
+                "overlaybeam",
+                "Solar ship overlay beam",
+                "vs_overlay_beam",
+                "fs_overlay_beam",
+            ),
         ] {
             pipelines.insert(
                 name.to_string(),
                 make(
                     label,
                     vertex,
-                    "fs_overlay",
+                    fragment,
                     over,
                     &[],
                     Some(false),
@@ -1571,6 +1616,7 @@ impl Solar {
             models: None,
             rings,
             rings_for: u64::MAX,
+            craters,
             bound: (u64::MAX, usize::MAX, usize::MAX),
             starfields: [0, 1].map(|_| {
                 device.create_texture(&wgpu::TextureDescriptor {
@@ -2605,6 +2651,7 @@ impl Solar {
                     .as_ref()
                     .filter(|_| !model_draws.is_empty() && !crate::gpu::skipped("Solar model"))
                 {
+                    pass.set_bind_group(2, &self.craters.1, &[]);
                     pass.set_vertex_buffer(0, meshes.vertices.slice(..));
                     pass.set_vertex_buffer(1, meshes.instances.slice(..));
                     pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -2739,13 +2786,19 @@ impl Solar {
                 .max(params.ev[4][3])
                 .max(params.ev[3][3]);
             // The alarm alone lights only the band round the rim (from 0.86
-            // of the radius out), and nothing below 0.3; a hit, the beam or
-            // a flash, the whole frame.
-            let whole = params.ev[2][3].max(params.ev[3][3]).max(params.ev[4][3]);
+            // of the radius out), and nothing below 0.3; the tractor beam's
+            // hold only from 0.4 of it out (`BEAM_INNER`); a hit or a flash,
+            // the whole frame.
+            let whole = params.ev[2][3].max(params.ev[4][3]);
             if whole > 0.01 {
                 let (label, pipeline) = &self.pipelines["overlay"];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..OVERLAY_VERTICES, 0..1);
+            } else if params.ev[3][3] > 0.01 {
+                let (label, pipeline) = &self.pipelines["overlaybeam"];
+                pass.set_pipeline(pipeline);
+                let ring = full - (full as f64 * 0.4 * 0.4 * std::f64::consts::FRAC_PI_4) as u64;
+                crate::gpu::counted_draw(&mut pass, label, ring, 0..RIM_SIDES * 6, 0..1);
             } else if alarm > 0.3 {
                 let (label, pipeline) = &self.pipelines["overlayrim"];
                 pass.set_pipeline(pipeline);
@@ -3459,6 +3512,96 @@ fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &System) {
     );
 }
 
+/// Texels along each side of a rock shape's crater map (`CRATER_MAP` in the
+/// shader).
+const CRATER_MAP: u32 = 512;
+
+/// Bake each rock shape's small craters once, a layer a shape, over its
+/// directions octahedrally (`fs_bake_craters`): their height and slope, with
+/// the slope of the grain's middle octave, read by the rocks' shader in one
+/// filtered fetch where it worked out eight cells and a noise octave a
+/// pixel. (Each shape's craters lie where they lie on every rock of it;
+/// they were drawn for each rock's size before.)
+fn bake_craters(
+    gpu: &Graphics,
+    shader: &wgpu::ShaderModule,
+    noise: &crate::noise3d::Noise3d,
+) -> wgpu::Texture {
+    let device = &gpu.device;
+    let format = wgpu::TextureFormat::Rgba16Float;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Solar rock craters"),
+        size: wgpu::Extent3d {
+            width: CRATER_MAP,
+            height: CRATER_MAP,
+            depth_or_array_layers: models::ROCKS,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    // It reads the noise volume alone.
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Solar rock craters"),
+        bind_group_layouts: &[None, Some(&noise.layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Solar rock craters"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_bake_craters"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_bake_craters"),
+            targets: &[Some(format.into())],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    for layer in 0..models::ROCKS {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_array_layer: layer,
+            array_layer_count: Some(1),
+            ..Default::default()
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Solar rock craters"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(1, &noise.group, &[]);
+        pass.draw(0..3, layer..layer + 1);
+    }
+    gpu.submit(encoder.finish());
+    texture
+}
+
 /// Whether another body of `system` could pass in front of the star as seen
 /// from a body of `radius` at `at`: only then is its eclipse pass drawn.
 /// The label on a stopover's main object, where it is in view and clear of
@@ -3629,18 +3772,33 @@ fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
     let o = |k: usize| shot.objects[k];
     match scene.event {
         voyage::Event::Asteroids => {
+            // The light in each rock's own frame (`ev_light` turned back by
+            // it: turned in its vertex shader, it cost the V3D half its
+            // threads), and its kind of stone and shape (`bake_craters`)
+            // in one.
             let kind = shot.extra[0] as f32;
-            let look = [kind, 0.0, 0.0, 0.0];
+            let light = Vec3::new(
+                shot.extra[2] as f32,
+                shot.extra[3] as f32,
+                shot.rot[0] as f32,
+            )
+            .normalize();
+            let look = |turn: Quat, variant: u32| {
+                let l = turn.inverse() * light;
+                [l.x, l.y, l.z, kind * models::ROCKS as f32 + variant as f32]
+            };
             for k in 0..3 {
                 let at = v3(o(k));
                 let radius = o(k)[3] as f32;
                 let mut rng = system::Rng::new(seed ^ 0x4e40 ^ k as u64);
                 if let Some(level) = lod(at, radius) {
+                    let variant = (k as u32 + 3) % models::ROCKS;
                     let key = Key::Rock {
-                        variant: (k as u32 + 3) % models::ROCKS,
+                        variant,
                         lod: level,
                     };
-                    out.push((key, instance(at, radius, tumble(&mut rng, 0.05), look)));
+                    let turn = tumble(&mut rng, 0.05);
+                    out.push((key, instance(at, radius, turn, look(turn, variant))));
                 }
             }
             let span = Vec3::new(460.0, 280.0, 820.0);
@@ -3678,11 +3836,13 @@ fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
                     continue;
                 }
                 if let Some(level) = lod(at, radius) {
+                    let variant = (i % models::ROCKS as u64) as u32;
                     let key = Key::Rock {
-                        variant: (i % models::ROCKS as u64) as u32,
+                        variant,
                         lod: level,
                     };
-                    out.push((key, instance(at, radius, tumble(&mut rng, 0.08), look)));
+                    let turn = tumble(&mut rng, 0.08);
+                    out.push((key, instance(at, radius, turn, look(turn, variant))));
                 }
             }
         }
@@ -3735,8 +3895,15 @@ fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
                     continue;
                 }
                 let turn = Quat::from_axis_angle(axis, shot.rot[3] as f32 * (1.0 + k as f32 * 0.6));
+                // Its finest machinery is 0.037 of its half-size across: the
+                // coarser mesh while that is under two pixels (the escorts,
+                // mostly). A third of a million triangles a cube cost the
+                // V3D's binner whatever their size on the frame.
+                let at = v3(o(k));
+                let px = o(k)[3] as f32 / (at - ship).length().max(1.0) / pixel;
                 let key = Key::Hive {
                     variant: (shot.extra[3] as u32 + k as u32) % 3,
+                    lod: if px * 0.037 < 2.0 { 1 } else { 0 },
                 };
                 out.push((key, instance(v3(o(k)), o(k)[3] as f32, turn, look)));
             }

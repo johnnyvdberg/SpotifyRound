@@ -134,6 +134,9 @@ struct Params {
 @group(0) @binding(14) var starfield: texture_cube<f32>;
 // The galaxy alone, small and soft (`fs_bake_sky`).
 @group(0) @binding(15) var sky_cube: texture_cube<f32>;
+// Each rock shape's small craters, a layer a shape (`fs_bake_craters`), in
+// a group of their own (`crater_layout`).
+@group(2) @binding(2) var rock_craters: texture_2d_array<f32>;
 
 // Which map slot a mapped body's pipeline reads, and which drive a warp
 // pipeline draws.
@@ -2216,6 +2219,12 @@ struct Rim {
 
 // Vertex `index` of the ring round the rim, from `RIM_INNER` out.
 fn rim_vertex(index: u32) -> vec2<f32> {
+    return ring_vertex(index, RIM_INNER);
+}
+
+// Vertex `index` of a ring of `RIM_SIDES` sides from `inner` of the
+// radius out past the panel's edge.
+fn ring_vertex(index: u32, inner: f32) -> vec2<f32> {
     let side = index / 6u;
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
@@ -2224,7 +2233,7 @@ fn rim_vertex(index: u32) -> vec2<f32> {
     let c = corners[index % 6u];
     let angle = (f32(side) + c.x) * TAU / f32(RIM_SIDES);
     // Out past the panel's circle, so the polygon's flats cover it.
-    let radius = mix(RIM_INNER * 0.98, 1.0 / cos(PI / f32(RIM_SIDES)), c.y);
+    let radius = mix(inner * 0.98, 1.0 / cos(PI / f32(RIM_SIDES)), c.y);
     return vec2<f32>(cos(angle), sin(angle)) * radius;
 }
 
