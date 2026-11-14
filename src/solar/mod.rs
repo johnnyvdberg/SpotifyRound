@@ -120,9 +120,10 @@ const ROCKS: u32 = 260;
 /// (`HALO_SCALE` in `encounter.wgsl`), and in what.
 const LEVIATHAN_HALO: u32 = 4;
 const LEVIATHAN_HALO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// How many times coarser than the frame the plasma storm is drawn
-/// (`STORM_SCALE` in `encounter.wgsl`), in the leviathans' halos' format.
-const STORM_SCALE: u32 = 2;
+/// How many times coarser than the frame the plasma storm and the remnant
+/// are drawn (`COARSE` in `encounter.wgsl`), in the leviathans' halos'
+/// format.
+const COARSE: u32 = 2;
 /// Slices of the frame each leviathan's fins are bounded in (`FIN_SLICES`).
 const LEVIATHAN_FIN_SLICES: u32 = 16;
 /// A gate's guide buoys (two a step down the approach) and the most nodes
@@ -326,9 +327,10 @@ pub(crate) struct Solar {
     /// The leviathans' halos, drawn small before the frame's pass, and the
     /// bind group reading them in it (`fs_leviathan_glow`).
     leviathan_halos: (wgpu::TextureView, wgpu::BindGroup),
-    /// The plasma storm, drawn at half the frame's resolution before the
-    /// frame's pass (`fs_gas`) and laid over the sky from there.
-    storm: (wgpu::TextureView, wgpu::BindGroup),
+    /// The plasma storm or the remnant, drawn at half the frame's
+    /// resolution before the frame's pass and laid over the sky from there
+    /// (`fs_coarse`).
+    coarse: (wgpu::TextureView, wgpu::BindGroup),
     /// The battle's starship meshes: on their way from the thread building
     /// (or loading) them, then on the GPU, with where each one lies.
     model_library: Option<std::sync::mpsc::Receiver<models::Library>>,
@@ -677,7 +679,7 @@ impl Solar {
         };
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         // The nebula and the plasma storm, read from the gas map (`fs_gas`),
-        // and the storm laid over the sky (`fs_storm`): each in its own
+        // and the storm laid over the sky (`fs_coarse`): each in its own
         // layout, into the frame (tested against its depth) or not.
         let gas_pipeline = |label: &str,
                             layout: &wgpu::PipelineLayout,
@@ -1012,7 +1014,7 @@ impl Solar {
                 let (gases, frame) = (&gas_pipeline_layout, wgpu::TextureFormat::Rgba8UnormSrgb);
                 let made = gas_pipeline(&label, gases, "fs_gas", &constants, frame, over, true);
                 pipelines.insert(key, made);
-            } else if event == voyage::Event::PlasmaStorm {
+            } else if event.coarse() {
                 // Below, with the layout it shares with the leviathans' glow.
             } else if event != voyage::Event::Leviathans && event_parts(event, [0; 3]).is_none() {
                 pipelines.insert(key, pipeline(&label, vs, fs, blend, &constants));
@@ -1193,17 +1195,31 @@ impl Solar {
             true,
         );
         pipelines.insert("leviathanglow".to_string(), made);
-        // The plasma storm at half the frame's resolution before its pass,
-        // then laid over the sky.
-        let storm = voyage::Event::PlasmaStorm;
-        let constants = [("EVENT", storm.id() as f64)];
-        let label = format!("Solar event {} gas", storm.slug());
-        let (gases, small) = (&gas_pipeline_layout, LEVIATHAN_HALO_FORMAT);
-        let made = gas_pipeline(&label, gases, "fs_gas", &constants, small, None, false);
-        pipelines.insert("stormgas".to_string(), made);
-        let label = format!("Solar event {}", storm.slug());
-        let made = gas_pipeline(&label, &glow_layout, "fs_storm", &[], frame, over, true);
-        pipelines.insert(format!("event{}", storm.id()), made);
+        // The plasma storm and the remnant at half the frame's resolution
+        // before its pass, then laid over the sky.
+        for event in voyage::Event::ALL.into_iter().filter(|e| e.coarse()) {
+            let constants = [("EVENT", event.id() as f64)];
+            let label = format!("Solar event {} coarse", event.slug());
+            let (layout, fs) = if event.gas() {
+                (&gas_pipeline_layout, "fs_gas")
+            } else {
+                (&pipeline_layout, "fs_event")
+            };
+            let small = LEVIATHAN_HALO_FORMAT;
+            let made = gas_pipeline(&label, layout, fs, &constants, small, None, false);
+            pipelines.insert(format!("coarse{}", event.id()), made);
+            let label = format!("Solar event {}", event.slug());
+            let made = gas_pipeline(
+                &label,
+                &glow_layout,
+                "fs_coarse",
+                &constants,
+                frame,
+                over,
+                true,
+            );
+            pipelines.insert(format!("event{}", event.id()), made);
+        }
         // The battle's starships as meshes (`ships`): from a vertex buffer,
         // placed by the shader's own battle (`vs_ship`), writing the depth.
         let ship_attributes =
@@ -1710,12 +1726,12 @@ impl Solar {
                 },
             ],
         });
-        let storm = device
+        let coarse = device
             .create_texture(&wgpu::TextureDescriptor {
-                label: Some("Solar storm"),
+                label: Some("Solar coarse"),
                 size: wgpu::Extent3d {
-                    width: SIZE / STORM_SCALE,
-                    height: SIZE / STORM_SCALE,
+                    width: SIZE / COARSE,
+                    height: SIZE / COARSE,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -1727,13 +1743,13 @@ impl Solar {
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let storm_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Solar storm"),
+        let coarse_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Solar coarse"),
             layout: &halo_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&storm),
+                    resource: wgpu::BindingResource::TextureView(&coarse),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -1766,7 +1782,7 @@ impl Solar {
             sampler,
             bind_group: None,
             leviathan_halos: (halos, halo_group),
-            storm: (storm, storm_group),
+            coarse: (coarse, coarse_group),
             model_library: Some(models::spawn_library()),
             models: None,
             rings,
@@ -2652,13 +2668,13 @@ impl Solar {
             pass.set_pipeline(pipeline);
             crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..creatures * 9);
         }
-        // The plasma storm, at half the resolution, likewise.
-        let storm = event == Some(voyage::Event::PlasmaStorm) && params.ev[10][1] > 0.001;
-        if storm {
+        // The plasma storm or the remnant, at half the resolution, likewise.
+        let coarse = event.filter(|e| e.coarse() && params.ev[10][1] > 0.001);
+        if let Some(e) = coarse {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Solar storm"),
+                label: Some("Solar coarse"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.storm.0,
+                    view: &self.coarse.0,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -2673,10 +2689,12 @@ impl Solar {
             });
             pass.set_bind_group(0, group, &[]);
             pass.set_bind_group(1, &self.streamer.noise().group, &[]);
-            pass.set_bind_group(2, &self.gas[1].1, &[]);
-            let (label, pipeline) = &self.pipelines["stormgas"];
+            if e.gas() {
+                pass.set_bind_group(2, &self.gas[1].1, &[]);
+            }
+            let (label, pipeline) = &self.pipelines[&format!("coarse{}", e.id())];
             pass.set_pipeline(pipeline);
-            let small = (SIZE / STORM_SCALE * (SIZE / STORM_SCALE)) as u64;
+            let small = (SIZE / COARSE * (SIZE / COARSE)) as u64;
             crate::gpu::counted_draw(&mut pass, label, small, 0..3, 0..1);
         }
         {
@@ -2796,8 +2814,8 @@ impl Solar {
                     }
                 } else {
                     let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
-                    if storm {
-                        pass.set_bind_group(2, &self.storm.1, &[]);
+                    if coarse.is_some() {
+                        pass.set_bind_group(2, &self.coarse.1, &[]);
                     } else if e.gas() {
                         pass.set_bind_group(2, &self.gas[0].1, &[]);
                     }

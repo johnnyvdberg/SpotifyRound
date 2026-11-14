@@ -157,6 +157,12 @@ impl Event {
         matches!(self, Event::Nebula | Event::PlasmaStorm)
     }
 
+    /// The plasma storm or the remnant: drawn at half the frame's resolution
+    /// before its pass, and laid over the sky from there (`fs_coarse`).
+    pub fn coarse(self) -> bool {
+        matches!(self, Event::PlasmaStorm | Event::Remnant)
+    }
+
     /// A star gate or a wormhole: it throws the ship on itself, no drive.
     pub fn portal(self) -> bool {
         matches!(self, Event::Gate | Event::Wormhole)

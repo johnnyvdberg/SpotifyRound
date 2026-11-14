@@ -906,7 +906,7 @@ fn fs_probe_leviathan(in: Leviathan) -> @location(0) vec4<f32> {
 }
 
 // Drawn coarser than the frame before its pass, in a group of their own:
-// the leviathans' halos, or the plasma storm (`fs_storm`).
+// the leviathans' halos, or the plasma storm or the remnant (`fs_coarse`).
 @group(2) @binding(0) var leviathan_halo: texture_2d<f32>;
 @group(2) @binding(1) var halo_sampler: sampler;
 
@@ -977,12 +977,17 @@ fn ev_remnant(d: vec3<f32>) -> vec4<f32> {
             colour += tint * filaments * limb * 0.09 / (1.0 + tk / 2500.0);
         }
     }
-    // The diffuse glow inside, and its heart.
+    // The diffuse glow inside.
     let inside = max(hits.y - max(hits.x, 0.0), 0.0) / radius;
     colour += vec3<f32>(0.25, 0.35, 0.9) * inside * 0.035;
-    let px = point_pixels(ship, d, centre);
-    colour += vec3<f32>(0.75, 0.85, 1.0) * glint(px, 1.4) * 1.5 + vec3<f32>(0.4, 0.55, 1.0) * exp(-px * 0.03) * 0.15;
     return vec4<f32>(colour, 0.0);
+}
+
+// The neutron star at the remnant's heart: drawn at the frame's own
+// resolution (`fs_coarse`).
+fn remnant_star(d: vec3<f32>) -> vec3<f32> {
+    let px = point_pixels(ev_ship(), d, ev_obj(0).xyz);
+    return vec3<f32>(0.75, 0.85, 1.0) * glint(px, 1.4) * 1.5 + vec3<f32>(0.4, 0.55, 1.0) * exp(-px * 0.03) * 0.15;
 }
 
 // ---------------------------------------------------------------------------
@@ -2493,13 +2498,13 @@ fn star_disc(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32) -> vec3<f32> {
 // a pipeline layout of their own (`gas_pipeline`), so apart from `fs_event`.
 //
 // The storm is drawn at half the frame's resolution, before the frame's
-// pass (`STORM_SCALE`), and laid over the sky from there (`fs_storm`).
+// pass (`COARSE`), and laid over the sky from there (`fs_coarse`).
 @fragment
 fn fs_gas(in: Full) -> @location(0) vec4<f32> {
     let d = to_ev(normalize(in.dir));
     var position = in.position;
     if (EVENT == 14) {
-        position = vec4<f32>(in.position.xy * STORM_SCALE, in.position.zw);
+        position = vec4<f32>(in.position.xy * COARSE, in.position.zw);
     }
     let s = half_frame(position);
     var c = vec4<f32>(0.0);
@@ -2511,16 +2516,21 @@ fn fs_gas(in: Full) -> @location(0) vec4<f32> {
     return c * params.ev[10].y;
 }
 
-// How many times coarser than the frame the plasma storm is drawn
-// (`STORM_SCALE` in `mod.rs`).
-const STORM_SCALE: f32 = 2.0;
+// How many times coarser than the frame the plasma storm and the remnant
+// are drawn (`COARSE` in `mod.rs`).
+const COARSE: f32 = 2.0;
 
-// The plasma storm over the sky, from where it was drawn at half the
-// frame's resolution (`fs_gas`).
+// The plasma storm (14) or the remnant (10) over the sky, from where it was
+// drawn at half the frame's resolution (`fs_gas`, `fs_event`); the
+// remnant's star, a pixel or two across, sharp over it.
 @fragment
-fn fs_storm(in: Full) -> @location(0) vec4<f32> {
+fn fs_coarse(in: Full) -> @location(0) vec4<f32> {
     let uv = in.position.xy / (params.frame.x * 2.0);
-    return textureSampleLevel(leviathan_halo, halo_sampler, uv, 0.0);
+    var c = textureSampleLevel(leviathan_halo, halo_sampler, uv, 0.0);
+    if (EVENT == 10) {
+        c += vec4<f32>(remnant_star(to_ev(normalize(in.dir))), 0.0) * params.ev[10].y;
+    }
+    return c;
 }
 
 // Each event's draw over the sky.

@@ -881,9 +881,6 @@ Solar event comet #0             vs_background  VS-bin    31   4     0   22     
 Solar rocks comet #0             fs_rock        FS        58   4     0    9    11        0:0    2    3
 Solar rocks comet #0             vs_rock        VS       205   4     0  109    23        0:0    0    8
 Solar rocks comet #0             vs_rock        VS-bin   192   4     0   97    21        0:0    0   11
-Solar event remnant #0           fs_event       FS       421   2     1   98    64        0:0    2   31
-Solar event remnant #0           vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar event remnant #0           vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar event wormhole #0          fs_event       FS       401   2     0   88    43        0:0    2   27
 Solar event wormhole #0          vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event wormhole #0          vs_background  VS-bin    31   4     0   22     7        0:0    0    0
@@ -965,10 +962,16 @@ Solar probe leviathans halos #0  vs_leviathan   VS-bin   389   4     0  191    3
 Solar event leviathans glow #0   fs_leviathan_glow FS        64   4     0   11    14        0:0    0    2
 Solar event leviathans glow #0   vs_leviathan_glow VS       121   4     0   67    20        0:0    0    6
 Solar event leviathans glow #0   vs_leviathan_glow VS-bin    31   4     0   22     7        0:0    0    0
-Solar event plasma-storm gas #0  fs_gas         FS       556   2     1  140    64        0:0    2   42
-Solar event plasma-storm gas #0  vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar event plasma-storm gas #0  vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar event plasma-storm #0      fs_storm       FS        15   4     0    3     3        0:0    1    0
+Solar event remnant coarse #0    fs_event       FS       367   2     1   85    64        0:0    0   27
+Solar event remnant coarse #0    vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar event remnant coarse #0    vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar event remnant #0           fs_coarse      FS       157   4     0   44    22        0:0    2   19
+Solar event remnant #0           vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar event remnant #0           vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar event plasma-storm coarse #0 fs_gas         FS       556   2     1  140    64        0:0    2   42
+Solar event plasma-storm coarse #0 vs_background  VS        60   4     0   35    10        0:0    0    2
+Solar event plasma-storm coarse #0 vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar event plasma-storm #0      fs_coarse      FS        15   4     0    3     3        0:0    1    0
 Solar event plasma-storm #0      vs_background  VS        32   4     0   22     7        0:0    0    1
 Solar event plasma-storm #0      vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar ships #0                   fs_ship        FS       508   4     0  178    32        0:0    1   32
