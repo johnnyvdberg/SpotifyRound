@@ -881,15 +881,42 @@ Solar model ring #0              vs_model       VS-bin    96   4     0   46    1
 Solar model debris #0            fs_model       FS       195   4     0   74    23        0:0    0    4
 Solar model debris #0            vs_model       VS       131   4     0   70    25        0:0    0    2
 Solar model debris #0            vs_model       VS-bin    96   4     0   46    18        0:0    0    6
-Solar battle effects 1 #0        fs_battle_fx   FS       960   2     2  248    64        0:0    9   73
-Solar battle effects 1 #0        vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar battle effects 1 #0        vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar battle effects 2 #0        fs_battle_fx   FS       742   2     1  226    64        0:0    3   55
-Solar battle effects 2 #0        vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar battle effects 2 #0        vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar battle effects 3 #0        fs_battle_fx   FS      1179   2     1  286    64        0:0   17   89
-Solar battle effects 3 #0        vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar battle effects 3 #0        vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar battle effects beams #0    fs_fx_line     FS       240   4     0   50    27        0:0    1   31
+Solar battle effects beams #0    vs_fx_line     VS       272   4     0  139    30        0:0    1    9
+Solar battle effects beams #0    vs_fx_line     VS-bin   208   4     0   84    23        0:0    0   10
+Solar battle effects beams dim #0 fs_fx_line     FS       240   4     0   50    27        0:0    1   31
+Solar battle effects beams dim #0 vs_fx_line     VS       256   4     0  125    30        0:0    0    9
+Solar battle effects beams dim #0 vs_fx_line     VS-bin   196   4     0   80    22        0:0    0    8
+Solar battle effects glints #0   fs_fx_glint    FS       207   4     0   47    24        0:0    2   30
+Solar battle effects glints #0   vs_fx_spot     VS       329   2     0  128    45        0:0    0   16
+Solar battle effects glints #0   vs_fx_spot     VS-bin   332   4     0  125    32        0:0    0   16
+Solar battle effects glints dim #0 fs_fx_glint    FS       211   4     0   47    24        0:0    2   31
+Solar battle effects glints dim #0 vs_fx_spot     VS       327   2     0  127    44        0:0    2   16
+Solar battle effects glints dim #0 vs_fx_spot     VS-bin   330   4     0  121    32        0:0    2   18
+Solar battle effects bursts #0   fs_fx_burst    FS       259   4     0   63    25        0:0    0   33
+Solar battle effects bursts #0   vs_fx_spot     VS       332   2     0  131    46        0:0    0   16
+Solar battle effects bursts #0   vs_fx_spot     VS-bin   332   4     0  125    32        0:0    0   16
+Solar battle effects bursts dim #0 fs_fx_burst    FS       263   4     0   63    25        0:0    0   37
+Solar battle effects bursts dim #0 vs_fx_spot     VS       328   2     0  130    45        0:0    2   16
+Solar battle effects bursts dim #0 vs_fx_spot     VS-bin   330   4     0  121    32        0:0    2   18
+Solar battle effects shields #0  fs_fx_shield   FS       216   4     0   44    28        0:0    2   33
+Solar battle effects shields #0  vs_fx_spot     VS       341   2     0  137    49        0:0    0   16
+Solar battle effects shields #0  vs_fx_spot     VS-bin   332   4     0  125    32        0:0    0   16
+Solar battle effects shields dim #0 fs_fx_shield   FS       216   4     0   44    28        0:0    2   33
+Solar battle effects shields dim #0 vs_fx_spot     VS       335   2     0  135    50        0:0    2   16
+Solar battle effects shields dim #0 vs_fx_spot     VS-bin   330   4     0  121    32        0:0    2   18
+Solar battle effects shock shields #0 fs_fx_jolt     FS       266   4     0   58    27        0:0    1   35
+Solar battle effects shock shields #0 vs_fx_spot     VS       338   2     0  133    50        0:0    0   16
+Solar battle effects shock shields #0 vs_fx_spot     VS-bin   332   4     0  125    32        0:0    0   16
+Solar battle effects shock shields dim #0 fs_fx_jolt     FS       265   4     0   58    27        0:0    2   35
+Solar battle effects shock shields dim #0 vs_fx_spot     VS       331   2     0  134    46        0:0    2   16
+Solar battle effects shock shields dim #0 vs_fx_spot     VS-bin   330   4     0  121    32        0:0    2   18
+Solar battle effects shock wave #0 fs_fx_ring     FS       196   4     0   45    24        0:0    1   25
+Solar battle effects shock wave #0 vs_fx_ring     VS       138   4     0   74    17        0:0    0    7
+Solar battle effects shock wave #0 vs_fx_ring     VS-bin   127   4     0   64    15        0:0    0    4
+Solar battle effects shock wave dim #0 fs_fx_ring     FS       195   4     0   45    24        0:0    2   25
+Solar battle effects shock wave dim #0 vs_fx_ring     VS       132   4     0   72    17        0:0    0    5
+Solar battle effects shock wave dim #0 vs_fx_ring     VS-bin   118   4     0   60    15        0:0    1    2
 Solar ship overlay #0            fs_overlay     FS       232   4     0   86    22        0:0    1   21
 Solar ship overlay #0            vs_overlay     VS        31   4     0   21     7        0:0    0    1
 Solar ship overlay #0            vs_overlay     VS-bin    30   4     0   22     8        0:0    0    0

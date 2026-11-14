@@ -292,6 +292,8 @@ pub(crate) struct Solar {
     drive_override: Option<u32>,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// A battle's effects this frame, by kind (`battle_effects`).
+    effects: wgpu::Buffer,
     /// The meshes' triangles, every grid's (`grid_indices`).
     grid: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -945,22 +947,70 @@ impl Solar {
             });
             pipelines.insert(format!("model{family}"), (label, made));
         }
-        // A battle's effects over its meshes, each pixel at the depth of the
-        // nearest effect in it (`fs_battle_fx`).
-        for part in 1..=3 {
-            pipelines.insert(
-                format!("battlefx{part}"),
-                make(
-                    &format!("Solar battle effects {part}"),
-                    "vs_background",
-                    "fs_battle_fx",
-                    add,
-                    &[("FX", part as f64)],
-                    Some(false),
-                    wgpu::ColorWrites::ALL,
-                    false,
-                ),
-            );
+        // A battle's effects after its meshes, each kind on its own bounded
+        // geometry (`battle_effects`), tested against them at its own depth
+        // without writing it, added; their dim light apart, behind them.
+        let fx_attributes = wgpu::vertex_attr_array![
+            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4
+        ];
+        for ((kind, (part, vs, fs, _)), far) in FX_KINDS
+            .iter()
+            .enumerate()
+            .flat_map(|k| [(k, false), (k, true)])
+        {
+            let (key, label) = if far {
+                (
+                    format!("battlefx{kind}far"),
+                    format!("Solar battle effects {part} dim"),
+                )
+            } else {
+                (
+                    format!("battlefx{kind}"),
+                    format!("Solar battle effects {part}"),
+                )
+            };
+            let constants = [("FX_FAR", if far { 1.0 } else { 0.0 })];
+            let options = wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            };
+            let layout = wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Fx>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &fx_attributes,
+            };
+            let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(&label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vs),
+                    buffers: &[Some(layout)],
+                    compilation_options: options.clone(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        blend: add,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: options,
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            pipelines.insert(key, (label, made));
         }
         for (name, label, vertex) in [
             ("overlay", "Solar ship overlay", "vs_overlay"),
@@ -1161,6 +1211,12 @@ impl Solar {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let effects = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Solar battle effects"),
+            size: (FX_INSTANCES * std::mem::size_of::<Fx>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let grid = {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1247,6 +1303,7 @@ impl Solar {
             drive_override: None,
             layout,
             uniforms,
+            effects,
             grid,
             sampler,
             bind_group: None,
@@ -2014,6 +2071,23 @@ impl Solar {
         }
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&params));
+        // A battle's effects, grouped by kind, and a draw for each kind.
+        let mut fx_draws = Vec::new();
+        if params.ev[0][0] as u32 == voyage::Event::Battle.id() {
+            let mut flat = Vec::new();
+            for (kind, list) in battle_effects(&params.ev).into_iter().enumerate() {
+                let at = flat.len().min(FX_INSTANCES) as u32;
+                flat.extend(list);
+                flat.truncate(FX_INSTANCES);
+                if flat.len() as u32 > at {
+                    fx_draws.push((kind, at..flat.len() as u32));
+                }
+            }
+            if !flat.is_empty() {
+                gpu.queue
+                    .write_buffer(&self.effects, 0, bytemuck::cast_slice(&flat));
+            }
+        }
         // The stopover's models, grouped by mesh: their placings into the
         // instance buffer, and a draw for each group.
         let mut model_draws: Vec<ModelDraw> = Vec::new();
@@ -2205,14 +2279,19 @@ impl Solar {
                     }
                     pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
                 }
-                if e == voyage::Event::Battle {
+                if e == voyage::Event::Battle && !fx_draws.is_empty() {
                     // Its fire, shields and blasts, after the ships and wreckage, tested
-                    // against them at their own depths.
-                    // In three passes, each within the V3D's registers (`FX`).
-                    for part in 1..=3 {
-                        let (label, pipeline) = &self.pipelines[&format!("battlefx{part}")];
-                        pass.set_pipeline(pipeline);
-                        crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                    // against them at their own depths: a draw a kind.
+                    // Their dim light only where no mesh is.
+                    pass.set_vertex_buffer(0, self.effects.slice(..));
+                    for (kind, instances) in &fx_draws {
+                        for key in [format!("battlefx{kind}"), format!("battlefx{kind}far")] {
+                            let (label, pipeline) = &self.pipelines[&key];
+                            pass.set_pipeline(pipeline);
+                            let vertices = 0..FX_KINDS[*kind].3;
+                            let instances = instances.clone();
+                            crate::gpu::counted_draw(&mut pass, label, 0, vertices, instances);
+                        }
                     }
                 }
                 if e.rocks() {
@@ -3494,6 +3573,377 @@ fn fleet_rows(ev: &mut [[f32; 4]; EV_ROWS]) {
         ev[12 + 2 * i] = [at[0], at[1], at[2], s];
         ev[13 + 2 * i] = [heading[0], heading[1], heading[2], jolt];
     }
+}
+
+/// One of a battle's effects this frame, drawn on its own bounded geometry
+/// (`vs_fx_*` in `encounter.wgsl`): four rows its kind reads its own way,
+/// the last how far its light reaches (pixels round it, units round it, how
+/// far its front stands towards the camera, and the part of that within
+/// which its light is bright, [`FX_BRIGHT`]).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct Fx {
+    a: [f32; 4],
+    b: [f32; 4],
+    colour: [f32; 4],
+    reach: [f32; 4],
+}
+
+/// The most effects drawn in a battle's frame.
+const FX_INSTANCES: usize = 128;
+
+/// The kinds of a battle's effects, a pipeline each (`battlefx<kind>`): its
+/// label's part, its vertex and fragment shaders and vertices an instance.
+const FX_KINDS: [(&str, &str, &str, u32); 6] = [
+    ("beams", "vs_fx_line", "fs_fx_line", 6 * 8),
+    ("glints", "vs_fx_spot", "fs_fx_glint", 6),
+    ("bursts", "vs_fx_spot", "fs_fx_burst", 6),
+    ("shields", "vs_fx_spot", "fs_fx_shield", 6),
+    ("shock shields", "vs_fx_spot", "fs_fx_jolt", 6),
+    ("shock wave", "vs_fx_ring", "fs_fx_ring", 6 * 64),
+];
+const FX_BEAM: usize = 0;
+const FX_GLINT: usize = 1;
+const FX_BURST: usize = 2;
+const FX_SHIELD: usize = 3;
+const FX_JOLT: usize = 4;
+const FX_WAVE: usize = 5;
+
+/// Linear light under which the sRGB frame rounds a pixel to black: where
+/// each effect's glow is cut.
+const FX_DIM: f32 = 0.5 / 255.0 / 12.92;
+/// Light under which an effect is dim (`FX_BRIGHT` in `encounter.wgsl`):
+/// drawn behind every mesh, not at its own depth.
+const FX_BRIGHT: f32 = 0.015;
+
+/// How far out a glow `peak` bright at its centre stays above `floor`, in
+/// its falloff's own lengths: for `exp(-x)`, `x` itself.
+fn fx_falloff(peak: f32, floor: f32) -> f32 {
+    (peak / floor).max(1.0).ln()
+}
+
+/// A battle's effects this frame, by kind ([`FX_KINDS`]), as
+/// `encounter.wgsl` once worked them out for every pixel: the ships'
+/// engines, shields flaring where the shock strikes them; fire between the
+/// fleets, each its own way, the target's shield flaring where it lands;
+/// torpedoes arcing over and bursting on the shields; fighters weaving round
+/// the wedge fleet; the lost ship's blast and its shock; stray fire past the
+/// ship. From the stopover's rows, `fleet_rows` already filled in.
+fn battle_effects(ev: &[[f32; 4]; EV_ROWS]) -> [Vec<Fx>; 6] {
+    use std::f32::consts::{PI, TAU};
+    type V = [f32; 3];
+    let mut out: [Vec<Fx>; 6] = Default::default();
+    let fract = |x: f32| x - x.floor();
+    let v3 = |r: [f32; 4]| [r[0], r[1], r[2]];
+    let add = |a: V, b: V| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    let sub = |a: V, b: V| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let scale = |a: V, k: f32| a.map(|x| x * k);
+    let length = |a: V| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    let norm = |a: V| scale(a, 1.0 / length(a).max(1e-9));
+    let mix = |a: V, b: V, k: f32| add(a, scale(sub(b, a), k));
+    let white = [1.0; 3];
+    let brightest = |c: V| c[0].max(c[1]).max(c[2]);
+    // A beam or bolt from `a` to `b`, `w` pixels wide; dashes at `dash`, or
+    // steady if negative.
+    let beam = |out: &mut [Vec<Fx>; 6], a: V, b: V, w: f32, colour: V, dash: f32| {
+        let peak = brightest(colour);
+        if peak < FX_DIM {
+            return;
+        }
+        let span = length(sub(b, a));
+        let m = scale(sub(b, a), 1.0 / span.max(1e-3));
+        let reach = |floor| {
+            (5.0 * w * fx_falloff(0.12 * peak, floor))
+                .max(w * (2.0 * fx_falloff(1.6 * peak, floor)).sqrt())
+                + 1.0
+        };
+        out[FX_BEAM].push(Fx {
+            a: [a[0], a[1], a[2], w],
+            b: [m[0], m[1], m[2], span],
+            colour: [colour[0], colour[1], colour[2], dash],
+            reach: [reach(FX_DIM), 0.0, 0.0, reach(FX_BRIGHT) / reach(FX_DIM)],
+        });
+    };
+    // A point's glint at `p`, `size` pixels.
+    let glint = |out: &mut [Vec<Fx>; 6], p: V, size: f32, colour: V| {
+        let peak = brightest(colour);
+        if peak < FX_DIM {
+            return;
+        }
+        let reach = |floor| {
+            (6.0 * size * fx_falloff(0.15 * peak, floor))
+                .max(size * (2.0 * fx_falloff(2.0 * peak, floor)).sqrt())
+                + 1.0
+        };
+        out[FX_GLINT].push(Fx {
+            a: [p[0], p[1], p[2], size],
+            colour: [colour[0], colour[1], colour[2], 0.0],
+            reach: [reach(FX_DIM), 0.0, 0.0, reach(FX_BRIGHT) / reach(FX_DIM)],
+            ..Default::default()
+        });
+    };
+    // A burst at `c` of radius `r`, `age` 0..1 through it, its light times
+    // `k`, its front `front` units nearer than its centre.
+    let burst = |out: &mut [Vec<Fx>; 6], c: V, r: f32, age: f32, k: f32, front: f32| {
+        if age <= 0.0 || age >= 1.0 {
+            return;
+        }
+        let size = r * (0.25 + 0.75 * age.sqrt());
+        let fade = (1.0 - age) * (1.0 - age) * k;
+        let reach = |floor| {
+            (size * 0.55 * fx_falloff(2.2 * fade, floor).sqrt())
+                .max(size * (1.0 + 0.18 * fx_falloff(0.35 * fade, floor).sqrt()))
+                .max(r * fx_falloff(0.04 * fade, floor))
+                * 1.02
+        };
+        out[FX_BURST].push(Fx {
+            a: [c[0], c[1], c[2], r],
+            b: [0.0, 0.0, 0.0, age],
+            colour: [k, k, k, 0.0],
+            reach: [0.0, reach(FX_DIM), front, reach(FX_BRIGHT) / reach(FX_DIM)],
+        });
+    };
+    // A shield of radius `r` round `c` flaring towards `toward`, `power`
+    // how tightly; or, `power` 0, struck by the shock (`fs_fx_jolt`).
+    let shield = |out: &mut [Vec<Fx>; 6], c: V, r: f32, toward: V, power: f32, colour: V| {
+        if brightest(colour) < FX_DIM {
+            return;
+        }
+        out[if power > 0.0 { FX_SHIELD } else { FX_JOLT }].push(Fx {
+            a: [c[0], c[1], c[2], r],
+            b: [toward[0], toward[1], toward[2], power],
+            colour: [colour[0], colour[1], colour[2], 0.0],
+            reach: [0.0, r, r, 1.0],
+        });
+    };
+    let fire = |f: usize| {
+        [
+            [1.0, 0.5, 0.12],
+            [0.3, 1.0, 0.3],
+            [0.45, 1.0, 0.25],
+            [0.3, 1.0, 0.55],
+            [1.0, 0.8, 0.2],
+            [0.25, 1.0, 0.4],
+        ][f]
+    };
+    let shield_colour = |f: usize| {
+        [
+            [0.4, 0.7, 1.0],
+            [0.7, 0.8, 1.0],
+            [0.7, 1.0, 0.4],
+            [0.3, 1.0, 0.5],
+            [1.0, 0.7, 0.3],
+            [0.3, 1.0, 0.4],
+        ][f]
+    };
+    let faction =
+        |i: usize| ((if i >= 4 { ev[6][1] } else { ev[6][0] }) as i32).clamp(0, 5) as usize;
+    let at = |i: usize| ev[12 + 2 * i];
+    let ship = v3(ev[1]);
+    let t = ev[0][1];
+    let seed = ev[9][0];
+    let (kill, lost) = (ev[6][2], ev[7][3] as i32);
+    let blast = v3(ev[8]);
+    for i in 0..BATTLE_SHIPS {
+        if i as i32 == lost && t > kill {
+            continue;
+        }
+        let (c, size) = (v3(at(i)), at(i)[3]);
+        let (heading, jolt) = (v3(ev[13 + 2 * i]), ev[13 + 2 * i][3]);
+        let f = faction(i);
+        if jolt > 0.01 {
+            let toward = norm(sub(blast, c));
+            shield(
+                &mut out,
+                c,
+                size * 1.45,
+                toward,
+                0.0,
+                scale(shield_colour(f), jolt),
+            );
+        }
+        let engine = sub(c, scale(heading, size * 1.02));
+        let colour = scale(mix(shield_colour(f), white, 0.5), 0.9);
+        glint(&mut out, engine, 1.0 + size * 0.03, colour);
+    }
+    // Fire between the fleets: beams, or bolts in short dashes for the wedge
+    // fleet and the raiders. Not for the screenshots' one ship.
+    for k in (0..7).filter(|_| ev[9][1] <= 0.5) {
+        let fk = k as f32;
+        let clock = t * 1.6 + fk * 0.37;
+        let on = fract(clock);
+        if on > 0.35 {
+            continue;
+        }
+        let h = hash_cell([clock.floor(), fk, seed]);
+        let shooter = (h * 7.99) as i32;
+        let aim = (shooter / 4 * 4 + 4 + (fract(h * 13.0) * 3.99) as i32) % 8;
+        if (shooter == lost || aim == lost) && t > kill {
+            continue;
+        }
+        let (a, b) = (at(shooter as usize), at(aim as usize));
+        let f = faction(shooter as usize);
+        let missing = if fract(h * 7.0) >= 0.6 { 1.0 } else { 0.0 };
+        let miss = [31.0, 57.0, 91.0].map(|n| (fract(h * n) - 0.5) * b[3] * 3.0 * missing);
+        let from = add(v3(a), scale(norm(sub(v3(b), v3(a))), a[3] * 0.6));
+        let to = add(v3(b), miss);
+        let pulse = (on / 0.35 * PI).sin();
+        let colour = scale(mix(fire(f), white, 0.4), 1.4 * pulse);
+        let dash = if f == 1 || f == 2 { on * 9.0 } else { -1.0 };
+        beam(
+            &mut out,
+            from,
+            to,
+            if f == 5 { 1.8 } else { 1.1 },
+            colour,
+            dash,
+        );
+        // Where a beam lands, its target's shield flares.
+        if fract(h * 7.0) < 0.6 && on > 0.05 {
+            let toward = norm(sub(v3(a), v3(b)));
+            let colour = scale(shield_colour(faction(aim as usize)), 0.7 * pulse);
+            shield(&mut out, v3(b), b[3] * 1.45, toward, 5.0, colour);
+        }
+    }
+    // Torpedoes: glowing slugs arcing over with their trails, bursting on
+    // the target's shield.
+    for k in 0..5 {
+        let fk = k as f32;
+        let clock = t / 2.6 + fk * 0.23;
+        let phase = fract(clock);
+        let h = hash_cell([clock.floor(), fk + 10.0, seed]);
+        let shooter = (h * 7.99) as i32;
+        let aim = (shooter / 4 * 4 + 4 + (fract(h * 17.0) * 3.99) as i32) % 8;
+        if (shooter == lost || aim == lost) && t > kill - 2.0 {
+            continue;
+        }
+        let a = v3(at(shooter as usize));
+        let goal = at(aim as usize);
+        let arc = |flight: f32| {
+            add(
+                mix(a, v3(goal), flight),
+                [0.0, (flight * PI).sin() * 25.0, 0.0],
+            )
+        };
+        let tint = mix(fire(faction(shooter as usize)), [1.0, 0.25, 0.1], 0.5);
+        if phase < 0.7 {
+            let flight = (phase / 0.7).clamp(0.0, 1.0);
+            let p = arc(flight);
+            let pulse = 0.75 + 0.25 * (t * 30.0 + fk).sin();
+            glint(&mut out, p, 2.0, scale(tint, 1.6 * pulse));
+            let back = arc((flight - 0.12).max(0.0));
+            beam(&mut out, back, p, 1.0, scale(tint, 0.35), -1.0);
+        } else {
+            let age = (phase - 0.7) / 0.3;
+            let toward = norm(sub(a, v3(goal)));
+            let landing = add(v3(goal), scale(toward, goal[3] * 1.45));
+            burst(
+                &mut out,
+                landing,
+                (goal[3] * 0.7).max(4.0),
+                age,
+                0.6,
+                goal[3],
+            );
+            let colour = scale(
+                shield_colour(faction(aim as usize)),
+                (1.0 - age).powi(2) * 0.9,
+            );
+            shield(&mut out, v3(goal), goal[3] * 1.45, toward, 4.0, colour);
+        }
+    }
+    // Fighters weaving round the wedge fleet, bolts flicking between them.
+    if ev[6][0] as i32 == 1 || ev[6][1] as i32 == 1 {
+        let o = ev[5];
+        for k in 0..10 {
+            let fk = k as f32;
+            let h = hash_cell([fk, seed, 21.0]);
+            let a = t * (0.5 + 0.4 * h) + h * TAU;
+            let p = add(
+                v3(o),
+                [
+                    a.cos() * o[3] * (0.3 + 0.5 * h),
+                    (a * 1.7 + fk).sin() * o[3] * 0.25,
+                    a.sin() * o[3] * 0.5 * (0.4 + 0.6 * fract(h * 7.0)),
+                ],
+            );
+            let way = norm([
+                -a.sin() * o[3],
+                (a * 1.7 + fk).cos() * 1.7 * o[3] * 0.25,
+                a.cos() * o[3] * 0.5,
+            ]);
+            let tint = if k < 5 {
+                [0.6, 0.85, 1.0]
+            } else {
+                [1.0, 0.5, 0.3]
+            };
+            glint(&mut out, p, 1.0, scale(tint, 1.2));
+            beam(
+                &mut out,
+                sub(p, scale(way, 8.0)),
+                p,
+                0.6,
+                scale(tint, 0.25),
+                -1.0,
+            );
+            if fract(t * 2.0 + h * 5.0) <= 0.15 {
+                let shot = if k < 5 {
+                    [1.0, 0.25, 0.2]
+                } else {
+                    [0.3, 1.0, 0.3]
+                };
+                let (from, to) = (add(p, scale(way, 2.0)), add(p, scale(way, 30.0)));
+                beam(&mut out, from, to, 0.8, shot, -1.0);
+            }
+        }
+    }
+    // The ship lost: a flash, a fireball and a ring of shock in its plane.
+    let age = (t - kill) / 5.0;
+    burst(&mut out, blast, 30.0, age, 1.4, 30.0 * age.max(0.0).sqrt());
+    if t >= kill {
+        let flash = scale([1.0, 0.95, 0.9], (-(t - kill) * 3.0).exp() * 3.0);
+        glint(&mut out, blast, 6.0, flash);
+    }
+    if age > 0.0 && age < 1.0 {
+        let wave = (t - kill) * ev[8][3];
+        let colour = scale([0.7, 0.85, 1.0], (1.0 - age).powi(2) * 0.7);
+        // Bright within this part of its band (`bump`).
+        let bright = (1.0 - (FX_BRIGHT / brightest(colour)).min(1.0).sqrt()).sqrt();
+        out[FX_WAVE].push(Fx {
+            a: [blast[0], blast[1], blast[2], wave],
+            b: [4.0 + wave * 0.05, 0.0, 0.0, 0.0],
+            colour: [colour[0], colour[1], colour[2], 0.0],
+            reach: [0.0, 0.0, 0.0, (bright + 0.05).min(1.0)],
+        });
+    }
+    // Stray fire: a beam past the ship, a torpedo bursting close by.
+    let (laser_at, torpedo_at, side) = (ev[7][0], ev[7][1], ev[6][3]);
+    if t > laser_at && t < laser_at + 0.6 {
+        let a = v3(at(4));
+        let near = add(ship, [side * 14.0, 6.0, 28.0]);
+        let end = add(near, scale(sub(near, a), 0.5));
+        let pulse = ((t - laser_at) / 0.6 * PI).sin();
+        let colour = scale(mix(fire(faction(4)), white, 0.5), 2.0 * pulse);
+        beam(&mut out, a, end, 1.8, colour, -1.0);
+    }
+    if t > torpedo_at && t < torpedo_at + 3.5 {
+        let a = v3(at(0));
+        let near = add(ship, [-side * 22.0, -8.0, 40.0]);
+        let flight = (t - torpedo_at) / 1.1;
+        if flight < 1.0 {
+            glint(&mut out, mix(a, near, flight), 2.4, [2.0, 0.8, 0.4]);
+        } else {
+            burst(
+                &mut out,
+                near,
+                22.0,
+                (t - torpedo_at - 1.1) / 2.4,
+                1.2,
+                10.0,
+            );
+        }
+    }
+    out
 }
 
 fn encounter_rows(view: &View) -> [[f32; 4]; EV_ROWS] {
