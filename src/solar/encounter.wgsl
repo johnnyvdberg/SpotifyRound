@@ -608,11 +608,8 @@ fn ev_comet(d: vec3<f32>) -> vec4<f32> {
 // the vertex shader; the pixel only measures its ray against it.
 // ---------------------------------------------------------------------------
 
-override PART: i32 = 1;
-
-// The light under which a piece is cut: half a step of the 8-bit sRGB frame
-// over black, in linear light.
-const FAINT: f32 = 1.5e-4;
+// Which piece a leviathan pipeline draws: `PART` (declared with the gate's,
+// below), set by every one.
 const LOG2_E: f32 = 1.442695;
 
 struct Leviathan {
@@ -1038,11 +1035,12 @@ fn gate() -> Gate {
 }
 
 // The faintest light drawn: half a level of the sRGB frame over black. A
-// glow's quad reaches as far as its light stays above it.
+// glow's quad (or a leviathan's piece) reaches as far as its light stays
+// above it.
 const FAINT: f32 = 0.5 / 255.0 / 12.92;
 
 // A point of the encounter frame in the camera's space (right, up, ahead).
-fn ev_camera(p: vec3<f32>) -> vec3<f32> {
+fn ev_camera_point(p: vec3<f32>) -> vec3<f32> {
     let w = from_ev(p - ev_ship());
     return vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
 }
@@ -1126,7 +1124,7 @@ fn vs_gate_field(@builtin(vertex_index) vertex: u32) -> GateField {
         q = vec2<f32>(cos(a), sin(a)) * 0.9 / cos(PI / f32(GATE_SIDES));
     }
     let p = g.centre + (g.f1 * q.x + g.f2 * q.y) * g.radius;
-    out.position = camera_clip(ev_camera(p), 0.9999);
+    out.position = camera_clip(ev_camera_point(p), 0.9999);
     out.q = q;
     out.ray = p - ev_ship();
     out.bend = (g.f1 * q.x + g.f2 * q.y) * 0.25 * open;
@@ -1194,7 +1192,7 @@ fn vs_glow(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
         return out;
     }
     out.tint = g.hue * strength * fade;
-    let corner = cone_corner(ev_camera(out.at), reach, vertex % 6u, 0.9999);
+    let corner = cone_corner(ev_camera_point(out.at), reach, vertex % 6u, 0.9999);
     out.position = corner;
     out.ray = to_ev(params.right.xyz * corner.x * params.frame.y + params.up.xyz * corner.y * params.frame.y + params.forward.xyz * corner.w);
     let ro = (ev_ship() - g.centre) / g.radius;
@@ -2284,7 +2282,7 @@ fn vs_dyson_panel(@builtin(vertex_index) vertex: u32, v: PanelIn) -> Panel {
     let o = ev_obj(0);
     let p = o.xyz + n * o.w * (0.7 + 0.2 * shell);
     let depth = select(DYSON_FAR, DYSON_NEAR, PART <= 2) - select(0.0, 0.0005, PART % 2 == 0);
-    out.position = camera_clip(ev_camera(p), depth);
+    out.position = camera_clip(ev_camera_point(p), depth);
     out.ray = p - ev_ship();
     out.cell = vec2<f32>(g - v.cell.x - 0.5, gy - v.cell.y - 0.5);
     let facing = max(dot(-n, normalize(ev_ship() - o.xyz)), 0.0);
@@ -2343,7 +2341,7 @@ fn vs_dyson_star(@builtin(vertex_index) vertex: u32) -> DysonStar {
         let far = length(o.xyz - ev_ship());
         reach = r * (1.0 + log(max(0.6 * light, 1.0)) / 6.0) / max(far - r, 1e-3) / params.frame.z;
     }
-    let corner = cone_corner(ev_camera(o.xyz), reach, vertex % 6u, 0.998);
+    let corner = cone_corner(ev_camera_point(o.xyz), reach, vertex % 6u, 0.998);
     out.position = corner;
     out.ray = to_ev(params.right.xyz * corner.x * params.frame.y + params.up.xyz * corner.y * params.frame.y + params.forward.xyz * corner.w);
     return out;
