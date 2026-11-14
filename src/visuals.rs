@@ -20,6 +20,7 @@ use slint::wgpu_30::wgpu;
 use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
+use crate::solar::console::Console;
 use crate::solar::labels::BodyLabel;
 use crate::solar::{Hud, Solar};
 use crate::ui::{AppWindow, WindowExt};
@@ -224,6 +225,16 @@ pub(crate) trait Visual: Send {
     fn labels(&self) -> Vec<BodyLabel> {
         Vec::new()
     }
+
+    /// What the ship's terminal a long press opens shows, for scenes with
+    /// one (`solar::console`).
+    fn console(&self) -> Option<Console> {
+        None
+    }
+
+    /// An order from that terminal: the page it was given on and the code
+    /// of the row chosen.
+    fn order(&mut self, _page: i32, _code: i32) {}
 }
 
 /// Render the selected scene while the visualizer is visible.
@@ -239,6 +250,7 @@ pub fn spawn(
     scene: Arc<AtomicUsize>,
     available: Arc<AtomicU64>,
     travel: Arc<AtomicI64>,
+    orders: Arc<Mutex<Vec<(i32, i32)>>>,
 ) {
     let spawned = std::thread::Builder::new()
         .name("visualizer".into())
@@ -352,6 +364,7 @@ pub fn spawn(
             let mut scale = 1.0f32;
             let mut shown_hud = Hud::default();
             let mut shown_labels: Vec<BodyLabel> = Vec::new();
+            let mut shown_console: Option<Console> = None;
 
             loop {
                 if !take_built(&mut renderers, &mut mask, &mut building, &mut slots) {
@@ -390,6 +403,15 @@ pub fn spawn(
                 if switched {
                     shown_hud = Hud::default();
                     shown_labels.clear();
+                    shown_console = None;
+                    // Orders given to another visit are dropped.
+                    orders.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    if ui
+                        .upgrade_in_event_loop(|ui| ui.set_console(None))
+                        .is_err()
+                    {
+                        return;
+                    }
                     let cleared = Hud::default();
                     if ui
                         .upgrade_in_event_loop(move |ui| {
@@ -420,6 +442,11 @@ pub fn spawn(
                     renderer.travel((swiped - travelled).clamp(-most, most) as i32);
                     travelled = swiped;
                 }
+                let given: Vec<(i32, i32)> =
+                    std::mem::take(&mut *orders.lock().unwrap_or_else(|e| e.into_inner()));
+                for (page, code) in given {
+                    renderer.order(page, code);
+                }
                 let seas = renderer.seas();
                 if seas != charted {
                     charted = seas.clone();
@@ -445,6 +472,16 @@ pub fn spawn(
                     shown_hud = hud.clone();
                     if ui
                         .upgrade_in_event_loop(move |ui| ui.set_idle_hud(&hud))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let console = renderer.console();
+                if console != shown_console {
+                    shown_console = console.clone();
+                    if ui
+                        .upgrade_in_event_loop(move |ui| ui.set_console(console.as_ref()))
                         .is_err()
                     {
                         return;

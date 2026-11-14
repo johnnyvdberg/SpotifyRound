@@ -326,7 +326,10 @@ fn plan(kind: Kind, moons: &[Moon]) -> Vec<Pass> {
     if ground {
         plan.push(pass("erosion", Target::Terrain, false));
     }
-    if matches!(kind, Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball) {
+    if matches!(
+        kind,
+        Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball
+    ) {
         plan.push(pass("rivers", Target::Terrain, false));
     }
     if cratered(kind) {
@@ -658,7 +661,15 @@ impl Streamer {
             ("climate1", sl, "fs_climate", CLIMATE, None, rgb, 1),
             ("climate2", sl, "fs_climate", CLIMATE, None, alpha, 2),
             ("climate6", sl, "fs_climate", CLIMATE, None, rgb, 6),
-            ("climate5", sl, "fs_climate", CLIMATE, None, wgpu::ColorWrites::BLUE, 5),
+            (
+                "climate5",
+                sl,
+                "fs_climate",
+                CLIMATE,
+                None,
+                wgpu::ColorWrites::BLUE,
+                5,
+            ),
             ("climate3", sl, "fs_climate", CLIMATE, None, red_green, 3),
             ("climate4", sl, "fs_climate", CLIMATE, None, blue_alpha, 4),
             ("relief", sl, "fs_relief", RELIEF, None, all, 0),
@@ -1113,7 +1124,10 @@ impl Streamer {
                 let (texture, layer) = self.texture_of(job.slot, pass.target);
                 draw(
                     encoder,
-                    (self.labels[pass.pipeline].as_str(), &self.pipelines[pass.pipeline]),
+                    (
+                        self.labels[pass.pipeline].as_str(),
+                        &self.pipelines[pass.pipeline],
+                    ),
                     &group,
                     &self.noise.group,
                     &level_view(texture, 0, layer),

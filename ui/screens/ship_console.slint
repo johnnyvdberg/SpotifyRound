@@ -1,0 +1,392 @@
+import { Pointer, Theme } from "../theme.slint";
+import { Idle, ConsoleRow } from "../state.slint";
+
+// The ship's computer, which a long press on the solar tour opens: a green
+// phosphor terminal on a curved CRT, scan lines over it, block capitals and
+// a blinking cursor, the way a freighter's mainframe of the old films
+// talked to its crew.
+//
+// Three pages, tabbed along the top: NAVIGATION (the worlds of this system
+// and the next stars out), ENCOUNTERS (what the ship can meet between the
+// stars) and INCIDENTS (what can happen aboard). A tap picks a row, a drag
+// scrolls the list, EXECUTE sends the order (`Idle.order`) and the screen
+// prints its confirmation while the tour carries it out behind; EXIT, or a
+// tap outside the screen, closes it.
+export component ShipConsole inherits Rectangle {
+    width: 1080px;
+    height: 1080px;
+    background: transparent;
+    visible: Idle.console-open && Idle.scene == 2 && Idle.console-ready;
+
+    private property <color> phosphor: #6dff9a;
+    private property <color> dim: #3aa862;
+    private property <color> faint: #1d5c34;
+    private property <color> glass: #020d06;
+    private property <color> amber: #ffb43c;
+    private property <color> red: #ff4a3a;
+
+    private property <length> cx: 540px;
+    private property <length> cy: 540px;
+    private property <length> screen-r: 468px;
+
+    // The page shown, the row picked on it (-1 for none), and an order being
+    // carried out: its words, and how far its confirmation has printed, 0..1.
+    private property <int> page: 0;
+    private property <int> picked: -1;
+    private property <bool> executing: false;
+    private property <string> verb: "";
+    private property <string> object: "";
+    private property <float> typed: root.executing ? 1 : 0;
+    animate typed { duration: root.executing ? 1500ms : 0ms; }
+
+    private property <[ConsoleRow]> rows: root.page == 0
+        ? Idle.console-destinations
+        : (root.page == 1 ? Idle.console-encounters : Idle.console-incidents);
+    private property <ConsoleRow> choice: root.rows[max(0, root.picked)];
+    private property <bool> has-pick: root.picked >= 0 && root.picked < root.rows.length;
+
+    // Half a second on, half off.
+    private property <bool> blink: Math.mod(animation-tick() / 1ms, 1000) < 500;
+
+    in property <bool> open: Idle.console-open;
+    changed open => {
+        root.page = 0;
+        root.picked = -1;
+        root.executing = false;
+    }
+
+    private property <length> row-h: 54px;
+    private property <length> list-y: 318px;
+    private property <length> list-h: 420px;
+
+    function verb-for(page: int, row: ConsoleRow) -> string {
+        if (page == 0) {
+            return row.code >= 1000 ? "PLOT JUMP TO" : "SET COURSE FOR";
+        }
+        if (page == 1) {
+            return "INTERCEPT";
+        }
+        return "TRIGGER";
+    }
+
+    // The room's dark behind the screen.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000301e8;
+    }
+
+    // Closes on a tap outside the screen.
+    TouchArea {
+        mouse-cursor: Pointer.plain;
+        clicked => {
+            let rx = self.mouse-x - root.cx;
+            let ry = self.mouse-y - root.cy;
+            if (!root.executing && rx * rx + ry * ry > root.screen-r * root.screen-r) {
+                Idle.console-open = false;
+            }
+        }
+    }
+
+    // The CRT's housing and its curved glass, brighter at the middle.
+    Rectangle {
+        x: root.cx - root.screen-r - 10px;
+        y: root.cy - root.screen-r - 10px;
+        width: (root.screen-r + 10px) * 2;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: #0b0f0c;
+        border-width: 2px;
+        border-color: #2a332c;
+    }
+    Rectangle {
+        x: root.cx - root.screen-r;
+        y: root.cy - root.screen-r;
+        width: root.screen-r * 2;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: root.glass;
+        border-width: 2px;
+        border-color: root.faint;
+    }
+    Rectangle {
+        x: root.cx - root.screen-r;
+        y: root.cy - root.screen-r;
+        width: root.screen-r * 2;
+        height: self.width;
+        background: @radial-gradient(circle, #0b3018 0%, #06200f 40%, #020d0600 70%);
+    }
+
+    // The header: the machine's name, and a rule.
+    Text {
+        x: root.cx - 300px;
+        y: 112px;
+        width: 600px;
+        text: "ORACLE/5  ::  SHIP INTERFACE 2.1";
+        color: root.phosphor;
+        font-family: "DejaVu Sans Mono";
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: 3px;
+        horizontal-alignment: center;
+    }
+    Rectangle {
+        x: root.cx - 300px;
+        y: 142px;
+        width: 600px;
+        height: 2px;
+        background: root.dim;
+    }
+
+    // Where the ship is and what it is doing.
+    for line[i] in Idle.console-status : Text {
+        x: root.cx - 300px;
+        y: 156px + i * 24px;
+        width: 600px;
+        text: line;
+        color: root.dim;
+        font-family: "DejaVu Sans Mono";
+        font-size: 15px;
+        overflow: elide;
+    }
+
+    // The tabs.
+    for name[k] in ["NAVIGATION", "ENCOUNTERS", "INCIDENTS"] : Rectangle {
+        x: root.cx - 300px + k * 204px;
+        y: 238px;
+        width: 192px;
+        height: 46px;
+        background: root.page == k ? root.phosphor : transparent;
+        border-width: 2px;
+        border-color: root.page == k ? root.phosphor : root.dim;
+        Text {
+            text: name;
+            color: root.page == k ? root.glass : root.phosphor;
+            font-family: "DejaVu Sans Mono";
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        TouchArea {
+            mouse-cursor: Pointer.hand;
+            clicked => {
+                if (!root.executing && root.page != k) {
+                    root.page = k;
+                    root.picked = -1;
+                }
+            }
+        }
+    }
+
+    // The list, framed, dragged to scroll and tapped to pick.
+    Rectangle {
+        x: root.cx - 320px;
+        y: root.list-y - 10px;
+        width: 640px;
+        height: root.list-h + 20px;
+        background: transparent;
+        border-width: 1px;
+        border-color: root.faint;
+    }
+    Flickable {
+        x: root.cx - 312px;
+        y: root.list-y;
+        width: 624px;
+        height: root.list-h;
+        content-height: root.rows.length * root.row-h;
+        interactive: !root.executing;
+
+        for item[i] in root.rows : Rectangle {
+            private property <bool> chosen: i == root.picked;
+            x: 0;
+            y: i * root.row-h;
+            width: parent.width;
+            height: root.row-h;
+            background: self.chosen ? root.phosphor : transparent;
+
+            Text {
+                x: 12px;
+                y: 6px;
+                width: 30px;
+                text: parent.chosen ? ">" : (item.state == 1 ? "*" : " ");
+                color: parent.chosen ? root.glass : root.phosphor;
+                font-family: "DejaVu Sans Mono";
+                font-size: 20px;
+                font-weight: 700;
+            }
+            Text {
+                x: 40px;
+                y: 5px;
+                width: parent.width - 170px;
+                text: item.label;
+                color: parent.chosen ? root.glass : (item.state == 2 ? root.dim : root.phosphor);
+                font-family: "DejaVu Sans Mono";
+                font-size: 19px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                x: 40px;
+                y: 30px;
+                width: parent.width - 60px;
+                text: item.detail;
+                color: parent.chosen ? root.glass.with-alpha(0.8) : root.dim;
+                font-family: "DejaVu Sans Mono";
+                font-size: 13px;
+                overflow: elide;
+            }
+            Text {
+                x: parent.width - 130px;
+                y: 7px;
+                width: 118px;
+                text: item.state == 1 ? (item.code >= 1000 ? "[COURSE]" : "[HERE]") : (item.state == 2 ? "[PASSED]" : "");
+                color: parent.chosen ? root.glass : (item.state == 1 ? root.amber : root.dim);
+                font-family: "DejaVu Sans Mono";
+                font-size: 14px;
+                font-weight: 700;
+                horizontal-alignment: right;
+            }
+            // A dotted rule under each row.
+            Rectangle {
+                x: 12px;
+                y: root.row-h - 1px;
+                width: parent.width - 24px;
+                height: 1px;
+                background: root.faint;
+            }
+            TouchArea {
+                mouse-cursor: Pointer.hand;
+                clicked => {
+                    if (!root.executing) {
+                        root.picked = i;
+                    }
+                }
+            }
+        }
+    }
+
+    // The prompt: the order to be given, and a blinking cursor.
+    Text {
+        x: root.cx - 312px;
+        y: 760px;
+        width: 600px;
+        text: root.has-pick
+            ? "> " + root.verb-for(root.page, root.choice) + " " + root.choice.label
+            : "> AWAITING INSTRUCTION";
+        color: root.phosphor;
+        font-family: "DejaVu Sans Mono";
+        font-size: 16px;
+        overflow: elide;
+    }
+    Rectangle {
+        x: root.cx + 296px;
+        y: 762px;
+        width: 12px;
+        height: 20px;
+        background: root.blink ? root.phosphor : transparent;
+    }
+
+    // EXECUTE and EXIT.
+    for name[k] in ["EXECUTE", "EXIT"] : Rectangle {
+        private property <bool> live: k == 1 || root.has-pick;
+        x: root.cx - 220px + k * 240px;
+        y: 806px;
+        width: 200px;
+        height: 56px;
+        background: k == 0 && root.has-pick ? root.phosphor.with-alpha(0.18) : transparent;
+        border-width: 2px;
+        border-color: self.live ? root.phosphor : root.faint;
+        Text {
+            text: name;
+            color: parent.live ? root.phosphor : root.faint;
+            font-family: "DejaVu Sans Mono";
+            font-size: 19px;
+            font-weight: 700;
+            letter-spacing: 4px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        TouchArea {
+            mouse-cursor: Pointer.hand;
+            clicked => {
+                if (root.executing) {
+                    return;
+                }
+                if (k == 1) {
+                    Idle.console-open = false;
+                    return;
+                }
+                if (!root.has-pick) {
+                    return;
+                }
+                root.verb = root.verb-for(root.page, root.choice);
+                root.object = root.choice.label;
+                Idle.order(root.page, root.choice.code);
+                root.executing = true;
+            }
+        }
+    }
+
+    // The scan lines, over everything on the glass.
+    for i in 112 : Rectangle {
+        x: root.cx - root.screen-r;
+        y: root.cy - root.screen-r + i * 8.4px;
+        width: root.screen-r * 2;
+        height: 3px;
+        background: #00000038;
+    }
+
+    // An order being carried out: the screen cleared, and its confirmation
+    // printing line by line over the cut the tour makes behind it.
+    if root.executing : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000301;
+
+        Rectangle {
+            x: root.cx - root.screen-r;
+            y: root.cy - root.screen-r;
+            width: root.screen-r * 2;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: root.glass;
+        }
+        for line[i] in [
+            "> " + root.verb + " " + root.object,
+            "  PRIORITY ONE. ORDER ACKNOWLEDGED.",
+            root.page == 0 ? "  NAVIGATION SOLUTION LAID IN." : (root.page == 1 ? "  DRIVE DISENGAGING FOR CONTACT." : "  ALL HANDS ADVISED."),
+            "  RESUMING EXTERNAL VIEW",
+        ] : Text {
+            x: root.cx - 330px;
+            y: 420px + i * 44px;
+            width: 660px;
+            text: line;
+            visible: root.typed > i * 0.22 + 0.01;
+            color: i == 0 ? root.phosphor : root.dim;
+            font-family: "DejaVu Sans Mono";
+            font-size: i == 0 ? 20px : 17px;
+            font-weight: i == 0 ? 700 : 400;
+            overflow: elide;
+        }
+        Rectangle {
+            x: root.cx - 330px;
+            y: 420px + 4 * 44px;
+            width: 12px;
+            height: 22px;
+            background: root.blink ? root.phosphor : transparent;
+        }
+        TouchArea {
+            mouse-cursor: Pointer.plain;
+        }
+        Timer {
+            interval: 1900ms;
+            running: root.executing;
+            triggered => {
+                root.executing = false;
+                Idle.console-open = false;
+            }
+        }
+    }
+}

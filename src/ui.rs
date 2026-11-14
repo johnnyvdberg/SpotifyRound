@@ -236,6 +236,9 @@ pub trait WindowExt: Sized {
     fn set_seas(&self, names: &[&str], here: usize);
     /// The text a scene lays over its frame; empty strings hide it.
     fn set_idle_hud(&self, hud: &crate::solar::Hud);
+    /// What the ship's terminal shows; none for a scene without one, which
+    /// also closes it.
+    fn set_console(&self, console: Option<&crate::solar::console::Console>);
     /// The labels a scene lays on the worlds in its frame; none hides them.
     fn set_idle_labels(&self, labels: &[crate::solar::labels::BodyLabel]);
     fn tick(&self, frame: &Frame);
@@ -415,6 +418,40 @@ impl WindowExt for AppWindow {
         idle.set_sea(here as i32);
     }
 
+    fn set_console(&self, console: Option<&crate::solar::console::Console>) {
+        let idle = self.global::<Idle>();
+        let rows = |rows: &[crate::solar::console::Row]| {
+            let rows: Vec<ConsoleRow> = rows
+                .iter()
+                .map(|row| ConsoleRow {
+                    label: row.label.as_str().into(),
+                    detail: row.detail.as_str().into(),
+                    state: row.state,
+                    code: row.code,
+                })
+                .collect();
+            ModelRc::from(Rc::new(VecModel::from(rows)))
+        };
+        let Some(console) = console else {
+            idle.set_console_ready(false);
+            idle.set_console_open(false);
+            return;
+        };
+        let status: Vec<slint::SharedString> =
+            console.status.iter().map(|s| s.as_str().into()).collect();
+        idle.set_console_status(ModelRc::from(Rc::new(VecModel::from(status))));
+        idle.set_console_destinations(rows(&console.destinations));
+        // The lists that never change are set once, so a list scrolled on
+        // the terminal stays where it is.
+        if idle.get_console_encounters().row_count() != console.encounters.len() {
+            idle.set_console_encounters(rows(&console.encounters));
+        }
+        if idle.get_console_incidents().row_count() != console.incidents.len() {
+            idle.set_console_incidents(rows(&console.incidents));
+        }
+        idle.set_console_ready(true);
+    }
+
     fn set_idle_hud(&self, hud: &crate::solar::Hud) {
         let idle = self.global::<Idle>();
         idle.set_hud_title(hud.title.as_str().into());
@@ -464,6 +501,11 @@ impl WindowExt for AppWindow {
         idle.set_man_drive(manoeuvre.drive as i32);
         idle.set_man_charge(manoeuvre.charge);
         idle.set_alert(hud.alert);
+        let notice = hud.notice.clone().unwrap_or_default();
+        idle.set_notice_title(notice.title.as_str().into());
+        idle.set_notice_text(notice.text.as_str().into());
+        idle.set_notice_progress(notice.progress);
+        idle.set_notice_alert(notice.alert);
         let target = hud.target.clone().unwrap_or_default();
         idle.set_target_shown(target.shown);
         idle.set_target_lock(target.lock);
@@ -784,6 +826,109 @@ mod preview {
         println!("wrote {}", path.display());
     }
 
+    /// The solar tour's ship terminal and an incident on its HUD, over a
+    /// still of the tour, without a GPU: run alone, as it sets the platform.
+    #[test]
+    #[ignore = "renders the ship terminal's previews into target/preview"]
+    fn render_console_previews() {
+        use crate::solar::console;
+        let soft = slint::platform::software_renderer::MinimalSoftwareWindow::new(
+            slint::platform::software_renderer::RepaintBufferType::NewBuffer,
+        );
+        slint::platform::set_platform(Box::new(PreviewPlatform {
+            window: soft.clone(),
+        }))
+        .unwrap();
+        let window = AppWindow::new().unwrap();
+        window.show().unwrap();
+        soft.set_size(slint::PhysicalSize::new(SIZE, SIZE));
+        window.reveal_app();
+        window.set_auth_state(2, "");
+
+        let still = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/solar-moon.jpg");
+        let still = image::open(still)
+            .map(|i| {
+                i.resize_exact(SIZE, SIZE, image::imageops::FilterType::Triangle)
+                    .to_rgba8()
+            })
+            .unwrap_or_else(|_| image::RgbaImage::new(SIZE, SIZE));
+        window.set_idle_scene(2, SIZE as f32);
+        window.set_idle(true, 1.0);
+        window.set_idle_frame(slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::clone_from_slice(still.as_raw(), SIZE, SIZE),
+        ));
+        for (k, name) in [(6, "21-solar-incident"), (0, "21-solar-incident-amber")] {
+            let hud = crate::solar::Hud {
+                notice: Some(console::Notice::of(&console::INCIDENTS[k], 0.3)),
+                ..Default::default()
+            };
+            window.set_idle_hud(&hud);
+            save(&window, &soft, name);
+        }
+        window.set_idle_hud(&crate::solar::Hud::default());
+
+        let row = |label: &str, detail: &str, state: i32, code: i32| console::Row {
+            label: label.into(),
+            detail: detail.into(),
+            state,
+            code,
+        };
+        let console = console::Console {
+            status: vec![
+                "LOCATION   VESPERA SYSTEM".into(),
+                "STATUS     IN ORBIT, THALASSA".into(),
+                "COURSE     KORRIN SYSTEM".into(),
+            ],
+            destinations: vec![
+                row("ACHERON", "lava world", 2, 0),
+                row("THALASSA", "ocean world", 1, 1),
+                row("BRONTES", "gas giant", 0, 2),
+                row("BRONTES IV", "icy moon, moon of Brontes", 0, 3),
+                row(
+                    "KORRIN SYSTEM",
+                    "K-type orange dwarf, 6 worlds, 8.2 ly",
+                    1,
+                    1001,
+                ),
+                row(
+                    "TAVISH SYSTEM",
+                    "M-type red dwarf, 5 worlds, 15.9 ly",
+                    0,
+                    1002,
+                ),
+                row(
+                    "OREN SYSTEM",
+                    "G-type yellow dwarf, 7 worlds, 21.4 ly",
+                    0,
+                    1004,
+                ),
+            ],
+            encounters: console::encounter_rows(),
+            incidents: console::incident_rows(),
+        };
+        window.set_console(Some(&console));
+        let idle = window.global::<Idle>();
+        idle.set_console_open(true);
+        save(&window, &soft, "22-ship-console");
+        // A tap on a row picks it; EXECUTE prints the order's confirmation.
+        let tap = |x: f32, y: f32| {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            let w = window.window();
+            w.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+            w.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            w.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        };
+        tap(500.0, 450.0);
+        save(&window, &soft, "22-ship-console-picked");
+        tap(540.0, 260.0);
+        tap(500.0, 340.0);
+        save(&window, &soft, "22-ship-console-encounters");
+        tap(420.0, 834.0);
+        save(&window, &soft, "23-ship-console-executing");
+        window.set_console(None);
+    }
+
     #[test]
     #[ignore = "renders design previews into target/preview"]
     fn render_design_previews() {
@@ -1051,7 +1196,25 @@ mod preview {
             ));
             save(&window, &soft, name);
         }
-        window.set_idle_hud(&crate::solar::Hud::default());
+        // An incident aboard, on the HUD, and the ship's terminal a long
+        // press opens, on each of its pages with a row picked.
+        let (pixels, hud, console) = crate::solar::tests::render_console(11, "-high-orbit", 6);
+        window.set_idle_scene(2, crate::solar::SIZE as f32);
+        window.set_idle_hud(&hud);
         window.set_idle_labels(&[]);
+        window.set_idle_frame(slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::clone_from_slice(
+                &pixels,
+                crate::solar::SIZE,
+                crate::solar::SIZE,
+            ),
+        ));
+        save(&window, &soft, "21-solar-incident");
+        window.set_console(Some(&console));
+        window.global::<Idle>().set_console_open(true);
+        save(&window, &soft, "22-ship-console");
+        window.global::<Idle>().set_console_open(false);
+        window.set_console(None);
+        window.set_idle_hud(&crate::solar::Hud::default());
     }
 }

@@ -1282,6 +1282,19 @@ impl Tour {
         tour
     }
 
+    /// When the first segment `matches` picks begins, seconds into the visit.
+    pub fn start_of(&self, matches: impl Fn(Phase) -> bool) -> Option<f64> {
+        self.segments
+            .iter()
+            .find(|s| matches(s.phase))
+            .map(|s| s.start)
+    }
+
+    /// The look of the light the visit arrived in (`voyage::LOOKS`).
+    pub fn arrival_light(&self) -> u32 {
+        self.arrival
+    }
+
     /// The segment of `phase`'s kind (the cruise, the spool or the jump).
     fn segment_of(&self, matches: impl Fn(Phase) -> bool) -> Segment {
         *self
