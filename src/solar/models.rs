@@ -1,6 +1,6 @@
 //! The meshes of everything solid met between the stars, built
 //! procedurally and cached: the battle's starships, the asteroid field's
-//! rocks, star gates, the crystal entity, hive cubes, the derelict ring
+//! rocks, star gates, hive cubes, the derelict ring
 //! station, and debris.
 //!
 //! Each model is a distance field with parameters of its own, drawn per
@@ -79,9 +79,9 @@ pub struct Instance {
 }
 
 /// The families of models, each with a pipeline of its own (`MODEL` in
-/// `encounter.wgsl`): rocks, star gates, the crystal, hive cubes, ring
+/// `encounter.wgsl`): rocks, star gates, hive cubes, ring
 /// stations and debris.
-pub const FAMILIES: [&str; 6] = ["rock", "gate", "crystal", "hive", "ring", "debris"];
+pub const FAMILIES: [&str; 5] = ["rock", "gate", "hive", "ring", "debris"];
 
 impl Key {
     /// Its family's number (from 1, as `MODEL`); ships have their own
@@ -91,10 +91,9 @@ impl Key {
             Key::Ship { .. } => 0,
             Key::Rock { .. } => 1,
             Key::Gate { .. } => 2,
-            Key::Crystal { .. } => 3,
-            Key::Hive { .. } => 4,
-            Key::Ring { .. } => 5,
-            Key::Debris { .. } => 6,
+            Key::Hive { .. } => 3,
+            Key::Ring { .. } => 4,
+            Key::Debris { .. } => 5,
         }
     }
 }
@@ -119,9 +118,6 @@ pub enum Key {
     Gate {
         style: u32,
         part: u32,
-    },
-    Crystal {
-        variant: u32,
     },
     /// A hive cube, at a level of detail (0 the finest; 1 for the small,
     /// far ones, whose finest machinery is under two pixels).
@@ -163,7 +159,6 @@ impl Key {
         }
         keys.push(Key::Gate { style: 2, part: 1 });
         for variant in 0..3 {
-            keys.push(Key::Crystal { variant });
             for lod in 0..2 {
                 keys.push(Key::Hive { variant, lod });
             }
@@ -188,7 +183,6 @@ impl Key {
             } => (1, design, role, variant),
             Key::Rock { variant, .. } => (2, variant, 0, 0),
             Key::Gate { style, part } => (3, style, part, 0),
-            Key::Crystal { variant } => (4, variant, 0, 0),
             Key::Hive { variant, .. } => (5, variant, 0, 0),
             Key::Ring { gaps, variant } => (6, gaps, variant, 0),
             Key::Debris { variant } => (7, variant, 0, 0),
@@ -203,7 +197,6 @@ impl Key {
             Key::Ship { .. } => 100,
             Key::Rock { lod, .. } => [80, 40, 18][lod.min(2) as usize],
             Key::Gate { .. } => 150,
-            Key::Crystal { .. } => 110,
             Key::Hive { lod: 0, .. } => 150,
             Key::Hive { .. } => 50,
             Key::Ring { .. } => 170,
@@ -230,7 +223,6 @@ impl Key {
             } => format!("ship-{design}-{role}-{variant}"),
             Key::Rock { variant, lod } => format!("rock-{variant}-{lod}"),
             Key::Gate { style, part } => format!("gate-{style}-{part}"),
-            Key::Crystal { variant } => format!("crystal-{variant}"),
             Key::Hive { variant, lod: 0 } => format!("hive-{variant}"),
             Key::Hive { variant, lod } => format!("hive-{variant}-{lod}"),
             Key::Ring { gaps, variant } => format!("ring-{gaps}-{variant}"),
@@ -490,7 +482,6 @@ fn field(key: Key, k: &Params, p: Vec3) -> Sample {
         },
         Key::Rock { .. } => rock(k, p),
         Key::Gate { style, part } => gate(k, p, style, part),
-        Key::Crystal { .. } => crystal(k, p),
         Key::Hive { .. } => hive(k, p),
         Key::Ring { gaps, .. } => ring_station(k, p, gaps),
         Key::Debris { .. } => debris(k, p),
@@ -1114,45 +1105,6 @@ fn gate(_k: &Params, p: Vec3, style: u32, which: u32) -> Sample {
             s
         }
     }
-}
-
-/// The crystal entity: shards by mirror symmetry (26), each a long
-/// bipyramid, with smaller ones branching off the longest, a core between.
-fn crystal(k: &Params, p0: Vec3) -> Sample {
-    let mut p = p0.abs();
-    if p.x < p.y {
-        p = Vec3::new(p.y, p.x, p.z);
-    }
-    if p.y < p.z {
-        p = Vec3::new(p.x, p.z, p.y);
-    }
-    if p.x < p.y {
-        p = Vec3::new(p.y, p.x, p.z);
-    }
-    let shard = |p: Vec3, dir: Vec3, length: f32, width: f32| {
-        let along = p.dot(dir);
-        let rad = (p - dir * along).length();
-        let waist = length * 0.3;
-        let taper = if along < waist {
-            width * (0.5 + 0.5 * along / waist)
-        } else {
-            width * (1.0 - (along - waist) / (length - waist))
-        };
-        (rad - taper.max(0.0)).max((-along).max(along - length)) * 0.7
-    };
-    let long = k.get(0, 0.9, 1.05);
-    let mut d = shard(p, Vec3::X, long, 0.11);
-    d = d.min(shard(
-        p,
-        Vec3::new(1.0, 1.0, 0.0).normalize(),
-        k.get(1, 0.6, 0.8),
-        0.08,
-    ));
-    d = d.min(shard(p, Vec3::ONE.normalize(), k.get(2, 0.75, 0.92), 0.09));
-    let b = p - Vec3::new(long * 0.6, 0.0, 0.0);
-    d = d.min(shard(b, Vec3::new(0.6, 1.0, 0.0).normalize(), 0.3, 0.04));
-    d = d.min(shard(b, Vec3::new(0.6, 0.0, 1.0).normalize(), 0.3, 0.04));
-    Sample::new(d.min(p0.length() - 0.16), part::HULL)
 }
 
 /// A hive cube, half-size 1: each face built up of blocks of machinery at

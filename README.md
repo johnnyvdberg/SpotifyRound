@@ -82,8 +82,7 @@ Spotify **Premium** account.
   hive cube whose tractor beam it has to tear free of (each cube its own: size, colour, scarring,
   escorts, beam and breakaway, [docs/solar-hive-cubes.jpg](docs/solar-hive-cubes.jpg)), slings round
   a black hole past its lensed accretion disc, crosses a nebula lit by lightning, passes a starless
-  rogue planet glowing with lava cracks and aurorae, rides out a pulsar's sweeping beams, flies a
-  broken derelict ring station, a comet's tails, a pod of glowing leviathans and the filaments of a
+  rogue planet glowing with lava cracks and aurorae, flies a broken derelict ring station, a comet's tails, a pod of glowing leviathans and the filaments of a
   supernova remnant, or drops out on the edge of a battle between two fleets and slips away unseen
   while stray fire passes close ([docs/solar-battle.jpg](docs/solar-battle.jpg), six battles from
   the fight through the blast). Each fleet is one of six designs at its own scale — saucer cruisers
@@ -91,8 +90,7 @@ Spotify **Premium** account.
   traders, the cube collective — firing beams, pulsed bolts and torpedoes that burst on flaring
   shields; a ship is lost, and its shock ripples out through space, bending the stars, shoving the
   other ships aside as their shields take it on the struck side, and rocking the ship. It may skirt
-  a plasma storm's lightning-lit eyewall, pass a Dyson swarm's rings of collectors round a dim star,
-  or a vast crystal entity that bends the stars into rainbows and brightens as it notices the ship.
+  a plasma storm's lightning-lit eyewall or pass a Dyson swarm's rings of collectors round a dim star.
   Or the next leg is a star gate, its nodes lighting as the ship lines up and its
   field throwing it down a golden conduit, or a wormhole with another sky inside, dived into. Inside
   a leg there may be an ion storm, a convoy alongside, a tachyon echo, a shortcut, a spacetime rift

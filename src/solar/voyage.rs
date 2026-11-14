@@ -63,8 +63,8 @@ pub enum Event {
     BlackHole,
     Nebula,
     RoguePlanet,
-    Pulsar,
-    Derelict,
+    // 6 was the pulsar
+    Derelict = 7,
     Comet,
     Leviathans,
     Remnant,
@@ -73,17 +73,15 @@ pub enum Event {
     Battle,
     PlasmaStorm,
     DysonSwarm,
-    Crystal,
 }
 
 impl Event {
-    pub const ALL: [Event; 16] = [
+    pub const ALL: [Event; 14] = [
         Event::Asteroids,
         Event::HiveCube,
         Event::BlackHole,
         Event::Nebula,
         Event::RoguePlanet,
-        Event::Pulsar,
         Event::Derelict,
         Event::Comet,
         Event::Leviathans,
@@ -93,7 +91,6 @@ impl Event {
         Event::Battle,
         Event::PlasmaStorm,
         Event::DysonSwarm,
-        Event::Crystal,
     ];
 
     /// Its number in the shaders (`EVENT` in `encounter.wgsl`), from 1.
@@ -109,7 +106,6 @@ impl Event {
             Event::BlackHole => "black-hole",
             Event::Nebula => "nebula",
             Event::RoguePlanet => "rogue-planet",
-            Event::Pulsar => "pulsar",
             Event::Derelict => "derelict",
             Event::Comet => "comet",
             Event::Leviathans => "leviathans",
@@ -119,7 +115,6 @@ impl Event {
             Event::Battle => "battle",
             Event::PlasmaStorm => "plasma-storm",
             Event::DysonSwarm => "dyson-swarm",
-            Event::Crystal => "crystal",
         }
     }
 
@@ -136,7 +131,6 @@ impl Event {
             Event::BlackHole => 32.0,
             Event::Nebula => 28.0,
             Event::RoguePlanet => 30.0,
-            Event::Pulsar => 28.0,
             Event::Derelict => 32.0,
             Event::Comet => 28.0,
             Event::Leviathans => 32.0,
@@ -146,7 +140,6 @@ impl Event {
             Event::Battle => 32.0,
             Event::PlasmaStorm => 30.0,
             Event::DysonSwarm => 32.0,
-            Event::Crystal => 30.0,
         }
     }
 
@@ -155,12 +148,7 @@ impl Event {
     pub fn needs_models(self) -> bool {
         matches!(
             self,
-            Event::Asteroids
-                | Event::HiveCube
-                | Event::Derelict
-                | Event::Battle
-                | Event::Gate
-                | Event::Crystal
+            Event::Asteroids | Event::HiveCube | Event::Derelict | Event::Battle | Event::Gate
         )
     }
 
@@ -362,10 +350,9 @@ impl Passage {
     /// swapped for one that does not (each its own, by its draw), the legs'
     /// looks following: for while the meshes are still being built.
     pub fn without_models(mut self, drive: u32) -> Self {
-        const INSTEAD: [Event; 10] = [
+        const INSTEAD: [Event; 9] = [
             Event::Nebula,
             Event::BlackHole,
-            Event::Pulsar,
             Event::Comet,
             Event::Leviathans,
             Event::Remnant,
@@ -501,7 +488,6 @@ pub fn shot(stop: &Stopover, local: f64) -> Shot {
         Event::BlackHole => black_hole(&mut rng, local, duration),
         Event::Nebula => nebula(&mut rng, local, duration),
         Event::RoguePlanet => rogue_planet(&mut rng, local, duration),
-        Event::Pulsar => pulsar(&mut rng, local, duration),
         Event::Derelict => derelict(&mut rng, local, duration),
         Event::Comet => comet(&mut rng, local, duration),
         Event::Leviathans => leviathans(&mut rng, local, duration),
@@ -511,7 +497,6 @@ pub fn shot(stop: &Stopover, local: f64) -> Shot {
         Event::Battle => battle(&mut rng, local, duration),
         Event::PlasmaStorm => plasma_storm(&mut rng, local, duration),
         Event::DysonSwarm => dyson_swarm(&mut rng, local, duration),
-        Event::Crystal => crystal(&mut rng, local, duration),
     };
     // Past the stopover, the drive re-engaging: back onto the heading, the
     // star the jump makes for, over its first seconds.
@@ -795,41 +780,6 @@ fn rogue_planet(rng: &mut Rng, local: f64, duration: f64) -> Shot {
             rng.range(0.5, 1.0),
             (rng.next() % 113) as f64,
         ],
-        ..Default::default()
-    }
-}
-
-/// A pulsar: its beams sweep round like a lighthouse's, and every turn one
-/// crosses the ship.
-fn pulsar(rng: &mut Rng, local: f64, _duration: f64) -> Shot {
-    let star = [rng.range(-80.0, 80.0), rng.range(10.0, 60.0), 420.0];
-    let period = rng.range(2.1, 2.9);
-    let tilt = rng.range(0.45, 0.8);
-    let ship = [0.0, 0.0, 9.0 * local];
-    // The beam's cone round the spin axis passes through the ship.
-    let towards = normalize(sub(ship, star));
-    let perp = normalize(cross(towards, [0.3, 1.0, 0.1]));
-    let axis = rotate(towards, perp, tilt);
-    let phase = TAU * local / period;
-    let beam = rotate(towards, axis, phase);
-    let aligned = dot(beam, towards).max(dot(scale(beam, -1.0), towards));
-    let sweep = ((aligned - 0.995) / 0.005).clamp(0.0, 1.0).powi(2);
-    let to = normalize(sub(star, ship));
-    Shot {
-        ship,
-        look: blend(AHEAD, to, 0.65 * smoothstep(0.0, 4.0, local)),
-        alert: 0.45 + 0.4 * sweep,
-        hit: sweep,
-        hit_at: [0.0, 0.0],
-        flash: sweep * 0.35,
-        shake: 0.1 + 0.7 * sweep,
-        objects: [
-            [star[0], star[1], star[2], 4.0],
-            [beam[0], beam[1], beam[2], tilt],
-            [0.0; 4],
-        ],
-        rot: [axis[0], axis[1], axis[2], phase],
-        extra: [rng.range(0.0, 1.0), rng.range(0.6, 1.0), period, 0.0],
         ..Default::default()
     }
 }
@@ -1222,44 +1172,6 @@ fn dyson_swarm(rng: &mut Rng, local: f64, duration: f64) -> Shot {
     }
 }
 
-/// A crystal entity: a vast drifting lattice of crystal, the stars bent
-/// through it in rainbows, its heart pulsing brighter as it turns toward
-/// the ship.
-fn crystal(rng: &mut Rng, local: f64, duration: f64) -> Shot {
-    let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
-    let size = rng.range(60.0, 80.0);
-    let centre = [
-        side * rng.range(60.0, 100.0),
-        rng.range(-10.0, 30.0),
-        rng.range(330.0, 380.0),
-    ];
-    let ship = [0.0, 0.0, 8.0 * local];
-    let to = normalize(sub(centre, ship));
-    let watch = smoothstep(0.5, 4.0, local) * (1.0 - smoothstep(0.88, 1.0, local / duration));
-    let notice = smoothstep(0.35 * duration, 0.55 * duration, local)
-        * (1.0 - smoothstep(0.75 * duration, 0.95 * duration, local));
-    let axis = normalize([rng.range(-0.3, 0.3), 1.0, rng.range(-0.3, 0.3)]);
-    Shot {
-        ship,
-        look: blend(AHEAD, to, 0.82 * watch),
-        roll: side * 0.05 * watch,
-        alert: 0.2 + 0.4 * notice,
-        objects: [
-            [centre[0], centre[1], centre[2], size],
-            [notice, 0.0, 0.0, 0.0],
-            [0.0; 4],
-        ],
-        rot: [
-            axis[0],
-            axis[1],
-            axis[2],
-            local * 0.03 + rng.range(0.0, TAU),
-        ],
-        extra: [rng.range(0.0, 1.0), (rng.next() % 127) as f64, 0.0, 0.0],
-        ..Default::default()
-    }
-}
-
 fn sq(x: f64) -> f64 {
     x * x
 }
@@ -1409,20 +1321,6 @@ pub fn hud(
                 ),
             )
         }
-        Event::Pulsar => (
-            "INTERDICTION",
-            vec![
-                line("Object", "pulsar · 1.4 solar masses".into()),
-                line("Period", format!("{:.0} ms (strobed {:.1} s)", 30.0 + 60.0 * shot.extra[0], shot.extra[2])),
-                line("Radiation", format!("{:.0} Sv/h", 2.0 + 480.0 * shot.hit)),
-                line("Range", km(range(0))),
-                left,
-            ],
-            (
-                "PULSAR SWEEP",
-                "Its beams sweep the ship once a turn; hull shielding to full until the drive can re-engage.".into(),
-            ),
-        ),
         Event::Derelict => (
             "DERELICT",
             vec![
@@ -1575,28 +1473,6 @@ pub fn hud(
                 "A star wrapped in rings of collectors, built by someone, some time. Dropping out to look.".into(),
             ),
         ),
-        Event::Crystal => {
-            let notice = shot.objects[1][0];
-            (
-                "CONTACT",
-                vec![
-                    line("Entity", format!("crystalline · {} across", km(shot.objects[0][3] * 2.0))),
-                    line("Activity", if notice > 0.3 { "RESONATING".into() } else { "drifting".into() }),
-                    line("Range", km(range(0))),
-                    left,
-                    rest,
-                ],
-                (
-                    if notice > 0.3 { "IT HAS NOTICED US" } else { "CRYSTAL ENTITY" },
-                    if notice > 0.3 {
-                        "Its heart is brightening, its lattice turning our way. Holding still."
-                    } else {
-                        "A vast lattice of crystal drifting between the stars, bending their light."
-                    }
-                    .into(),
-                ),
-            )
-        }
         Event::Wormhole => {
             let name = name_of(stop);
             (

@@ -501,41 +501,6 @@ fn ev_rogue(d: vec3<f32>) -> vec4<f32> {
 }
 
 // ---------------------------------------------------------------------------
-// A pulsar: a hard point, two beams sweeping round with it, the wind nebula
-// it blows, a ring in its equator.
-// ---------------------------------------------------------------------------
-
-fn ev_pulsar(d: vec3<f32>) -> vec4<f32> {
-    let ship = ev_ship();
-    let star = ev_obj(0).xyz;
-    let beam = normalize(ev_obj(1).xyz);
-    let axis = normalize(params.ev[8].xyz);
-    let tint = mix(vec3<f32>(0.55, 0.7, 1.0), vec3<f32>(0.8, 0.55, 1.0), params.ev[9].x);
-    let px = point_pixels(ship, d, star);
-    var colour = vec3<f32>(0.9, 0.95, 1.0) * glint(px, 1.5) * 3.0 + tint * exp(-px * 0.02) * 0.25;
-    // The beams, both ways out of the poles of its field.
-    let line = ray_to_line(ship, d, star, beam);
-    if (line.y > 0.0) {
-        let width = 2.5 + abs(line.z) * 0.05;
-        let core = exp(-sq(line.x / width)) + exp(-line.x / (width * 6.0)) * 0.15;
-        colour += mix(tint, vec3<f32>(1.0), 0.4) * core * exp(-abs(line.z) / 1400.0) * 1.4 * params.ev[9].y;
-    }
-    // The wind nebula's ring, in its equator, wisps drifting out.
-    let denom = dot(d, axis);
-    if (abs(denom) > 1e-3) {
-        let t = dot(star - ship, axis) / denom;
-        if (t > 0.0) {
-            let q = ship + d * t - star;
-            let r = length(q);
-            let wisps = 0.5 + 0.5 * noise(q * 0.03 + vec3<f32>(0.0, 0.0, ev_t() * 0.2));
-            colour += tint * bump((r - 75.0) / 22.0) * wisps * 0.035 / max(abs(denom), 0.35);
-        }
-    }
-    colour += tint * exp(-px * 0.01) * 0.012;
-    return vec4<f32>(colour, 0.0);
-}
-
-// ---------------------------------------------------------------------------
 // A derelict: a broken ring station, a band traced as a cylinder, its last
 // windows lit, its breaks smouldering, a beacon blinking.
 // ---------------------------------------------------------------------------
@@ -951,8 +916,8 @@ fn fs_leviathan_glow(in: LeviathanGlow) -> @location(0) vec4<f32> {
 
 // ---------------------------------------------------------------------------
 // A supernova remnant: a shell of glowing filaments, red outside and teal
-// within, brighter where it is seen edge on, flown through; the pulsar the
-// star left at its heart.
+// within, brighter where it is seen edge on, flown through; the neutron star
+// left at its heart.
 // ---------------------------------------------------------------------------
 
 fn ev_remnant(d: vec3<f32>) -> vec4<f32> {
@@ -1498,7 +1463,7 @@ fn fs_ship(in: ShipOut) -> @location(0) vec4<f32> {
 // Every other model (`models.rs`), instanced: each vertex in its model's own
 // frame, turned by its instance's quaternion, scaled and placed in the
 // encounter frame. One pipeline per family (`MODEL`): 1 rocks, 2 star
-// gates, 3 the crystal, 4 hive cubes, 5 ring stations, 6 debris.
+// gates, 3 hive cubes, 4 ring stations, 5 debris.
 // ---------------------------------------------------------------------------
 
 override MODEL: i32 = 0;
@@ -1764,34 +1729,6 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
             colour += hue * smoothstep01(0.45, 0.65, u) * (0.25 + 0.15 * sin(atan2(q.y, q.x) * 36.0 - t * 4.0));
         }
     } else if (MODEL == 3) {
-        // The crystal: the stars behind bent through it a colour at a time
-        // into rainbows, the sky reflected off its faces, its heart's light
-        // running through it as it notices the ship.
-        let tint = mix(vec3<f32>(0.55, 0.9, 1.0), mix(vec3<f32>(0.8, 0.65, 1.0), vec3<f32>(0.65, 1.0, 0.8), step(0.5, look.x)), step(0.33, look.x));
-        let notice = look.y;
-        let d = -v;
-        let mu = max(dot(n, v), 0.0);
-        let fresnel = 0.06 + 0.94 * pow(1.0 - mu, 5.0);
-        // `refract` written out for the three colours: the part along the
-        // face is the same for each, scaled; the sky needs no normalized
-        // direction; and all four directions are in the world's frame, the
-        // sky's, from one turn of the ray and the normal. Three refracts,
-        // their normalizations and four turns (`ev_sky`) cost the V3D half
-        // its threads.
-        let dw = from_ev(d);
-        let nw = from_ev(n);
-        let c = dot(nw, dw);
-        let along = dw - nw * c;
-        let k = 1.0 - c * c;
-        let rr = textureSampleLevel(starfield, map_sampler, along * 0.84 - nw * sqrt(1.0 - 0.7056 * k), 0.0).r;
-        let gg = textureSampleLevel(starfield, map_sampler, along * 0.8 - nw * sqrt(1.0 - 0.64 * k), 0.0).g;
-        let bb = textureSampleLevel(starfield, map_sampler, along * 0.76 - nw * sqrt(1.0 - 0.5776 * k), 0.0).b;
-        let through = vec3<f32>(rr, gg, bb) * 2.5 * tint + tint * 0.05;
-        let mirror = textureSampleLevel(starfield, map_sampler, dw - nw * (2.0 * c), 0.0).rgb * 2.0 + tint * 0.04;
-        let inner = tint * (0.04 + 0.5 * notice * (0.6 + 0.4 * sin(t * 4.0 - length(q) * 12.0))) * (1.0 - smoothstep01(0.0, 1.0, length(q)));
-        let facet = pow(max(dot(n, normalize(vec3<f32>(0.3, 1.0, 0.2))), 0.0), 12.0) * tint * 0.4;
-        colour = mix(through, mirror, fresnel) + inner + pow(1.0 - mu, 3.0) * tint * 0.45 + facet;
-    } else if (MODEL == 4) {
         // A hive cube: dark machinery, panels a shade each, light in its
         // colour from slits and bays, flickering; scars blasted dark with
         // smouldering edges.
@@ -1815,7 +1752,7 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
             colour *= 1.0 - 0.75 * burnt;
             colour += vec3<f32>(1.0, 0.35, 0.06) * bump((scar - cut) / 0.025) * 0.6 * (0.7 + 0.3 * sin(t * 2.0 + scar * 30.0));
         }
-    } else if (MODEL == 5) {
+    } else if (MODEL == 4) {
         // A ring station: plated hull aged and scorched, ribs darker, rows
         // of windows on its inner face with a few still lit and flickering,
         // its breaks smouldering.
@@ -2438,24 +2375,6 @@ fn star_disc(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32) -> vec3<f32> {
     return vec3<f32>(1.0, 0.68, 0.38) * (0.5 + 0.5 * mu) * (0.85 + 0.3 * cells) * 2.2;
 }
 
-// ---------------------------------------------------------------------------
-// A crystal entity: a vast lattice folded from a few shapes by mirror
-// symmetry, marched; the stars behind bent through it in rainbows (the sky
-// read three times, once a colour, each bent its own amount), its faces
-// reflecting the sky, its heart pulsing brighter as it notices the ship.
-// ---------------------------------------------------------------------------
-
-fn ev_crystal(d: vec3<f32>) -> vec4<f32> {
-    // The crystal itself is a mesh (`fs_model`, family 3): here its light
-    // round it, brighter as it notices the ship.
-    let ship = ev_ship();
-    let tint = mix(vec3<f32>(0.55, 0.9, 1.0), mix(vec3<f32>(0.8, 0.65, 1.0), vec3<f32>(0.65, 1.0, 0.8), step(0.5, params.ev[9].x)), step(0.33, params.ev[9].x));
-    let notice = ev_obj(1).x;
-    let px = point_pixels(ship, d, ev_obj(0).xyz);
-    let heart = tint * exp(-px * 0.03) * (0.25 + 1.2 * notice) * (0.8 + 0.2 * sin(ev_t() * 3.0));
-    return vec4<f32>(tint * exp(-px * 0.01) * (0.04 + 0.12 * notice) + heart * 0.4, 0.0);
-}
-
 // Each event's draw over the sky.
 @fragment
 fn fs_event(in: Full) -> @location(0) vec4<f32> {
@@ -2470,8 +2389,6 @@ fn fs_event(in: Full) -> @location(0) vec4<f32> {
         c = ev_nebula(d, s);
     } else if (EVENT == 5) {
         c = ev_rogue(d);
-    } else if (EVENT == 6) {
-        c = ev_pulsar(d);
     } else if (EVENT == 7) {
         c = ev_derelict(d);
     } else if (EVENT == 8) {
@@ -2484,8 +2401,6 @@ fn fs_event(in: Full) -> @location(0) vec4<f32> {
         c = ev_battle(d);
     } else if (EVENT == 14) {
         c = ev_storm(d, s);
-    } else if (EVENT == 16) {
-        c = ev_crystal(d);
     }
     return c * params.ev[10].y;
 }

@@ -187,7 +187,7 @@ pub const INCIDENTS: [Incident; 16] = [
         text: "Narrow-band burst from the deep. Pattern repeats every twelve seconds. \
                Not natural. Intercept plotted.",
         alert: 0.4,
-        divert: Some(Event::Crystal),
+        divert: Some(Event::Derelict),
     },
     Incident {
         title: "WARSHIPS ON THE LINE",
@@ -236,7 +236,6 @@ pub fn describe(event: Event) -> (&'static str, &'static str) {
         Event::BlackHole => ("BLACK HOLE", "Sling past a lensed accretion disc"),
         Event::Nebula => ("STORM NEBULA", "Cross a nebula lit by lightning"),
         Event::RoguePlanet => ("ROGUE PLANET", "A starless world, cracked with lava"),
-        Event::Pulsar => ("PULSAR", "Ride out the sweeping beams"),
         Event::Derelict => ("DERELICT STATION", "A broken ring station, adrift"),
         Event::Comet => ("COMET", "Fly through the tails"),
         Event::Leviathans => ("LEVIATHANS", "A pod of glowing giants"),
@@ -246,7 +245,6 @@ pub fn describe(event: Event) -> (&'static str, &'static str) {
         Event::Battle => ("FLEET BATTLE", "Slip past a fight between fleets"),
         Event::PlasmaStorm => ("PLASMA STORM", "Skirt a lightning-lit eyewall"),
         Event::DysonSwarm => ("DYSON SWARM", "Rings of collectors round a dim star"),
-        Event::Crystal => ("CRYSTAL ENTITY", "Something vast that notices the ship"),
     }
 }
 

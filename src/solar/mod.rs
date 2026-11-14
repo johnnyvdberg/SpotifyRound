@@ -2644,7 +2644,7 @@ impl Solar {
                     }
                     pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
                 }
-                // The other models: rocks, gates, the crystal, hive cubes,
+                // The other models: rocks, gates, hive cubes,
                 // ring stations, debris.
                 if let Some(meshes) = self
                     .models
@@ -3608,7 +3608,7 @@ fn bake_craters(
 /// the panels: its name and range, a leader up from its edge.
 /// Every model the stopover in view has, placed for this moment: the
 /// asteroid field's rocks (each at the level of detail its size on the
-/// frame calls for, too small ones left out), a star gate, the crystal, a
+/// frame calls for, too small ones left out), a star gate, a
 /// hive cube and its escorts, a ring station and its debris, a battle's
 /// wreckage. Each a mesh and where it goes (`fs_model`).
 /// The parts of an event drawn bounded instead of over the whole frame (see
@@ -3874,18 +3874,6 @@ fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
                 ));
             }
         }
-        voyage::Event::Crystal => {
-            let axis =
-                Vec3::new(shot.rot[0] as f32, shot.rot[1] as f32, shot.rot[2] as f32).normalize();
-            let turn = Quat::from_axis_angle(axis, shot.rot[3] as f32);
-            let look = [shot.extra[0] as f32, o(1)[0] as f32, 0.0, 0.0];
-            out.push((
-                Key::Crystal {
-                    variant: (shot.extra[1] as u32) % 3,
-                },
-                instance(v3(o(0)), o(0)[3] as f32, turn, look),
-            ));
-        }
         voyage::Event::HiveCube => {
             let axis =
                 Vec3::new(shot.rot[0] as f32, shot.rot[1] as f32, shot.rot[2] as f32).normalize();
@@ -4018,7 +4006,6 @@ fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel
         voyage::Event::HiveCube => "Hive cube".to_string(),
         voyage::Event::BlackHole => "Black hole".into(),
         voyage::Event::RoguePlanet => "Rogue planet".into(),
-        voyage::Event::Pulsar => "Pulsar".into(),
         voyage::Event::Derelict => "Derelict station".into(),
         voyage::Event::Comet => "Comet nucleus".into(),
         voyage::Event::Leviathans => "Leviathan pod".into(),
@@ -4027,7 +4014,6 @@ fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel
         voyage::Event::Battle => "Battle".into(),
         voyage::Event::PlasmaStorm => "Storm eye".into(),
         voyage::Event::DysonSwarm => "Dyson swarm".into(),
-        voyage::Event::Crystal => "Crystal entity".into(),
     };
     let [x, y, z] = scene.basis;
     let rel = sub([o[0], o[1], o[2]], shot.ship);
@@ -6486,10 +6472,9 @@ pub(crate) mod tests {
                 voyage::Event::Asteroids | voyage::Event::Comet => {
                     parts.extend(["Solar rocks", "Solar model"])
                 }
-                voyage::Event::Gate
-                | voyage::Event::HiveCube
-                | voyage::Event::Crystal
-                | voyage::Event::Derelict => parts.push("Solar model"),
+                voyage::Event::Gate | voyage::Event::HiveCube | voyage::Event::Derelict => {
+                    parts.push("Solar model")
+                }
                 _ => {}
             }
             solar.tour = tour_through(seed, vec![voyage::Stopover { event, variant: 7 }]);

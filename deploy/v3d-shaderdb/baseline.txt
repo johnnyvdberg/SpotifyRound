@@ -866,9 +866,6 @@ Solar event nebula #0            vs_background  VS-bin    31   4     0   22     
 Solar event rogue-planet #0      fs_event       FS       715   2     1  169    64        0:0    4   43
 Solar event rogue-planet #0      vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event rogue-planet #0      vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar event pulsar #0            fs_event       FS       336   4     0   89    30        0:0    2   40
-Solar event pulsar #0            vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar event pulsar #0            vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar event derelict #0          fs_event       FS       227   4     0   58    21        0:0    4   33
 Solar event derelict #0          vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event derelict #0          vs_background  VS-bin    31   4     0   22     7        0:0    0    0
@@ -890,9 +887,6 @@ Solar event battle #0            vs_background  VS-bin    31   4     0   22     
 Solar event plasma-storm #0      fs_event       FS       696   2     1  176    64        0:0    6   76
 Solar event plasma-storm #0      vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event plasma-storm #0      vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar event crystal #0           fs_event       FS       190   4     0   58    20        0:0    2   24
-Solar event crystal #0           vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar event crystal #0           vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar event gate field #0        fs_gate_field  FS       222   4     0   52    26        0:0    0   28
 Solar event gate field #0        vs_gate_field  VS       204   4     0   89    24        0:0    1    8
 Solar event gate field #0        vs_gate_field  VS-bin   170   4     0   64    19        0:0    1    3
@@ -977,9 +971,6 @@ Solar model rock #0              vs_model       VS-bin    96   4     0   46    1
 Solar model gate #0              fs_model       FS       239   4     0   73    27        0:0    0    5
 Solar model gate #0              vs_model       VS       132   4     0   71    24        0:0    0    2
 Solar model gate #0              vs_model       VS-bin    96   4     0   46    18        0:0    0    6
-Solar model crystal #0           fs_model       FS       220   4     0   61    29        0:0    0    5
-Solar model crystal #0           vs_model       VS       119   4     0   64    27        0:0    0    3
-Solar model crystal #0           vs_model       VS-bin    96   4     0   46    18        0:0    0    6
 Solar model hive #0              fs_model       FS       271   4     0   68    25        0:0    0    5
 Solar model hive #0              vs_model       VS       114   4     0   66    26        0:0    0    1
 Solar model hive #0              vs_model       VS-bin    96   4     0   46    18        0:0    0    6
