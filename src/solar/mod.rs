@@ -116,6 +116,17 @@ const EV_ROWS: usize = 12 + 2 * BATTLE_SHIPS;
 const BATTLE_SHIPS: usize = 8;
 /// Rocks or debris drawn round the ship in a stopover (`vs_rock`).
 const ROCKS: u32 = 260;
+/// A gate's guide buoys (two a step down the approach) and the most nodes
+/// round its ring (`vs_glow`).
+const GATE_BUOYS: u32 = 24;
+const GATE_NODES: u32 = 9;
+/// The sides of a gate's field (`GATE_SIDES` in `encounter.wgsl`).
+const GATE_SIDES: u32 = 48;
+/// The most panels a Dyson swarm has: six rings of three rows, each of up
+/// to 150 cells and one more where the ring's seam cuts one in two.
+const DYSON_PANELS: u32 = 6 * 3 * 151;
+/// A panel's quads (`DYSON_GRID` in `encounter.wgsl`), two triangles each.
+const DYSON_PANEL_VERTICES: u32 = 2 * 3 * 6;
 /// Vertices of the ship's own effects' quad (`vs_overlay`).
 const OVERLAY_VERTICES: u32 = 3;
 
@@ -292,6 +303,8 @@ pub(crate) struct Solar {
     drive_override: Option<u32>,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// A Dyson swarm's panels this frame (`dyson_panels`).
+    panels: wgpu::Buffer,
     /// The meshes' triangles, every grid's (`grid_indices`).
     grid: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -466,7 +479,8 @@ impl Solar {
                            write_depth: Option<bool>,
                            writes: wgpu::ColorWrites,
                            strict: bool,
-                           cull_mode: Option<wgpu::Face>| {
+                           cull_mode: Option<wgpu::Face>,
+                           buffers: &[Option<wgpu::VertexBufferLayout>]| {
             let options = wgpu::PipelineCompilationOptions {
                 constants,
                 ..Default::default()
@@ -477,7 +491,7 @@ impl Solar {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some(vs),
-                    buffers: &[],
+                    buffers,
                     compilation_options: options.clone(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -522,8 +536,19 @@ impl Solar {
                     write_depth: Option<bool>,
                     writes: wgpu::ColorWrites,
                     strict: bool| {
-            let depth = write_depth;
-            make_culled(label, vs, fs, blend, constants, depth, writes, strict, None)
+            let (depth, cull) = (write_depth, None);
+            make_culled(
+                label,
+                vs,
+                fs,
+                blend,
+                constants,
+                depth,
+                writes,
+                strict,
+                cull,
+                &[],
+            )
         };
         // A mapped world's mesh: its back faces culled (counter-clockwise
         // seen from outside, see `grid_indices`).
@@ -534,7 +559,18 @@ impl Solar {
                      writes: wgpu::ColorWrites| {
             let (vs, back) = ("vs_globe", Some(wgpu::Face::Back));
             let depth = Some(false);
-            make_culled(label, vs, fs, blend, constants, depth, writes, false, back)
+            make_culled(
+                label,
+                vs,
+                fs,
+                blend,
+                constants,
+                depth,
+                writes,
+                false,
+                back,
+                &[],
+            )
         };
         let pipeline = |label: &str,
                         vs: &str,
@@ -822,7 +858,9 @@ impl Solar {
             } else {
                 ("vs_background", "fs_event", over)
             };
-            pipelines.insert(key, pipeline(&label, vs, fs, blend, &constants));
+            if event_parts(event, [0; 3]).is_none() {
+                pipelines.insert(key, pipeline(&label, vs, fs, blend, &constants));
+            }
             if event.rocks() {
                 let label = format!("Solar rocks {}", event.slug());
                 let all = wgpu::ColorWrites::ALL;
@@ -838,6 +876,55 @@ impl Solar {
                 );
                 pipelines.insert(format!("rocks{}", event.id()), made);
             }
+        }
+        // The gate and the Dyson swarm drawn bounded instead, a pipeline a
+        // part (`PART`, drawn as `event_parts` lists them): the gate's field
+        // a polygon in the ring's plane, its buoys and nodes a quad each; the
+        // swarm's panels from `dyson_panels`, the near side's and the far
+        // side's told apart by their facing (seen from outside a panel winds
+        // clockwise on the frame), at depths of their own strictly in front
+        // of what is there (see `fs_dyson_panel`), and its star's glow and
+        // disc each on the square it reaches across.
+        let (near, far) = (Some(wgpu::Face::Front), Some(wgpu::Face::Back));
+        let panel_attributes = wgpu::vertex_attr_array![
+            0 => Float32x4, 1 => Float32x4
+        ];
+        let panel = [Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Panel>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &panel_attributes,
+        })];
+        let gate = voyage::Event::Gate;
+        for (name, vs, fs, part, blend) in [
+            ("field", "vs_gate_field", "fs_gate_field", 0, over),
+            ("buoys", "vs_glow", "fs_gate_glint", 1, add),
+            ("nodes", "vs_glow", "fs_gate_glint", 2, add),
+        ] {
+            let label = format!("Solar event {} {name}", gate.slug());
+            let made = pipeline(&label, vs, fs, blend, &[("PART", part as f64)]);
+            pipelines.insert(format!("event{} {name}", gate.id()), made);
+        }
+        let dyson = voyage::Event::DysonSwarm;
+        for (name, part, blend, write, cull) in [
+            ("near", 1, over, true, near),
+            ("near lit", 2, add, false, near),
+            ("far", 3, over, true, far),
+            ("far lit", 4, add, false, far),
+            ("glow", 1, add, false, None),
+            ("star", 2, add, false, None),
+        ] {
+            let label = format!("Solar event {} {name}", dyson.slug());
+            let constants = [("PART", part as f64)];
+            let (vs, fs, buffers) = match cull {
+                Some(_) => ("vs_dyson_panel", "fs_dyson_panel", &panel[..]),
+                None => ("vs_dyson_star", "fs_dyson_star", &[][..]),
+            };
+            let all = wgpu::ColorWrites::ALL;
+            let (depth, strict) = (Some(write), true);
+            let made = make_culled(
+                &label, vs, fs, blend, &constants, depth, all, strict, cull, buffers,
+            );
+            pipelines.insert(format!("event{} {name}", dyson.id()), made);
         }
         for flux in voyage::Flux::ALL {
             let constants = [("EVENT", flux.id() as f64)];
@@ -1161,6 +1248,12 @@ impl Solar {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let panels = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Solar Dyson panels"),
+            size: (DYSON_PANELS as usize * std::mem::size_of::<Panel>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let grid = {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1247,6 +1340,7 @@ impl Solar {
             drive_override: None,
             layout,
             uniforms,
+            panels,
             grid,
             sampler,
             bind_group: None,
@@ -2014,6 +2108,14 @@ impl Solar {
         }
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&params));
+        // A Dyson swarm's panels, placed for the frame.
+        let mut panels = [0; 3];
+        if event == Some(voyage::Event::DysonSwarm) {
+            let placed;
+            (placed, panels) = dyson_panels(&params.ev);
+            gpu.queue
+                .write_buffer(&self.panels, 0, bytemuck::cast_slice(&placed));
+        }
         // The stopover's models, grouped by mesh: their placings into the
         // instance buffer, and a draw for each group.
         let mut model_draws: Vec<ModelDraw> = Vec::new();
@@ -2154,9 +2256,19 @@ impl Solar {
             // A stopover: its own draw over the sky (or in place of it), and
             // the rocks round the ship, in front of everything.
             if let Some(e) = event.filter(|_| params.ev[10][1] > 0.001) {
-                let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
-                pass.set_pipeline(pipeline);
-                crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                if let Some(parts) = event_parts(e, panels) {
+                    pass.set_vertex_buffer(0, self.panels.slice(..));
+                    for (name, vertices, instances) in parts {
+                        let key = format!("event{} {name}", e.id());
+                        let (label, pipeline) = &self.pipelines[&key];
+                        pass.set_pipeline(pipeline);
+                        crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, instances);
+                    }
+                } else {
+                    let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
+                    pass.set_pipeline(pipeline);
+                    crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                }
                 // The battle's ships, each its fleet's design in a variant of
                 // its own, the one lost gone once it blows up.
                 if e == voyage::Event::Battle
@@ -3040,6 +3152,115 @@ fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &System) {
 /// frame calls for, too small ones left out), a star gate, the crystal, a
 /// hive cube and its escorts, a ring station and its debris, a battle's
 /// wreckage. Each a mesh and where it goes (`fs_model`).
+/// The parts of an event drawn bounded instead of over the whole frame (see
+/// `with_seed`), in the order drawn: each one's name, vertices and
+/// instances. A Dyson swarm's panels are `panels` (`dyson_panels`): the
+/// near side's up to the second, the far side's from the first. Parts with
+/// nothing to show collapse in their vertex shaders.
+fn event_parts(
+    event: voyage::Event,
+    panels: [u32; 3],
+) -> Option<Vec<(&'static str, u32, std::ops::Range<u32>)>> {
+    match event {
+        // The field, then the glows over it (`fs_gate_glint`).
+        voyage::Event::Gate => Some(vec![
+            ("field", GATE_SIDES * 3, 0..1),
+            ("buoys", 6, 0..GATE_BUOYS),
+            ("nodes", 6, 0..GATE_NODES),
+        ]),
+        // The near panels first, so nothing they hide is shaded.
+        voyage::Event::DysonSwarm => {
+            let ([near, far, all], n) = (panels, DYSON_PANEL_VERTICES);
+            Some(vec![
+                ("near", n, 0..near),
+                ("near lit", n, 0..near),
+                ("far", n, far..all),
+                ("far lit", n, far..all),
+                ("glow", 6, 0..1),
+                ("star", 6, 0..1),
+            ])
+        }
+        _ => None,
+    }
+}
+
+/// A Dyson swarm's panel, placed for the frame (`PanelIn` in
+/// `encounter.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Panel {
+    span: [f32; 4],
+    cell: [f32; 4],
+}
+
+/// A Dyson swarm's collector panels this frame, from the stopover's rows
+/// (`ev`): three shells, two rings each about tilted axes of their own,
+/// three rows of panels round each, a place for a panel a cell (its hash
+/// may leave it out, in `vs_dyson_panel`); each ring turning, its cells
+/// counted from where the longitude wraps, so the seam cuts a panel in two
+/// as the trace once did. The near side's first, then those on the limb or
+/// close (in both draws: the culling sorts their triangles), then the far
+/// side's: the panels and where the limb's begin and end.
+fn dyson_panels(ev: &[[f32; 4]; EV_ROWS]) -> (Vec<Panel>, [u32; 3]) {
+    use glam::Vec3;
+    use std::f32::consts::{PI, TAU};
+    let (t, seed) = (ev[0][1], ev[9][0]);
+    let ship = Vec3::new(ev[1][0], ev[1][1], ev[1][2]);
+    let star = Vec3::new(ev[5][0], ev[5][1], ev[5][2]);
+    let mut sides: [Vec<Panel>; 3] = Default::default();
+    for shell in 0..3 {
+        let fs = shell as f32;
+        let (rr, cells) = (ev[5][3] * (0.7 + 0.2 * fs), 90.0 + 30.0 * fs);
+        for k in 0..2 {
+            let fk = k as f32 + fs * 2.0;
+            let h = |n: f32| hash_cell([fk, seed, n]);
+            let axis = (Vec3::new(h(1.0) - 0.5, 1.0, h(2.0) - 0.5)
+                + Vec3::new(0.0, 0.0, 0.6 * (h(3.0) - 0.5)))
+            .normalize();
+            let width = 0.13 + 0.05 * h(4.0);
+            let e1 = axis.cross(Vec3::Z).normalize();
+            let e2 = axis.cross(e1);
+            let turned = t * (0.02 + 0.02 * fs) * if k == 1 { -1.0 } else { 1.0 };
+            let (lo, hi) = ((turned - PI) / TAU * cells, (turned + PI) / TAU * cells);
+            let at = |g: f32, gy: f32| {
+                let (lat, lon) = ((gy / 3.0 * 2.0 - 1.0) * width, g / cells * TAU - turned);
+                (e1 * lon.cos() + e2 * lon.sin()) * (1.0 - lat * lat).sqrt() + axis * lat
+            };
+            for row in 0..3 {
+                let fr = row as f32;
+                for slot in 0..=cells as u32 {
+                    let id = lo.floor() + slot as f32;
+                    let (g0, g1) = ((id + 0.12).max(lo), (id + 0.88).min(hi));
+                    if g1 <= g0 {
+                        continue;
+                    }
+                    // Which way its corners face the ship, clearly.
+                    let facing = [(g0, 0.14), (g1, 0.14), (g0, 0.86), (g1, 0.86)].map(|(g, y)| {
+                        let n = at(g, fr + y);
+                        n.dot((ship - star - n * rr).normalize())
+                    });
+                    let side = if facing.iter().all(|f| *f > 0.02) {
+                        0
+                    } else if facing.iter().all(|f| *f < -0.02) {
+                        2
+                    } else {
+                        1
+                    };
+                    sides[side].push(Panel {
+                        span: [g0, g1, cells, turned],
+                        cell: [id, fr, fk, seed],
+                    });
+                }
+            }
+        }
+    }
+    let near = sides[0].len() as u32;
+    let limb = near + sides[1].len() as u32;
+    let panels: Vec<Panel> = sides.concat();
+    let all = panels.len() as u32;
+    (panels, [limb, near, all])
+}
+
 fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
     use glam::{Mat3, Quat, Vec3};
     use models::{Instance, Key};

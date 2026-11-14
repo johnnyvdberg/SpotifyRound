@@ -821,9 +821,6 @@ Solar event leviathans #0        vs_background  VS-bin    31   4     0   22     
 Solar event remnant #0           fs_event       FS       421   2     1   98    64        0:0    2   31
 Solar event remnant #0           vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event remnant #0           vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar event gate #0              fs_event       FS       676   2     2  149    54        0:0    6   51
-Solar event gate #0              vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar event gate #0              vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar event wormhole #0          fs_event       FS       401   2     0   88    43        0:0    2   27
 Solar event wormhole #0          vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event wormhole #0          vs_background  VS-bin    31   4     0   22     7        0:0    0    0
@@ -833,12 +830,36 @@ Solar event battle #0            vs_background  VS-bin    31   4     0   22     
 Solar event plasma-storm #0      fs_event       FS       696   2     1  176    64        0:0    6   76
 Solar event plasma-storm #0      vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event plasma-storm #0      vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar event dyson-swarm #0       fs_event       FS       655   2     3  176    62        0:0    6   64
-Solar event dyson-swarm #0       vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar event dyson-swarm #0       vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar event crystal #0           fs_event       FS       190   4     0   58    20        0:0    2   24
 Solar event crystal #0           vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event crystal #0           vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar event gate field #0        fs_gate_field  FS       222   4     0   52    26        0:0    0   28
+Solar event gate field #0        vs_gate_field  VS       204   4     0   89    24        0:0    1    8
+Solar event gate field #0        vs_gate_field  VS-bin   170   4     0   64    19        0:0    1    3
+Solar event gate buoys #0        fs_gate_glint  FS       341   4     0   64    31        0:0    1   39
+Solar event gate buoys #0        vs_glow        VS       336   2     0  149    59        0:0    0   11
+Solar event gate buoys #0        vs_glow        VS-bin   223   4     0  113    24        0:0    0   13
+Solar event gate nodes #0        fs_gate_glint  FS       339   4     0   65    31        0:0    1   40
+Solar event gate nodes #0        vs_glow        VS       368   2     0  151    55        0:0    1   15
+Solar event gate nodes #0        vs_glow        VS-bin   293   4     0  129    25        0:0    0   17
+Solar event dyson-swarm near #0  fs_dyson_panel FS        11   4     0    4     2        0:0    0    2
+Solar event dyson-swarm near #0  vs_dyson_panel VS       240   4     0  103    28        0:0    0   12
+Solar event dyson-swarm near #0  vs_dyson_panel VS-bin   240   4     0  103    28        0:0    0   12
+Solar event dyson-swarm near lit #0 fs_dyson_panel FS       106   4     0   26    14        0:0    2   14
+Solar event dyson-swarm near lit #0 vs_dyson_panel VS       255   4     0  109    29        0:0    0   13
+Solar event dyson-swarm near lit #0 vs_dyson_panel VS-bin   240   4     0  103    28        0:0    0   12
+Solar event dyson-swarm far #0   fs_dyson_panel FS       202   4     0   52    22        0:0    3   20
+Solar event dyson-swarm far #0   vs_dyson_panel VS       247   4     0  106    28        0:0    0    9
+Solar event dyson-swarm far #0   vs_dyson_panel VS-bin   240   4     0  103    28        0:0    0   12
+Solar event dyson-swarm far lit #0 fs_dyson_panel FS        21   4     0    7     5        0:0    0    3
+Solar event dyson-swarm far lit #0 vs_dyson_panel VS       260   4     0  111    32        0:0    1    8
+Solar event dyson-swarm far lit #0 vs_dyson_panel VS-bin   240   4     0  103    28        0:0    0   12
+Solar event dyson-swarm glow #0  fs_dyson_star  FS        97   4     0   22    12        0:0    2   14
+Solar event dyson-swarm glow #0  vs_dyson_star  VS       227   4     0  102    32        0:0    0   14
+Solar event dyson-swarm glow #0  vs_dyson_star  VS-bin   154   4     0   73    20        0:0    0    7
+Solar event dyson-swarm star #0  fs_dyson_star  FS       158   4     0   40    21        0:0    2   14
+Solar event dyson-swarm star #0  vs_dyson_star  VS       180   2     0   78    40        0:0    0    7
+Solar event dyson-swarm star #0  vs_dyson_star  VS-bin   162   4     0   75    21        0:0    0    3
 Solar flux ion-storm #0          fs_flux        FS       260   4     0   90    30        0:0    0    2
 Solar flux ion-storm #0          vs_background  VS        32   4     0   22     7        0:0    0    1
 Solar flux ion-storm #0          vs_background  VS-bin    31   4     0   22     7        0:0    0    0

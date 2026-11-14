@@ -7,6 +7,9 @@
 // or glowed along it, analytically where it can be. One pipeline per event
 // (`EVENT`), so each holds only its own code:
 // - `fs_event`, over the sky (premultiplied): the objects and their light.
+//   Not the gate's or the Dyson swarm's: they are drawn bounded, a draw a
+//   part over only the pixels it lights (`vs_glow`, `vs_gate_field`,
+//   `vs_dyson_panel`, `vs_dyson_star`).
 // - `fs_event_sky`, in place of the sky: the black hole, which lenses it.
 // - `vs_rock` / `fs_rock`, instanced: rocks round the ship (the asteroid
 //   field), debris (the derelict) or ice (the comet), each a lumpy sphere on
@@ -700,85 +703,238 @@ fn ev_remnant(d: vec3<f32>) -> vec4<f32> {
 
 // ---------------------------------------------------------------------------
 // A star gate: a ring (or a blocky ring with pylons, or two rings turning
-// against each other) traced by marching its distance field; its nodes lit
-// one by one as the ship lines up, its field opening in the middle, buoys
-// chasing light down the approach.
+// against each other), its nodes lit one by one as the ship lines up, its
+// field opening in the middle, buoys chasing light down the approach. The
+// ring is a mesh (`fs_model`, family 2), drawn over all this; the rest is
+// drawn bounded, each part over only the pixels it lights, one pipeline a
+// part (`PART`, in this order in `draw`):
+// - `vs_gate_field` / `fs_gate_field`: the field, a polygon in the ring's
+//   plane round its opening, over the sky (premultiplied).
+// - `vs_glow` / `fs_gate_glint`: the buoys (1), then the nodes (2), a quad
+//   each, added over it.
 // ---------------------------------------------------------------------------
 
-fn ev_gate(d: vec3<f32>) -> vec4<f32> {
-    let ship = ev_ship();
+struct Gate {
+    centre: vec3<f32>,
+    radius: f32,
+    // Its frame: across the ring, turning slowly round its axis, and the axis.
+    f1: vec3<f32>,
+    f2: vec3<f32>,
+    normal: vec3<f32>,
+    style: f32,
+    hue: vec3<f32>,
+    // How far through the stopover.
+    u: f32,
+};
+
+fn gate() -> Gate {
+    var g: Gate;
     let o = ev_obj(0);
-    let centre = o.xyz;
-    let radius = o.w;
-    let normal = normalize(params.ev[8].xyz);
+    g.centre = o.xyz;
+    g.radius = o.w;
+    g.normal = normalize(params.ev[8].xyz);
     let spin = params.ev[8].w;
-    let style = params.ev[9].x;
-    let hue = mix(vec3<f32>(1.0, 0.72, 0.3), select(vec3<f32>(0.75, 0.45, 1.0), vec3<f32>(0.4, 0.85, 1.0), params.ev[9].y < 0.66), step(0.33, params.ev[9].y));
-    let u = params.ev[9].z;
-    let t = ev_t();
-    // The gate's frame: z along its axis, turning slowly round it.
-    var e1 = normalize(cross(normal, vec3<f32>(0.0, 1.0, 0.0)));
-    let e2 = cross(normal, e1);
+    g.style = params.ev[9].x;
+    g.hue = mix(vec3<f32>(1.0, 0.72, 0.3), select(vec3<f32>(0.75, 0.45, 1.0), vec3<f32>(0.4, 0.85, 1.0), params.ev[9].y < 0.66), step(0.33, params.ev[9].y));
+    g.u = params.ev[9].z;
+    let e1 = normalize(cross(g.normal, vec3<f32>(0.0, 1.0, 0.0)));
+    let e2 = cross(g.normal, e1);
     let c = cos(spin);
     let s = sin(spin);
-    let f1 = e1 * c + e2 * s;
-    let f2 = -e1 * s + e2 * c;
-    let ro = ship - centre;
-    let lo = vec3<f32>(dot(ro, f1), dot(ro, f2), dot(ro, normal));
-    let ld = vec3<f32>(dot(d, f1), dot(d, f2), dot(d, normal));
-    var colour = vec3<f32>(0.0);
-    var alpha = 0.0;
-    var reach = 1e9;
-    // The ring itself is a mesh (`fs_model`, family 2), drawn over this.
-    // The field opening across the middle: rippling light over the stars
-    // seen through it, bent.
-    if (abs(ld.z) > 1e-4) {
-        let tf = -lo.z / ld.z;
-        if (tf > 0.0 && tf < reach) {
-            let q = lo + ld * tf;
-            let r = length(q.xy) / radius;
-            let open = smoothstep01(0.48, 0.62, u);
-            let inside = 1.0 - smoothstep01(0.86, 0.9, r);
-            if (inside > 0.0 && open > 0.0) {
-                let a = atan2(q.y, q.x);
-                let swirl = noise(vec3<f32>(cos(a + r * 3.0 - t * 0.8) * r * 3.0, sin(a + r * 3.0 - t * 0.8) * r * 3.0, t * 0.4));
-                let ripple = 0.5 + 0.5 * sin(r * 30.0 - t * 7.0 + swirl * 3.0);
-                let bent = normalize(d + (f1 * q.x + f2 * q.y) / radius * 0.25 * open);
-                let behind = ev_sky(bent) * 2.0;
-                let field = hue * (0.35 + 0.9 * ripple * ripple + 0.6 * swirl) * (0.45 + 0.9 * r * r * r) + vec3<f32>(1.0) * pow(1.0 - r, 5.0) * 0.9
-                    + mix(hue, vec3<f32>(1.0), 0.5) * bump((r - 0.87) / 0.025) * 1.5;
-                let cover = open * inside * 0.85;
-                colour = colour * alpha + (1.0 - alpha) * (field + behind) * cover;
-                alpha = max(alpha, cover);
-            }
-        }
+    g.f1 = e1 * c + e2 * s;
+    g.f2 = -e1 * s + e2 * c;
+    return g;
+}
+
+// The faintest light drawn: half a level of the sRGB frame over black. A
+// glow's quad reaches as far as its light stays above it.
+const FAINT: f32 = 0.5 / 255.0 / 12.92;
+
+// A point of the encounter frame in the camera's space (right, up, ahead).
+fn ev_camera(p: vec3<f32>) -> vec3<f32> {
+    let w = from_ev(p - ev_ship());
+    return vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
+}
+
+// A point in the camera's space on the frame, at a fixed depth (0..1).
+fn camera_clip(c: vec3<f32>, depth: f32) -> vec4<f32> {
+    return vec4<f32>(c.x / params.frame.y, c.y / params.frame.y, depth * c.z, c.z);
+}
+
+// A corner (0..5, two triangles) of the square round the cone of rays
+// within `reach` pixels (`point_pixels`) of the point `c` in the camera's
+// space: its projection holds every pixel the point's glow reaches, even
+// where the point is off the frame.
+fn cone_corner(c: vec3<f32>, reach: f32, corner: u32, depth: f32) -> vec4<f32> {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+    );
+    let k = corners[corner];
+    let u = normalize(c);
+    let a = normalize(cross(u, select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(u.y) > 0.9)));
+    let b = cross(u, a);
+    let t = min(reach * params.frame.z, 50.0);
+    return camera_clip(u + (a * k.x + b * k.y) * t, depth);
+}
+
+// The field at `q` on the ring's plane (across it, in the ring's radius),
+// seen along unit `d`: rippling light over the stars seen through it, bent
+// by `bend` (premultiplied, unclamped: dark in its swirls), and its cover;
+// nothing off it. `open`, how far it is open, in `hue.w`.
+fn gate_field(q: vec2<f32>, d: vec3<f32>, bend: vec3<f32>, hue: vec4<f32>) -> vec4<f32> {
+    let t = ev_t();
+    let r = length(q);
+    let inside = 1.0 - smoothstep01(0.86, 0.9, r);
+    if (inside <= 0.0) {
+        return vec4<f32>(0.0);
     }
-    // The nodes' light, seen from afar as glints.
-    let nodes = select(9.0, 3.0, style > 0.5 && style < 1.5);
-    for (var k = 0; k < 9; k++) {
-        let fk = f32(k);
+    // Round the middle at angle `a`, turned on by `r * 3 - t * 0.8`: `q`
+    // turned so, without the angle itself.
+    let turn = r * 3.0 - t * 0.8;
+    let c = cos(turn);
+    let s = sin(turn);
+    let swirl = noise(vec3<f32>((q.x * c - q.y * s) * 3.0, (q.x * s + q.y * c) * 3.0, t * 0.4));
+    let ripple = 0.5 + 0.5 * sin(r * 30.0 - t * 7.0 + swirl * 3.0);
+    let behind = ev_sky(d + bend) * 2.0;
+    let m = 1.0 - r;
+    let field = hue.rgb * (0.35 + 0.9 * ripple * ripple + 0.6 * swirl) * (0.45 + 0.9 * r * r * r) + vec3<f32>(1.0) * m * m * m * m * m * 0.9
+        + mix(hue.rgb, vec3<f32>(1.0), 0.5) * bump((r - 0.87) / 0.025) * 1.5;
+    let cover = hue.w * inside * 0.85;
+    return vec4<f32>((field + behind) * cover, cover);
+}
+
+// The sides of the field's polygon, round its circle.
+const GATE_SIDES: u32 = 48u;
+
+struct GateField {
+    @builtin(position) position: vec4<f32>,
+    // Where on the ring's plane, across it in its radius, from the ship,
+    // and how the light there is bent: all linear across the plane.
+    @location(0) q: vec2<f32>,
+    @location(1) ray: vec3<f32>,
+    @location(2) bend: vec3<f32>,
+    @location(3) @interpolate(flat) hue: vec4<f32>,
+};
+
+// The field: a fan of triangles as a list, out to just past where it ends
+// (0.9 of the ring's radius), in the ring's plane.
+@vertex
+fn vs_gate_field(@builtin(vertex_index) vertex: u32) -> GateField {
+    var out: GateField;
+    let g = gate();
+    let open = smoothstep01(0.48, 0.62, g.u);
+    out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    if (open <= 0.0) {
+        return out;
+    }
+    let corner = vertex % 3u;
+    var q = vec2<f32>(0.0);
+    if (corner > 0u) {
+        let a = f32(vertex / 3u + corner - 1u) * TAU / f32(GATE_SIDES);
+        q = vec2<f32>(cos(a), sin(a)) * 0.9 / cos(PI / f32(GATE_SIDES));
+    }
+    let p = g.centre + (g.f1 * q.x + g.f2 * q.y) * g.radius;
+    out.position = camera_clip(ev_camera(p), 0.9999);
+    out.q = q;
+    out.ray = p - ev_ship();
+    out.bend = (g.f1 * q.x + g.f2 * q.y) * 0.25 * open;
+    out.hue = vec4<f32>(g.hue, open);
+    return out;
+}
+
+@fragment
+fn fs_gate_field(in: GateField) -> @location(0) vec4<f32> {
+    return gate_field(in.q, normalize(in.ray), in.bend, in.hue) * params.ev[10].y;
+}
+
+struct Glow {
+    @builtin(position) position: vec4<f32>,
+    // The ray through the pixel, in the encounter frame.
+    @location(0) ray: vec3<f32>,
+    // The point in the encounter frame.
+    @location(1) @interpolate(flat) at: vec3<f32>,
+    // Its colour, at full strength.
+    @location(2) @interpolate(flat) tint: vec3<f32>,
+    // The gate's frame (`Gate`), the ship in it in the ring's radius, and
+    // the field's colour and how far it is open, for the field under it.
+    @location(3) @interpolate(flat) f1: vec3<f32>,
+    @location(4) @interpolate(flat) f2: vec3<f32>,
+    @location(5) @interpolate(flat) normal: vec3<f32>,
+    @location(6) @interpolate(flat) ship: vec3<f32>,
+    @location(7) @interpolate(flat) hue: vec4<f32>,
+};
+
+override PART: i32 = 0;
+
+@vertex
+fn vs_glow(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Glow {
+    var out: Glow;
+    out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    let g = gate();
+    let fade = params.ev[10].y;
+    let peak = max(g.hue.r, max(g.hue.g, g.hue.b)) * fade;
+    var strength = 0.0;
+    var reach = 0.0;
+    if (PART == 1) {
+        // A buoy: a pair a step down the approach, the light chasing along
+        // them. Its glint's halo, then its core, fades out past `FAINT`.
+        let fk = f32(instance / 2u);
+        let chase = step(fract(ev_t() * 0.9 - fk * 0.083), 0.18);
+        let x = select(-1.0, 1.0, instance % 2u == 0u) * g.radius * 1.3;
+        out.at = vec3<f32>(g.centre.x + x, g.centre.y - g.radius * 0.35, g.centre.z - 40.0 - fk * 46.0);
+        strength = 0.25 + 1.4 * chase;
+        let light = strength * peak / FAINT;
+        reach = max(7.2 * log(max(0.15 * light, 1.0)), 1.2 * sqrt(2.0 * log(max(2.0 * light, 1.0))));
+    } else {
+        // A node round the ring, lit in turn.
+        let nodes = select(9.0, 3.0, g.style > 0.5 && g.style < 1.5);
+        let fk = f32(instance);
         if (fk >= nodes) {
-            break;
+            return out;
         }
-        let on = smoothstep01(0.25 + fk / nodes * 0.25, 0.3 + fk / nodes * 0.25, u);
+        strength = smoothstep01(0.25 + fk / nodes * 0.25, 0.3 + fk / nodes * 0.25, g.u);
         let ang = fk * TAU / nodes;
-        let at = centre + (f1 * cos(ang) + f2 * sin(ang)) * radius * select(1.0, 1.18, style > 0.5 && style < 1.5);
-        let px = point_pixels(ship, d, at);
-        colour += hue * (exp(-px / 3.0) * 0.8 + exp(-px / 18.0) * 0.12) * on;
+        out.at = g.centre + (g.f1 * cos(ang) + g.f2 * sin(ang)) * g.radius * select(1.0, 1.18, g.style > 0.5 && g.style < 1.5);
+        let light = strength * peak / FAINT;
+        reach = max(18.0 * log(max(0.12 * light, 1.0)), 3.0 * log(max(0.8 * light, 1.0)));
     }
-    // Buoys down the approach, chasing light toward the gate.
-    for (var k = 0; k < 12; k++) {
-        let fk = f32(k);
-        let z = centre.z - 40.0 - fk * 46.0;
-        let chase = step(fract(t * 0.9 - fk * 0.083), 0.18);
-        for (var side = 0; side < 2; side++) {
-            let x = select(-1.0, 1.0, side == 0) * radius * 1.3;
-            let buoy = vec3<f32>(centre.x + x, centre.y - radius * 0.35, z);
-            let px = point_pixels(ship, d, buoy);
-            colour += hue * glint(px, 1.2) * (0.25 + 1.4 * chase) * (1.0 - alpha);
-        }
+    if (reach <= 0.0) {
+        return out;
     }
-    return vec4<f32>(colour, alpha);
+    out.tint = g.hue * strength * fade;
+    let corner = cone_corner(ev_camera(out.at), reach, vertex % 6u, 0.9999);
+    out.position = corner;
+    out.ray = to_ev(params.right.xyz * corner.x * params.frame.y + params.up.xyz * corner.y * params.frame.y + params.forward.xyz * corner.w);
+    let ro = (ev_ship() - g.centre) / g.radius;
+    out.f1 = g.f1;
+    out.f2 = g.f2;
+    out.normal = g.normal;
+    out.ship = vec3<f32>(dot(ro, g.f1), dot(ro, g.f2), dot(ro, g.normal));
+    out.hue = vec4<f32>(g.hue, smoothstep01(0.48, 0.62, g.u));
+    return out;
+}
+
+// Drawn over the field, which dims the buoys behind it and, dark in its
+// swirls, swallows a glow's faint light there: what the glow adds to it.
+@fragment
+fn fs_gate_glint(in: Glow) -> @location(0) vec4<f32> {
+    let d = normalize(in.ray);
+    let px = point_pixels(ev_ship(), d, in.at);
+    // The field where the ray crosses the ring's plane ahead, if open.
+    var field = vec4<f32>(0.0);
+    let ld = vec3<f32>(dot(d, in.f1), dot(d, in.f2), dot(d, in.normal));
+    let tf = -in.ship.z / ld.z;
+    if (in.hue.w > 0.0 && abs(ld.z) > 1e-4 && tf > 0.0) {
+        let q = in.ship.xy + ld.xy * tf;
+        field = gate_field(q, d, (in.f1 * q.x + in.f2 * q.y) * 0.25 * in.hue.w, in.hue);
+    }
+    var light = in.tint * (exp(-px / 3.0) * 0.8 + exp(-px / 18.0) * 0.12);
+    if (PART == 1) {
+        light = in.tint * glint(px, 1.2) * (1.0 - field.a);
+    }
+    let under = field.rgb * params.ev[10].y;
+    return vec4<f32>(max(under + light, vec3<f32>(0.0)) - max(under, vec3<f32>(0.0)), 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1734,79 +1890,156 @@ fn ev_storm(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
 // three shells, each ring turning about its own tilted axis. Panels between
 // the camera and the star are dark against it, catching its light on their
 // edges; those beyond it shine with its light.
+//
+// The panels are geometry, an instance each (`vs_dyson_panel`), placed for
+// the frame on the CPU from the same hashes a pixel's trace once found them
+// by; the near side's face the camera, the far side's away, so culling
+// sorts out those on the limb. Drawn in
+// this order (`PART`, `draw` in `mod.rs`), each over only its own pixels,
+// at depths of their own just short of the background's: the near side's
+// at `DYSON_NEAR`, the far side's at `DYSON_FAR`, the star behind both.
+// - 1: the near panels darken what is behind them, once, writing the depth
+//   so nothing further is shaded there.
+// - 2: each near panel's unlit back and its rim glint, added.
+// - 3: the far panels darken the sky, once, writing the depth, and lay down
+//   what light of the star shows through them.
+// - 4: each far panel's lit face, added.
+// - `vs_dyson_star` / `fs_dyson_star`: the star's glow over the rest, on
+//   the square it reaches across (1), and its disc on its own (2).
 // ---------------------------------------------------------------------------
 
-fn ev_dyson(d: vec3<f32>) -> vec4<f32> {
+const DYSON_NEAR: f32 = 0.996;
+const DYSON_FAR: f32 = 0.997;
+// A panel's quads, along and across its ring.
+const DYSON_GRID: vec2<u32> = vec2<u32>(2u, 3u);
+const DYSON_WARM: vec3<f32> = vec3<f32>(1.0, 0.72, 0.42);
+
+struct Panel {
+    @builtin(position) position: vec4<f32>,
+    // Across the panel from its middle, in its cell's widths and heights.
+    @location(0) cell: vec2<f32>,
+    // How brightly its face is lit.
+    @location(1) lit: f32,
+    // The ray through the pixel, in the encounter frame.
+    @location(2) ray: vec3<f32>,
+};
+
+// A panel's place, worked out for the frame by `dyson_panels` in `mod.rs`.
+// What was hashed (its ring's axis and width, whether it is there, how
+// bright its face) is hashed here, as the trace did: the CPU's sums differ
+// from the GPU's in the last bits, enough to move a panel.
+struct PanelIn {
+    // Its span round the ring in cells, the ring's cells, and how far the
+    // ring has turned.
+    @location(0) span: vec4<f32>,
+    // Its id round the ring, its row, its ring's number and the swarm's
+    // seed.
+    @location(1) cell: vec4<f32>,
+};
+
+@vertex
+fn vs_dyson_panel(@builtin(vertex_index) vertex: u32, v: PanelIn) -> Panel {
+    var out: Panel;
+    out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    if (hash_cell(vec3<f32>(v.cell.x, v.cell.y, v.cell.z + v.cell.w)) < 0.15) {
+        return out;
+    }
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+    );
+    // A grid of quads, close enough to the sphere that its edges fall
+    // where the traced ones did.
+    let quad = vertex / 6u;
+    let corner = (corners[vertex % 6u] + vec2<f32>(f32(quad % DYSON_GRID.x), f32(quad / DYSON_GRID.x))) / vec2<f32>(DYSON_GRID);
+    let g = mix(v.span.x, v.span.y, corner.x);
+    let gy = v.cell.y + mix(0.14, 0.86, corner.y);
+    let fk = v.cell.z;
+    let seed = v.cell.w;
+    let lat = (gy / 3.0 * 2.0 - 1.0) * (0.13 + 0.05 * hash_cell(vec3<f32>(fk, seed, 4.0)));
+    let lon = g / v.span.z * TAU - v.span.w;
+    let shell = floor(fk * 0.5);
+    let axis = normalize(vec3<f32>(hash_cell(vec3<f32>(fk, seed, 1.0)) - 0.5, 1.0, hash_cell(vec3<f32>(fk, seed, 2.0)) - 0.5) + vec3<f32>(0.0, 0.0, 0.6 * (hash_cell(vec3<f32>(fk, seed, 3.0)) - 0.5)));
+    let e1 = normalize(cross(axis, vec3<f32>(0.0, 0.0, 1.0)));
+    let n = (e1 * cos(lon) + cross(axis, e1) * sin(lon)) * sqrt(1.0 - lat * lat) + axis * lat;
+    let o = ev_obj(0);
+    let p = o.xyz + n * o.w * (0.7 + 0.2 * shell);
+    let depth = select(DYSON_FAR, DYSON_NEAR, PART <= 2) - select(0.0, 0.0005, PART % 2 == 0);
+    out.position = camera_clip(ev_camera(p), depth);
+    out.ray = p - ev_ship();
+    out.cell = vec2<f32>(g - v.cell.x - 0.5, gy - v.cell.y - 0.5);
+    let facing = max(dot(-n, normalize(ev_ship() - o.xyz)), 0.0);
+    out.lit = (0.35 + 0.65 * facing) * (0.6 + 0.4 * hash_cell(vec3<f32>(v.cell.x, v.cell.z, 9.0))) * 0.8;
+    return out;
+}
+
+// The star's glow along `d`, and (`disc` > 0) its disc.
+fn dyson_star(d: vec3<f32>, disc: f32, glow: f32) -> vec3<f32> {
     let ship = ev_ship();
     let o = ev_obj(0);
-    let star = o.xyz;
-    let radius = o.w;
-    let seed = params.ev[9].x;
-    let t = ev_t();
-    let warm = vec3<f32>(1.0, 0.72, 0.42);
-    // The star, its glow, dimmed by what covers it.
-    let px = point_pixels(ship, d, star);
-    let disc = star_disc(ship, d, star, radius * 0.11);
-    var colour = vec3<f32>(0.0);
-    var cover = 0.0;
-    var front = vec3<f32>(0.0);
-    var front_cover = 0.0;
-    var back = vec3<f32>(0.0);
-    for (var shell = 0; shell < 3; shell++) {
-        let fs = f32(shell);
-        let rr = radius * (0.7 + 0.2 * fs);
-        let hits = sphere_hits(ship, d, star, rr);
-        for (var side = 0; side < 2; side++) {
-            let th = select(hits.y, hits.x, side == 0);
-            if (th <= 0.0) {
-                continue;
-            }
-            let n = normalize(ship + d * th - star);
-            // Rings: each shell has two, about axes of their own.
-            for (var k = 0; k < 2; k++) {
-                let fk = f32(k) + fs * 2.0;
-                let axis = normalize(vec3<f32>(hash_cell(vec3<f32>(fk, seed, 1.0)) - 0.5, 1.0, hash_cell(vec3<f32>(fk, seed, 2.0)) - 0.5) + vec3<f32>(0.0, 0.0, 0.6 * (hash_cell(vec3<f32>(fk, seed, 3.0)) - 0.5)));
-                let lat = dot(n, axis);
-                let width = 0.13 + 0.05 * hash_cell(vec3<f32>(fk, seed, 4.0));
-                if (abs(lat) > width) {
-                    continue;
-                }
-                var e1 = normalize(cross(axis, vec3<f32>(0.0, 0.0, 1.0)));
-                let e2 = cross(axis, e1);
-                let lon = atan2(dot(n, e2), dot(n, e1)) + t * (0.02 + 0.02 * fs) * select(1.0, -1.0, k == 1);
-                let cells = 90.0 + 30.0 * fs;
-                let g = lon / TAU * cells;
-                let id = floor(g);
-                let fx = fract(g) - 0.5;
-                let rows = 3.0;
-                let gy = (lat / width * 0.5 + 0.5) * rows;
-                let fy = fract(gy) - 0.5;
-                let present = step(0.15, hash_cell(vec3<f32>(id, floor(gy), fk + seed)));
-                let panel = present * step(abs(fx), 0.38) * step(abs(fy), 0.36);
-                if (panel <= 0.0) {
-                    continue;
-                }
-                let edge = smoothstep01(0.3, 0.38, max(abs(fx), abs(fy) * 1.05));
-                if (side == 0 && dot(n, -d) > 0.0) {
-                    // The near side: the panels' unlit backs, a glint of
-                    // the star on their rims.
-                    front += vec3<f32>(0.012, 0.012, 0.014) + warm * edge * 0.25 * exp(-px * 0.004);
-                    front_cover = max(front_cover, panel);
-                } else {
-                    // The far side: their faces, lit.
-                    let facing = max(dot(-n, normalize(ship - star + d * 0.0)), 0.0);
-                    back += warm * (0.35 + 0.65 * facing) * (0.6 + 0.4 * hash_cell(vec3<f32>(id, fk, 9.0))) * 0.8;
-                    cover = max(cover, panel * 0.9);
-                }
-            }
-        }
+    let px = point_pixels(ship, d, o.xyz);
+    var light = DYSON_WARM * (exp(-px * 0.02) * 0.5 + exp(-px * 0.004) * 0.12) * glow;
+    if (disc > 0.0) {
+        light += star_disc(ship, d, o.xyz, o.w * 0.11) * disc;
     }
-    let glow = warm * (exp(-px * 0.02) * 0.5 + exp(-px * 0.004) * 0.12);
-    colour = disc * (1.0 - cover * 0.6) + glow * (1.0 - cover * 0.4);
-    colour = mix(colour, back, cover);
-    colour = mix(colour, front, front_cover);
-    let a = max(max(cover, front_cover), max(disc.r, 0.0) * 0.0);
-    return vec4<f32>(colour, a);
+    return light;
+}
+
+@fragment
+fn fs_dyson_panel(in: Panel) -> @location(0) vec4<f32> {
+    let fade = params.ev[10].y;
+    var colour = vec4<f32>(0.0);
+    if (PART == 1) {
+        colour = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    } else if (PART == 2) {
+        let px = point_pixels(ev_ship(), normalize(in.ray), ev_obj(0).xyz);
+        let edge = smoothstep01(0.3, 0.38, max(abs(in.cell.x), abs(in.cell.y) * 1.05));
+        colour = vec4<f32>(vec3<f32>(0.012, 0.012, 0.014) + DYSON_WARM * edge * 0.25 * exp(-px * 0.004), 0.0);
+    } else if (PART == 3) {
+        // The star through the panels: its disc dimmed more than its glow.
+        colour = vec4<f32>(dyson_star(normalize(in.ray), 0.46, 0.64) * 0.1, 0.9);
+    } else {
+        colour = vec4<f32>(DYSON_WARM * in.lit * 0.9, 0.0);
+    }
+    return colour * fade;
+}
+
+struct DysonStar {
+    @builtin(position) position: vec4<f32>,
+    // The ray through the pixel, in the encounter frame.
+    @location(0) ray: vec3<f32>,
+};
+
+// The star's glow (`PART` 1) on the square it reaches across, and its disc
+// (2) on the square its halo does.
+@vertex
+fn vs_dyson_star(@builtin(vertex_index) vertex: u32) -> DysonStar {
+    var out: DysonStar;
+    let o = ev_obj(0);
+    // Where the glow's tail, or the disc's own halo, falls past `FAINT`.
+    let light = params.ev[10].y / FAINT;
+    var reach = log(max(0.12 * light, 1.0)) / 0.004;
+    if (PART == 2) {
+        let r = o.w * 0.11;
+        let far = length(o.xyz - ev_ship());
+        reach = r * (1.0 + log(max(0.6 * light, 1.0)) / 6.0) / max(far - r, 1e-3) / params.frame.z;
+    }
+    let corner = cone_corner(ev_camera(o.xyz), reach, vertex % 6u, 0.998);
+    out.position = corner;
+    out.ray = to_ev(params.right.xyz * corner.x * params.frame.y + params.up.xyz * corner.y * params.frame.y + params.forward.xyz * corner.w);
+    return out;
+}
+
+@fragment
+fn fs_dyson_star(in: DysonStar) -> @location(0) vec4<f32> {
+    let d = normalize(in.ray);
+    var light = vec3<f32>(0.0);
+    if (PART == 1) {
+        light = dyson_star(d, 0.0, 1.0);
+    } else {
+        light = star_disc(ev_ship(), d, ev_obj(0).xyz, ev_obj(0).w * 0.11);
+    }
+    return vec4<f32>(light * params.ev[10].y, 0.0);
 }
 
 // The star's disc: limb-darkened, its surface churning.
@@ -1865,16 +2098,12 @@ fn fs_event(in: Full) -> @location(0) vec4<f32> {
         c = ev_leviathans(d);
     } else if (EVENT == 10) {
         c = ev_remnant(d);
-    } else if (EVENT == 11) {
-        c = ev_gate(d);
     } else if (EVENT == 12) {
         c = ev_wormhole(d);
     } else if (EVENT == 13) {
         c = ev_battle(d);
     } else if (EVENT == 14) {
         c = ev_storm(d, s);
-    } else if (EVENT == 15) {
-        c = ev_dyson(d);
     } else if (EVENT == 16) {
         c = ev_crystal(d);
     }
