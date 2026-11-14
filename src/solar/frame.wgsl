@@ -133,8 +133,9 @@ struct Params {
 @group(0) @binding(14) var starfield: texture_cube<f32>;
 // The galaxy alone, small and soft (`fs_bake_sky`).
 @group(0) @binding(15) var sky_cube: texture_cube<f32>;
-// Each rock shape's small craters, a layer a shape (`fs_bake_craters`).
-@group(0) @binding(16) var rock_craters: texture_2d_array<f32>;
+// Each rock shape's small craters, a layer a shape (`fs_bake_craters`), in
+// a group of their own (`crater_layout`).
+@group(2) @binding(2) var rock_craters: texture_2d_array<f32>;
 
 // Which map slot a mapped body's pipeline reads, and which drive a warp
 // pipeline draws.

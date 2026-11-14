@@ -305,7 +305,7 @@ pub(crate) struct Solar {
     rings: wgpu::Texture,
     rings_for: u64,
     /// Each rock shape's small craters (`bake_craters`).
-    craters: wgpu::Texture,
+    craters: (wgpu::Texture, wgpu::BindGroup),
     bound: (u64, usize, usize),
     /// The baked starfields (galaxy and stars, cube maps), for this system
     /// and the next, and whose they are: seed and rows done. Beside each,
@@ -443,8 +443,14 @@ impl Solar {
                 texture_entry(13, d2),
                 texture_entry(14, wgpu::TextureViewDimension::Cube),
                 texture_entry(15, wgpu::TextureViewDimension::Cube),
-                texture_entry(16, array),
             ],
+        });
+        // The rocks' crater maps, a group of their own for the models: in the
+        // frame's group they would be the seventeenth texture a stage, over
+        // the V3D's limit of sixteen for the pipelines that add a group.
+        let crater_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Solar rock craters"),
+            entries: &[texture_entry(2, array)],
         });
         let mut source = String::from(include_str!("noise.wgsl"));
         source.push_str(crate::noise3d::WGSL);
@@ -459,6 +465,31 @@ impl Solar {
             bind_group_layouts: &[Some(&layout), Some(&streamer.noise().layout)],
             immediate_size: 0,
         });
+        let model_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Solar models"),
+            bind_group_layouts: &[
+                Some(&layout),
+                Some(&streamer.noise().layout),
+                Some(&crater_layout),
+            ],
+            immediate_size: 0,
+        });
+        let craters = {
+            let texture = bake_craters(gpu, &shader, streamer.noise());
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Solar rock craters"),
+                layout: &crater_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                }],
+            });
+            (texture, group)
+        };
         // Every frame pipeline tests the depth mask (see `draw`); the mask's
         // own pipeline writes it and nothing else. Only the meshes cull.
         let make_culled = |label: &str,
@@ -917,7 +948,7 @@ impl Solar {
             let label = format!("Solar model {name}");
             let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(&label),
-                layout: Some(&pipeline_layout),
+                layout: Some(&model_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_model"),
@@ -1268,7 +1299,7 @@ impl Solar {
             models: None,
             rings,
             rings_for: u64::MAX,
-            craters: bake_craters(gpu, &shader, streamer.noise()),
+            craters,
             bound: (u64::MAX, usize::MAX, usize::MAX),
             starfields: [0, 1].map(|_| {
                 device.create_texture(&wgpu::TextureDescriptor {
@@ -1469,11 +1500,6 @@ impl Solar {
         entries.push(wgpu::BindGroupEntry {
             binding: 15,
             resource: wgpu::BindingResource::TextureView(&sky_cube),
-        });
-        let craters = array(&self.craters);
-        entries.push(wgpu::BindGroupEntry {
-            binding: 16,
-            resource: wgpu::BindingResource::TextureView(&craters),
         });
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Solar frame"),
@@ -2212,6 +2238,7 @@ impl Solar {
                     .as_ref()
                     .filter(|_| !model_draws.is_empty() && !crate::gpu::skipped("Solar model"))
                 {
+                    pass.set_bind_group(2, &self.craters.1, &[]);
                     pass.set_vertex_buffer(0, meshes.vertices.slice(..));
                     pass.set_vertex_buffer(1, meshes.instances.slice(..));
                     pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);

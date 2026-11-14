@@ -638,6 +638,9 @@ Solar mip chain #2               vs_main        VS-bin    33   4     0   23     
 Solar mip chain #3               fs_main        FS        11   4     0    2     3        0:0    0    0
 Solar mip chain #3               vs_main        VS        38   4     0   26     6        0:0    0    1
 Solar mip chain #3               vs_main        VS-bin    33   4     0   23     7        0:0    0    0
+Solar rock craters #0            fs_bake_craters FS       296   2     1   50    59        0:0    1   12
+Solar rock craters #0            vs_bake_craters VS        36   4     0   24     8        0:0    0    1
+Solar rock craters #0            vs_bake_craters VS-bin    32   4     0   23     7        0:0    0    0
 Solar mask #0                    fs_mask        FS       112   4     0   32    14        0:0    4    5
 Solar mask #0                    vs_body        VS       271   4     0  125    23        0:0    1   10
 Solar mask #0                    vs_body        VS-bin   267   4     0  114    25        0:0    2   12
@@ -1061,6 +1064,3 @@ Solar cloud layer 0 1 #0         vs_body        VS-bin   267   4     0  114    2
 Solar cloud layer 1 1 #0         fs_cloud_layer FS       375   4     0  127    25        0:0    3   19
 Solar cloud layer 1 1 #0         vs_body        VS       271   4     0  125    23        0:0    1   10
 Solar cloud layer 1 1 #0         vs_body        VS-bin   267   4     0  114    25        0:0    2   12
-Solar rock craters #0            fs_bake_craters FS       296   2     1   50    59        0:0    1   12
-Solar rock craters #0            vs_bake_craters VS        36   4     0   24     8        0:0    0    1
-Solar rock craters #0            vs_bake_craters VS-bin    32   4     0   23     7        0:0    0    0
