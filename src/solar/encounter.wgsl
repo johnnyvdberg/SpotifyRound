@@ -2738,9 +2738,59 @@ fn overlay_beam(y: f32, r: f32, t: f32) -> vec3<f32> {
 
 // The overlay with a flash over it. Squared: blended in linear light, a
 // little white reads as a lot.
+// A flash's white: over everything first (`fs_overlay_flash`), the rest of
+// the overlay added over it dimmed as much (`overlay_flash`), as one draw
+// of both would have it.
+fn overlay_white() -> f32 {
+    return clamp(sq(params.ev[4].w), 0.0, 1.0);
+}
+
 fn overlay_flash(colour: vec3<f32>) -> vec4<f32> {
-    let white = clamp(sq(params.ev[4].w), 0.0, 1.0);
-    return vec4<f32>(colour * (1.0 - white) + vec3<f32>(1.0) * white, white);
+    return vec4<f32>(colour * (1.0 - overlay_white()), 0.0);
+}
+
+@fragment
+fn fs_overlay_flash(in: Full) -> @location(0) vec4<f32> {
+    return vec4<f32>(overlay_white());
+}
+
+// A hit on the shield lights only round where it struck: its ring of
+// hexagons, `bump`'s width either side of its front, and its glow, out to
+// where it falls under `FAINT`. Two instances of a polygon of `HIT_SIDES`
+// round it: a disc for the glow and the ring, or while the glow reaches the
+// ring's inside, one disc for both and nothing.
+const HIT_SIDES: u32 = 32u;
+
+@vertex
+fn vs_overlay_hit(@builtin(vertex_index) index: u32, @builtin(instance_index) part: u32) -> Full {
+    let hit = params.ev[2].w;
+    let at = params.ev[11].xy;
+    let front = (1.0 - hit) * 0.8 + 0.06;
+    let glow = log(max(hit * 0.2 / FAINT, 1.0)) / 14.0;
+    let flat = cos(PI / f32(HIT_SIDES));
+    let ring = vec2<f32>(max(front - 0.1, 0.0), front + 0.1);
+    // Apart while the disc's corners stay inside the ring's flats.
+    let apart = glow / flat < ring.x * flat;
+    var inner = 0.0;
+    var outer = select(max(ring.y, glow), glow, apart);
+    if (part == 1u) {
+        inner = select(0.0, ring.x, apart);
+        outer = select(0.0, ring.y, apart);
+    }
+    let side = index / 6u;
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+    );
+    let c = corners[index % 6u];
+    let angle = (f32(side) + c.x) * TAU / f32(HIT_SIDES);
+    // The inner edge's chords inside its circle, the outer's outside.
+    let radius = mix(inner, outer / flat, c.y);
+    var out: Full;
+    out.position = vec4<f32>(at + vec2<f32>(cos(angle), sin(angle)) * radius, 0.0, 1.0);
+    out.dir = vec3<f32>(0.0);
+    out.face = 0u;
+    return out;
 }
 
 @fragment
@@ -2751,30 +2801,25 @@ fn fs_overlay_beam(in: Full) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_overlay(in: Full) -> @location(0) vec4<f32> {
+fn fs_overlay_hit(in: Full) -> @location(0) vec4<f32> {
     let s = half_frame(in.position);
     let r = length(s);
     let hit = params.ev[2].w;
-    let t = params.burn.y;
-    var colour = overlay_alarm(r, t);
-    // A hit: a ring of hexagons rippling out from it.
-    if (hit > 0.01) {
-        let at = params.ev[11].xy;
-        let dist = length(s - at);
-        let front = (1.0 - hit) * 0.8 + 0.06;
-        let ring = bump((dist - front) / 0.05) * (1.0 - smoothstep01(0.97, 1.0, r));
-        // A true hexagonal lattice: the nearer of two offset grids' cell
-        // middles, the hexagon's own distance to it; only its edges lit.
-        let g = s * 14.0;
-        let pitch = vec2<f32>(1.0, 1.732);
-        let a = g - pitch * floor(g / pitch) - pitch * 0.5;
-        let b = (g - pitch * 0.5) - pitch * floor((g - pitch * 0.5) / pitch) - pitch * 0.5;
-        let local = select(b, a, dot(a, a) < dot(b, b));
-        let hex_d = max(abs(local.x) * 0.866 + abs(local.y) * 0.5, abs(local.y));
-        let edge = smoothstep01(0.4, 0.48, hex_d);
-        colour += vec3<f32>(0.35, 0.75, 1.0) * ring * (0.1 + 0.9 * edge) * hit * 0.55;
-        colour += vec3<f32>(0.6, 0.85, 1.0) * exp(-dist * 14.0) * hit * 0.2;
-    }
-    colour += overlay_beam(in.position.y, r, t);
+    // A ring of hexagons rippling out from it.
+    let at = params.ev[11].xy;
+    let dist = length(s - at);
+    let front = (1.0 - hit) * 0.8 + 0.06;
+    let ring = bump((dist - front) / 0.05) * (1.0 - smoothstep01(0.97, 1.0, r));
+    // A true hexagonal lattice: the nearer of two offset grids' cell
+    // middles, the hexagon's own distance to it; only its edges lit.
+    let g = s * 14.0;
+    let pitch = vec2<f32>(1.0, 1.732);
+    let a = g - pitch * floor(g / pitch) - pitch * 0.5;
+    let b = (g - pitch * 0.5) - pitch * floor((g - pitch * 0.5) / pitch) - pitch * 0.5;
+    let local = select(b, a, dot(a, a) < dot(b, b));
+    let hex_d = max(abs(local.x) * 0.866 + abs(local.y) * 0.5, abs(local.y));
+    let edge = smoothstep01(0.4, 0.48, hex_d);
+    var colour = vec3<f32>(0.35, 0.75, 1.0) * ring * (0.1 + 0.9 * edge) * hit * 0.55;
+    colour += vec3<f32>(0.6, 0.85, 1.0) * exp(-dist * 14.0) * hit * 0.2;
     return overlay_flash(colour);
 }

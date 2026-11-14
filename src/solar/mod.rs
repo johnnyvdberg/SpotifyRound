@@ -138,6 +138,9 @@ const DYSON_PANELS: u32 = 6 * 3 * 151;
 const DYSON_PANEL_VERTICES: u32 = 2 * 3 * 6;
 /// Vertices of the ship's own effects' quad (`vs_overlay`).
 const OVERLAY_VERTICES: u32 = 3;
+/// Sides of the ring a hit on the shield is drawn on (`HIT_SIDES` in
+/// `encounter.wgsl`).
+const HIT_SIDES: u32 = 32;
 
 /// Motes of dust streaking past in a burn (`DUST` in the shader), the sides
 /// of the engines' glow round the rim (`RIM_SIDES`), how fast the dust
@@ -1365,12 +1368,23 @@ impl Solar {
             pipelines.insert(key, (label, made));
         }
         for (name, label, vertex, fragment) in [
-            ("overlay", "Solar ship overlay", "vs_overlay", "fs_overlay"),
+            (
+                "overlayflash",
+                "Solar ship overlay flash",
+                "vs_overlay",
+                "fs_overlay_flash",
+            ),
+            (
+                "overlayhit",
+                "Solar ship overlay hit",
+                "vs_overlay_hit",
+                "fs_overlay_hit",
+            ),
             (
                 "overlayrim",
                 "Solar ship overlay rim",
                 "vs_overlay_rim",
-                "fs_overlay",
+                "fs_overlay_beam",
             ),
             (
                 "overlaybeam",
@@ -2953,16 +2967,24 @@ impl Solar {
                 .max(params.ev[2][3])
                 .max(params.ev[4][3])
                 .max(params.ev[3][3]);
-            // The alarm alone lights only the band round the rim (from 0.86
-            // of the radius out), and nothing below 0.3; the tractor beam's
-            // hold only from 0.4 of it out (`BEAM_INNER`); a hit or a flash,
-            // the whole frame.
-            let whole = params.ev[2][3].max(params.ev[4][3]);
-            if whole > 0.01 {
-                let (label, pipeline) = &self.pipelines["overlay"];
+            // A flash whitens the whole frame (drawn first: the rest is
+            // dimmed as much); a hit lights round where it struck alone
+            // (`vs_overlay_hit`); the alarm only the band round the rim (from
+            // 0.86 of the radius out), and nothing below 0.3; the tractor
+            // beam's hold only from 0.4 of it out (`BEAM_INNER`).
+            let flash = params.ev[4][3];
+            // Its white, linear, under half a step of the sRGB frame's darkest.
+            if flash * flash > 0.5 / 255.0 / 12.92 {
+                let (label, pipeline) = &self.pipelines["overlayflash"];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..OVERLAY_VERTICES, 0..1);
-            } else if params.ev[3][3] > 0.01 {
+            }
+            if params.ev[2][3] > 0.01 {
+                let (label, pipeline) = &self.pipelines["overlayhit"];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, 0, 0..HIT_SIDES * 6, 0..2);
+            }
+            if params.ev[3][3] > 0.01 {
                 let (label, pipeline) = &self.pipelines["overlaybeam"];
                 pass.set_pipeline(pipeline);
                 let ring = full - (full as f64 * 0.4 * 0.4 * std::f64::consts::FRAC_PI_4) as u64;

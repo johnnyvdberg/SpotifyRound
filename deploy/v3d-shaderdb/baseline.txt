@@ -1025,13 +1025,16 @@ Solar battle effects shock wave #0 vs_fx_ring     VS-bin   127   4     0   64   
 Solar battle effects shock wave dim #0 fs_fx_ring     FS       195   4     0   45    24        0:0    2   25
 Solar battle effects shock wave dim #0 vs_fx_ring     VS       132   4     0   72    17        0:0    0    5
 Solar battle effects shock wave dim #0 vs_fx_ring     VS-bin   118   4     0   60    15        0:0    1    2
-Solar ship overlay #0            fs_overlay     FS       237   4     0   87    22        0:0    0   19
-Solar ship overlay #0            vs_overlay     VS        31   4     0   21     7        0:0    0    1
-Solar ship overlay #0            vs_overlay     VS-bin    30   4     0   22     8        0:0    0    0
-Solar ship overlay rim #0        fs_overlay     FS       237   4     0   87    22        0:0    0   19
+Solar ship overlay flash #0      fs_overlay_flash FS        15   4     0    4     2        0:0    0    2
+Solar ship overlay flash #0      vs_overlay     VS        31   4     0   21     7        0:0    0    1
+Solar ship overlay flash #0      vs_overlay     VS-bin    30   4     0   22     8        0:0    0    0
+Solar ship overlay hit #0        fs_overlay_hit FS        83   4     0   40    14        0:0    0    3
+Solar ship overlay hit #0        vs_overlay_hit VS        95   4     0   55    15        0:0    0    1
+Solar ship overlay hit #0        vs_overlay_hit VS-bin    96   4     0   56    15        0:0    0    0
+Solar ship overlay rim #0        fs_overlay_beam FS       159   4     0   51    15        0:0    0   13
 Solar ship overlay rim #0        vs_overlay_rim VS        63   4     0   38    12        0:0    0    1
 Solar ship overlay rim #0        vs_overlay_rim VS-bin    64   4     0   39    12        0:0    0    0
-Solar ship overlay beam #0       fs_overlay_beam FS       159   4     0   51    15        0:0    0   12
+Solar ship overlay beam #0       fs_overlay_beam FS       159   4     0   51    15        0:0    0   13
 Solar ship overlay beam #0       vs_overlay_beam VS        63   4     0   38    12        0:0    0    1
 Solar ship overlay beam #0       vs_overlay_beam VS-bin    64   4     0   39    12        0:0    0    0
 Solar eclipse #0                 fs_eclipse     FS       277   4     1   55    26        0:0    4   27
