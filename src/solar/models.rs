@@ -29,7 +29,7 @@ use glam::Vec3;
 use super::system::Rng;
 
 /// Bumped whenever a model's shape changes, so stale caches are rebuilt.
-pub const GENERATOR: u32 = 6;
+pub const GENERATOR: u32 = 7;
 /// Variants of each ship design and role.
 pub const VARIANTS: u32 = 3;
 /// Ship designs: as `voyage::FACTIONS`.
@@ -1447,7 +1447,66 @@ pub fn build(key: Key) -> Mesh {
             }
         })
         .collect();
-    Mesh { vertices, indices }
+    let indices = simplify(&vertices, &indices, step * 0.1);
+    let mut mesh = Mesh { vertices, indices };
+    // Ordered for the GPU: triangles for its cache of shaded vertices, then
+    // the outer ones first so fewer pixels are shaded and then covered, the
+    // vertices in the order they are first used.
+    meshopt::optimize_vertex_cache_in_place(&mut mesh.indices, mesh.vertices.len());
+    let stride = std::mem::size_of::<ShipVertex>();
+    let positions =
+        meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&mesh.vertices), stride, 0)
+            .expect("positions");
+    meshopt::optimize_overdraw_in_place(&mut mesh.indices, &positions, 1.05);
+    let kept = meshopt::optimize_vertex_fetch_in_place(&mut mesh.indices, &mut mesh.vertices);
+    mesh.vertices.truncate(kept);
+    mesh
+}
+
+/// The flat stretches the lattice cut into many small triangles merged
+/// (meshoptimizer), moving the surface no more than `error`: a tenth of a
+/// cell, under a pixel even close up. The vertices where parts meet stay
+/// put, so the parts' edges keep their places; the normals and occlusion
+/// weigh in, so the shading stays where it was. The V3D's cost for a mesh
+/// follows its triangles (the hive cube's 300,000 took 20 ms a frame).
+fn simplify(vertices: &[ShipVertex], indices: &[u32], error: f32) -> Vec<u32> {
+    let mut edge = vec![false; vertices.len()];
+    for t in indices.chunks_exact(3) {
+        let parts = [0, 1, 2].map(|k| vertices[t[k] as usize].extra[1]);
+        if parts[0] != parts[1] || parts[1] != parts[2] {
+            for &i in t {
+                edge[i as usize] = true;
+            }
+        }
+    }
+    let shade: Vec<f32> = vertices
+        .iter()
+        .flat_map(|v| {
+            let [x, y, z] = v.normal;
+            [
+                x,
+                y,
+                z,
+                v.extra[0] as f32 / 255.0,
+                v.extra[2] as f32 / 255.0,
+            ]
+        })
+        .collect();
+    let stride = std::mem::size_of::<ShipVertex>();
+    let positions = meshopt::VertexDataAdapter::new(bytemuck::cast_slice(vertices), stride, 0)
+        .expect("positions");
+    meshopt::simplify_with_attributes_and_locks(
+        indices,
+        &positions,
+        &shade,
+        &[0.5, 0.5, 0.5, 1.0, 1.0],
+        5 * 4,
+        &edge,
+        0,
+        error,
+        meshopt::SimplifyOptions::ErrorAbsolute,
+        None,
+    )
 }
 
 #[cfg(test)]

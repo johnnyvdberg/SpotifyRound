@@ -1288,7 +1288,13 @@ impl Solar {
                     })],
                     compilation_options: options,
                 }),
-                primitive: wgpu::PrimitiveState::default(),
+                // Closed and wound counter-clockwise outward, which on the
+                // frame (x right, y up, depth away: a mirror) is clockwise:
+                // the far side need never be rasterised.
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Front),
+                    ..Default::default()
+                },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH,
                     depth_write_enabled: Some(true),
