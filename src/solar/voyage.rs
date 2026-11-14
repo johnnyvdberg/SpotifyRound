@@ -152,6 +152,11 @@ impl Event {
         )
     }
 
+    /// The nebula or the plasma storm: drawn from the baked gas (`fs_gas`).
+    pub fn gas(self) -> bool {
+        matches!(self, Event::Nebula | Event::PlasmaStorm)
+    }
+
     /// A star gate or a wormhole: it throws the ship on itself, no drive.
     pub fn portal(self) -> bool {
         matches!(self, Event::Gate | Event::Wormhole)

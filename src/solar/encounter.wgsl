@@ -370,9 +370,36 @@ fn fs_event_sky(in: Full) -> @location(0) vec4<f32> {
 }
 
 // ---------------------------------------------------------------------------
-// A nebula: glowing gas and dark lanes of dust marched through in a few
-// widening steps, lit up from inside by lightning.
+// A nebula: glowing gas and dark lanes of dust, lit up from inside by
+// lightning. The gas is space-3d's (wwwtyro/space-3d, released into the
+// public domain under the Unlicense): noise displaced by noise six times
+// over, baked once over every direction (`fs_bake_gas`), each layer made
+// sparse with a power. Two layers here: one far off, fixed on the sky, and
+// one on a sphere round the ship's path that it flies through, so the gas
+// near it streams past.
 // ---------------------------------------------------------------------------
+
+// The near layer's sphere: round the middle of the ship's path, wider than
+// the path (`nebula` in `voyage.rs` flies 40 a second for 28 s).
+const NEBULA_MIDDLE: vec3<f32> = vec3<f32>(0.0, 0.0, 560.0);
+const NEBULA_REACH: f32 = 900.0;
+
+// The gas map along unit `d` mirrored on the axes `flip` gives (±1 each):
+// each nebula, and each of its layers, its own part of the map.
+fn gas_along(d: vec3<f32>, flip: vec3<f32>) -> vec4<f32> {
+    return textureSampleLevel(gas_map, map_sampler, d * flip, 0.0);
+}
+
+// Eight ways to mirror the gas map, one for each `seed` mod 8.
+fn gas_flip(seed: f32) -> vec3<f32> {
+    let k = u32(seed) & 7u;
+    return vec3<f32>(f32(k & 1u), f32((k >> 1u) & 1u), f32((k >> 2u) & 1u)) * 2.0 - 1.0;
+}
+
+// space-3d's layer: `min(1, n * intensity)` to the power `falloff`.
+fn gas_layer(n: f32, intensity: f32, falloff: f32) -> f32 {
+    return pow(min(n * intensity, 1.0), falloff);
+}
 
 fn ev_nebula(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
     let ship = ev_ship();
@@ -392,23 +419,25 @@ fn ev_nebula(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
         c2 = vec3<f32>(0.95, 0.68, 0.22);
     }
     let strike = ev_obj(0);
-    var through = 1.0;
-    var light = vec3<f32>(0.0);
-    var dist = 14.0;
-    for (var i = 0; i < 7; i++) {
-        let p = ship + d * dist;
-        let q = p * 0.004 + vec3<f32>(seed * 1.3, seed * 0.7, 0.0);
-        let n1 = noise(q);
-        let n2 = noise(q * 2.7 + 3.1);
-        let gas = smoothstep01(0.2, 0.85, n1 * 0.75 + n2 * 0.35 + 0.1) * density;
-        let dust = smoothstep01(0.2, 0.55, noise(q * 1.5 + 7.0));
-        let span = dist * 0.8;
-        let flash = exp(-length(p - strike.xyz) / 110.0) * strike.w * 0.8;
-        let tint = mix(c1, c2, 0.5 + 0.5 * n2);
-        light += through * (tint * gas * 0.0016 + vec3<f32>(0.85, 0.85, 1.0) * flash * gas * 0.01) * span;
-        through *= exp(-(gas * 0.0007 + dust * 0.0025) * span);
-        dist += span;
-    }
+    let flip = gas_flip(seed);
+    let far = gas_along(d, flip);
+    // Where the ray leaves the near layer's sphere (the ship is inside it).
+    let rel = ship - NEBULA_MIDDLE;
+    let b = dot(rel, d);
+    let out = -b + sqrt(max(b * b - dot(rel, rel) + NEBULA_REACH * NEBULA_REACH, 0.0));
+    let near = gas_along((rel + d * out) / NEBULA_REACH, -flip.yzx);
+    let glow1 = gas_layer(far.r, 1.35 * density, 5.0);
+    let glow2 = gas_layer(far.g, 1.4 * density, 6.0);
+    let wisp = gas_layer(near.r, 1.4 * density, 6.0);
+    let dust = smoothstep01(0.55, 0.8, near.b) * density;
+    // The strike lights the gas round it.
+    let toward = normalize(strike.xyz - ship);
+    let flash = exp(-length(d - toward) * 5.0) * strike.w;
+    let gas = glow1 + glow2 + wisp;
+    let through = exp(-(gas * 0.45 + dust * 1.2));
+    var light = (c1 * glow1 * 0.9 + c2 * glow2 * 0.75) * exp(-(wisp * 0.6 + dust * 1.2))
+        + mix(c1, c2, near.a) * wisp * 0.8
+        + vec3<f32>(0.85, 0.85, 1.0) * flash * (gas + 0.1) * 1.4;
     // The strike's bolt, jagged across the frame.
     let at = from_ev(strike.xyz - ship);
     let z = dot(at, params.forward.xyz);
@@ -876,6 +905,8 @@ fn fs_probe_leviathan(in: Leviathan) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
+// Drawn coarser than the frame before its pass, in a group of their own:
+// the leviathans' halos, or the plasma storm (`fs_storm`).
 @group(2) @binding(0) var leviathan_halo: texture_2d<f32>;
 @group(2) @binding(1) var halo_sampler: sampler;
 
@@ -1616,6 +1647,83 @@ fn vs_bake_craters(@builtin(vertex_index) index: u32, @builtin(instance_index) l
     return out;
 }
 
+// The gas map's size (`GAS_MAP` in `mod.rs`).
+const GAS_MAP: f32 = 512.0;
+
+fn noise01(p: vec3<f32>) -> f32 {
+    return 0.5 * noise(p) + 0.5;
+}
+
+// space-3d's nebula (wwwtyro/space-3d, `nebula.glsl`, Unlicense): noise
+// displaced by noise six times over, from the finest octave to the
+// coarsest, along unit `p` times its scale.
+fn space3d_nebula(p: vec3<f32>) -> f32 {
+    var scale = 64.0;
+    var displace = vec3<f32>(0.0);
+    for (var i = 0; i < 6; i++) {
+        displace = vec3<f32>(
+            noise01(p * scale + displace),
+            noise01(p.yzx * scale + displace),
+            noise01(p.zxy * scale + displace),
+        );
+        scale *= 0.5;
+    }
+    return noise01(p * scale + displace);
+}
+
+// The storm's map's size (`STORM_MAP` in `mod.rs`), and how far out it
+// reaches, in the storm's radii.
+const STORM_MAP: f32 = 512.0;
+const STORM_REACH: f32 = 1.1;
+
+// The storm's gas at `q`, a point of the disc turned round the eye by its
+// spiral (in the storm's radii), in layer `k` of it: the nebula's gas
+// there, each layer from its own part of it, with a finer octave.
+fn storm_gas(q: vec2<f32>, k: f32) -> f32 {
+    let p = vec3<f32>(q, k * 5.3);
+    return space3d_nebula(p * 0.1 + vec3<f32>(3.1, 7.7, 1.3)) * 0.65 + noise01(p * 8.0 + vec3<f32>(19.0)) * 0.35;
+}
+
+// The plasma storm's disc from above, out to `STORM_REACH` radii, on the
+// face of a cube map toward +z: its gas wound into a spiral round the eye,
+// thinning out to its edge and in to the eye, at its bottom (r), middle (g)
+// and top (b), each its own; and the shade of its arms, darker, denser
+// bands (a). Its eyewall is worked out as it is drawn.
+@fragment
+fn fs_bake_storm(in: CraterBake) -> @location(0) vec4<f32> {
+    if (in.layer != 4u) {
+        return vec4<f32>(0.0);
+    }
+    // The face toward +z, as `cube_dir` has it: x across, y up.
+    let uv = in.position.xy / STORM_MAP * 2.0 - 1.0;
+    let p = vec2<f32>(uv.x, -uv.y) * STORM_REACH;
+    let r = length(p);
+    // Wound tighter near the eye, where it turned faster.
+    let a = log(r + 0.05) * 1.6 + 0.35 / (r + 0.15);
+    let q = vec2<f32>(p.x * cos(a) - p.y * sin(a), p.x * sin(a) + p.y * cos(a));
+    let profile = smoothstep01(0.08, 0.2, r) * (1.0 - smoothstep01(0.7, 1.05, r));
+    // The noise's gas lies close round a half: spread out to -1..1.
+    let ring = 0.25 * bump((r - 0.22) / 0.1);
+    let layers = vec3<f32>(storm_gas(q, 0.0), storm_gas(q, 1.0), storm_gas(q, 2.0));
+    let gas = smoothstep(vec3<f32>(0.0), vec3<f32>(0.55), (layers - 0.55) * 3.0 + ring) * profile;
+    let shade = space3d_nebula(vec3<f32>(q, 0.0) * 0.07 + vec3<f32>(11.4, 2.9, 5.2));
+    return vec4<f32>(gas, mix(0.35, 1.0, smoothstep01(0.35, 0.65, shade)));
+}
+
+// The gas along each direction, a texel each of a cube face (the layer):
+// two layers of it at their own scales (r, g), dust (b), and a finer one
+// for tints (a).
+@fragment
+fn fs_bake_gas(in: CraterBake) -> @location(0) vec4<f32> {
+    let dir = cube_dir(in.layer, in.position.xy / GAS_MAP);
+    return vec4<f32>(
+        space3d_nebula(dir * 0.5 + vec3<f32>(3.1, 7.7, 1.3)),
+        space3d_nebula(dir * 0.35 + vec3<f32>(11.4, 2.9, 5.2)),
+        space3d_nebula(dir * 0.7 + vec3<f32>(6.6, 13.1, 9.8)),
+        noise01(dir * 6.0 + vec3<f32>(19.0)),
+    );
+}
+
 // A rock shape's small craters along each direction, their height and
 // slope (`crater_bump`), a texel each; with its grain's middle octave
 // added to the slope (it fades out over the same footprints as the
@@ -2113,9 +2221,10 @@ fn fs_fx_ring(in: FxOut) -> @location(0) vec4<f32> {
 
 // ---------------------------------------------------------------------------
 // A plasma storm: a vast storm cell seen from its edge, marched in a few
-// widening steps through a disc of gas whose noise is turned round the eye,
-// faster near it, so it spirals; its eyewall bright, lit from inside by
-// lightning.
+// widening steps through a disc of gas wound in a spiral round the eye, its
+// eyewall bright, lit from inside by lightning. The gas is the nebula's,
+// wound and baked once from above (`fs_bake_storm`): the disc turns as a
+// whole.
 // ---------------------------------------------------------------------------
 
 fn ev_storm(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
@@ -2144,48 +2253,53 @@ fn ev_storm(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
     } else if (abs(h0) > thick) {
         return vec4<f32>(0.0);
     }
+    // The ray in the storm's frame, in its radii.
+    let rel = ship - eye;
+    let start = vec3<f32>(dot(rel, e1), dot(rel, e2), dot(rel, axis)) / radius;
+    let step_ = vec3<f32>(dot(d, e1), dot(d, e2), dot(d, axis)) / radius;
+    // And within the disc's edge: no gas beyond it.
+    let along = dot(step_.xy, step_.xy);
+    let toward = dot(start.xy, step_.xy);
+    let edge = toward * toward - along * (dot(start.xy, start.xy) - 1.05 * 1.05);
+    if (edge <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    t0 = max(t0, (-toward - sqrt(edge)) / along);
+    t1 = min(t1, (-toward + sqrt(edge)) / along);
     if (t1 <= t0) {
         return vec4<f32>(0.0);
     }
     var through = 1.0;
     // The gas's, the eyewall's and the lightning's light, kept apart as
-    // amounts and coloured after the march: three colours carried through
-    // it spilled the V3D's registers.
+    // amounts and coloured after the march.
     var lit = vec3<f32>(0.0);
-    let n = 12;
+    let n = 8;
     // Each pixel's steps offset by its own amount, so the steps blur into
     // grain rather than banding.
     let dither = hash_cell(vec3<f32>(floor(s * params.frame.x), 7.0));
-    // The ray in the storm's frame, and its distance from the strike, as
-    // scalars along it (fewer registers through the march than vectors).
-    let rel = ship - eye;
-    let start = vec3<f32>(dot(rel, e1), dot(rel, e2), dot(rel, axis)) / radius;
-    let step_ = vec3<f32>(dot(d, e1), dot(d, e2), dot(d, axis)) / radius;
+    // Its distance from the strike, as scalars along it.
     let from_strike = ship - strike.xyz;
     let strike_near = dot(from_strike, d);
     let strike_far = dot(from_strike, from_strike);
+    // The disc turns as a whole, faster for a smaller storm, its spiral
+    // the way it turns; each storm its own part of the map.
+    let spin = turn_way * t * 0.08 + seed * 0.61;
+    let turn = vec2<f32>(cos(spin), sin(spin)) / STORM_REACH;
     for (var i = 0; i < n; i++) {
         let f = (f32(i) + dither) / f32(n);
         let tt = mix(t0, t1, f * f);
         let span = (t1 - t0) * (2.0 * f) / f32(n);
         let p = start + step_ * tt;
-        let h = p.z * radius;
-        let r = length(p.xy);
-        // Spiralling: turned on by the distance from the eye and with time,
-        // faster inside.
-        let a = turn_way * (t * 0.05 / (r + 0.15) + log(r + 0.05) * 1.6);
-        let c = cos(a);
-        let sn = sin(a);
-        let q = vec3<f32>((p.x * c - p.y * sn) * 3.0, (p.x * sn + p.y * c) * 3.0, p.z * 4.0) + vec3<f32>(seed);
-        let fine = noise(q * 2.6 + 5.0);
-        let cloud = noise(q) * 0.65 + fine * 0.35;
-        let profile = smoothstep01(0.08, 0.2, r) * (1.0 - smoothstep01(0.7, 1.05, r)) * (1.0 - smoothstep01(0.4, 1.0, abs(h) / thick));
-        let wall = bump((r - 0.22) / 0.06);
-        let gas = smoothstep01(0.0, 0.55, cloud + 0.25 * bump((r - 0.22) / 0.1)) * profile;
+        let h = p.z * radius / thick;
+        let at = vec2<f32>(p.x * turn.x - p.y * turn.y, (p.x * turn.y + p.y * turn.x) * turn_way);
+        let g = textureSampleLevel(gas_map, map_sampler, vec3<f32>(at, 1.0), 0.0);
+        // The gas between the disc's layers, thinning toward its bottom and
+        // top.
+        let gas = select(mix(g.g, g.r, -h), mix(g.g, g.b, h), h > 0.0) * saturate(1.6 - 1.6 * abs(h));
+        let wall = bump((length(p.xy) - 0.22) / 0.06);
+        let shade = g.a;
         let flash = exp(-sqrt(max(strike_far + tt * (2.0 * strike_near + tt), 0.0)) / 90.0) * strike.w * 3.0;
-        // Darker, denser bands in the arms; hot near the wall.
-        let shade = mix(0.35, 1.0, smoothstep01(0.1, 0.8, fine * 0.5 + 0.5));
-        lit += through * span * gas * vec3<f32>(0.0045 * shade, 0.03 * wall, 0.02 * flash);
+        lit += through * span * gas * vec3<f32>(0.0065 * shade, 0.02 * wall, 0.02 * flash);
         through *= exp(-gas * 0.006 * span);
     }
     let tint = mix(vec3<f32>(0.25, 0.4, 1.0), mix(vec3<f32>(1.0, 0.45, 0.15), vec3<f32>(0.35, 1.0, 0.55), step(0.66, params.ev[9].x)), step(0.33, params.ev[9].x));
@@ -2375,6 +2489,40 @@ fn star_disc(o: vec3<f32>, d: vec3<f32>, c: vec3<f32>, r: f32) -> vec3<f32> {
     return vec3<f32>(1.0, 0.68, 0.38) * (0.5 + 0.5 * mu) * (0.85 + 0.3 * cells) * 2.2;
 }
 
+// The nebula (4) and the plasma storm (14) over the sky, from the gas map:
+// a pipeline layout of their own (`gas_pipeline`), so apart from `fs_event`.
+//
+// The storm is drawn at half the frame's resolution, before the frame's
+// pass (`STORM_SCALE`), and laid over the sky from there (`fs_storm`).
+@fragment
+fn fs_gas(in: Full) -> @location(0) vec4<f32> {
+    let d = to_ev(normalize(in.dir));
+    var position = in.position;
+    if (EVENT == 14) {
+        position = vec4<f32>(in.position.xy * STORM_SCALE, in.position.zw);
+    }
+    let s = half_frame(position);
+    var c = vec4<f32>(0.0);
+    if (EVENT == 4) {
+        c = ev_nebula(d, s);
+    } else {
+        c = ev_storm(d, s);
+    }
+    return c * params.ev[10].y;
+}
+
+// How many times coarser than the frame the plasma storm is drawn
+// (`STORM_SCALE` in `mod.rs`).
+const STORM_SCALE: f32 = 2.0;
+
+// The plasma storm over the sky, from where it was drawn at half the
+// frame's resolution (`fs_gas`).
+@fragment
+fn fs_storm(in: Full) -> @location(0) vec4<f32> {
+    let uv = in.position.xy / (params.frame.x * 2.0);
+    return textureSampleLevel(leviathan_halo, halo_sampler, uv, 0.0);
+}
+
 // Each event's draw over the sky.
 @fragment
 fn fs_event(in: Full) -> @location(0) vec4<f32> {
@@ -2385,8 +2533,6 @@ fn fs_event(in: Full) -> @location(0) vec4<f32> {
         c = ev_asteroids(d);
     } else if (EVENT == 2) {
         c = ev_cube(d);
-    } else if (EVENT == 4) {
-        c = ev_nebula(d, s);
     } else if (EVENT == 5) {
         c = ev_rogue(d);
     } else if (EVENT == 7) {
@@ -2399,8 +2545,6 @@ fn fs_event(in: Full) -> @location(0) vec4<f32> {
         c = ev_wormhole(d);
     } else if (EVENT == 13) {
         c = ev_battle(d);
-    } else if (EVENT == 14) {
-        c = ev_storm(d, s);
     }
     return c * params.ev[10].y;
 }

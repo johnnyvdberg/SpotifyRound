@@ -120,6 +120,9 @@ const ROCKS: u32 = 260;
 /// (`HALO_SCALE` in `encounter.wgsl`), and in what.
 const LEVIATHAN_HALO: u32 = 4;
 const LEVIATHAN_HALO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// How many times coarser than the frame the plasma storm is drawn
+/// (`STORM_SCALE` in `encounter.wgsl`), in the leviathans' halos' format.
+const STORM_SCALE: u32 = 2;
 /// Slices of the frame each leviathan's fins are bounded in (`FIN_SLICES`).
 const LEVIATHAN_FIN_SLICES: u32 = 16;
 /// A gate's guide buoys (two a step down the approach) and the most nodes
@@ -320,6 +323,9 @@ pub(crate) struct Solar {
     /// The leviathans' halos, drawn small before the frame's pass, and the
     /// bind group reading them in it (`fs_leviathan_glow`).
     leviathan_halos: (wgpu::TextureView, wgpu::BindGroup),
+    /// The plasma storm, drawn at half the frame's resolution before the
+    /// frame's pass (`fs_gas`) and laid over the sky from there.
+    storm: (wgpu::TextureView, wgpu::BindGroup),
     /// The battle's starship meshes: on their way from the thread building
     /// (or loading) them, then on the GPU, with where each one lies.
     model_library: Option<std::sync::mpsc::Receiver<models::Library>>,
@@ -330,6 +336,8 @@ pub(crate) struct Solar {
     rings_for: u64,
     /// Each rock shape's small craters (`bake_craters`).
     craters: (wgpu::Texture, wgpu::BindGroup),
+    /// The nebula's gas and the plasma storm's (`bake_gas`, `bake_storm`).
+    gas: [(wgpu::Texture, wgpu::BindGroup); 2],
     bound: (u64, usize, usize),
     /// The baked starfields (galaxy and stars, cube maps), for this system
     /// and the next, and whose they are: seed and rows done. Beside each,
@@ -514,6 +522,37 @@ impl Solar {
             });
             (texture, group)
         };
+        // The nebula's and the plasma storm's gas, a group of its own for
+        // their two pipelines (as the craters are, for the same limit).
+        let gas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Solar gas"),
+            entries: &[texture_entry(3, wgpu::TextureViewDimension::Cube)],
+        });
+        let gas_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Solar gas"),
+            bind_group_layouts: &[
+                Some(&layout),
+                Some(&streamer.noise().layout),
+                Some(&gas_layout),
+            ],
+            immediate_size: 0,
+        });
+        let gas = [bake_gas, bake_storm].map(|bake| {
+            let texture = bake(gpu, &shader, streamer.noise());
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::Cube),
+                ..Default::default()
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Solar gas"),
+                layout: &gas_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                }],
+            });
+            (texture, group)
+        });
         // Every frame pipeline tests the depth mask (see `draw`); the mask's
         // own pipeline writes it and nothing else. Only the meshes cull.
         let make_culled = |label: &str,
@@ -634,6 +673,53 @@ impl Solar {
             )
         };
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        // The nebula and the plasma storm, read from the gas map (`fs_gas`),
+        // and the storm laid over the sky (`fs_storm`): each in its own
+        // layout, into the frame (tested against its depth) or not.
+        let gas_pipeline = |label: &str,
+                            layout: &wgpu::PipelineLayout,
+                            fs: &str,
+                            constants: &[(&str, f64)],
+                            format: wgpu::TextureFormat,
+                            blend: Option<wgpu::BlendState>,
+                            depth: bool| {
+            let options = wgpu::PipelineCompilationOptions {
+                constants,
+                ..Default::default()
+            };
+            let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_background"),
+                    buffers: &[],
+                    compilation_options: options.clone(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: options,
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: depth.then_some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            (label.to_string(), made)
+        };
         let add = Some(wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -919,7 +1005,13 @@ impl Solar {
             };
             // The leviathans and the encounters drawn in parts are drawn in pieces
             // instead (below).
-            if event != voyage::Event::Leviathans && event_parts(event, [0; 3]).is_none() {
+            if event == voyage::Event::Nebula {
+                let (gases, frame) = (&gas_pipeline_layout, wgpu::TextureFormat::Rgba8UnormSrgb);
+                let made = gas_pipeline(&label, gases, "fs_gas", &constants, frame, over, true);
+                pipelines.insert(key, made);
+            } else if event == voyage::Event::PlasmaStorm {
+                // Below, with the layout it shares with the leviathans' glow.
+            } else if event != voyage::Event::Leviathans && event_parts(event, [0; 3]).is_none() {
                 pipelines.insert(key, pipeline(&label, vs, fs, blend, &constants));
             }
             if event.rocks() {
@@ -1098,6 +1190,17 @@ impl Solar {
             true,
         );
         pipelines.insert("leviathanglow".to_string(), made);
+        // The plasma storm at half the frame's resolution before its pass,
+        // then laid over the sky.
+        let storm = voyage::Event::PlasmaStorm;
+        let constants = [("EVENT", storm.id() as f64)];
+        let label = format!("Solar event {} gas", storm.slug());
+        let (gases, small) = (&gas_pipeline_layout, LEVIATHAN_HALO_FORMAT);
+        let made = gas_pipeline(&label, gases, "fs_gas", &constants, small, None, false);
+        pipelines.insert("stormgas".to_string(), made);
+        let label = format!("Solar event {}", storm.slug());
+        let made = gas_pipeline(&label, &glow_layout, "fs_storm", &[], frame, over, true);
+        pipelines.insert(format!("event{}", storm.id()), made);
         // The battle's starships as meshes (`ships`): from a vertex buffer,
         // placed by the shader's own battle (`vs_ship`), writing the depth.
         let ship_attributes =
@@ -1587,6 +1690,37 @@ impl Solar {
                 },
             ],
         });
+        let storm = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Solar storm"),
+                size: wgpu::Extent3d {
+                    width: SIZE / STORM_SCALE,
+                    height: SIZE / STORM_SCALE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: LEVIATHAN_HALO_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let storm_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Solar storm"),
+            layout: &halo_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&storm),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&halo_sampler),
+                },
+            ],
+        });
         let rings = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Solar ring profiles"),
             size: wgpu::Extent3d {
@@ -1612,11 +1746,13 @@ impl Solar {
             sampler,
             bind_group: None,
             leviathan_halos: (halos, halo_group),
+            storm: (storm, storm_group),
             model_library: Some(models::spawn_library()),
             models: None,
             rings,
             rings_for: u64::MAX,
             craters,
+            gas,
             bound: (u64::MAX, usize::MAX, usize::MAX),
             starfields: [0, 1].map(|_| {
                 device.create_texture(&wgpu::TextureDescriptor {
@@ -2496,6 +2632,33 @@ impl Solar {
             pass.set_pipeline(pipeline);
             crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..creatures * 9);
         }
+        // The plasma storm, at half the resolution, likewise.
+        let storm = event == Some(voyage::Event::PlasmaStorm) && params.ev[10][1] > 0.001;
+        if storm {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Solar storm"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.storm.0,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, group, &[]);
+            pass.set_bind_group(1, &self.streamer.noise().group, &[]);
+            pass.set_bind_group(2, &self.gas[1].1, &[]);
+            let (label, pipeline) = &self.pipelines["stormgas"];
+            pass.set_pipeline(pipeline);
+            let small = (SIZE / STORM_SCALE * (SIZE / STORM_SCALE)) as u64;
+            crate::gpu::counted_draw(&mut pass, label, small, 0..3, 0..1);
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Solar pass"),
@@ -2613,6 +2776,11 @@ impl Solar {
                     }
                 } else {
                     let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
+                    if storm {
+                        pass.set_bind_group(2, &self.storm.1, &[]);
+                    } else if e.gas() {
+                        pass.set_bind_group(2, &self.gas[0].1, &[]);
+                    }
                     pass.set_pipeline(pipeline);
                     crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
                 }
@@ -3515,6 +3683,12 @@ fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &System) {
 /// Texels along each side of a rock shape's crater map (`CRATER_MAP` in the
 /// shader).
 const CRATER_MAP: u32 = 512;
+/// Texels along each side of a face of the gas map (`bake_gas`), as
+/// `GAS_MAP` in `encounter.wgsl`.
+const GAS_MAP: u32 = 512;
+/// Texels along each side of the storm's map (`bake_storm`), as `STORM_MAP`
+/// in `encounter.wgsl`.
+const STORM_MAP: u32 = 512;
 
 /// Bake each rock shape's small craters once, a layer a shape, over its
 /// directions octahedrally (`fs_bake_craters`): their height and slope, with
@@ -3527,14 +3701,67 @@ fn bake_craters(
     shader: &wgpu::ShaderModule,
     noise: &crate::noise3d::Noise3d,
 ) -> wgpu::Texture {
+    let label = "Solar rock craters";
+    bake(
+        gpu,
+        shader,
+        noise,
+        label,
+        "fs_bake_craters",
+        CRATER_MAP,
+        models::ROCKS,
+    )
+}
+
+/// The gas the nebula and the plasma storm are drawn from, baked once over
+/// every direction, a cube map's six faces (`fs_bake_gas`): read through a
+/// cube, its filtering has no seams.
+fn bake_gas(
+    gpu: &Graphics,
+    shader: &wgpu::ShaderModule,
+    noise: &crate::noise3d::Noise3d,
+) -> wgpu::Texture {
+    bake(gpu, shader, noise, "Solar gas", "fs_bake_gas", GAS_MAP, 6)
+}
+
+/// The plasma storm's disc seen from above, baked once on the face toward
+/// +z of a cube map (`fs_bake_storm`): read through the same binding as the
+/// nebula's gas (a second would be a texture over the V3D's limit).
+fn bake_storm(
+    gpu: &Graphics,
+    shader: &wgpu::ShaderModule,
+    noise: &crate::noise3d::Noise3d,
+) -> wgpu::Texture {
+    bake(
+        gpu,
+        shader,
+        noise,
+        "Solar storm",
+        "fs_bake_storm",
+        STORM_MAP,
+        6,
+    )
+}
+
+/// A map baked once from the noise volume alone: `layers` square layers of
+/// `size`, `fs` drawn over each (`vs_bake_craters`).
+fn bake(
+    gpu: &Graphics,
+    shader: &wgpu::ShaderModule,
+    noise: &crate::noise3d::Noise3d,
+    label: &str,
+    fs: &str,
+    size: u32,
+    layers: u32,
+) -> wgpu::Texture {
     let device = &gpu.device;
     let format = wgpu::TextureFormat::Rgba16Float;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Solar rock craters"),
+        label: Some(label),
         size: wgpu::Extent3d {
-            width: CRATER_MAP,
-            height: CRATER_MAP,
-            depth_or_array_layers: models::ROCKS,
+            width: size,
+            height: size,
+            depth_or_array_layers: layers,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -3545,12 +3772,12 @@ fn bake_craters(
     });
     // It reads the noise volume alone.
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Solar rock craters"),
+        label: Some(label),
         bind_group_layouts: &[None, Some(&noise.layout)],
         immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Solar rock craters"),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: shader,
@@ -3560,7 +3787,7 @@ fn bake_craters(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_bake_craters"),
+            entry_point: Some(fs),
             targets: &[Some(format.into())],
             compilation_options: Default::default(),
         }),
@@ -3571,7 +3798,7 @@ fn bake_craters(
         cache: None,
     });
     let mut encoder = device.create_command_encoder(&Default::default());
-    for layer in 0..models::ROCKS {
+    for layer in 0..layers {
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2),
             base_array_layer: layer,
@@ -3579,7 +3806,7 @@ fn bake_craters(
             ..Default::default()
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Solar rock craters"),
+            label: Some(label),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view,
                 depth_slice: None,
@@ -6494,7 +6721,7 @@ pub(crate) mod tests {
                 let mut t = segment.start + 0.05;
                 while t < segment.start + segment.duration {
                     settle(&mut solar, &gpu, t);
-                    let mut time = |solar: &mut Solar, skip: &[&str]| {
+                    let time = |solar: &mut Solar, skip: &[&str]| {
                         crate::gpu::skip(skip);
                         let n = 10;
                         solar.draw(&gpu, t, 0);

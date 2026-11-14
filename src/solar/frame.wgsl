@@ -137,6 +137,10 @@ struct Params {
 // Each rock shape's small craters, a layer a shape (`fs_bake_craters`), in
 // a group of their own (`crater_layout`).
 @group(2) @binding(2) var rock_craters: texture_2d_array<f32>;
+// The nebula's gas over every direction (`fs_bake_gas`), or for the plasma
+// storm its disc from above on the face toward +z (`fs_bake_storm`); in a
+// group of its own for their pipelines (`gas_layout`).
+@group(2) @binding(3) var gas_map: texture_cube<f32>;
 
 // Which map slot a mapped body's pipeline reads, and which drive a warp
 // pipeline draws.
