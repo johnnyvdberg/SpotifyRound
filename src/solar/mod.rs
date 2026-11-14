@@ -753,17 +753,31 @@ impl Solar {
             let k = k as u32 + 1;
             // Its start-up at the jump point, over the sky, rising into its
             // light: the drives' only, a gate or wormhole throwing the ship
-            // on itself.
+            // on itself. A pipeline a stage of it (`STAGE`), each with only
+            // what shows then.
             if (k as usize) <= tour::DRIVES.len() {
-                let constants = [("WARP", k as f64)];
+                // The engagement's added over the drive's light rising.
+                let stages = tour::SPOOL_STAGES.len() - 1;
+                for stage in 1..=stages {
+                    let constants = [("WARP", k as f64), ("STAGE", stage as f64)];
+                    let made = pipeline(
+                        &format!("Solar spool {name} stage {stage}"),
+                        "vs_background",
+                        "fs_spool",
+                        if stage == stages { add } else { None },
+                        &constants,
+                    );
+                    pipelines.insert(format!("spool{k}-{stage}"), made);
+                }
+                let constants = [("WARP", k as f64), ("RISING", 1.0)];
                 let made = pipeline(
-                    &format!("Solar spool {name}"),
+                    &format!("Solar spool {name} light"),
                     "vs_background",
-                    "fs_spool",
+                    "fs_warp",
                     None,
                     &constants,
                 );
-                pipelines.insert(format!("spool{k}"), made);
+                pipelines.insert(format!("spoollight{k}"), made);
             }
             for (key, label, flare) in [
                 (format!("warp{k}"), format!("Solar warp {name}"), 0.0),
@@ -1963,9 +1977,14 @@ impl Solar {
         let covered = event.is_some_and(|e| e.replaces_sky())
             && params.ev[10][1] >= 1.0
             && params.warp[2] >= 1.0;
-        let background = if baked && params.spool[1] > 0.001 {
-            // The drive starting up, and on into the jump's first seconds.
-            format!("spool{}", self.drive().0)
+        let background = if baked && params.spool[1] > 0.001 && params.warp[0] < 1.0 {
+            // The drive starting up, and on into the jump's first seconds
+            // until its light is all there is; while it is still aligning,
+            // the sky with the star marked, all that shows then.
+            match spool_stage(params.spool[0]) {
+                0 => "target".to_string(),
+                stage => format!("spool{}-{stage}", self.drive().0),
+            }
         } else if params.warp[0] > 0.02 {
             let flare = if params.warp[1] > 0.0 { "flare" } else { "" };
             format!("warp{flare}{look}")
@@ -2145,6 +2164,13 @@ impl Solar {
                 let (label, pipeline) = &self.pipelines[&format!("dropahead{drop_look}")];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..DROP_SIDES * 6, 0..1);
+            }
+            // The drive's light rising as it engages, its start-up added
+            // over it.
+            if background.starts_with("spool") && params.warp[0] > 0.0 {
+                let (label, pipeline) = &self.pipelines[&format!("spoollight{}", self.drive().0)];
+                pass.set_pipeline(pipeline);
+                crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
             }
             if !background.is_empty() {
                 let (label, pipeline) = &self.pipelines[&background];
@@ -2969,6 +2995,16 @@ fn length(a: [f64; 3]) -> f64 {
 fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Which stage of the drive's preparation `progress` (`Params::spool`'s x) is
+/// in: 0 aligning, before its start-up shows, then each of the pipelines
+/// `fs_spool` has a stage (`STAGE`).
+fn spool_stage(progress: f32) -> usize {
+    tour::SPOOL_STAGES[1..]
+        .iter()
+        .filter(|&&s| progress >= s as f32)
+        .count()
 }
 
 /// Texels along a ring profile, and rows (one per planet).
