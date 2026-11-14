@@ -595,65 +595,356 @@ fn ev_comet(d: vec3<f32>) -> vec4<f32> {
 // Leviathans: a pod of vast translucent creatures, each a spine of soft
 // glowing lobes rippling as it swims, fins at the shoulders, its light
 // pulsing down its length; plankton glittering round them.
+//
+// Drawn in pieces, each on quads bounded to where its light falls under
+// `FAINT` (`PART`; the draws in `Solar::draw`): each lobe's core (1), the
+// fins at each creature's shoulders (2), the filament trailing from its tail
+// (3), and every lobe's wide halo (4), small, into a texture of its own
+// (`LEVIATHAN_HALO` in `mod.rs`), added over the sky with the plankton by
+// `fs_leviathan_glow`. Each creature and lobe is worked out once a quad, in
+// the vertex shader; the pixel only measures its ray against it.
 // ---------------------------------------------------------------------------
 
-fn ev_leviathans(d: vec3<f32>) -> vec4<f32> {
+override PART: i32 = 1;
+
+// The light under which a piece is cut: half a step of the 8-bit sRGB frame
+// over black, in linear light.
+const FAINT: f32 = 1.5e-4;
+const LOG2_E: f32 = 1.442695;
+
+struct Leviathan {
+    @builtin(position) position: vec4<f32>,
+    // The pixel's ray in camera space (right, up, ahead), over its z.
+    @location(0) ray: vec2<f32>,
+    // In camera space: the lobe's centre and how fast its light falls with
+    // the distance from it (squared for the cores, log2 e over the scale), or
+    // the filament's start and its length.
+    @location(1) @interpolate(flat) centre: vec4<f32>,
+    // Its light at the peak; w the fins' fall across them, or the filament's
+    // width.
+    @location(2) @interpolate(flat) colour: vec4<f32>,
+    // The fins' axes, side and the normal to their sheet, each with the
+    // shoulder's offset along it; or the filament's way.
+    @location(3) @interpolate(flat) side: vec4<f32>,
+    @location(4) @interpolate(flat) normal: vec4<f32>,
+};
+
+// A vector in the encounter frame in camera space.
+fn ev_camera(v: vec3<f32>) -> vec3<f32> {
+    let w = from_ev(v);
+    return vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
+}
+
+// How far out a light of `peak` falling as exp(-x²) stays over `FAINT`, in x.
+fn gauss_reach(peak: f32) -> f32 {
+    return sqrt(log(max(peak / FAINT, 1.0)));
+}
+
+// The frame's box round a sphere at `c` (camera space) of radius `r`: its
+// tangents' slopes, across the half frame (low x, low y, high x, high y).
+// The whole frame if the sphere reaches behind the camera, none if it is
+// wholly behind.
+fn sphere_box(c: vec3<f32>, r: f32) -> vec4<f32> {
+    let k = c.z * c.z - r * r;
+    if (c.z < -r) {
+        return vec4<f32>(4.0);
+    }
+    if (c.z <= r || k <= 1e-3 * c.z * c.z) {
+        return vec4<f32>(-1.0, -1.0, 1.0, 1.0);
+    }
+    let x = (c.x * c.z + vec2<f32>(-1.0, 1.0) * r * sqrt(c.x * c.x + k)) / k;
+    let y = (c.y * c.z + vec2<f32>(-1.0, 1.0) * r * sqrt(c.y * c.y + k)) / k;
+    return vec4<f32>(x.x, y.x, x.y, y.y) / params.frame.y;
+}
+
+// The frame within distance `r` of the segment from `a` to `b` (camera
+// space): the box round both ends' spheres' boxes, turned along it. What of
+// it is nearer the camera's plane than 2r is left out: unless the segment
+// passes within 4r of the camera (then the whole frame), it is at least 60°
+// off the view, too far from any ray in the frame to light it.
+fn segment_corner(a: vec3<f32>, b: vec3<f32>, r: f32, corner: vec2<f32>) -> vec2<f32> {
+    let ab = b - a;
+    if (length(a + ab * clamp(-dot(a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0)) < r * 4.0) {
+        return corner;
+    }
+    let near = r * 2.0;
+    if (max(a.z, b.z) < near) {
+        return vec2<f32>(4.0);
+    }
+    let p = select(a, mix(a, b, (near - a.z) / (b.z - a.z)), a.z < near);
+    let q = select(b, mix(b, a, (near - b.z) / (a.z - b.z)), b.z < near);
+    let way = q.xy / q.z - p.xy / p.z;
+    let along = select(vec2<f32>(1.0, 0.0), normalize(way), length(way) > 1e-6);
+    let across = vec2<f32>(-along.y, along.x);
+    var lo = vec2<f32>(1e9);
+    var hi = vec2<f32>(-1e9);
+    for (var e = 0; e < 2; e++) {
+        let box = sphere_box(select(q, p, e == 0), r);
+        for (var k = 0; k < 4; k++) {
+            let c = vec2<f32>(select(box.x, box.z, (k & 1) != 0), select(box.y, box.w, (k & 2) != 0));
+            let uv = vec2<f32>(dot(c, along), dot(c, across));
+            lo = min(lo, uv);
+            hi = max(hi, uv);
+        }
+    }
+    let at = mix(lo, hi, corner * 0.5 + 0.5);
+    return along * at.x + across * at.y;
+}
+
+// Slices of the frame each creature's fins are bounded in, a quad each
+// (`LEVIATHAN_FIN_SLICES` in `mod.rs`).
+const FIN_SLICES: u32 = 16u;
+
+// The fins' light falls under `FAINT` where the ray's offset from the
+// shoulder `v`, off, has |off·m| over `width` (m the fins' normal). For the
+// ray along e = (x, y, 1) tan, off·m = -Q(e) / |e|² with
+// Q(e) = (e·m)(e·v) - (v·m)|e|²: the fins lie in the band |Q| < width |e|²
+// between two conics. Where it crosses the frame's line at `u` (x = u, or
+// y = u if `by_y`): the lowest and highest it reaches along it, within the
+// frame; low over high if it misses.
+fn fin_cross(v: vec3<f32>, m: vec3<f32>, width: f32, u: f32, by_y: bool) -> vec2<f32> {
+    let tan_half = params.frame.y;
+    var lo = 1e9;
+    var hi = -1e9;
+    var ends = vec3<f32>(0.0);
+    for (var k = 0; k < 2; k++) {
+        let s = select(-width, width, k == 1);
+        // Q - s|e|² along the line, a quadratic in w from three points.
+        var g = vec3<f32>(0.0);
+        for (var i = 0; i < 3; i++) {
+            let w = f32(i - 1);
+            let e = vec3<f32>(select(vec2<f32>(u, w), vec2<f32>(w, u), by_y) * tan_half, 1.0);
+            g[i] = dot(e, m) * dot(e, v) - (dot(v, m) + s) * dot(e, e);
+            ends[i] = width * dot(e, e);
+        }
+        let c = g.y;
+        let b = (g.z - g.x) * 0.5;
+        let a = (g.z + g.x) * 0.5 - c;
+        var roots = vec2<f32>(2.0);
+        if (abs(a) > 1e-6 * (abs(b) + abs(c))) {
+            let disc = b * b - 4.0 * a * c;
+            if (disc >= 0.0) {
+                roots = (-b + vec2<f32>(-1.0, 1.0) * sqrt(disc)) / (2.0 * a);
+            }
+        } else if (abs(b) > 0.0) {
+            roots = vec2<f32>(-c / b);
+        }
+        for (var i = 0; i < 2; i++) {
+            if (abs(roots[i]) <= 1.0) {
+                lo = min(lo, roots[i]);
+                hi = max(hi, roots[i]);
+            }
+        }
+        // The line's ends, if inside the band: Q there is g + s|e|².
+        if (k == 1) {
+            let q = g.xz + vec2<f32>(s) * ends.xz / width;
+            if (abs(q.x) <= ends.x) {
+                lo = -1.0;
+                hi = max(hi, -1.0);
+            }
+            if (abs(q.y) <= ends.z) {
+                hi = 1.0;
+                lo = min(lo, 1.0);
+            }
+        }
+    }
+    return vec2<f32>(lo, hi);
+}
+
+// The quad bounding a creature's fins in slice `slice` of the frame: across
+// the band where it crosses the slice's two sides, and where it leaves the
+// frame between them.
+fn fin_corner(v: vec3<f32>, m: vec3<f32>, width: f32, slice: u32, corner: vec2<f32>) -> vec2<f32> {
+    // Sliced across the way the band runs past the shoulder.
+    let t = cross(v, m);
+    let run = select(t.xy, t.xy * v.z - v.xy * t.z, v.z > 0.0);
+    let by_y = abs(run.y) > abs(run.x);
+    let step = 2.0 / f32(FIN_SLICES);
+    let u = -1.0 + f32(slice) * step + vec2<f32>(0.0, step);
+    let a = fin_cross(v, m, width, u.x, by_y);
+    let b = fin_cross(v, m, width, u.y, by_y);
+    var lo = min(a.x, b.x);
+    var hi = max(a.y, b.y);
+    for (var k = 0; k < 2; k++) {
+        let edge = select(-1.0, 1.0, k == 1);
+        let leaves = fin_cross(v, m, width, edge, !by_y);
+        if (leaves.x <= u.y && leaves.y >= u.x) {
+            lo = min(lo, edge);
+            hi = max(hi, edge);
+        }
+    }
+    if (lo > hi) {
+        return vec2<f32>(4.0);
+    }
+    // A little over, for the band's curve between the sides.
+    let margin = step * 0.25 + 2.0 / params.frame.x;
+    let w = mix(lo - margin, hi + margin, corner.y * 0.5 + 0.5);
+    let along = mix(u.x, u.y, corner.x * 0.5 + 0.5);
+    return select(vec2<f32>(along, w), vec2<f32>(w, along), by_y);
+}
+
+@vertex
+fn vs_leviathan(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Leviathan {
+    var out: Leviathan;
     let ship = ev_ship();
     let pod = ev_obj(0);
     let heading = normalize(ev_obj(1).xyz);
     let length_ = ev_obj(1).w;
     let seed = params.ev[9].z;
     let t = ev_t();
+    let fade = params.ev[10].y;
     let side = normalize(cross(heading, vec3<f32>(0.0, 1.0, 0.0)));
     let upward = cross(side, heading);
     let ca = hue_of(params.ev[9].x) * 0.6 + vec3<f32>(0.1, 0.35, 0.45);
     let cb = hue_of(params.ev[9].y) * 0.6 + vec3<f32>(0.3, 0.1, 0.4);
-    var colour = vec3<f32>(0.0);
-    let count = i32(pod.w);
-    for (var c = 0; c < 5; c++) {
-        if (c >= count) {
-            break;
-        }
-        let fc = f32(c);
-        let h = vec3<f32>(hash_cell(vec3<f32>(fc, seed, 1.0)), hash_cell(vec3<f32>(fc, seed, 2.0)), hash_cell(vec3<f32>(fc, seed, 3.0)));
-        let size = mix(0.55, 1.15, h.x);
-        let body = length_ * size;
-        let head = pod.xyz + side * (h.y - 0.5) * 140.0 + upward * (h.z - 0.5) * 70.0 + heading * (h.x - 0.5) * 60.0;
-        let phase = t * (1.1 + 0.3 * h.z) + h.y * TAU;
-        for (var j = 0; j < 9; j++) {
-            let f = f32(j) / 8.0;
-            let wave = sin(phase - f * 4.2) * body * 0.07 * (0.25 + f);
-            let p = head - heading * f * body + upward * wave + side * sin(phase * 0.5 - f * 2.0) * body * 0.03;
-            let thick = body * 0.075 * (1.0 - 0.8 * f) * smoothstep01(-0.1, 0.12, f);
-            let v = p - ship;
-            let z = dot(v, d);
-            if (z < 1.0) {
-                continue;
+    // A quad a lobe for the cores and halos, a slice of the frame a creature
+    // for the fins, a creature for the filaments.
+    let lobes = PART == 1 || PART == 4;
+    let c = select(select(instance, instance / FIN_SLICES, PART == 2), instance / 9u, lobes);
+    let fc = f32(c);
+    let h = vec3<f32>(hash_cell(vec3<f32>(fc, seed, 1.0)), hash_cell(vec3<f32>(fc, seed, 2.0)), hash_cell(vec3<f32>(fc, seed, 3.0)));
+    let size = mix(0.55, 1.15, h.x);
+    let body = length_ * size;
+    let head = pod.xyz + side * (h.y - 0.5) * 140.0 + upward * (h.z - 0.5) * 70.0 + heading * (h.x - 0.5) * 60.0;
+    let phase = t * (1.1 + 0.3 * h.z) + h.y * TAU;
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+    );
+    let corner = corners[vertex % 6u];
+    var at = vec2<f32>(0.0);
+    if (PART == 3) {
+        // The trailing filament.
+        let tail = ev_camera(head - heading * body - ship);
+        let way = ev_camera(-heading);
+        let width = body * 0.006 + 0.3;
+        let colour = cb * 0.4 * fade;
+        out.centre = vec4<f32>(tail, body * 0.8);
+        out.colour = vec4<f32>(colour, width);
+        out.side = vec4<f32>(way, 0.0);
+        let reach = width * gauss_reach(max(colour.r, max(colour.g, colour.b)));
+        at = segment_corner(tail, tail + way * body * 0.8, reach, corner);
+    } else {
+        // A lobe: the shoulder's for the fins.
+        let j = select(2u, instance % 9u, lobes);
+        let f = f32(j) / 8.0;
+        let wave = sin(phase - f * 4.2) * body * 0.07 * (0.25 + f);
+        let p = head - heading * f * body + upward * wave + side * sin(phase * 0.5 - f * 2.0) * body * 0.03;
+        let thick = body * 0.075 * (1.0 - 0.8 * f) * smoothstep01(-0.1, 0.12, f);
+        let tint = mix(ca, cb, f);
+        let v = ev_camera(p - ship);
+        if (PART == 2) {
+            // The fins, wide sheets swept to each side, beating slowly: their
+            // light falls across `normal` (upward, swept by the beat) fast and
+            // along `side` slowly.
+            let beat = sin(phase * 0.8) * 0.5;
+            let colour = tint * 0.35 * fade;
+            let s = ev_camera(side);
+            let m = ev_camera(upward) - s * beat;
+            out.centre = vec4<f32>(v, LOG2_E / sq(thick * 4.0));
+            out.colour = vec4<f32>(colour, LOG2_E / sq(thick * 0.35));
+            out.side = vec4<f32>(s, dot(v, s));
+            out.normal = vec4<f32>(m, dot(v, m));
+            let reach = gauss_reach(max(colour.r, max(colour.g, colour.b)));
+            at = fin_corner(v, m, thick * 0.35 * reach, instance % FIN_SLICES, corner);
+        } else {
+            var colour = tint * 0.035;
+            var reach = thick * 3.0 * log(max(0.035 * max(tint.r, max(tint.g, tint.b)) * fade / FAINT, 1.0));
+            out.centre = vec4<f32>(v, LOG2_E / (thick * 3.0));
+            if (PART == 1) {
+                let pulse_ = 0.5 + 0.5 * sin(t * 2.2 - f * 9.0 + h.z * 6.0);
+                colour = tint * (0.3 + 0.7 * pulse_) * 0.55 * fade;
+                reach = thick * gauss_reach(max(colour.r, max(colour.g, colour.b)));
+                out.centre.w = LOG2_E / sq(thick);
             }
-            let off = v - d * z;
-            let across = length(off);
-            let pulse_ = 0.5 + 0.5 * sin(t * 2.2 - f * 9.0 + h.z * 6.0);
-            let tint = mix(ca, cb, f);
-            colour += tint * (exp(-sq(across / thick)) * (0.3 + 0.7 * pulse_) * 0.55 + exp(-across / (thick * 3.0)) * 0.035);
-            if (j == 2) {
-                // The fins, wide sheets swept to each side, beating slowly.
-                let beat = sin(phase * 0.8) * 0.5;
-                let fin = exp(-sq((dot(off, upward) - dot(off, side) * beat) / (thick * 0.35))) * exp(-sq(dot(off, side) / (thick * 4.0)));
-                colour += tint * fin * 0.35;
-            }
-        }
-        // A trailing filament from the tail.
-        let tail_from = head - heading * body;
-        let trail = ray_to_line(ship, d, tail_from, -heading);
-        if (trail.y > 0.0 && trail.z > 0.0 && trail.z < body * 0.8) {
-            colour += cb * exp(-sq(trail.x / (body * 0.006 + 0.3))) * (1.0 - trail.z / (body * 0.8)) * 0.4;
+            out.colour = vec4<f32>(colour, 0.0);
+            let box = clamp(sphere_box(v, reach), vec4<f32>(-1.0), vec4<f32>(1.0));
+            at = mix(box.xy, box.zw, corner * 0.5 + 0.5);
         }
     }
-    // Plankton glittering.
-    let cell = floor(d * 230.0);
-    let g = hash_cell(cell + vec3<f32>(seed));
+    // At the far end of the depth mask, as the sky.
+    out.position = vec4<f32>(at, 1.0, 1.0);
+    out.ray = at * params.frame.y;
+    return out;
+}
+
+@fragment
+fn fs_leviathan(in: Leviathan) -> @location(0) vec4<f32> {
+    let e = vec3<f32>(in.ray, 1.0);
+    let ee = dot(e, e);
+    let v = in.centre.xyz;
+    var light = 0.0;
+    if (PART == 3) {
+        let trail = ray_to_line(vec3<f32>(0.0), e * inverseSqrt(ee), v, in.side.xyz);
+        let length_ = in.centre.w;
+        if (trail.y > 0.0 && trail.z > 0.0 && trail.z < length_) {
+            light = exp(-sq(trail.x / in.colour.w)) * (1.0 - trail.z / length_);
+        }
+    } else {
+        // How far ahead the ray passes the lobe, times |e|.
+        let ve = dot(v, e);
+        if (PART == 2) {
+            // The ray's offset from the shoulder along each of the fins' axes.
+            let k = ve / ee;
+            let along = in.side.w - k * dot(e, in.side.xyz);
+            let across = in.normal.w - k * dot(e, in.normal.xyz);
+            light = exp2(-(sq(across) * in.colour.w + sq(along) * in.centre.w));
+        } else {
+            // Its distance squared from the lobe's centre: |v × e|² / |e|².
+            let c = cross(v, e);
+            let off = dot(c, c) / ee;
+            if (PART == 1) {
+                light = exp2(-off * in.centre.w);
+            } else {
+                light = exp2(-sqrt(off) * in.centre.w);
+            }
+        }
+        // Nothing nearer than a unit ahead.
+        light = select(light, 0.0, ve * abs(ve) < ee);
+    }
+    return vec4<f32>(in.colour.rgb * light, 0.0);
+}
+
+// For the Pi estimate only: the pixels a piece covers, shaded by nothing.
+@fragment
+fn fs_probe_leviathan(in: Leviathan) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
+}
+
+@group(2) @binding(0) var leviathan_halo: texture_2d<f32>;
+@group(2) @binding(1) var halo_sampler: sampler;
+
+struct LeviathanGlow {
+    @builtin(position) position: vec4<f32>,
+    // The ray through the pixel in the encounter frame, not normalized.
+    @location(0) dir: vec3<f32>,
+    // The plankton's colour, with the stopover's fade; and the seed, the
+    // glitter's phase and the fade.
+    @location(1) @interpolate(flat) plankton: vec3<f32>,
+    @location(2) @interpolate(flat) look: vec3<f32>,
+};
+
+@vertex
+fn vs_leviathan_glow(@builtin(vertex_index) index: u32) -> LeviathanGlow {
+    let full = full_vertex(index);
+    var out: LeviathanGlow;
+    out.position = full.position;
+    out.dir = to_ev(full.dir);
+    let fade = params.ev[10].y;
+    let ca = hue_of(params.ev[9].x) * 0.6 + vec3<f32>(0.1, 0.35, 0.45);
+    out.plankton = ca * 0.5 * fade;
+    out.look = vec3<f32>(params.ev[9].z, ev_t() * 3.0, fade);
+    return out;
+}
+
+// Over the sky: the lobes' halos, and the plankton glittering.
+@fragment
+fn fs_leviathan_glow(in: LeviathanGlow) -> @location(0) vec4<f32> {
+    let uv = in.position.xy / (2.0 * params.frame.x);
+    var colour = textureSampleLevel(leviathan_halo, halo_sampler, uv, 0.0).rgb * in.look.z;
+    let g = hash_cell(floor(normalize(in.dir) * 230.0) + vec3<f32>(in.look.x));
     if (g > 0.996) {
-        colour += ca * 0.5 * (0.5 + 0.5 * sin(t * 3.0 + g * 300.0));
+        colour += in.plankton * (0.5 + 0.5 * sin(in.look.y + g * 300.0));
     }
     return vec4<f32>(colour, 0.0);
 }
@@ -1861,8 +2152,6 @@ fn fs_event(in: Full) -> @location(0) vec4<f32> {
         c = ev_derelict(d);
     } else if (EVENT == 8) {
         c = ev_comet(d);
-    } else if (EVENT == 9) {
-        c = ev_leviathans(d);
     } else if (EVENT == 10) {
         c = ev_remnant(d);
     } else if (EVENT == 11) {

@@ -815,9 +815,6 @@ Solar event comet #0             vs_background  VS-bin    31   4     0   22     
 Solar rocks comet #0             fs_rock        FS        58   4     0    9    11        0:0    2    3
 Solar rocks comet #0             vs_rock        VS       205   4     0  109    23        0:0    0    8
 Solar rocks comet #0             vs_rock        VS-bin   192   4     0   97    21        0:0    0   11
-Solar event leviathans #0        fs_event       FS       498   2     2  120    63        0:0    1   34
-Solar event leviathans #0        vs_background  VS        60   4     0   35    10        0:0    0    2
-Solar event leviathans #0        vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar event remnant #0           fs_event       FS       421   2     1   98    64        0:0    2   31
 Solar event remnant #0           vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event remnant #0           vs_background  VS-bin    31   4     0   22     7        0:0    0    0
@@ -860,6 +857,33 @@ Solar flux whales #0             vs_background  VS-bin    31   4     0   22     
 Solar flux gravity-wave #0       fs_flux        FS       182   4     0   43    19        0:0    0    4
 Solar flux gravity-wave #0       vs_background  VS        32   4     0   22     7        0:0    0    1
 Solar flux gravity-wave #0       vs_background  VS-bin    31   4     0   22     7        0:0    0    0
+Solar event leviathans lobes #0  fs_leviathan   FS        32   4     0    1    14        0:0    0    2
+Solar event leviathans lobes #0  vs_leviathan   VS       422   4     0  214    32        0:0    1   20
+Solar event leviathans lobes #0  vs_leviathan   VS-bin   389   4     0  202    32        0:0    1   18
+Solar probe leviathans lobes #0  fs_probe_leviathan FS         8   4     0    0     0        0:0    0    3
+Solar probe leviathans lobes #0  vs_leviathan   VS       391   4     0  201    32        0:0    1   18
+Solar probe leviathans lobes #0  vs_leviathan   VS-bin   389   4     0  202    32        0:0    1   18
+Solar event leviathans fins #0   fs_leviathan   FS        43   4     0    1    20        0:0    1    2
+Solar event leviathans fins #0   vs_leviathan   VS       756   2    10  299    51        0:0    0   48
+Solar event leviathans fins #0   vs_leviathan   VS-bin   704   2    10  215    50        0:0    1   44
+Solar probe leviathans fins #0   fs_probe_leviathan FS         8   4     0    0     0        0:0    0    3
+Solar probe leviathans fins #0   vs_leviathan   VS       740   2     0  291    62        0:0    7    5
+Solar probe leviathans fins #0   vs_leviathan   VS-bin   704   2    10  215    50        0:0    1   44
+Solar event leviathans filaments #0 fs_leviathan   FS        60   4     0    4    21        0:0    0    2
+Solar event leviathans filaments #0 vs_leviathan   VS       607   4     0  242    30        0:0    1   35
+Solar event leviathans filaments #0 vs_leviathan   VS-bin   515   4     0  160    32        0:0    0   31
+Solar probe leviathans filaments #0 fs_probe_leviathan FS         8   4     0    0     0        0:0    0    3
+Solar probe leviathans filaments #0 vs_leviathan   VS       515   4     0  160    32        0:0    0   32
+Solar probe leviathans filaments #0 vs_leviathan   VS-bin   515   4     0  160    32        0:0    0   31
+Solar event leviathans halos #0  fs_leviathan   FS        33   4     0    1    14        0:0    0    2
+Solar event leviathans halos #0  vs_leviathan   VS       408   4     0  205    31        0:0    1   15
+Solar event leviathans halos #0  vs_leviathan   VS-bin   389   4     0  191    31        0:0    1   18
+Solar probe leviathans halos #0  fs_probe_leviathan FS         8   4     0    0     0        0:0    0    3
+Solar probe leviathans halos #0  vs_leviathan   VS       390   4     0  190    31        0:0    1   20
+Solar probe leviathans halos #0  vs_leviathan   VS-bin   389   4     0  191    31        0:0    1   18
+Solar event leviathans glow #0   fs_leviathan_glow FS        64   4     0   11    14        0:0    0    2
+Solar event leviathans glow #0   vs_leviathan_glow VS       121   4     0   67    20        0:0    0    6
+Solar event leviathans glow #0   vs_leviathan_glow VS-bin    31   4     0   22     7        0:0    0    0
 Solar ships #0                   fs_ship        FS       508   4     0  178    32        0:0    1   32
 Solar ships #0                   vs_ship        VS       145   4     0   81    23        0:0    0    1
 Solar ships #0                   vs_ship        VS-bin   108   4     0   50    17        0:0    0    3

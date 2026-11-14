@@ -116,6 +116,12 @@ const EV_ROWS: usize = 12 + 2 * BATTLE_SHIPS;
 const BATTLE_SHIPS: usize = 8;
 /// Rocks or debris drawn round the ship in a stopover (`vs_rock`).
 const ROCKS: u32 = 260;
+/// How many times coarser than the frame the leviathans' halos are drawn
+/// (`HALO_SCALE` in `encounter.wgsl`), and in what.
+const LEVIATHAN_HALO: u32 = 4;
+const LEVIATHAN_HALO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Slices of the frame each leviathan's fins are bounded in (`FIN_SLICES`).
+const LEVIATHAN_FIN_SLICES: u32 = 16;
 /// Vertices of the ship's own effects' quad (`vs_overlay`).
 const OVERLAY_VERTICES: u32 = 3;
 
@@ -296,6 +302,9 @@ pub(crate) struct Solar {
     grid: wgpu::Buffer,
     sampler: wgpu::Sampler,
     bind_group: Option<wgpu::BindGroup>,
+    /// The leviathans' halos, drawn small before the frame's pass, and the
+    /// bind group reading them in it (`fs_leviathan_glow`).
+    leviathan_halos: (wgpu::TextureView, wgpu::BindGroup),
     /// The battle's starship meshes: on their way from the thread building
     /// (or loading) them, then on the GPU, with where each one lies.
     model_library: Option<std::sync::mpsc::Receiver<models::Library>>,
@@ -822,7 +831,10 @@ impl Solar {
             } else {
                 ("vs_background", "fs_event", over)
             };
-            pipelines.insert(key, pipeline(&label, vs, fs, blend, &constants));
+            // The leviathans are drawn in pieces instead (below).
+            if event != voyage::Event::Leviathans {
+                pipelines.insert(key, pipeline(&label, vs, fs, blend, &constants));
+            }
             if event.rocks() {
                 let label = format!("Solar rocks {}", event.slug());
                 let all = wgpu::ColorWrites::ALL;
@@ -847,6 +859,109 @@ impl Solar {
                 pipeline(&label, "vs_background", "fs_flux", add, &constants),
             );
         }
+        // The leviathans in pieces, each on quads bounded to where its light
+        // reaches (`PART`): every lobe's core, the fins and the filaments over
+        // the sky; the lobes' wide halos into a texture a quarter of the
+        // frame's resolution, added over the sky with the plankton.
+        for (part, name) in [(1, "lobes"), (2, "fins"), (3, "filaments")] {
+            let constants = [("PART", part as f64)];
+            let (vs, label) = ("vs_leviathan", format!("Solar event leviathans {name}"));
+            let made = pipeline(&label, vs, "fs_leviathan", add, &constants);
+            pipelines.insert(format!("leviathan{part}"), made);
+            let label = format!("Solar probe leviathans {name}");
+            let fs = "fs_probe_leviathan";
+            let made = make(&label, vs, fs, None, &constants, Some(false), none, false);
+            pipelines.insert(format!("probeleviathan{part}"), made);
+        }
+        let halo_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Solar leviathan halos"),
+            entries: &[texture_entry(0, d2), sampler_entry(1)],
+        });
+        let glow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Solar leviathan glow"),
+            bind_group_layouts: &[
+                Some(&layout),
+                Some(&streamer.noise().layout),
+                Some(&halo_layout),
+            ],
+            immediate_size: 0,
+        });
+        let leviathan = |label: &str,
+                         layout: &wgpu::PipelineLayout,
+                         (vs, fs): (&str, &str),
+                         format: wgpu::TextureFormat,
+                         writes: wgpu::ColorWrites,
+                         depth: bool| {
+            let constants = [("PART", 4.0)];
+            let options = wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            };
+            let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vs),
+                    buffers: &[],
+                    compilation_options: options.clone(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: add,
+                        write_mask: writes,
+                    })],
+                    compilation_options: options,
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: depth.then_some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            (label.to_string(), made)
+        };
+        let (halo, all) = (LEVIATHAN_HALO_FORMAT, wgpu::ColorWrites::ALL);
+        let shaders = ("vs_leviathan", "fs_leviathan");
+        let made = leviathan(
+            "Solar event leviathans halos",
+            &pipeline_layout,
+            shaders,
+            halo,
+            all,
+            false,
+        );
+        pipelines.insert("leviathan4".to_string(), made);
+        let shaders = ("vs_leviathan", "fs_probe_leviathan");
+        let made = leviathan(
+            "Solar probe leviathans halos",
+            &pipeline_layout,
+            shaders,
+            halo,
+            none,
+            false,
+        );
+        pipelines.insert("probeleviathan4".to_string(), made);
+        let shaders = ("vs_leviathan_glow", "fs_leviathan_glow");
+        let frame = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let made = leviathan(
+            "Solar event leviathans glow",
+            &glow_layout,
+            shaders,
+            frame,
+            all,
+            true,
+        );
+        pipelines.insert("leviathanglow".to_string(), made);
         // The battle's starships as meshes (`ships`): from a vertex buffer,
         // placed by the shader's own battle (`vs_ship`), writing the depth.
         let ship_attributes =
@@ -1228,6 +1343,43 @@ impl Solar {
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
         let tour = tour_for(seed, 0, false, None);
+        let halos = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Solar leviathan halos"),
+                size: wgpu::Extent3d {
+                    width: SIZE / LEVIATHAN_HALO,
+                    height: SIZE / LEVIATHAN_HALO,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: LEVIATHAN_HALO_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let halo_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Solar leviathan halos"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let halo_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Solar leviathan halos"),
+            layout: &halo_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&halos),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&halo_sampler),
+                },
+            ],
+        });
         let rings = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Solar ring profiles"),
             size: wgpu::Extent3d {
@@ -1250,6 +1402,7 @@ impl Solar {
             grid,
             sampler,
             bind_group: None,
+            leviathan_halos: (halos, halo_group),
             model_library: Some(models::spawn_library()),
             models: None,
             rings,
@@ -2073,6 +2226,36 @@ impl Solar {
         let Some(group) = &self.bind_group else {
             return;
         };
+        // The leviathans' halos, small, before the frame's pass reads them.
+        let creatures = params.ev[5][3] as u32;
+        let leviathans = event == Some(voyage::Event::Leviathans) && params.ev[10][1] > 0.001;
+        if leviathans {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Solar leviathan halos"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.leviathan_halos.0,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, group, &[]);
+            pass.set_bind_group(1, &self.streamer.noise().group, &[]);
+            if crate::gpu::counting() {
+                pass.set_pipeline(&self.pipelines["probeleviathan4"].1);
+                crate::gpu::probe_draw(&mut pass, 0..6, 0..creatures * 9);
+            }
+            let (label, pipeline) = &self.pipelines["leviathan4"];
+            pass.set_pipeline(pipeline);
+            crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..creatures * 9);
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Solar pass"),
@@ -2154,9 +2337,30 @@ impl Solar {
             // A stopover: its own draw over the sky (or in place of it), and
             // the rocks round the ship, in front of everything.
             if let Some(e) = event.filter(|_| params.ev[10][1] > 0.001) {
-                let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
-                pass.set_pipeline(pipeline);
-                crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                if leviathans {
+                    // Their halos and the plankton over the whole sky, then
+                    // each lobe's core, the fins and the filaments, each on
+                    // its own quads.
+                    pass.set_bind_group(2, &self.leviathan_halos.1, &[]);
+                    let (label, pipeline) = &self.pipelines["leviathanglow"];
+                    pass.set_pipeline(pipeline);
+                    crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                    let fins = creatures * LEVIATHAN_FIN_SLICES;
+                    for (part, quads) in [(1, creatures * 9), (2, fins), (3, creatures)] {
+                        if counting {
+                            let probe = &self.pipelines[&format!("probeleviathan{part}")];
+                            pass.set_pipeline(&probe.1);
+                            crate::gpu::probe_draw(&mut pass, 0..6, 0..quads);
+                        }
+                        let (label, pipeline) = &self.pipelines[&format!("leviathan{part}")];
+                        pass.set_pipeline(pipeline);
+                        crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..quads);
+                    }
+                } else {
+                    let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
+                    pass.set_pipeline(pipeline);
+                    crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
+                }
                 // The battle's ships, each its fleet's design in a variant of
                 // its own, the one lost gone once it blows up.
                 if e == voyage::Event::Battle
