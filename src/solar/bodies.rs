@@ -363,7 +363,10 @@ impl FlatLook {
 }
 
 pub(super) fn night_mode(kind: Kind) -> f32 {
-    if kind.has_cities() {
+    if kind == Kind::Starbase {
+        // A station's own lights, coloured (`station_lights` in the frame).
+        3.0
+    } else if kind.has_cities() {
         1.0
     } else if kind.glows() {
         2.0

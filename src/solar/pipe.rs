@@ -67,6 +67,8 @@ pub(crate) enum Pipe {
     /// The battle's ships, and every other model family (from 1).
     Ships,
     Model(u32),
+    /// A starbase tunnel's window panes, the city behind them (`fs_pane`).
+    BasePanes,
     /// A battle's effects of kind `kind`, near or dim.
     BattleFx {
         kind: usize,
@@ -154,6 +156,7 @@ impl fmt::Display for Pipe {
             Pipe::Leviathan(part) => write!(f, "leviathan{part}"),
             Pipe::LeviathanGlow => f.write_str("leviathanglow"),
             Pipe::Ships => f.write_str("ships"),
+            Pipe::BasePanes => f.write_str("basepanes"),
             Pipe::Model(family) => write!(f, "model{family}"),
             Pipe::BattleFx { kind, far } => {
                 write!(f, "battlefx{kind}{}", if far { "far" } else { "" })

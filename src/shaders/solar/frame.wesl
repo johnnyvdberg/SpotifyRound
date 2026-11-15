@@ -1635,6 +1635,9 @@ fn fs_glow(in: Quad) -> @location(0) vec4<f32> {
             let night = extra_texel(uv, lod + 0.6).r;
             let tint = mix(vec3<f32>(1.0, 0.55, 0.22), vec3<f32>(1.0, 0.88, 0.66), smoothstep01(0.2, 0.9, night));
             colour += tint * night * night * 2.2 * darkness * (1.0 - cloud * 0.85);
+        } else if (params.bodies[i].look.w > 2.5) {
+            // A starbase's own lights, coloured.
+            colour += station_lights(extra_texel(uv, lod + 0.6), mu_sun);
         } else if (params.bodies[i].look.w > 1.5) {
             // Molten rock glows on both sides, more visibly in the dark.
             let night = extra_texel(uv, lod + 0.6).r;
@@ -2001,6 +2004,8 @@ fn fs_globe(in: Globe) -> @location(0) vec4<f32> {
         let night = globe_extra(in.uv.xy, BIAS + 0.6).r;
         let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
         rgb += molten_heat(night) * in.thru * (0.15 + 0.55 * darkness);
+    } else if (NIGHT == 3) {
+        rgb += station_lights(globe_extra(in.uv.xy, BIAS + 0.6), mu);
     }
     if (RINGS) {
         rgb *= globe_ring_shadow(in);
@@ -2019,6 +2024,17 @@ fn globe_ring_shadow(in: Globe) -> f32 {
 // Molten rock's light by how hot it is, 0..1: along a blackbody's colours,
 // a dull deep red where it has nearly crusted over, through orange, to
 // yellow-white in the hottest seams.
+// A starbase's lights (`extra`: brightness, colour 0 warm, 0.5 cyan, 1
+// magenta): bright on the night side, still faintly showing by day.
+fn station_lights(extra: vec2<f32>, mu: f32) -> vec3<f32> {
+    let warm = vec3<f32>(1.0, 0.82, 0.58);
+    let cyan = vec3<f32>(0.35, 0.9, 1.0);
+    let magenta = vec3<f32>(1.0, 0.3, 0.85);
+    let tint = select(mix(cyan, magenta, smoothstep01(0.5, 1.0, extra.y)), mix(warm, cyan, smoothstep01(0.0, 0.5, extra.y)), extra.y < 0.5);
+    let darkness = 1.0 - smoothstep01(-0.10, 0.03, mu);
+    return tint * extra.x * extra.x * 1.8 * (0.08 + 0.92 * darkness);
+}
+
 fn molten_heat(night: f32) -> vec3<f32> {
     let red = vec3<f32>(0.7, 0.07, 0.01);
     let orange = vec3<f32>(1.0, 0.36, 0.05);

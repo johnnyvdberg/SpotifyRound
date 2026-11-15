@@ -46,16 +46,27 @@ const METRE: f64 = 1.0 / (KM * 1000.0);
 /// fast the ship passes through it, metres a second.
 const CORRIDOR: f64 = 60_000.0;
 const MOUTH_SPEED: f64 = 250.0;
-/// The tunnel: its length and how far its S-bend carries it to the side,
-/// metres; how fast the ship comes out of it into the bay.
-const TUNNEL_LENGTH: f64 = 6000.0;
-const BEND: f64 = 400.0;
+/// The shaft from the mouth down to the tunnel, metres deep; its width at
+/// the mouth is `FUNNEL_TOP` across the middle.
+pub const FUNNEL: f64 = 1000.0;
+pub const FUNNEL_TOP: f64 = 1000.0;
+/// The tunnel: segments of `SEGMENT` metres, `SEGMENTS` of them, round a
+/// bore `BORE` metres in radius; how far its S-bend carries it to the side.
+pub const SEGMENT: f64 = 160.0;
+pub const SEGMENTS: u32 = 38;
+pub const TUNNEL_LENGTH: f64 = SEGMENT * SEGMENTS as f64;
+pub const BORE: f64 = 120.0;
+pub const BEND: f64 = 400.0;
+/// How fast the ship comes out of the tunnel into the bay, metres a second.
 const BAY_SPEED: f64 = 60.0;
 /// The cradle: this far into the bay past the tunnel's end, and this far
 /// below its line, metres; how far the ship backs out of it.
-const CRADLE: f64 = 300.0;
-const CRADLE_DROP: f64 = 15.0;
-const BACK_OUT: f64 = 60.0;
+pub const CRADLE: f64 = 300.0;
+pub const CRADLE_DROP: f64 = 15.0;
+pub const BACK_OUT: f64 = 60.0;
+/// The interior is drawn (and the base's outside not) from this many
+/// metres out from the mouth, where the funnel fills the view.
+const INSIDE_FROM: f64 = 2000.0;
 /// How fast the ship leaves through the mouth, metres a second.
 const EXIT_SPEED: f64 = 400.0;
 
@@ -90,7 +101,13 @@ impl BaseStage {
         BaseStage::Climb,
     ];
 
+    /// Inside the base, from the mouth in and back out to it.
+    pub fn inner(self) -> bool {
+        !matches!(self, BaseStage::Approach | BaseStage::Climb)
+    }
+
     /// A short name, for screenshots and tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn name(self) -> &'static str {
         match self {
             BaseStage::Approach => "approach",
@@ -287,9 +304,16 @@ struct Frame {
     radius: f64,
 }
 
+/// Where the tunnel ends and the bay begins, metres in from the mouth.
+pub const fn tunnel_end() -> f64 {
+    FUNNEL + TUNNEL_LENGTH
+}
+
 /// The tunnel's line: how far to the right at depth `z`, metres, and how
-/// fast that changes with depth. An S-bend, so its far end is never in view.
-fn bend(z: f64) -> (f64, f64) {
+/// fast that changes with depth. Straight down the funnel, then an S-bend
+/// along the tunnel, so its far end is never in view.
+pub fn bend(z: f64) -> (f64, f64) {
+    let z = z - FUNNEL;
     if z <= 0.0 {
         return (0.0, 0.0);
     }
@@ -340,12 +364,40 @@ fn turn(a: [f64; 3], b: [f64; 3], s: f64, fallback: [f64; 3]) -> [f64; 3] {
     super::super::voyage::rotate(a, axis, c.acos() * s.clamp(0.0, 1.0))
 }
 
+/// Where the camera is and which way it looks.
+struct Pose {
+    position: [f64; 3],
+    forward: [f64; 3],
+    up: [f64; 3],
+}
+
 /// Where the camera is and which way it looks, at a moment of a visit.
 pub(super) struct Placed {
     pub position: [f64; 3],
     pub forward: [f64; 3],
     pub up: [f64; 3],
+    pub scene: BaseScene,
+}
+
+/// A moment of a visit to a starbase as its interior is drawn
+/// (`interior.rs`): where the camera is in the base's frame, metres (the
+/// mouth at the origin, +z in, +y up, +x right), and that frame's axes in
+/// the world; the stage, how far into it and into the whole visit; whether
+/// the interior is drawn in place of the system; and what moves in it.
+#[derive(Clone, Copy, Debug)]
+pub struct BaseScene {
+    pub ship: [f64; 3],
+    pub basis: [[f64; 3]; 3],
+    pub stage: BaseStage,
+    pub local: f64,
+    pub clock: f64,
     pub inside: bool,
+    pub seed: u64,
+    /// The ship given priority, while it is seen going in: where (metres,
+    /// in the base's frame) and how brightly its engines show, 0..1.
+    pub traffic: Option<[f64; 4]>,
+    /// The hull's shudder as the clamps close and let go, 0..1.
+    pub shake: f64,
 }
 
 impl Tour {
@@ -400,6 +452,19 @@ impl Tour {
         }
     }
 
+    /// The starbase's attitude, held still rather than turning as a moon
+    /// does: rows turning world directions into its body's frame, in which
+    /// its maps lie and its mouth faces +z (`MOUTH` in `generate.wesl`).
+    /// The mouth faces the corridor the ship flies in by, its up the base's.
+    pub fn base_attitude(&self) -> Option<(Stop, [[f64; 3]; 3])> {
+        let base = self.base.as_ref()?;
+        let frame = self.base_frame(base);
+        Some((
+            base.stop,
+            [normalize(cross(frame.up, frame.out)), frame.up, frame.out],
+        ))
+    }
+
     /// A point inside the base, metres in its own frame, relative to its
     /// centre in the world; and a direction in its frame, in the world.
     fn inside_rel(frame: &Frame, p: [f64; 3]) -> [f64; 3] {
@@ -417,35 +482,33 @@ impl Tour {
 
     /// The camera `local` seconds into stage `stage` of the visit to the
     /// base at `stop` (`t` into the visit).
-    pub(super) fn base_view(&self, stop: Stop, stage: BaseStage, local: f64, t: f64) -> Placed {
+    fn base_place(&self, stop: Stop, stage: BaseStage, local: f64, t: f64) -> Pose {
         let base = self.base_at(stop);
         let frame = self.base_frame(base);
         let centre = self.system.centre(stop, t);
         let inward = scale(frame.out, -1.0);
         let at = |rel: [f64; 3]| add(centre, rel);
         // In the base's frame: where, and which way it looks.
-        let placed = |p: [f64; 3], d: [f64; 3]| Placed {
+        let placed = |p: [f64; 3], d: [f64; 3]| Pose {
             position: at(Self::inside_rel(&frame, p)),
             forward: normalize(Self::inside_dir(&frame, d)),
             up: frame.up,
-            inside: true,
         };
         let tunnel = |z: f64, sense: f64| {
             let (x, slope) = bend(z);
             placed([x, 0.0, z], [slope * sense, 0.0, sense])
         };
-        let cradle_z = TUNNEL_LENGTH + CRADLE;
+        let cradle_z = tunnel_end() + CRADLE;
         match stage {
             BaseStage::Approach => {
                 let align = base.align_at();
                 if local < align {
                     // Calling in, cleared and perhaps holding: still in orbit.
                     let (position, forward, up) = self.orbiting(stop, t);
-                    return Placed {
+                    return Pose {
                         position,
                         forward,
                         up,
-                        inside: false,
                     };
                 }
                 if local < align + ALIGN {
@@ -457,29 +520,27 @@ impl Tour {
                     let p1 = scale(frame.out, frame.radius + CORRIDOR * METRE);
                     let v1 = scale(inward, corridor_speed() * METRE * ALIGN);
                     let (_, f0, u0) = self.orbiting(stop, t);
-                    return Placed {
+                    return Pose {
                         position: at(hermite(p0, v0, p1, v1, s)),
                         forward: turn(f0, inward, smoothstep(0.0, 0.7, s), frame.right),
                         up: normalize(turn(u0, frame.up, smoothstep(0.0, 1.0, s), frame.right)),
-                        inside: false,
                     };
                 }
                 // Down the corridor's beacons to the mouth.
                 let d = closing(local - align - ALIGN);
-                Placed {
+                Pose {
                     position: at(scale(frame.out, frame.radius + d * METRE)),
                     forward: inward,
                     up: frame.up,
-                    inside: false,
                 }
             }
             BaseStage::Tunnel => tunnel(
-                ease(0.0, MOUTH_SPEED, TUNNEL_LENGTH, BAY_SPEED, TUNNEL, local),
+                ease(0.0, MOUTH_SPEED, tunnel_end(), BAY_SPEED, TUNNEL, local),
                 1.0,
             ),
             BaseStage::Berth => {
                 let u = local / BERTH;
-                let z = ease(TUNNEL_LENGTH, BAY_SPEED, cradle_z, 0.0, BERTH, local);
+                let z = ease(tunnel_end(), BAY_SPEED, cradle_z, 0.0, BERTH, local);
                 placed(
                     [BEND, -CRADLE_DROP * smoothstep(0.5, 1.0, u), z],
                     [0.0, 0.0, 1.0],
@@ -514,14 +575,109 @@ impl Tour {
                 let p1 = self.orbit_rel(stop, end);
                 let v1 = scale(self.orbit_velocity(stop, end), CLIMB);
                 let (_, f1, u1) = self.orbiting(stop, t);
-                Placed {
+                Pose {
                     position: at(hermite(p0, v0, p1, v1, s)),
                     forward: turn(frame.out, f1, smoothstep(0.25, 1.0, s), frame.right),
                     up: normalize(turn(frame.up, u1, smoothstep(0.0, 1.0, s), frame.right)),
-                    inside: false,
                 }
             }
         }
+    }
+
+    /// The camera `local` seconds into stage `stage` of the visit to the
+    /// base at `stop` (`t` into the visit), and the interior as drawn then.
+    pub(super) fn base_view(&self, stop: Stop, stage: BaseStage, local: f64, t: f64) -> Placed {
+        let base = self.base_at(stop);
+        let frame = self.base_frame(base);
+        let pose = self.base_place(stop, stage, local, t);
+        let ship = self.to_base(&frame, base.stop, pose.position, t);
+        // Inside from where the funnel fills the view, down and back up.
+        let inside =
+            stage.inner() || (ship[2] > -INSIDE_FROM && ship[0].hypot(ship[1]) < FUNNEL_TOP);
+        let start = self.base_start(stop);
+        // The shudder of the clamps closing at the end of the berthing, and
+        // letting go as the undocking begins.
+        let thud = |at: f64| {
+            let x = local - at;
+            if x < 0.0 { 0.0 } else { (-x / 0.35).exp() }
+        };
+        let shake = match stage {
+            BaseStage::Berth => thud(BERTH - 1.2),
+            BaseStage::Undock => 0.6 * thud(0.3),
+            _ => 0.0,
+        };
+        Placed {
+            position: pose.position,
+            forward: pose.forward,
+            up: pose.up,
+            scene: BaseScene {
+                ship,
+                basis: [frame.right, frame.up, scale(frame.out, -1.0)],
+                stage,
+                local,
+                clock: t - start,
+                inside,
+                seed: self.system.seed,
+                traffic: self.traffic_at(base, &frame, stage, local, t),
+                shake,
+            },
+        }
+    }
+
+    /// A point in the world at `t`, in the base's frame (metres from its
+    /// mouth).
+    fn to_base(&self, frame: &Frame, stop: Stop, p: [f64; 3], t: f64) -> [f64; 3] {
+        let mouth = add(self.system.centre(stop, t), scale(frame.out, frame.radius));
+        let rel = scale(sub(p, mouth), 1.0 / METRE);
+        [
+            dot(rel, frame.right),
+            dot(rel, frame.up),
+            -dot(rel, frame.out),
+        ]
+    }
+
+    /// The ship given priority, while it is seen: through the hold, from
+    /// halfway between the camera and the mouth to the corridor's start and
+    /// down it into the mouth, its engines fading as it goes in.
+    fn traffic_at(
+        &self,
+        base: &Base,
+        frame: &Frame,
+        stage: BaseStage,
+        local: f64,
+        t: f64,
+    ) -> Option<[f64; 4]> {
+        base.traffic?;
+        if stage != BaseStage::Approach {
+            return None;
+        }
+        let hold = base
+            .steps()
+            .into_iter()
+            .find(|&(s, _)| s == Step::Hold)
+            .map(|(_, at)| at)?;
+        let u = (local - hold) / (HOLD * 0.9);
+        if !(-0.15..=1.0).contains(&u) {
+            return None;
+        }
+        let start = self.base_start(base.stop);
+        let seen_from = self.to_base(
+            frame,
+            base.stop,
+            self.orbiting(base.stop, start + hold).0,
+            t,
+        );
+        let from = scale(seen_from, 0.5);
+        let corridor = [0.0, 0.0, -CORRIDOR];
+        let at = if u < 0.6 {
+            let s = smoothstep(0.0, 0.6, u.max(0.0));
+            add(scale(from, 1.0 - s), scale(corridor, s))
+        } else {
+            let s = smoothstep(0.6, 1.0, u);
+            scale(corridor, 1.0 - s)
+        };
+        let shown = smoothstep(-0.15, 0.0, u) * (1.0 - smoothstep(0.9, 1.0, u));
+        Some([at[0], at[1], at[2], shown])
     }
 
     /// Metres to the mouth from where the camera is at `t`, outside.
@@ -796,7 +952,7 @@ impl Tour {
                 )
             }
             BaseStage::Tunnel => {
-                let z = ease(0.0, MOUTH_SPEED, TUNNEL_LENGTH, BAY_SPEED, TUNNEL, local);
+                let z = ease(0.0, MOUTH_SPEED, tunnel_end(), BAY_SPEED, TUNNEL, local);
                 (
                     "TRANSIT TUNNEL".into(),
                     vec![
@@ -846,7 +1002,7 @@ impl Tour {
             ),
             BaseStage::Outbound => {
                 let z = ease(
-                    TUNNEL_LENGTH + CRADLE - BACK_OUT,
+                    tunnel_end() + CRADLE - BACK_OUT,
                     0.0,
                     0.0,
                     -EXIT_SPEED,
@@ -912,7 +1068,8 @@ mod tests {
         assert!((start - corridor_speed()).abs() < 2.0, "{start}");
         // The tunnel's bend starts and ends straight.
         assert_eq!(bend(0.0), (0.0, 0.0));
-        assert!(bend(TUNNEL_LENGTH * 0.5).1 > 0.0);
-        assert!((bend(TUNNEL_LENGTH - 1e-6).0 - BEND).abs() < 1e-3);
+        assert_eq!(bend(FUNNEL), (0.0, 0.0));
+        assert!(bend(FUNNEL + TUNNEL_LENGTH * 0.5).1 > 0.0);
+        assert!((bend(tunnel_end() - 1e-6).0 - BEND).abs() < 1e-3);
     }
 }

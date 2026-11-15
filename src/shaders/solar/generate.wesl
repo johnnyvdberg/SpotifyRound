@@ -68,6 +68,7 @@ const GEYSER: i32 = 16;
 const TWO_FACED: i32 = 17;
 const NITROGEN: i32 = 18;
 const RUSTY: i32 = 19;
+const STARBASE: i32 = 20;
 
 fn kind() -> i32 {
     return i32(gen.size.w + 0.5);
@@ -306,6 +307,145 @@ fn living(k: i32) -> bool {
     return k == TERRAN || k == OCEAN || k == JUNGLE || k == EYEBALL;
 }
 
+// A starbase's plating. Panels on a cube laid over the sphere, in two
+// sizes, each its own height and tone; ribs round a few great circles; and
+// the mouth the ship flies into, at +z in the body's frame (`MOUTH`), on a
+// broad apron. Shared by its height, day and night maps.
+const MOUTH: vec3<f32> = vec3<f32>(0.0, 0.0, 1.0);
+// The mouth's radius and its apron's, radians round the centre.
+const MOUTH_ANGLE: f32 = 0.016;
+const APRON_ANGLE: f32 = 0.07;
+
+struct Plate {
+    // The cell's id, a value of its own, and how far into it from its
+    // nearest edge (0 on the seam, 0.5 at its middle).
+    id: vec3<i32>,
+    value: f32,
+    edge: f32,
+};
+
+// The panel at `p`, `n` to a cube face's edge.
+fn plate(p: vec3<f32>, n: f32, seed: i32) -> Plate {
+    let a = abs(p);
+    var face = vec2<f32>(p.x, p.y) / a.z;
+    var axis = select(2, 5, p.z < 0.0);
+    if (a.x >= a.y && a.x >= a.z) {
+        face = vec2<f32>(p.z, p.y) / a.x;
+        axis = select(0, 3, p.x < 0.0);
+    } else if (a.y >= a.z) {
+        face = vec2<f32>(p.x, p.z) / a.y;
+        axis = select(1, 4, p.y < 0.0);
+    }
+    // Squared off toward the cube's corners, so panels stay near square.
+    let warped = atan(face * 0.9) / atan(0.9);
+    let g = (warped * 0.5 + 0.5) * n;
+    let cell = floor(g);
+    let f = g - cell;
+    var out: Plate;
+    out.id = vec3<i32>(i32(cell.x), i32(cell.y), axis + seed * 8);
+    out.value = hash3(out.id);
+    out.edge = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
+    return out;
+}
+
+// How near `p` is to one of the ribs (great circles round the first four
+// plates' points): 1 on its crest, 0 off it.
+fn ribs(p: vec3<f32>) -> f32 {
+    var rib = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let d = abs(dot(p, normalize(gen.plates[i].xyz)));
+        rib = max(rib, 1.0 - smoothstep(0.006, 0.011, d));
+    }
+    return rib;
+}
+
+// The starbase's height at `p`: panels stepped up and down, seams sunk
+// between them, ribs standing up along their circles, the apron flat round
+// the mouth and the mouth itself a pit.
+fn station_height(p: vec3<f32>) -> f32 {
+    let big = plate(p, 18.0, 1);
+    let small = plate(p, 72.0, 2);
+    var h = floor(big.value * 3.0) * 0.006 + floor(small.value * 2.0) * 0.0015;
+    h -= 0.005 * (1.0 - smoothstep(0.0, 0.05, big.edge));
+    h -= 0.0015 * (1.0 - smoothstep(0.0, 0.08, small.edge));
+    h += 0.012 * ribs(p);
+    let off = acos(clamp(dot(p, MOUTH), -1.0, 1.0));
+    let apron = 1.0 - smoothstep(APRON_ANGLE * 0.85, APRON_ANGLE, off);
+    h = mix(h, 0.004 + 0.002 * step(0.5, fract(off / APRON_ANGLE * 6.0)), apron);
+    h -= 0.03 * (1.0 - smoothstep(MOUTH_ANGLE * 0.8, MOUTH_ANGLE, off));
+    return h;
+}
+
+// The starbase's lights at `p`: their brightness, and their colour (0 warm
+// white, 0.5 cyan, 1 magenta). Lit districts of the large panels, their
+// windows in a fine grid; lanes of lights along the ribs, dashed; the
+// mouth's ring and the guidance lights running in to it.
+fn station_lights(p: vec3<f32>) -> vec2<f32> {
+    let big = plate(p, 18.0, 1);
+    let district = smoothstep(0.55, 0.75, big.value) * smoothstep(0.02, 0.06, big.edge);
+    var light = 0.0;
+    var hue = floor(fract(big.value * 7.31) * 3.0) * 0.5;
+    if (district > 0.0) {
+        let windows = plate(p, 360.0, 3);
+        let lit = step(0.55, windows.value) * smoothstep(0.1, 0.25, windows.edge);
+        light = district * lit * (0.5 + 0.5 * fract(windows.value * 13.7));
+    }
+    // Lanes: dashed along the ribs.
+    let rib = ribs(p);
+    if (rib > 0.0) {
+        let dash = step(0.5, fract(dot(p, vec3<f32>(91.0, 57.0, 73.0))));
+        let lane = rib * (0.35 + 0.65 * dash) * 0.9;
+        if (lane > light) {
+            light = lane;
+            hue = 0.5;
+        }
+    }
+    // The mouth: a bright ring, and lines of guidance lights running in.
+    let off = acos(clamp(dot(p, MOUTH), -1.0, 1.0));
+    if (off < APRON_ANGLE) {
+        let ring = 1.0 - smoothstep(0.0, 0.0025, abs(off - MOUTH_ANGLE * 1.15));
+        let side = normalize(cross(MOUTH, vec3<f32>(0.0, 1.0, 0.0)));
+        let up = cross(side, MOUTH);
+        let around = atan2(dot(p, up), dot(p, side));
+        let spoke = 1.0 - smoothstep(0.0, 0.05, abs(fract(around / TAU * 8.0 + 0.5) - 0.5));
+        let beads = step(0.55, fract(off / APRON_ANGLE * 9.0));
+        let guide = spoke * beads * step(MOUTH_ANGLE * 1.4, off);
+        let pit = 1.0 - smoothstep(MOUTH_ANGLE * 0.8, MOUTH_ANGLE, off);
+        let mouth = max(max(ring, guide * 0.8), pit * 0.25);
+        if (mouth > light * 0.5) {
+            light = max(light * (1.0 - pit), mouth);
+            hue = select(0.0, 0.5, guide > ring);
+        }
+    }
+    return vec2<f32>(clamp(light, 0.0, 1.0), hue);
+}
+
+// The starbase's day colour: hull plates in the palette's greys, each its
+// own tone, a few dark (arrays, glass), seams near black, ribs pale with
+// hazard-striped ends, the apron marked out round the dark mouth.
+fn station_day(p: vec3<f32>) -> vec3<f32> {
+    let big = plate(p, 18.0, 1);
+    let small = plate(p, 72.0, 2);
+    var hull = mix(pal(1), pal(0), 0.35 + 0.65 * big.value);
+    hull *= 0.85 + 0.3 * small.value;
+    // Arrays and glass: dark blue-grey panels.
+    hull = mix(hull, vec3<f32>(0.03, 0.045, 0.07), step(0.86, fract(big.value * 3.7)) * 0.85);
+    hull = mix(hull, pal(2), 1.0 - smoothstep(0.0, 0.05, big.edge));
+    hull = mix(hull, pal(2), (1.0 - smoothstep(0.0, 0.08, small.edge)) * 0.4);
+    hull = mix(hull, pal(3), ribs(p));
+    // Faint weathering streaks.
+    hull *= 0.92 + 0.16 * fbm(p * 40.0 + gen.offsets[0].xyz, 3);
+    let off = acos(clamp(dot(p, MOUTH), -1.0, 1.0));
+    if (off < APRON_ANGLE) {
+        let rings = step(0.82, fract(off / APRON_ANGLE * 6.0));
+        var apron = mix(pal(1) * 0.8, srgb(220.0, 170.0, 40.0), rings * 0.8);
+        apron = mix(apron, vec3<f32>(0.01), 1.0 - smoothstep(MOUTH_ANGLE * 0.8, MOUTH_ANGLE, off));
+        hull = mix(hull, apron, 1.0 - smoothstep(APRON_ANGLE * 0.85, APRON_ANGLE, off));
+    }
+    // The lights' windows show by day too, faintly.
+    return hull + vec3<f32>(0.04, 0.05, 0.06) * station_lights(p).x;
+}
+
 struct Shape {
     q: vec3<f32>,
     boundary: f32,
@@ -352,6 +492,9 @@ fn fs_height(in: Varying) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let p = sphere_at(in.position.xy / gen.size.xy);
+    if (k == STARBASE) {
+        return vec4<f32>(station_height(p), 0.0, 0.0, 1.0);
+    }
     let o = gen.offsets;
     let s = shape(p);
     let landish = smoothstep(-0.15, 0.25, s.base);
@@ -366,7 +509,7 @@ fn fs_height(in: Varying) -> @location(0) vec4<f32> {
 @fragment
 fn fs_erosion(in: Varying) -> @location(0) vec4<f32> {
     let k = kind();
-    if (!has_ground(k)) {
+    if (!has_ground(k) || k == STARBASE) {
         return vec4<f32>(0.0);
     }
     let s = shape(sphere_at(in.position.xy / gen.size.xy));
@@ -972,6 +1115,9 @@ fn fs_day(in: Varying) -> @location(0) vec4<f32> {
     if (GROUP == 3) {
         return vec4<f32>(living_day(c, steep), 1.0);
     }
+    if (GROUP == 13) {
+        return vec4<f32>(station_day(p), 1.0);
+    }
     return vec4<f32>(rocky_day(rocky_kind(), c, steep, features(in.position.xy)), 1.0);
 }
 
@@ -987,7 +1133,8 @@ fn liveable(position: vec2<f32>) -> f32 {
 
 // The night map, into the red channel, one pipeline per family (`GROUP`):
 // 0 cities on living worlds, 1 molten rock's glow on lava worlds, 2 a hot
-// Jupiter's own heat, 3 nothing (it only clears the channel).
+// Jupiter's own heat, 3 nothing (it only clears the channel), 5 a
+// starbase's lights, with their colour in green (4 is lava's fine cracks).
 @fragment
 fn fs_lights(in: Varying) -> @location(0) vec4<f32> {
     let k = kind();
@@ -1024,6 +1171,10 @@ fn fs_lights(in: Varying) -> @location(0) vec4<f32> {
         light = molten * (0.75 + 0.25 * fbm(p * 30.0, 3));
     } else if (GROUP == 2) {
         light = giant(p, k).night;
+    } else if (GROUP == 5) {
+        // A starbase's lights and their colour (`station_lights`), into
+        // both channels.
+        return vec4<f32>(station_lights(p), 0.0, 0.0);
     }
     return vec4<f32>(clamp(light, 0.0, 1.0), 0.0, 0.0, 0.0);
 }

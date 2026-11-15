@@ -60,11 +60,14 @@ pub enum Kind {
     Nitrogen = 18,
     /// Red, dusty and cratered.
     Rusty = 19,
+    /// Not a world but a station the size of a moon: plated in panels,
+    /// ribbed, lit by its districts, a mouth to fly into (`tour::starbase`).
+    Starbase = 20,
 }
 
 impl Kind {
     /// Every kind, in the shader's order.
-    pub const ALL: [Kind; 20] = [
+    pub const ALL: [Kind; 21] = [
         Kind::Terran,
         Kind::Desert,
         Kind::Ocean,
@@ -85,6 +88,7 @@ impl Kind {
         Kind::TwoFaced,
         Kind::Nitrogen,
         Kind::Rusty,
+        Kind::Starbase,
     ];
 
     pub fn name(self) -> &'static str {
@@ -109,6 +113,7 @@ impl Kind {
             Kind::TwoFaced => "two-faced moon",
             Kind::Nitrogen => "nitrogen-ice moon",
             Kind::Rusty => "rusty moon",
+            Kind::Starbase => "starbase",
         }
     }
 
@@ -536,6 +541,28 @@ fn catalogue_name(rng: &mut Rng) -> String {
 /// Palettes, linear: gas giants' bands, and the tints of rocky kinds.
 fn palette(kind: Kind, rng: &mut Rng) -> [[f32; 3]; 4] {
     match kind {
+        // A station's plating: light and dark hull greys, the seams' near
+        // black, and its ribs' paler alloy, faintly blue or warm.
+        Kind::Starbase => *rng.pick(&[
+            [
+                srgb(150, 156, 164),
+                srgb(84, 90, 100),
+                srgb(26, 28, 34),
+                srgb(196, 200, 206),
+            ],
+            [
+                srgb(158, 152, 144),
+                srgb(92, 88, 84),
+                srgb(30, 28, 26),
+                srgb(206, 198, 186),
+            ],
+            [
+                srgb(132, 142, 156),
+                srgb(70, 78, 92),
+                srgb(20, 24, 32),
+                srgb(184, 194, 210),
+            ],
+        ]),
         Kind::GasGiant => *rng.pick(&[
             // Banded beige and rust, like Jupiter.
             [
@@ -1064,9 +1091,8 @@ impl System {
         let moon = &mut self.planets[p].moons[m];
         moon.world = true;
         moon.starbase = true;
-        // Plated rock for now: grey and cratered (its own map is to come).
-        moon.kind = Kind::Barren;
-        moon.palette = palette(Kind::Barren, &mut rng);
+        moon.kind = Kind::Starbase;
+        moon.palette = palette(Kind::Starbase, &mut rng);
         // The size of a moon: 900 to 1,600 km in radius.
         moon.radius = rng.range(900.0, 1600.0) / KM;
         moon.name = rng.pick(STARBASE_NAMES).to_string();
@@ -1083,6 +1109,7 @@ impl System {
     }
 
     /// Whether `stop` is a starbase.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_starbase(&self, stop: Stop) -> bool {
         stop.moon.is_some_and(|m| {
             self.planets[stop.planet]

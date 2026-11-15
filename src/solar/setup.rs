@@ -793,6 +793,41 @@ impl Solar {
             cache: gpu.pipeline_cache(),
         });
         pipelines.insert(Pipe::Ships, ("Solar ships".to_string(), ship_pipeline));
+        // A starbase tunnel's panes: quads made in the vertex shader round
+        // each segment's window bands (`vs_pane`), the city behind them
+        // traced in `fs_pane`, opaque and writing the depth.
+        let panes = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Solar base panes"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_pane"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_pane"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: gpu.pipeline_cache(),
+        });
+        pipelines.insert(Pipe::BasePanes, ("Solar base panes".to_string(), panes));
         // Every other model family's meshes, instanced: a pipeline each.
         let instance_attributes =
             wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4];

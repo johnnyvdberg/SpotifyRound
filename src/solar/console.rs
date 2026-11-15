@@ -299,6 +299,24 @@ pub fn incident_rows() -> Vec<Row> {
 /// visit, and which. One or two, sometimes none, spread through the time in
 /// the system (`inside`, the start of the flight out); never in its first
 /// half minute, and never two at once.
+/// What a starbase's crews put right of incident `k` (`INCIDENTS`) while the
+/// ship is docked: a line for the service panel, its name and what was
+/// done; none for what needs no repair.
+pub fn repair(k: usize) -> Option<(&'static str, &'static str)> {
+    Some(match INCIDENTS.get(k)?.title {
+        "COOLANT LEAK" => ("COOLANT LOOP B", "leak patched, loop refilled"),
+        "HULL BREACH" => ("CARGO BAY TWO", "breach plated over and tested"),
+        "SHIP'S CAT LOOSE" => ("SHIP'S CAT", "recovered from a gantry, unharmed"),
+        "NAVIGATION DRIFT" => ("INERTIAL PLATFORM", "realigned on the base's beacons"),
+        "AUTOPILOT FAULT" => ("FLIGHT COMPUTER", "patched and flight-tested"),
+        "LIFE SIGNS" => ("CREW MANIFEST", "recounted: a stowaway handed over"),
+        "CARGO SHIFT" => ("CARGO CLAMPS", "the tow made fast again"),
+        "MOTION TRACKER" => ("AIR DUCTS, DECK C", "swept end to end: nothing found"),
+        "STELLAR FLARE" => ("SHIELDING", "flare damage to the emitters mended"),
+        _ => return None,
+    })
+}
+
 pub fn schedule(seed: u64, inside: f64) -> Vec<(f64, usize)> {
     let mut rng = Rng::new(seed ^ 0x1c1d_e7a5);
     let count = match rng.unit() {
@@ -326,6 +344,21 @@ pub fn schedule(seed: u64, inside: f64) -> Vec<(f64, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_starbase_repairs_what_went_wrong() {
+        let named = |title: &str| {
+            INCIDENTS
+                .iter()
+                .position(|i| i.title == title)
+                .expect(title)
+        };
+        assert!(repair(named("COOLANT LEAK")).is_some());
+        assert!(repair(named("HULL BREACH")).is_some());
+        assert!(repair(named("SHIP'S CAT LOOSE")).is_some());
+        assert!(repair(named("HYPERSLEEP CYCLE COMPLETE")).is_none());
+        assert!(repair(INCIDENTS.len()).is_none());
+    }
 
     #[test]
     fn orders_come_back_from_the_ui() {

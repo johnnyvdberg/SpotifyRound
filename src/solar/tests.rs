@@ -96,7 +96,32 @@ fn moments(tour: &Tour) -> Vec<(String, f64)> {
                         ));
                     }
                 } else {
-                    out.push((format!("base-{name}"), at(0.5)));
+                    // Each stage at the moments worth a look: the funnel and
+                    // the tunnel's windows, the clamps closing, the service
+                    // through its steps, the turn about, the way out and
+                    // out of the mouth.
+                    let points: &[(&str, f64)] = match stage {
+                        tour::BaseStage::Tunnel => &[
+                            ("funnel", 0.08),
+                            ("windows", 0.45),
+                            ("bend", 0.75),
+                            ("bay-ahead", 0.97),
+                        ],
+                        tour::BaseStage::Berth => &[("hall", 0.3), ("clamps", 0.93)],
+                        tour::BaseStage::Service => &[
+                            ("weld", 0.1),
+                            ("couple", 0.3),
+                            ("fuel", 0.5),
+                            ("scan", 0.7),
+                            ("ready", 0.95),
+                        ],
+                        tour::BaseStage::Undock => &[("back", 0.3), ("turn", 0.8)],
+                        tour::BaseStage::Outbound => &[("tunnel", 0.5), ("funnel", 0.95)],
+                        _ => &[("out", 0.15), ("orbit", 0.8)],
+                    };
+                    for &(what, u) in points {
+                        out.push((format!("base-{name}-{what}"), at(u)));
+                    }
                 }
             }
             Phase::Depart(_) => {
@@ -511,6 +536,92 @@ fn shoot(
         let thumb = image::imageops::thumbnail(&image, cell, cell);
         image::imageops::overlay(sheet, &thumb, (cell * x) as i64, (cell * y) as i64);
     }
+}
+
+/// A starbase visit from the approach to the climb out, at every moment
+/// `moments` names for it: a system whose ship holds for priority traffic
+/// and one whose does not (the first seeds with each, or `SOLAR_SEED` for
+/// one). A row each on `starbase-sheet.png`; the HUD and panels in
+/// `starbase.txt`.
+#[test]
+#[ignore = "writes screenshots; needs a working GPU adapter"]
+fn starbase() {
+    let dir = std::env::var("SOLAR_SHOTS_DIR").unwrap_or_else(|_| "target/solar-shots".into());
+    std::fs::create_dir_all(&dir).expect("a screenshot directory");
+    let gpu = crate::gpu::headless().expect("a GPU adapter");
+    let with_base = |hold: bool| {
+        (0..600u64).find(|&seed| {
+            let tour = Tour::new(
+                system::System::generate(seed),
+                system::System::generate(seed + 1),
+            );
+            tour.base
+                .as_ref()
+                .is_some_and(|b| b.traffic.is_some() == hold)
+        })
+    };
+    let seeds: Vec<u64> = match std::env::var("SOLAR_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        Some(seed) => vec![seed],
+        None => [with_base(true), with_base(false)]
+            .into_iter()
+            .flatten()
+            .collect(),
+    };
+    let cell = 216;
+    let mut rows = Vec::new();
+    let mut notes = String::new();
+    for seed in seeds {
+        let mut solar = Solar::with_seed(&gpu, seed);
+        wait_for_models(&mut solar, &gpu);
+        let mut thumbs = Vec::new();
+        for (label, t) in moments(&solar.tour)
+            .into_iter()
+            .filter(|(l, _)| l.starts_with("base-"))
+        {
+            settle(&mut solar, &gpu, t);
+            solar.draw(&gpu, t, 0);
+            let pixels = read_texture(&gpu, &solar.frames[0].texture);
+            let name = format!("starbase-seed{seed}-{label}");
+            let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+            image::save_buffer(&path, &pixels, SIZE, SIZE, image::ExtendedColorType::Rgba8)
+                .expect("a screenshot");
+            solar.hud_at = f64::NEG_INFINITY;
+            solar.update_hud(t);
+            notes.push_str(&format!("{name} (t={t:.1}s) {}\n", solar.hud.title));
+            for (l, v) in &solar.hud.lines {
+                notes.push_str(&format!("      {l:>13}  {v}\n"));
+            }
+            if let Some(m) = &solar.hud.manoeuvre {
+                notes.push_str(&format!("      [{}] {}\n", m.name, m.text));
+                for (l, v) in &m.stages {
+                    notes.push_str(&format!("        {l:>18}  {v}\n"));
+                }
+            }
+            if let Some(image) = image::RgbaImage::from_raw(SIZE, SIZE, pixels) {
+                thumbs.push(image::imageops::thumbnail(&image, cell, cell));
+            }
+        }
+        rows.push(thumbs);
+    }
+    let across = rows.iter().map(|r| r.len()).max().unwrap_or(0) as u32;
+    let mut sheet = image::RgbaImage::new(cell * across.max(1), cell * rows.len().max(1) as u32);
+    for (r, thumbs) in rows.iter().enumerate() {
+        for (c, thumb) in thumbs.iter().enumerate() {
+            image::imageops::overlay(
+                &mut sheet,
+                thumb,
+                (cell * c as u32) as i64,
+                (cell * r as u32) as i64,
+            );
+        }
+    }
+    sheet
+        .save(std::path::Path::new(&dir).join("starbase-sheet.png"))
+        .expect("a contact sheet");
+    std::fs::write(std::path::Path::new(&dir).join("starbase.txt"), notes).expect("notes");
 }
 
 /// Every encounter between the legs of a jump, gates and wormholes too:

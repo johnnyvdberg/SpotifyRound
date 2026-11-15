@@ -33,7 +33,7 @@ use glam::Vec3;
 use super::system::Rng;
 
 /// Bumped whenever a model's shape changes, so stale caches are rebuilt.
-pub const GENERATOR: u32 = 9;
+pub const GENERATOR: u32 = 10;
 /// Variants of each ship design and role.
 pub const VARIANTS: u32 = 3;
 /// Ship designs: as `voyage::FACTIONS`.
@@ -86,7 +86,7 @@ pub struct Instance {
 /// The families of models, each with a pipeline of its own (`MODEL` in
 /// `encounter.wesl`): rocks, star gates, hive cubes, ring
 /// stations and debris.
-pub const FAMILIES: [&str; 5] = ["rock", "gate", "hive", "ring", "debris"];
+pub const FAMILIES: [&str; 6] = ["rock", "gate", "hive", "ring", "debris", "base"];
 
 impl Key {
     /// Its family's number (from 1, as `MODEL`); ships have their own
@@ -99,6 +99,7 @@ impl Key {
             Key::Hive { .. } => 3,
             Key::Ring { .. } => 4,
             Key::Debris { .. } => 5,
+            Key::Base { .. } => 6,
         }
     }
 }
@@ -138,6 +139,10 @@ pub enum Key {
     Debris {
         variant: u32,
     },
+    /// A piece of a starbase's interior (`base_mesh::piece`).
+    Base {
+        piece: u32,
+    },
 }
 
 /// Keys order by kind in the alphabetical order of their names (debris,
@@ -157,6 +162,7 @@ impl Ord for Key {
                     role,
                     variant,
                 } => (5, [design, role, variant]),
+                Key::Base { piece } => (6, [piece, 0, 0]),
             }
         }
         rank(self).cmp(&rank(other))
@@ -205,6 +211,9 @@ impl Key {
         for variant in 0..DEBRIS {
             keys.push(Key::Debris { variant });
         }
+        for piece in 0..super::base_mesh::piece::COUNT {
+            keys.push(Key::Base { piece });
+        }
         keys
     }
 
@@ -220,6 +229,7 @@ impl Key {
             Key::Hive { variant, .. } => (5, variant, 0, 0),
             Key::Ring { gaps, variant } => (6, gaps, variant, 0),
             Key::Debris { variant } => (7, variant, 0, 0),
+            Key::Base { piece } => (8, piece, 0, 0),
         };
         0x5417_0000 ^ (kind as u64) << 32 ^ (a as u64) << 16 ^ (b as u64) << 8 ^ c as u64
     }
@@ -235,6 +245,7 @@ impl Key {
             Key::Hive { .. } => 50,
             Key::Ring { .. } => 170,
             Key::Debris { .. } => 40,
+            Key::Base { .. } => 0,
         }
     }
 
@@ -261,6 +272,7 @@ impl Key {
             Key::Hive { variant, lod } => format!("hive-{variant}-{lod}"),
             Key::Ring { gaps, variant } => format!("ring-{gaps}-{variant}"),
             Key::Debris { variant } => format!("debris-{variant}"),
+            Key::Base { piece } => format!("base-{piece}"),
         }
     }
 }
@@ -724,6 +736,7 @@ fn field(key: Key, k: &Params, p: Vec3) -> Sample {
         Key::Hive { .. } => unreachable!("hives are built as blocks"),
         Key::Ring { gaps, .. } => ring_station(k, p, gaps),
         Key::Debris { .. } => debris(k, p),
+        Key::Base { .. } => unreachable!("the interior is built as quads"),
     }
 }
 
@@ -1504,6 +1517,9 @@ fn debris(k: &Params, p: Vec3) -> Sample {
 pub fn build(key: Key) -> Mesh {
     if let Key::Hive { variant, lod } = key {
         return hive_mesh(variant, lod);
+    }
+    if let Key::Base { piece } = key {
+        return super::base_mesh::mesh(piece);
     }
     let params = Params::new(key);
     let n = key.resolution();

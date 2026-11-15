@@ -96,20 +96,34 @@ forces one; `cargo test --release solar::tests::encounters -- --ignored` shoots 
 ## Starbases
 
 About one system in four has a starbase the size of a moon, round one of its giants, visited in
-place of an orbit (`src/solar/tour/starbase.rs`; the plan for the rest is in
-[starbase-plan.md](starbase-plan.md)). The way in is staged like a drive spooling up, on a docking
-panel in approach control's green: CONTACT (hailing approach control), CLEARANCE (a bay and a
-corridor), ALIGNMENT (off the orbit onto the corridor's beacon) and FINAL (down the corridor to the
-mouth), while the HUD carries approach control's calls. One time in five another ship has priority
-(a medical frigate with casualties aboard, an ore hauler with its reactor running hot, a colony ark
-too big to wait…): the clearance says to hold, and a HOLD step keeps the ship circling in its orbit
-while that ship goes in first. Then it flies the tunnel, berths, is serviced (hull plating, coolant,
-reaction mass, the drive's coil, nav sync), undocks, turns about, flies back out and climbs back into
-the orbit it left, and the tour goes on from there. For now the inside is a flat placeholder: the
-tunnel, the city through its windows and the bay are still to be drawn. `SOLAR_STARBASE=1` puts a
-starbase in every system with a giant (`hold`: traffic always has priority; `clear`: never).
+place of an orbit (`src/solar/tour/starbase.rs`, drawn by `src/solar/interior.rs` and
+`src/solar/base_mesh.rs`; the plan is [starbase-plan.md](starbase-plan.md)). From outside it is
+plated in panels of two sizes, ribbed along great circles, its districts lit at night in warm white,
+cyan and magenta, lanes of lights along its ribs, and its mouth on a marked apron, ringed in light
+with guide lights running in. It holds still rather than turning as a moon does, its mouth on the
+corridor the ship comes in by.
 
-## The ship's computer
+The way in is staged like a drive spooling up, on a docking panel in approach control's green:
+CONTACT (hailing approach control), CLEARANCE (a bay and a corridor), ALIGNMENT (off the orbit onto
+the corridor's beacon) and FINAL (down the corridor to the mouth), while the HUD carries approach
+control's calls and two lines of beacons pulse in toward the mouth. One time in five another ship
+has priority (a medical frigate with casualties aboard, an ore hauler with its reactor running hot,
+a colony ark too big to wait…): the clearance says to hold, a HOLD step keeps the ship circling in
+its orbit, and the other ship's engines are seen going in first.
+
+Inside, a funnel narrows from the mouth to the tunnel, which bends through the base for six
+kilometres; through its windows, a neon city round it in three depths, traced on cylinders round
+the tunnel rather than built (`fs_pane`), with traffic moving between its blocks. It opens into a
+bay where other ships lie in their berths; the ship settles into a cradle, its clamps close with a
+jolt, and arms reach over the nose: a welder's arc throwing sparks and lighting the bay, a fuel
+coupling, a scanner's line, while the SERVICE panel ticks through hull plating, coolant, reaction
+mass, the drive's coil and nav sync (and puts right what went wrong aboard earlier in the visit: a
+coolant leak, a hull breach, the ship's cat). Then it undocks, turns about, flies back out and
+climbs into the orbit it left, and the tour goes on from there. `SOLAR_STARBASE=1` puts a starbase
+in every system with a giant (`hold`: traffic always has priority; `clear`: never);
+`cargo test --release solar::tests::starbase -- --ignored` shoots a visit.
+
+## The ship's computer## The ship's computer
 
 A long press on the solar tour opens the **ship's computer**, a green-phosphor terminal on a curved
 CRT with scan lines, in the style of a freighter's mainframe from the old science-fiction films

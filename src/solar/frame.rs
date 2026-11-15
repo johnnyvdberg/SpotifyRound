@@ -157,11 +157,18 @@ impl Solar {
                             place: f32x4(place, moon.radius),
                             // Locked to its planet, one face toward it; the
                             // clouds of a world drift on their own.
-                            rot: rotation(
-                                planet,
-                                angle + std::f64::consts::PI,
-                                t / moon.period * 0.2,
-                            ),
+                            rot: match self.tour.base_attitude() {
+                                // A starbase holds still, its mouth on the
+                                // corridor flown in by.
+                                Some((base, rows)) if base == stop => {
+                                    rows.map(|r| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0])
+                                }
+                                _ => rotation(
+                                    planet,
+                                    angle + std::f64::consts::PI,
+                                    t / moon.period * 0.2,
+                                ),
+                            },
                             look,
                             air: [air[0], air[1], air[2], bound as f32],
                             colour: [
@@ -327,8 +334,9 @@ impl Solar {
             .into_iter()
             .find(|e| e.id() == params.ev[EV_EVENT][0] as u32);
         let deep = params.ev[EV_SHIP][3] > 0.5;
-        // Inside a starbase: nothing of the system, and (until its tunnel
-        // and bay are drawn) nothing over the clear.
+        // Inside a starbase: nothing of the system, its interior drawn over
+        // the clear (in the fog's colour) instead.
+        let base = self.view(t).base;
         let inside = self.view(t).inside;
         // A stopover that replaces the sky, at full strength: nothing under it
         // to draw.
@@ -400,9 +408,14 @@ impl Solar {
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&params));
         // A battle's effects, grouped by kind, and a draw for each kind.
         let mut fx_draws = Vec::new();
-        if params.ev[EV_EVENT][0] as u32 == voyage::Event::Battle.id() {
+        let lists = if params.ev[EV_EVENT][0] as u32 == voyage::Event::Battle.id() {
+            Some(battle_effects(&params.ev))
+        } else {
+            base.as_ref().map(interior::effects)
+        };
+        if let Some(lists) = lists {
             let mut flat = Vec::new();
-            for (kind, list) in battle_effects(&params.ev).into_iter().enumerate() {
+            for (kind, list) in lists.into_iter().enumerate() {
                 let at = flat.len().min(FX_INSTANCES) as u32;
                 flat.extend(list);
                 flat.truncate(FX_INSTANCES);
@@ -437,11 +450,28 @@ impl Solar {
                 model_draws,
             } = &mut scratch;
             model_instances(&view, placed);
+            if let Some(b) = &view.base {
+                interior::instances(b, placed);
+            }
             placed.truncate(MODEL_INSTANCES);
+            // Inside a starbase every mesh is drawn as its interior (family
+            // 6), the ships in its berths too.
+            let family = |key: models::Key| {
+                if view.base.is_some_and(|b| b.inside) {
+                    6
+                } else {
+                    key.family()
+                }
+            };
             // A draw a mesh, the group with the nearest model first and the
             // nearest first within each: the depth test then spares the
             // pixels nearer models hide from the costly shading.
-            let ship = view.scene.as_ref().map_or([0.0; 3], |s| s.shot.ship);
+            let ship = view
+                .scene
+                .as_ref()
+                .map(|s| s.shot.ship)
+                .or(view.base.map(|b| b.ship))
+                .unwrap_or([0.0; 3]);
             let near = |i: &models::Instance| {
                 let d = [0, 1, 2].map(|k| i.place[k] as f64 - ship[k]);
                 (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - i.place[3] as f64
@@ -479,7 +509,7 @@ impl Solar {
                     // that can show, those next to each other in one draw.
                     for run in visible_runs(clusters, &instance, &params) {
                         model_draws.push((
-                            key.family(),
+                            family(key),
                             (run.start, run.end - run.start, range.2),
                             at..at + 1,
                         ));
@@ -487,12 +517,10 @@ impl Solar {
                     continue;
                 }
                 match model_draws.last_mut() {
-                    Some((family, last, instances))
-                        if *family == key.family() && *last == range =>
-                    {
+                    Some((f, last, instances)) if *f == family(key) && *last == range => {
                         instances.end = at + 1
                     }
-                    _ => model_draws.push((key.family(), range, at..at + 1)),
+                    _ => model_draws.push((family(key), range, at..at + 1)),
                 }
             }
             if !flat.is_empty() {
@@ -575,10 +603,11 @@ impl Solar {
                         // Inside a starbase, a flat placeholder for its
                         // tunnel and bay: a dim steel blue.
                         load: wgpu::LoadOp::Clear(if inside {
+                            // The interior's fog (`base_fog`), linear.
                             wgpu::Color {
-                                r: 0.035,
-                                g: 0.045,
-                                b: 0.07,
+                                r: 0.012,
+                                g: 0.014,
+                                b: 0.024,
                                 a: 1.0,
                             }
                         } else {
@@ -846,6 +875,49 @@ impl Solar {
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, instances);
                 if scissor.is_some() {
                     pass.set_scissor_rect(0, 0, SIZE, SIZE);
+                }
+            }
+            // A starbase: inside, its meshes (nearest first), the tunnel's
+            // panes with the city behind them, then its lights and sparks;
+            // from outside, its lights alone, in front of the base itself.
+            if let Some(b) = base.as_ref() {
+                if b.inside
+                    && let Some(meshes) = self.models.as_ref().filter(|_| !model_draws.is_empty())
+                {
+                    pass.set_bind_group(2, &self.craters.1, &[]);
+                    pass.set_vertex_buffer(0, meshes.vertices.slice(..));
+                    pass.set_vertex_buffer(1, meshes.instances.slice(..));
+                    pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.set_pipeline(&self.pipe(Pipe::Model(6)).1);
+                    for (_, (first, count, at), instances) in model_draws {
+                        pass.draw_indexed(*first..*first + *count, *at, instances.clone());
+                    }
+                    pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
+                }
+                let (_, panes) = interior::segments(b);
+                if panes > 0 {
+                    let (label, pipeline) = self.pipe(Pipe::BasePanes);
+                    pass.set_pipeline(pipeline);
+                    let quads = panes * interior::PANES;
+                    crate::gpu::counted_draw(
+                        &mut pass,
+                        label,
+                        0,
+                        0..interior::PANE_VERTICES,
+                        0..quads,
+                    );
+                }
+                if !fx_draws.is_empty() {
+                    pass.set_vertex_buffer(0, self.effects.slice(..));
+                    for (kind, instances) in &fx_draws {
+                        for far in [false, true] {
+                            let (label, pipeline) = self.pipe(Pipe::BattleFx { kind: *kind, far });
+                            pass.set_pipeline(pipeline);
+                            let vertices = 0..FX_KINDS[*kind].3;
+                            let instances = instances.clone();
+                            crate::gpu::counted_draw(&mut pass, label, 0, vertices, instances);
+                        }
+                    }
                 }
             }
             // An engine burn: the dust streaking past and the glow round

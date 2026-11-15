@@ -298,6 +298,7 @@ fn day_pipeline(kind: Kind) -> &'static str {
         Kind::Geyser => "day9",
         Kind::TwoFaced => "day10",
         Kind::Nitrogen => "day11",
+        Kind::Starbase => "day13",
         Kind::Barren | Kind::Captured | Kind::Rusty => "day12",
     }
 }
@@ -354,6 +355,7 @@ fn plan(kind: Kind, moons: &[Moon]) -> Vec<Pass> {
         Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball => "lights0",
         Kind::Lava => "lights1",
         Kind::HotJupiter => "lights2",
+        Kind::Starbase => "lights5",
         _ => "lights3",
     };
     plan.push(pass(lights, Target::Extra, true));
@@ -363,13 +365,21 @@ fn plan(kind: Kind, moons: &[Moon]) -> Vec<Pass> {
     if kind.has_cities() {
         plan.push(pass("towns", Target::Extra, false));
     }
-    let clouds = match kind {
-        Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball => "clouds0",
-        _ => "clouds1",
-    };
-    let mut clouds = pass(clouds, Target::Extra, false);
-    clouds.mips_after = vec![Target::Day, Target::Relief, Target::Extra];
-    plan.push(clouds);
+    if kind == Kind::Starbase {
+        // A station's lights write both the extra map's channels (their
+        // brightness and their colour): no cloud sheet after them.
+        if let Some(last) = plan.last_mut() {
+            last.mips_after = vec![Target::Day, Target::Relief, Target::Extra];
+        }
+    } else {
+        let clouds = match kind {
+            Kind::Terran | Kind::Ocean | Kind::Jungle | Kind::Eyeball => "clouds0",
+            _ => "clouds1",
+        };
+        let mut clouds = pass(clouds, Target::Extra, false);
+        clouds.mips_after = vec![Target::Day, Target::Relief, Target::Extra];
+        plan.push(clouds);
+    }
 
     for (i, moon) in moons.iter().enumerate() {
         let i = i as u32;
@@ -688,11 +698,13 @@ impl Streamer {
             ("day10", sl, "fs_day", DAY, None, all, 10),
             ("day11", sl, "fs_day", DAY, None, all, 11),
             ("day12", sl, "fs_day", DAY, None, all, 12),
+            ("day13", sl, "fs_day", DAY, None, all, 13),
             ("lights0", sl, "fs_lights", EXTRA, None, red, 0),
             ("lights1", sl, "fs_lights", EXTRA, None, red, 1),
             ("lights2", sl, "fs_lights", EXTRA, None, red, 2),
             ("lights3", sl, "fs_lights", EXTRA, None, red, 3),
             ("lights4", sl, "fs_lights", EXTRA, Some(max), red, 4),
+            ("lights5", sl, "fs_lights", EXTRA, None, red_green, 5),
             ("towns", sl, "fs_towns", EXTRA, Some(add), red, 0),
             ("clouds0", sl, "fs_clouds", EXTRA, None, green, 0),
             ("clouds1", sl, "fs_clouds", EXTRA, None, green, 1),

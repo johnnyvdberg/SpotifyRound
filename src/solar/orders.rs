@@ -183,6 +183,49 @@ impl Solar {
         self.hud.notice = Some(notice);
     }
 
+    /// Docked at a starbase: whatever went wrong aboard earlier in the
+    /// visit (an incident scheduled or raised before the service began)
+    /// put right by its crews, in place of the service panel's last lines.
+    pub(super) fn service_repairs(&mut self, t: f64) {
+        let Some(m) = self
+            .hud
+            .manoeuvre
+            .as_mut()
+            .filter(|m| m.dock && m.name == "SERVICE")
+        else {
+            return;
+        };
+        let Some(start) = self
+            .tour
+            .start_of(|p| matches!(p, Phase::Base(_, tour::BaseStage::Service)))
+        else {
+            return;
+        };
+        let seconds = t + self.visit_start;
+        let mut earlier: Vec<usize> = self
+            .incidents
+            .2
+            .iter()
+            .filter(|&&(at, _)| at < start)
+            .map(|&(_, k)| k)
+            .collect();
+        if let Some((at, k)) = self.raised
+            && at - self.visit_start < start
+            && seconds >= at
+        {
+            earlier.push(k);
+        }
+        let fixes: Vec<(String, String)> = earlier
+            .into_iter()
+            .filter_map(console::repair)
+            .map(|(name, done)| (name.to_string(), done.to_string()))
+            .take(2)
+            .collect();
+        let keep = m.stages.len().saturating_sub(fixes.len());
+        m.stages.truncate(keep);
+        m.stages.extend(fixes);
+    }
+
     /// What the terminal shows at `t` into the visit.
     pub(super) fn update_console(&mut self, t: f64) {
         let phase = self.tour.segment(t).0.phase;
@@ -232,7 +275,12 @@ impl Solar {
             });
             for (k, &stop) in self.tour.itinerary.iter().enumerate() {
                 let world = self.tour.world(stop);
+                let docking = self.tour.base.as_ref().filter(|b| b.stop == stop);
                 let detail = match stop.moon {
+                    Some(_) if let Some(base) = docking => format!(
+                        "starbase round {}, dock at bay {}",
+                        self.tour.system.planets[stop.planet].name, base.bay
+                    ),
                     Some(_) => format!(
                         "{}, moon of {}",
                         world.kind.name(),

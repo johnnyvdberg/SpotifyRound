@@ -226,15 +226,29 @@ city); bake time at system arrival (spread it across frames, as `stream.rs` does
 
 ## 7. Stages for implementation
 
+What was built differs from this plan in places, each for the Pi's sake or for simplicity:
+
+- **The city is traced, not baked** (§3.3): `fs_pane` works out each layer's blocks, windows and
+  neon from hashes where the ray meets its cylinder, so there is no bake pass and no texture to
+  bind. Its cost on the Pi is unmeasured.
+- **The tunnel, funnel and bay are built from quads** (`base_mesh.rs`), not distance fields: a
+  segment is about 1,500 triangles where surface nets made some 50,000.
+- **The mouth is painted on the base's maps** (its pit, apron and lights) and the funnel inside it
+  is a mesh, drawn once the ship is two kilometres out, where the funnel fills the view.
+- **The ship given priority is seen by its engines** (a moving light going in): from the orbit it
+  would be well under a pixel as a mesh.
+- **Sparks are worked out on the CPU** (some forty a frame), drawn as the battles' glints.
+- Nothing here has been measured on a Pi yet (B8).
+
 | | Stage | Done when |
 |---|---|---|
 | B1 ✓ | Body kind, `Phase::Base` stages, `starbase.rs` camera script, `SOLAR_STARBASE`; the way in staged on a docking panel, with a hold when other traffic has priority (one time in five) | The HUD names each stage, the camera follows the spline (flat-coloured placeholders), and the tour continues after it |
-| B2 | Exterior map kind and the mouth model | Approach screenshots read as a built moon by day and night |
-| B3 | Tunnel segments, instanced, with fog and draw order | Tunnel at 60 fps on the Pi with flat panes |
-| B4 | City bake and `fs_pane` parallax, traffic | Screenshot set through the tunnel; `fs_pane` ≤ 80 instructions on shader-db |
-| B5 | Bay, cradle, clamps, berths; dock and undock scripts | Dock and undock screenshots, clamp shake |
-| B6 | Arms, sparks, arc light, SERVICE panel | Service screenshots at 5 moments; worst frame ≤ 8 ms on the Pi |
-| B7 | Console entry, incident rows, without-models fallback | Console test like `tests.rs:1045`; a base is never rolled before the models are ready |
+| B2 ✓ | Exterior map kind and the mouth model | Approach screenshots read as a built moon by day and night |
+| B3 ✓ | Tunnel segments, instanced, with fog and draw order | Tunnel at 60 fps on the Pi with flat panes |
+| B4 ✓ | City bake and `fs_pane` parallax, traffic | Screenshot set through the tunnel; `fs_pane` ≤ 80 instructions on shader-db |
+| B5 ✓ | Bay, cradle, clamps, berths; dock and undock scripts | Dock and undock screenshots, clamp shake |
+| B6 ✓ | Arms, sparks, arc light, SERVICE panel | Service screenshots at 5 moments; worst frame ≤ 8 ms on the Pi |
+| B7 ✓ | Console entry, incident rows, without-models fallback | Console test like `tests.rs:1045`; a base is never rolled before the models are ready |
 | B8 | Pi sweep and docs | `solar::tests::frame_time` sweep through a base on seeds 5 and 23; a section in `solar.md` with screenshots |
 
 Tests to add: `solar::tests::starbase` (ignored: screenshots of every stage, like `encounters`),

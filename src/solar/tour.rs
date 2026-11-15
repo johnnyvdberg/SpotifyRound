@@ -29,7 +29,7 @@ use super::system::{AU, KM, Planet, REAL_AU, Stop, System};
 use super::voyage::{self, Event, Passage, Shot};
 
 pub mod starbase;
-pub use starbase::{Base, BaseStage};
+pub use starbase::{Base, BaseScene, BaseStage};
 
 /// Seconds each part of the tour takes.
 pub const TRANSFER: f64 = 45.0;
@@ -211,6 +211,8 @@ pub struct View {
     pub deep: bool,
     /// Inside a starbase: none of the system drawn either.
     pub inside: bool,
+    /// At a starbase: its interior as drawn (`interior.rs`).
+    pub base: Option<BaseScene>,
     /// A stopover in view, and something seen inside a leg: its kind
     /// (`voyage::Flux`), how much shows, and how far into it.
     pub scene: Option<Scene>,
@@ -2276,6 +2278,7 @@ impl Tour {
         let (mut look, mut drop_look) = (self.drive().0, self.arrival);
         let (mut deep, mut scene, mut flux, mut flash) = (segment.phase.deep(), None, None, 0.0);
         let mut inside = false;
+        let mut base = None;
         // Dropping out: the jump's light tears open over the new system (or
         // a stopover, after a leg of `length` seconds), its drive slowing on
         // from 0.4 to 0.15.
@@ -2291,7 +2294,8 @@ impl Tour {
             Phase::High(p) => self.orbiting(p, t),
             Phase::Base(p, stage) => {
                 let placed = self.base_view(p, stage, local, t);
-                inside = placed.inside;
+                inside = placed.scene.inside;
+                base = Some(placed.scene);
                 (placed.position, placed.forward, placed.up)
             }
             Phase::Transfer { from, to } => {
@@ -2460,6 +2464,7 @@ impl Tour {
             drop_look,
             deep,
             inside,
+            base,
             scene,
             flux,
             flash,

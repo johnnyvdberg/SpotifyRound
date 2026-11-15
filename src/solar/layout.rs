@@ -38,8 +38,15 @@ pub const EV_STATE: usize = 10;
 pub const EV_HIT: usize = 11;
 /// A battle's ships this frame, two rows each.
 pub const EV_FLEET: usize = 12;
+/// A starbase's interior (`interior.rs`), four rows: whether it is drawn
+/// (0 not, 1 seen from outside, 2 inside), seconds into the visit, the
+/// city's seed and the green of the bay's lights once serviced; the
+/// funnel's depth, the tunnel's length, its bend and its bore; a segment's
+/// length, the first segment with panes drawn, how many, and where the bay
+/// begins; where the arc light is and how bright.
+pub const EV_BASE: usize = EV_FLEET + 2 * BATTLE_SHIPS;
 /// Every row.
-pub const EV_ROWS: usize = EV_FLEET + 2 * BATTLE_SHIPS;
+pub const EV_ROWS: usize = EV_BASE + 4;
 
 /// Sides of the star's glare polygon (`vs_glare`).
 pub const GLARE_SIDES: u32 = 32;
@@ -86,6 +93,7 @@ pub const WESL: &[(&str, i64)] = &[
     ("EV_STATE", EV_STATE as i64),
     ("EV_HIT", EV_HIT as i64),
     ("EV_FLEET", EV_FLEET as i64),
+    ("EV_BASE", EV_BASE as i64),
     ("EV_ROWS", EV_ROWS as i64),
     ("GLARE_SIDES", GLARE_SIDES as i64),
     ("DROP_SIDES", DROP_SIDES as i64),

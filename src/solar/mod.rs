@@ -17,10 +17,12 @@
 //! quad per body, far to near, so a pixel only pays for the bodies over it.
 
 mod bake;
+mod base_mesh;
 mod bodies;
 pub mod console;
 mod encounters;
 mod frame;
+mod interior;
 pub mod labels;
 pub mod layout;
 pub mod models;
@@ -528,7 +530,10 @@ impl Solar {
     /// The camera at `t`, shaken by the engines through a burn.
     fn view(&self, t: f64) -> View {
         let mut view = self.view_override.unwrap_or_else(|| self.tour.view(t));
-        let throttle = self.throttle(t);
+        // The clamps closing on the hull at a starbase, and letting go,
+        // jolt it as a burn's thrust does.
+        let jolt = view.base.map_or(0.0, |b| b.shake as f32 * 6.0);
+        let throttle = self.throttle(t).max(jolt);
         if throttle > 0.0 {
             // The thrust shudders through the hull: a small, quick shake.
             let shake = |a: f64, b: f64| (t * a).sin() + 0.6 * (t * b + 1.3).sin();
@@ -626,6 +631,7 @@ impl Solar {
             notice: None,
         };
         self.update_incidents(t);
+        self.service_repairs(t);
         self.update_console(t);
     }
 
