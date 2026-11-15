@@ -263,30 +263,31 @@ fn beam_ends() -> array<vec3<f32>, 2> {
     return array<vec3<f32>, 2>(primary.xyz + normalize(ship - primary.xyz) * primary.w, ship + vec3<f32>(0.0, -7.0, 9.0));
 }
 
-fn cube_beam(d: vec3<f32>) -> vec3<f32> {
-    let beam = params.ev[3].w;
-    let primary = ev_obj(0);
-    let ends = beam_ends();
-    let along = ends[1] - ends[0];
-    let span = length(along);
-    let near = ray_to_line(ev_ship(), d, ends[0], along / span);
-    let f = clamp(near.z / span, 0.0, 1.0);
+// The beam along unit `d`: from its root `start` (xyz, and its length) along
+// unit `way` (xyz, and the cube's radius), in `colour` (rgb, and its style).
+fn cube_beam(d: vec3<f32>, start: vec4<f32>, way: vec4<f32>, colour: vec4<f32>) -> vec3<f32> {
+    let near = ray_to_line(ev_ship(), d, start.xyz, way.xyz);
+    let f = clamp(near.z / start.w, 0.0, 1.0);
     if (near.y <= 0.0 || near.z <= 0.0) {
         return vec3<f32>(0.0);
     }
-    let width = mix(primary.w * 0.2, 1.6, f * f);
+    let width = mix(way.w * 0.2, 1.6, f * f);
     let core = exp(-sq(near.x / width));
     var stripes = 0.6 + 0.4 * sin(near.z * 0.35 - ev_t() * 14.0);
-    if (params.ev[9].z > 0.5) {
+    if (colour.w > 0.5) {
         stripes = 0.35 + 0.65 * smoothstep01(0.5, 0.95, abs(sin(near.x / width * 7.0 + near.z * 0.2 - ev_t() * 4.0)));
     }
-    return cube_glow() * core * stripes * beam * (0.45 + 0.3 * f) * (1.0 - smoothstep01(0.9, 1.0, f));
+    return colour.rgb * core * stripes * (0.45 + 0.3 * f) * (1.0 - smoothstep01(0.9, 1.0, f));
 }
 
 struct CubeGlow {
     @builtin(position) position: vec4<f32>,
     // The ray through the pixel, in the encounter frame.
     @location(0) ray: vec3<f32>,
+    // The beam's (`cube_beam`), worked out once.
+    @location(1) @interpolate(flat) start: vec4<f32>,
+    @location(2) @interpolate(flat) way: vec4<f32>,
+    @location(3) @interpolate(flat) colour: vec4<f32>,
 };
 
 @vertex
@@ -307,18 +308,29 @@ fn vs_cube_glow(@builtin(vertex_index) vertex: u32) -> CubeGlow {
         if (box.x < 3.0) {
             at = mix(box.xy, box.zw, corner * 0.5 + 0.5);
         }
-    } else if (params.ev[3].w > 0.001) {
-        // The beam, a Gaussian across at most a fifth of the radius.
+    }
+    // The haze at the far end of the depth mask, as the sky is: only where
+    // the cube (drawn first) is not.
+    var depth = 1.0;
+    if (PART == 2 && params.ev[3].w > 0.001) {
+        // The beam, a Gaussian across at most a fifth of the radius; at the
+        // depth of its root on the cube's face, in front of all of the cube
+        // but its nearer edges.
         let ends = beam_ends();
         let reach = primary.w * 0.2 * gauss_reach(1.2);
-        at = segment_corner(ev_camera_point(ends[0]), ev_camera_point(ends[1]), reach, corner);
+        let root = ev_camera_point(ends[0]);
+        at = segment_corner(root, ev_camera_point(ends[1]), reach, corner);
+        depth = clamp(root.z / (root.z + 400.0), 0.0, 0.999);
+        let span = length(ends[1] - ends[0]);
+        out.start = vec4<f32>(ends[0], span);
+        out.way = vec4<f32>((ends[1] - ends[0]) / span, primary.w);
+        out.colour = vec4<f32>(cube_glow() * params.ev[3].w * params.ev[10].y, params.ev[9].z);
     }
     if (at.x > 3.0) {
         return out;
     }
     at = clamp(at, vec2<f32>(-1.0), vec2<f32>(1.0));
-    // At the far end of the depth mask, as the sky is.
-    out.position = vec4<f32>(at, 1.0, 1.0);
+    out.position = vec4<f32>(at, depth, 1.0);
     out.ray = to_ev(params.forward.xyz + (params.right.xyz * at.x + params.up.xyz * at.y) * params.frame.y);
     return out;
 }
@@ -326,13 +338,10 @@ fn vs_cube_glow(@builtin(vertex_index) vertex: u32) -> CubeGlow {
 @fragment
 fn fs_cube_glow(in: CubeGlow) -> @location(0) vec4<f32> {
     let d = normalize(in.ray);
-    var c = vec3<f32>(0.0);
     if (PART == 1) {
-        c = cube_haze(d);
-    } else {
-        c = cube_beam(d);
+        return vec4<f32>(cube_haze(d) * params.ev[10].y, 0.0);
     }
-    return vec4<f32>(c * params.ev[10].y, 0.0);
+    return vec4<f32>(cube_beam(d, in.start, in.way, in.colour), 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1921,7 +1930,8 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
             albedo *= 0.4;
         }
         let lit = max(dot(n, l), 0.0) * 0.9 + 0.08 + max(dot(n, -l), 0.0) * 0.05;
-        colour = albedo * lit * vec3<f32>(0.8, 0.9, 1.0) * mix(1.0, in.ao, 0.8) + glow * 0.012;
+        // Its own light's haze over it (`cube_haze`, drawn only round it).
+        colour = albedo * lit * vec3<f32>(0.8, 0.9, 1.0) * mix(1.0, in.ao, 0.8) + glow * 0.037;
         // On a block's top, across its face (`vs_model`): the finest blocks
         // 54 to a side, the large ones 6.
         let face = in.turn.x;

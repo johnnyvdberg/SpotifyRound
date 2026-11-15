@@ -2873,6 +2873,15 @@ impl Solar {
                     }
                     pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
                 }
+                if e == voyage::Event::HiveCube {
+                    // The cube's haze and tractor beam, after it: where it
+                    // stands in front of them, nothing of theirs is shaded.
+                    for name in ["haze", "beam"] {
+                        let (label, pipeline) = &self.pipelines[&format!("event{} {name}", e.id())];
+                        pass.set_pipeline(pipeline);
+                        crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..1);
+                    }
+                }
                 if e == voyage::Event::Battle && !fx_draws.is_empty() {
                     // Its fire, shields and blasts, after the ships and wreckage, tested
                     // against them at their own depths: a draw a kind.
@@ -3951,8 +3960,9 @@ fn event_parts(
             ("buoys", 6, 0..GATE_BUOYS),
             ("nodes", 6, 0..GATE_NODES),
         ]),
-        // The hive cube's haze and tractor beam (`vs_cube_glow`).
-        voyage::Event::HiveCube => Some(vec![("haze", 6, 0..1), ("beam", 6, 0..1)]),
+        // The hive cube's haze and tractor beam (`vs_cube_glow`): after its
+        // meshes instead (`hive_glows`), tested against them.
+        voyage::Event::HiveCube => Some(Vec::new()),
         // The near panels first, so nothing they hide is shaded.
         voyage::Event::DysonSwarm => {
             let ([near, far, all], n) = (panels, DYSON_PANEL_VERTICES);

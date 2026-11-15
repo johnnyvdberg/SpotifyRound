@@ -890,9 +890,9 @@ Solar event gate nodes #0        vs_glow        VS-bin   293   4     0  129    2
 Solar event hive-cube haze #0    fs_cube_glow   FS       122   4     0   31    13        0:0    0   18
 Solar event hive-cube haze #0    vs_cube_glow   VS       256   4     0  103    32        0:0    1   23
 Solar event hive-cube haze #0    vs_cube_glow   VS-bin   183   4     0   73    21        0:0    1   10
-Solar event hive-cube beam #0    fs_cube_glow   FS       215   4     0   58    19        0:0    0   20
-Solar event hive-cube beam #0    vs_cube_glow   VS       502   4     0  121    32        0:0    4   51
-Solar event hive-cube beam #0    vs_cube_glow   VS-bin   398   4     0  100    27        0:0    2   32
+Solar event hive-cube beam #0    fs_cube_glow   FS       134   4     0   31    23        0:0    0   10
+Solar event hive-cube beam #0    vs_cube_glow   VS       599   4     0  192    32        0:0    5   57
+Solar event hive-cube beam #0    vs_cube_glow   VS-bin   398   4     0  101    29        0:0    3   28
 Solar event dyson-swarm near #0  fs_dyson_panel FS        11   4     0    4     2        0:0    0    2
 Solar event dyson-swarm near #0  vs_dyson_panel VS       240   4     0  103    28        0:0    0   12
 Solar event dyson-swarm near #0  vs_dyson_panel VS-bin   240   4     0  103    28        0:0    0   12
