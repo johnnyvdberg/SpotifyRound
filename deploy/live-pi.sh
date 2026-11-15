@@ -16,7 +16,7 @@
 # Not as a second client on top of the running kiosk: with another window
 # under it cage stops scanning the client out and composites every frame,
 # which costs ~2.4-3.4 ms of render and ~3.5-5 ms of TFU a frame that the
-# kiosk never pays (docs/perf-bottlenecks.md, section 3.8). The solar tour's
+# kiosk never pays (docs/perf/perf-bottlenecks.md, section 3.8). The solar tour's
 # system comes from SOLAR_SEED, not SPOTIFY_ROUND_SEED.
 set -u
 TAG=$1; BIN=$2; SECS=$3; shift 3

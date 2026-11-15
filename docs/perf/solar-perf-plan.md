@@ -148,7 +148,7 @@ To recompile the prototypes after a change (about a minute once the image has a 
 
 ```bash
 deploy/v3d-shaderdb/shaderdb.sh . >/dev/null   # once: builds the image's test binary
-docker run --rm -v v3d-shaderdb-target:/target -v "$PWD/docs/solar-lab":/lab:ro \
+docker run --rm -v v3d-shaderdb-target:/target -v "$PWD/docs/perf/solar-lab":/lab:ro \
     -e SHADER_LAB_DIR=/lab v3d-shaderdb bash /lab/run-lab.sh > /tmp/lab.raw 2>&1
 python3 deploy/v3d-shaderdb/label.py /tmp/lab.raw | grep ' FS \| VS '
 ```

@@ -3,7 +3,7 @@
 // vertex: vs_globe
 // variants: SEA=1 CLOUDS=1 NIGHT=1 AIR=1 | SEA=1 CLOUDS=1 NIGHT=0 AIR=1 | CLOUDS=1 NIGHT=0 AIR=1 | NIGHT=2 AIR=1 | NIGHT=0 AIR=0 | NIGHT=2 AIR=0 | AIR=1 GIANT=1 | AIR=1 GIANT=1 RINGS=1 | AIR=1 | NIGHT=2 AIR=1 GIANT=1
 //
-// A prototype for docs/solar-perf-plan.md (brief S1): a mapped world drawn
+// A prototype for docs/perf/solar-perf-plan.md (brief S1): a mapped world drawn
 // as a patch of its latitude-longitude grid. Everything that varies smoothly
 // over the sphere is worked out at the vertices; the fragment shader keeps
 // only what depends on a texel. `fs_globe` is the whole world in one pass;

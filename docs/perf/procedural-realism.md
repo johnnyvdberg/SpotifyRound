@@ -1,7 +1,7 @@
 # Procedural realism on a small GPU
 
 Notes on what makes the solar tour's procedural shaders look real for what they cost on the Pi 5's
-V3D, with where each is used. Before and after shots of changes are kept in `docs/compare/`.
+V3D, with where each is used. Before-and-after shots are made with the solar screenshot tests (see [benchmarking.md](../benchmarking.md)); old ones are in git history.
 
 ## What gives the most for the cost
 

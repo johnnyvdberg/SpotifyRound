@@ -920,7 +920,7 @@ lever: 8.59 at 0.9, 7.90 at 0.833, 7.05 at 0.75. 109 tests pass.
 ## 16. The look can change: best practice and a low-poly seabed
 
 With the look no longer fixed, the terrain was re-examined against current
-practice. The result is a comparison sheet, [dive3d-terrain.png](dive3d-terrain.png),
+practice. The result is a comparison sheet, [dive3d-terrain.png](../dive3d-terrain.png),
 and a low-poly option that trades the smooth seabed for a fast, deliberately
 faceted one. Beyond the frame-structure comparison, the wider references are
 [GPU Gems 2's GPU geometry clipmaps](https://developer.nvidia.com/gpugems/gpugems2/part-i-geometric-complexity/chapter-2-terrain-rendering-using-gpu-based-geometry),
@@ -985,7 +985,7 @@ coarse+facets 2.59, the low-poly 3.32. The sheet shows where: the shallows and
 forest lose the fine sand and the plant roots; the atlantis columns' floor and
 the arctic rocks are where the facets read most.
 
-![Terrain variants: current, coarse, coarse+facets, low-poly](dive3d-terrain.png)
+![Terrain variants: current, coarse, coarse+facets, low-poly](../dive3d-terrain.png)
 
 The low-poly mode is opt-in: `SPOTIFY_ROUND_LOWPOLY=1` and
 `DIVE3D_TERRAIN_LEVELS=1` (or `2` for the subtler facet look). The test bits
@@ -2693,7 +2693,7 @@ auth pair (untouched), and the `DIVE3D_*` benchmark/preview flags
 the LinuxKMS backend cannot carry the imported dive texture, and femtovg is
 the slower comparison renderer.
 
-![deployed adaptive build](img/kiosk-adaptive-2026-10-30.png)
+![deployed adaptive build](../img/kiosk-adaptive-2026-10-30.png)
 
 ## 24. Biome detail, cave crystals and encounter fades: the final Pi check
 

@@ -11,7 +11,7 @@
 #   PI=<user>@<pi> deploy/bench-pi.sh features TAG [NAME=VALUE ...]
 #       what every part and effect costs (dive3d::feature_costs::features):
 #       leaves the table in target/bench/TAG-features.md (paste it into
-#       docs/feature-costs.md) and every measurement in TAG-features.csv.
+#       docs/perf/feature-costs.md) and every measurement in TAG-features.csv.
 #       DIVE3D_HOTSPOT_SCENES, DIVE3D_FEATURE_VISITS, _PLACES and _FRAMES narrow it.
 #
 # The defaults are four visits to every sea, six frames a place. The binary

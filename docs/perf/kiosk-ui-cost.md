@@ -75,4 +75,4 @@ Only if one of these changes:
   surface on screen would each do it.
 - The UI gains `opacity` below 1 on elements with children, or anything else that makes Skia
   open a layer. Each one splits the render pass, which costs a load and store of the whole
-  screen (≈0.8 ms at 1080²; `docs/perf-bottlenecks.md` §2).
+  screen (≈0.8 ms at 1080²; `docs/perf/perf-bottlenecks.md` §2).

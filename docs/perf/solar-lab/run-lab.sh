@@ -1,7 +1,7 @@
 #!/bin/bash
 # Compiles the prototypes in this directory with the Pi 5's shader compiler, inside
 # the v3d-shaderdb image, using the test binary that image last built (see
-# docs/solar-perf-plan.md for the command). Prints Mesa's raw shader-db log.
+# docs/perf/solar-perf-plan.md for the command). Prints Mesa's raw shader-db log.
 arch=$(uname -m)
 multiarch=$(gcc -print-multiarch 2>/dev/null || echo "$arch-linux-gnu")
 export LD_PRELOAD=/opt/mesa/lib/$multiarch/libv3d_noop_drm_shim.so

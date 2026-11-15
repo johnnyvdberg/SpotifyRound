@@ -126,7 +126,7 @@ How to read it:
   vertex passes and the binner) and ~0.8 ms is CPU.
 - The models split into ~0.8 ms of pixels (`QUARTER_MODELS`) and ~1.0 ms of geometry; issuing
   the draws with no instances (`DRAW_CALLS`) saves as much as leaving the models out, so the draw
-  calls themselves cost nothing measurable (as `docs/pipeline-optimization.md` §65 found).
+  calls themselves cost nothing measurable (as `docs/perf/pipeline-optimization.md` §65 found).
 - The corner mask already pays for itself: without it the frame is 0.58 ms slower, because the
   21.5 % of the square outside the window would be shaded. With early-Z it is cheaper still.
 
@@ -316,7 +316,7 @@ what a window keeps for its life (its hash, lit or not, warmth, brightness, room
 per-pixel path: per vertex where the window grid allows it, or from one tap into a small baked
 table indexed by the window's cell; and paint the room from a small baked atlas of rooms instead
 of `city_room`'s arithmetic, aiming at 4 threads. The draws grow by a few dozen a frame (~0.7 µs
-each, `docs/pipeline-optimization.md` §65), which is noise.
+each, `docs/perf/pipeline-optimization.md` §65), which is noise.
 
 **Expected gain.** Bound 5.1 ms at city s0 0.45 and 2.3 ms at arctic s750000 0.15;
 realistically **2–3 ms at the worst city view** and ~0.5 ms on the city's median. With early-Z
@@ -401,7 +401,7 @@ come from textures instead of `sin`: (a) bake the swell, chop and fine cells int
 channels of `caustic_map` (or a second small tileable texture) and scroll them, so the ceiling
 becomes two or three fetches of the same `at` and a few multiply-adds; (b) or drop the terms that
 the final wash leaves invisible, measured term by term against the previews (the survey in
-`docs/pipeline-optimization.md` §14 found the old glint's `sin`s and `pow` drew nothing in the
+`docs/perf/pipeline-optimization.md` §14 found the old glint's `sin`s and `pow` drew nothing in the
 previews; the ceiling has not been checked that way). Not recommended: a
 horizon split (measured above: 0.02 ms), #2/#3 at 4 threads (measured above), a per-vertex grid
 (the plane recedes to the horizon, where any grid undersamples).
@@ -485,7 +485,7 @@ paths.
 
 ### 3.8 The UI's present path: ~2 ms a frame that `hotspots` never sees
 
-> **Update 2026-11-10:** settled in `docs/kiosk-ui-cost.md`. Cage's direct scan-out is now
+> **Update 2026-11-10:** settled in `docs/perf/kiosk-ui-cost.md`. Cage's direct scan-out is now
 > confirmed (`cage -D`, and the client's `WAYLAND_DEBUG`: `XR24`, linear). The 1.4 ms TFU job is
 > the Vulkan WSI's linear copy, which every client pays, `vkcube` included. The UI costs
 > 1.3–2.5 ms of render engine a frame. T9 is not worth doing.
@@ -527,7 +527,7 @@ next vblank only if all of this fits.
 alpha mode, present mode, image count — is the first thing to log), then remove the full-screen
 copy and conversion if they are what they look like: render the UI straight into the scannable
 image, or keep the swapchain tiled if the display path does not need linear. The KMS overlay for
-the dive itself stays blocked (`docs/pipeline-optimization.md` §71).
+the dive itself stays blocked (`docs/perf/pipeline-optimization.md` §71).
 
 **Expected gain.** Unmeasured; bounded by ≈1.2 ms of render engine a frame (everything after
 Slint's own 0.8 ms) plus the 1.4 ms TFU job, on every frame of every scene, the globe and the
@@ -742,7 +742,7 @@ driver unless the brief says otherwise.
      note for Raspberry Pi's mesa package, for the user to send, so a later Pi OS update makes the
      local driver unnecessary. Record in `docs/` how to rebuild the local driver when Pi OS
      upgrades Mesa.
-  6. Follow-up once it runs: the draw-order probes of `docs/pipeline-optimization.md` §7.4/§12
+  6. Follow-up once it runs: the draw-order probes of `docs/perf/pipeline-optimization.md` §7.4/§12
      (`DEPTH_FIRST_DRAWS`, `TERRAIN_FIRST`, nearest-first) were measured without early-Z; re-run
      them with it (`DIVE3D_SKIP=<bit>`) before ruling them out for good.
 - **Constraints.** §4.0 rules 2–5 and 7; the shader gate is unaffected (no app shader changes);
@@ -981,7 +981,7 @@ driver unless the brief says otherwise.
 
 ## 5. Things tried and ruled out
 
-Measured in this analysis unless a section of `docs/pipeline-optimization.md` (PO) or
+Measured in this analysis unless a section of `docs/perf/pipeline-optimization.md` (PO) or
 `docs/nautilus.md` is named.
 
 | idea | result | where |

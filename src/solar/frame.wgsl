@@ -1810,7 +1810,7 @@ override RINGS: bool = false;
 // A mapped world seen from afar as a mesh: a patch of its own latitude-
 // longitude grid (`window`, `mesh` on the body, from the CPU), so everything
 // that varies smoothly over the sphere is worked out once a vertex and the
-// fragment shader keeps only what depends on a texel (docs/solar-perf-plan.md,
+// fragment shader keeps only what depends on a texel (docs/perf/solar-perf-plan.md,
 // brief S1). The grid's vertex is its index, `row * GRID_STRIDE + column`
 // (no vertex buffer), from a static index buffer holding the triangles for
 // a few sizes of grid; back faces are culled. The mesh stands a pixel and a

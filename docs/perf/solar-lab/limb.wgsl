@@ -2,7 +2,7 @@
 // entries: fs_limb_ring
 // vertex: vs_limb_ring
 //
-// A prototype for docs/solar-perf-plan.md (brief S2): the air past a limb as an
+// A prototype for docs/perf/solar-perf-plan.md (brief S2): the air past a limb as an
 // annulus round the silhouette, its light worked out at the vertices.
 
 const TAU: f32 = 6.283185307;

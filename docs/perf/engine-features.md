@@ -33,7 +33,7 @@ weakest.
   (`deploy/bench-pi.sh run`/`compare`, or the `hotspots` test). The median must stay under 11 ms.
   Report the median, the worst views and the places over 11 ms.
 - **Switchable and priced:** a new part or effect gets an entry in the skip lists
-  (`DIVE3D_SKIP` / `DIVE3D_SKIP_EFFECTS`) and a row in `docs/feature-costs.md`.
+  (`DIVE3D_SKIP` / `DIVE3D_SKIP_EFFECTS`) and a row in `docs/perf/feature-costs.md`.
 - **Pictures:** before and after shots of what changed (`deploy/shots.sh`, `docs/nautilus.md`).
 - **Public repository:** commit as `johnnyvdberg@gmail.com`; never write the Pi's address or user
   name into tracked files (`<user>@<pi>`).

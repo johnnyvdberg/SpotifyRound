@@ -5,7 +5,7 @@
 //! model group and sprite kind, found from `MODEL_GROUPS` and
 //! `SPRITE_GROUPS`, and every scenery element of `world::ELEMENTS`, so a new
 //! group or element is measured with no change here), at the
-//! places where it is in view, and writes `docs/feature-costs.md`'s table.
+//! places where it is in view, and writes `docs/perf/feature-costs.md`'s table.
 //! Run it on the Pi with `deploy/bench-pi.sh features TAG`; see that
 //! document for how to read the table.
 //!
@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 /// Not here: switches that change a shader switch (`part::SURFACE_FACETS`)
 /// or rebuild the seabed (`part::COARSE_SEABED`): alternated frame by frame,
 /// each frame would recompile the pipelines or rebuild every tile, so they
-/// are priced by `hotspots` pairs instead (`docs/feature-costs.md`).
+/// are priced by `hotspots` pairs instead (`docs/perf/feature-costs.md`).
 const PASSES: &[(&str, u64)] = &[
     ("whole 3D pass (all of the below and the clear)", part::SEA),
     ("terrain", part::TERRAIN),
