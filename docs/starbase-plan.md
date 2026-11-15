@@ -228,9 +228,11 @@ city); bake time at system arrival (spread it across frames, as `stream.rs` does
 
 What was built differs from this plan in places, each for the Pi's sake or for simplicity:
 
-- **The city is traced, not baked** (§3.3): `fs_pane` works out each layer's blocks, windows and
-  neon from hashes where the ray meets its cylinder, so there is no bake pass and no texture to
-  bind. Its cost on the Pi is unmeasured.
+- **The city is baked once at start-up, not per base** (§3.3): `fs_bake_city` paints its three
+  layers into one 2048 × 512 × 3 texture (in a group of its own, as the gas is), every block a
+  whole number of texels so each layer tiles; each base reads it from its own offset. `fs_pane`
+  only traces the three cylinders and reads a texel at each. The city is static: no flicker or
+  moving traffic.
 - **The tunnel, funnel and bay are built from quads** (`base_mesh.rs`), not distance fields: a
   segment is about 1,500 triangles where surface nets made some 50,000.
 - **The mouth is painted on the base's maps** (its pit, apron and lights) and the funnel inside it

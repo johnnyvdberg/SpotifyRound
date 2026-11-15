@@ -358,6 +358,8 @@ pub(crate) struct Solar {
     crater_layout: wgpu::BindGroupLayout,
     /// The nebula's gas and the plasma storm's (`bake_gas`, `bake_storm`).
     gas: [(wgpu::Texture, wgpu::BindGroup); 2],
+    /// The starbase's city, seen through its tunnel's windows (`bake_city`).
+    city: (wgpu::Texture, wgpu::BindGroup),
     bound: (u64, usize, usize),
     /// The baked starfields (galaxy and stars, cube maps), for this system
     /// and the next, and whose they are: seed and rows done. Beside each,

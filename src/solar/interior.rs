@@ -126,15 +126,15 @@ fn arms() -> [Arm; 3] {
     let c = cradle();
     [
         Arm {
-            base: c + Vec3::new(-45.0, 45.0, 55.0),
+            base: c + Vec3::new(-30.0, 30.0, 45.0),
             tool: piece::WELDER,
         },
         Arm {
-            base: c + Vec3::new(0.0, 50.0, 62.0),
+            base: c + Vec3::new(0.0, 34.0, 50.0),
             tool: piece::COUPLER,
         },
         Arm {
-            base: c + Vec3::new(45.0, 45.0, 55.0),
+            base: c + Vec3::new(30.0, 30.0, 45.0),
             tool: piece::SCANNER,
         },
     ]
@@ -155,18 +155,18 @@ fn tip(arm: usize, local: f64) -> (Vec3, bool) {
         0 => {
             // A seam welded along the nose, left to right, then a second.
             let u = (((local - 1.5) / 5.5).rem_euclid(1.0)) as f32;
-            let weld = c + Vec3::new(-12.0 + 24.0 * u, 6.0, 22.0);
+            let weld = c + Vec3::new(-5.0 + 10.0 * u, -3.6, 14.0 + 6.0 * u);
             let on = (1.5..7.0).contains(&local) || (25.5..31.0).contains(&local);
             (weld, span(0.0, 8.0).max(span(24.0, 32.0)), on)
         }
         1 => (
-            c + Vec3::new(0.0, 4.0, 15.0),
+            c + Vec3::new(2.5, -3.6, 17.0),
             span(8.0, 24.0),
             (9.6..22.4).contains(&local),
         ),
         _ => {
             let u = ((local - 24.0) / 8.0).clamp(0.0, 1.0) as f32;
-            let at = c + Vec3::new(-16.0 + 32.0 * u, 12.0, 26.0);
+            let at = c + Vec3::new(-6.0 + 12.0 * u, 6.0, 12.0 + 12.0 * u);
             (at, span(24.0, 32.5), (24.8..31.6).contains(&local))
         }
     };
@@ -217,6 +217,7 @@ pub(super) fn instances(b: &BaseScene, out: &mut Vec<(Key, Instance)>) {
         return;
     }
     let z = b.ship[2];
+    let ship = Vec3::new(b.ship[0] as f32, b.ship[1] as f32, b.ship[2] as f32);
     let none = [0.0; 4];
     if z < FUNNEL + 2500.0 {
         out.push((
@@ -274,15 +275,33 @@ pub(super) fn instances(b: &BaseScene, out: &mut Vec<(Key, Instance)>) {
     // Ships in the other berths, nose to the walls.
     for k in 0..4u64 {
         let side = if k % 2 == 0 { -1.0 } else { 1.0 };
-        let at = hall + Vec3::new(side * 250.0, -70.0, 200.0 + 280.0 * (k / 2) as f32);
+        let at = hall
+            + Vec3::new(
+                side * (110.0 + 30.0 * (k / 2) as f32),
+                -80.0,
+                560.0 + 80.0 * (k / 2) as f32,
+            );
         let mut rng = super::system::Rng::new(b.seed ^ 0xbe47 ^ k);
         let key = Key::Ship {
             design: (rng.next() % models::DESIGNS as u64) as u32,
             role: 1,
             variant: (rng.next() % models::VARIANTS as u64) as u32,
         };
-        let turn = yaw(side * std::f32::consts::FRAC_PI_2);
+        let turn = yaw(-side * std::f32::consts::FRAC_PI_2);
         out.push((key, instance(at, 45.0, turn, [k as f32, 0.0, 0.0, 0.0])));
+    }
+    // The ship's own bow, below the cockpit, while it berths, is
+    // serviced and leaves.
+    if matches!(
+        b.stage,
+        BaseStage::Berth | BaseStage::Service | BaseStage::Undock
+    ) {
+        let heading =
+            Vec3::new(b.heading[0] as f32, 0.0, b.heading[2] as f32).normalize_or(Vec3::Z);
+        out.push((
+            Key::Base { piece: piece::BOW },
+            instance(ship, 1.0, Quat::from_rotation_arc(Vec3::Z, heading), none),
+        ));
     }
     // The service arms, reaching their tools to their work.
     for (arm, (tip, _)) in arms().iter().zip(tips(b)) {
@@ -481,7 +500,7 @@ pub(super) fn effects(b: &BaseScene) -> [Vec<Fx>; 6] {
     // The scanner's line down onto the hull.
     let (scanning, on) = tips[2];
     if on {
-        let hull = Vec3::new(scanning.x, c.y - CRADLE_DROP as f32 + 2.0, scanning.z - 4.0);
+        let hull = Vec3::new(scanning.x, c.y - CRADLE_DROP as f32 - 3.9, scanning.z);
         beam(&mut out, scanning, hull, 1.2, [0.3, 1.6, 0.5]);
         let sweep = hull + Vec3::new(0.0, 0.0, ((t * 2.0).sin()) * 6.0);
         glint(&mut out, sweep, 2.0, [0.3, 1.4, 0.4]);
@@ -525,6 +544,7 @@ mod tests {
     fn the_weld_strikes_only_in_service() {
         let scene = |stage, local| BaseScene {
             ship: [BEND, -CRADLE_DROP, tunnel_end() + CRADLE],
+            heading: [0.0, 0.0, 1.0],
             basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             stage,
             local,
@@ -566,6 +586,7 @@ mod tests {
     fn the_tunnel_is_drawn_round_the_camera() {
         let mut b = BaseScene {
             ship: [0.0, 0.0, FUNNEL + 2000.0],
+            heading: [0.0, 0.0, 1.0],
             basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             stage: BaseStage::Tunnel,
             local: 5.0,

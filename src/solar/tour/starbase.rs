@@ -387,6 +387,8 @@ pub(super) struct Placed {
 #[derive(Clone, Copy, Debug)]
 pub struct BaseScene {
     pub ship: [f64; 3],
+    /// Which way the ship points, in the base's frame.
+    pub heading: [f64; 3],
     pub basis: [[f64; 3]; 3],
     pub stage: BaseStage,
     pub local: f64,
@@ -612,6 +614,10 @@ impl Tour {
             up: pose.up,
             scene: BaseScene {
                 ship,
+                heading: {
+                    let f = pose.forward;
+                    [dot(f, frame.right), dot(f, frame.up), -dot(f, frame.out)]
+                },
                 basis: [frame.right, frame.up, scale(frame.out, -1.0)],
                 stage,
                 local,

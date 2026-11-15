@@ -1272,8 +1272,8 @@ mod tests {
                     .all(|p| planets[..3].iter().filter(|q| *q == p).count() == 1)
             );
         }
-        // Every kind turns up somewhere across the seeds.
-        assert_eq!(kinds.len(), 20, "{kinds:?}");
+        // Every kind turns up somewhere across the seeds (starbases too).
+        assert_eq!(kinds.len(), Kind::ALL.len(), "{kinds:?}");
     }
 
     #[test]

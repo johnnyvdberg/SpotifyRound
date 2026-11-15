@@ -898,6 +898,7 @@ impl Solar {
                 if panes > 0 {
                     let (label, pipeline) = self.pipe(Pipe::BasePanes);
                     pass.set_pipeline(pipeline);
+                    pass.set_bind_group(2, &self.city.1, &[]);
                     let quads = panes * interior::PANES;
                     crate::gpu::counted_draw(
                         &mut pass,

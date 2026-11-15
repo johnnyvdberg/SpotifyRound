@@ -381,8 +381,8 @@ fn station_height(p: vec3<f32>) -> f32 {
 // windows in a fine grid; lanes of lights along the ribs, dashed; the
 // mouth's ring and the guidance lights running in to it.
 fn station_lights(p: vec3<f32>) -> vec2<f32> {
-    let big = plate(p, 18.0, 1);
-    let district = smoothstep(0.55, 0.75, big.value) * smoothstep(0.02, 0.06, big.edge);
+    let big = plate(p, 36.0, 4);
+    let district = smoothstep(0.55, 0.75, big.value) * smoothstep(0.03, 0.08, big.edge);
     var light = 0.0;
     var hue = floor(fract(big.value * 7.31) * 3.0) * 0.5;
     if (district > 0.0) {
@@ -410,11 +410,16 @@ fn station_lights(p: vec3<f32>) -> vec2<f32> {
         let spoke = 1.0 - smoothstep(0.0, 0.05, abs(fract(around / TAU * 8.0 + 0.5) - 0.5));
         let beads = step(0.55, fract(off / APRON_ANGLE * 9.0));
         let guide = spoke * beads * step(MOUTH_ANGLE * 1.4, off);
+        // The pit itself dark, rings of light stepping down it to the
+        // funnel's glow at its heart.
         let pit = 1.0 - smoothstep(MOUTH_ANGLE * 0.8, MOUTH_ANGLE, off);
-        let mouth = max(max(ring, guide * 0.8), pit * 0.25);
-        if (mouth > light * 0.5) {
+        let steps = step(0.75, fract(off / MOUTH_ANGLE * 5.0)) * 0.55;
+        let heart = 1.0 - smoothstep(0.0, MOUTH_ANGLE * 0.15, off);
+        let inner = pit * max(steps, heart);
+        let mouth = max(max(ring, guide * 0.8), inner);
+        if (mouth > light * 0.5 || pit > 0.0) {
             light = max(light * (1.0 - pit), mouth);
-            hue = select(0.0, 0.5, guide > ring);
+            hue = select(0.0, 0.5, guide > ring || inner > 0.0);
         }
     }
     return vec2<f32>(clamp(light, 0.0, 1.0), hue);

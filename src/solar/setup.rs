@@ -109,6 +109,54 @@ impl Solar {
             ],
             immediate_size: 0,
         });
+        // The starbase's city, baked once (`bake_city`), with a sampler of
+        // its own that wraps both ways: a group of its own for the panes.
+        let city_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Solar city"),
+            entries: &[
+                texture_entry(4, wgpu::TextureViewDimension::D2Array),
+                stream::sampler_entry(5),
+            ],
+        });
+        let city_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Solar city"),
+            bind_group_layouts: &[
+                Some(&layout),
+                Some(&streamer.noise().layout),
+                Some(&city_layout),
+            ],
+            immediate_size: 0,
+        });
+        let city = {
+            let texture = bake_city(gpu, &shader, streamer.noise());
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Solar city"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Solar city"),
+                layout: &city_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+            (texture, group)
+        };
         let gas = [bake_gas, bake_storm].map(|bake| {
             let texture = bake(gpu, &shader, streamer.noise());
             let view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -798,7 +846,7 @@ impl Solar {
         // traced in `fs_pane`, opaque and writing the depth.
         let panes = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Solar base panes"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&city_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_pane"),
@@ -1341,6 +1389,7 @@ impl Solar {
             craters,
             crater_layout,
             gas,
+            city,
             bound: (u64::MAX, usize::MAX, usize::MAX),
             starfields: [0, 1].map(|_| {
                 device.create_texture(&wgpu::TextureDescriptor {

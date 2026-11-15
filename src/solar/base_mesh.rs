@@ -32,7 +32,8 @@ pub mod piece {
     pub const WELDER: u32 = 6;
     pub const COUPLER: u32 = 7;
     pub const SCANNER: u32 = 8;
-    pub const COUNT: u32 = 9;
+    pub const BOW: u32 = 9;
+    pub const COUNT: u32 = 10;
 }
 
 /// Parts of the interior's own, after `models::part`'s.
@@ -218,6 +219,7 @@ pub fn mesh(piece: u32) -> Mesh {
         piece::LINK => link(&mut b),
         piece::WELDER => head(&mut b, 0),
         piece::COUPLER => head(&mut b, 1),
+        piece::BOW => bow(&mut b),
         _ => head(&mut b, 2),
     }
     b.mesh()
@@ -584,12 +586,67 @@ fn clamp(b: &mut Builder) {
     b.cuboid(v(-2.2, 8.0, -3.2), v(2.2, 11.0, 3.2), parts::HAZARD);
 }
 
+/// The ship's own bow as seen from its cockpit, the camera at the origin
+/// looking along +z: a deck tapering ahead below the eye, sloping sides, a
+/// stripe down its spine and running lights at its shoulders.
+fn bow(b: &mut Builder) {
+    let v = Vec3::new;
+    let (near, far) = (2.0, 30.0);
+    let (wide, narrow) = (9.0, 1.5);
+    let (top, bottom) = (-4.0, -11.0);
+    let deck = [
+        v(-wide, top, near),
+        v(wide, top, near),
+        v(narrow, top, far),
+        v(-narrow, top, far),
+    ];
+    b.flat(deck, Vec3::Y, part::HULL);
+    b.flat(
+        [
+            v(-0.6, top + 0.05, near),
+            v(0.6, top + 0.05, near),
+            v(0.3, top + 0.05, far),
+            v(-0.3, top + 0.05, far),
+        ],
+        Vec3::Y,
+        part::ACCENT,
+    );
+    for side in [-1.0f32, 1.0] {
+        let n = v(side * 0.8, 0.3, 0.1).normalize();
+        b.flat(
+            [
+                v(side * wide, top, near),
+                v(side * narrow, top, far),
+                v(side * narrow * 0.5, bottom, far),
+                v(side * wide * 0.8, bottom, near),
+            ],
+            n,
+            part::HULL,
+        );
+        b.cuboid(
+            v(side * wide - 0.4, top, near + 1.0),
+            v(side * wide + 0.4, top + 0.6, near + 2.0),
+            parts::LIGHT,
+        );
+    }
+    b.flat(
+        [
+            v(-narrow, top, far),
+            v(narrow, top, far),
+            v(narrow * 0.5, bottom, far),
+            v(-narrow * 0.5, bottom, far),
+        ],
+        Vec3::Z,
+        part::ACCENT,
+    );
+}
+
 /// An arm's link: a metre long along +z, scaled to its length, with a
 /// knuckle at its root.
 fn link(b: &mut Builder) {
     let v = Vec3::new;
-    b.cuboid(v(-0.05, -0.05, 0.0), v(0.05, 0.05, 1.0), part::HULL);
-    b.cuboid(v(-0.08, -0.08, -0.06), v(0.08, 0.08, 0.08), part::ACCENT);
+    b.cuboid(v(-0.022, -0.022, 0.0), v(0.022, 0.022, 1.0), part::HULL);
+    b.cuboid(v(-0.04, -0.04, -0.03), v(0.04, 0.04, 0.04), part::ACCENT);
 }
 
 /// A tool head, along +z from its root: a welder (0) with its glowing

@@ -113,7 +113,8 @@ its orbit, and the other ship's engines are seen going in first.
 
 Inside, a funnel narrows from the mouth to the tunnel, which bends through the base for six
 kilometres; through its windows, a neon city round it in three depths, traced on cylinders round
-the tunnel rather than built (`fs_pane`), with traffic moving between its blocks. It opens into a
+the tunnel rather than built: baked once into a texture and read where each window's ray meets
+each layer (`fs_bake_city`, `fs_pane`), with lanes of traffic lights between its blocks. It opens into a
 bay where other ships lie in their berths; the ship settles into a cradle, its clamps close with a
 jolt, and arms reach over the nose: a welder's arc throwing sparks and lighting the bay, a fuel
 coupling, a scanner's line, while the SERVICE panel ticks through hull plating, coolant, reaction

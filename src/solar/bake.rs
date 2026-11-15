@@ -170,6 +170,32 @@ pub(super) fn bake_storm(
     )
 }
 
+/// Texels round each layer of the starbase's city (`bake_city`), and along
+/// it, as `CITY_WIDTH` and `CITY_HEIGHT` in `encounter.wesl`.
+pub(super) const CITY_WIDTH: u32 = 2048;
+pub(super) const CITY_HEIGHT: u32 = 512;
+
+/// The city round a starbase's tunnel, seen through its windows, baked once
+/// (`fs_bake_city`): three layers, near to far, each the city on a cylinder
+/// round the tunnel, all the way round and a stretch along, tiling both
+/// ways. The panes read it where their rays meet each cylinder (`fs_pane`),
+/// each base from its own place in it.
+pub(super) fn bake_city(
+    gpu: &Graphics,
+    shader: &wgpu::ShaderModule,
+    noise: &crate::noise3d::Noise3d,
+) -> wgpu::Texture {
+    bake_sized(
+        gpu,
+        shader,
+        noise,
+        "Solar city",
+        "fs_bake_city",
+        (CITY_WIDTH, CITY_HEIGHT, 3),
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    )
+}
+
 /// A map baked once from the noise volume alone: `layers` square layers of
 /// `size`, `fs` drawn over each (`vs_bake_craters`).
 pub(super) fn bake(
@@ -181,13 +207,26 @@ pub(super) fn bake(
     size: u32,
     layers: u32,
 ) -> wgpu::Texture {
-    let device = &gpu.device;
     let format = wgpu::TextureFormat::Rgba16Float;
+    bake_sized(gpu, shader, noise, label, fs, (size, size, layers), format)
+}
+
+/// A map baked once: `layers` layers `width` by `height`, of `format`.
+fn bake_sized(
+    gpu: &Graphics,
+    shader: &wgpu::ShaderModule,
+    noise: &crate::noise3d::Noise3d,
+    label: &str,
+    fs: &str,
+    (width, height, layers): (u32, u32, u32),
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    let device = &gpu.device;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
-            width: size,
-            height: size,
+            width,
+            height,
             depth_or_array_layers: layers,
         },
         mip_level_count: 1,

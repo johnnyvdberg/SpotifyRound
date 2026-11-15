@@ -1791,7 +1791,14 @@ mod tests {
     fn every_design_meshes_closed_and_sound() {
         for key in Key::all()
             .into_iter()
-            .filter(|k| !matches!(k, Key::Ship { variant: 1.., .. } | Key::Rock { .. }))
+            // The starbase's pieces are in metres, open where they are never
+            // seen, and tested in `base_mesh`.
+            .filter(|k| {
+                !matches!(
+                    k,
+                    Key::Ship { variant: 1.., .. } | Key::Rock { .. } | Key::Base { .. }
+                )
+            })
         {
             let mesh = build(key);
             assert!(
