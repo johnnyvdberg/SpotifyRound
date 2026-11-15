@@ -127,12 +127,12 @@ pub struct Instance {
     /// own space, so the pattern moves with a swimming body.
     pub surface: [f32; 4],
     /// rgb: the seabed's colour under it, for the foot of a grounded model;
-    /// the same table as `floor_albedo` in `scene.wesl`, worked out once here
-    /// rather than looked up through a dynamic table in every pixel.
+    /// [`FLOOR_ALBEDO`], worked out once here rather than looked up through
+    /// a dynamic table in every pixel.
     pub floor: [f32; 4],
 }
 
-/// The floor's colour in each biome, as `floor_albedo` in `scene.wesl`.
+/// The floor's colour in each biome. The seabed's tiles carry it per vertex.
 pub const FLOOR_ALBEDO: [[f32; 3]; BIOMES] = [
     [0.62, 0.56, 0.42],
     [0.40, 0.36, 0.26],
