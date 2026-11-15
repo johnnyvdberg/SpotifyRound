@@ -28,6 +28,9 @@ use std::f64::consts::{PI, TAU};
 use super::system::{AU, KM, Planet, REAL_AU, Stop, System};
 use super::voyage::{self, Event, Passage, Shot};
 
+pub mod starbase;
+pub use starbase::{Base, BaseStage};
+
 /// Seconds each part of the tour takes.
 pub const TRANSFER: f64 = 45.0;
 /// A transfer that swings past the star or another planet on the way.
@@ -116,6 +119,9 @@ pub enum Phase {
         to: Stop,
     },
     High(Stop),
+    /// At the starbase at `Stop`, in place of an orbit: called in, docked,
+    /// serviced and out again (`starbase`).
+    Base(Stop, BaseStage),
     Depart(Stop),
     /// Out across the system to the jump point at its edge: climbing away
     /// from the last stop, or (a relay) from where the ship dropped out.
@@ -203,6 +209,8 @@ pub struct View {
     pub drop_look: u32,
     /// Out in the deep between stars: none of the system drawn.
     pub deep: bool,
+    /// Inside a starbase: none of the system drawn either.
+    pub inside: bool,
     /// A stopover in view, and something seen inside a leg: its kind
     /// (`voyage::Flux`), how much shows, and how far into it.
     pub scene: Option<Scene>,
@@ -344,6 +352,8 @@ pub struct Tour {
     pub passage: Passage,
     arrival: u32,
     basis: [[f64; 3]; 3],
+    /// The starbase docked at in place of an orbit, if the itinerary has one.
+    pub base: Option<Base>,
 }
 
 /// The flight out to the jump point: a Hermite spline from where it begins
@@ -497,6 +507,15 @@ pub struct Manoeuvre {
     /// charged it is, 0..1.
     pub drive: u32,
     pub charge: f32,
+    /// Docking at or serviced by a starbase: shown in the drive's panel,
+    /// in approach control's colours, with its own words: the tag lit at
+    /// the top (`tag`), the gauge's (`gauge`), the line under the name
+    /// (`label`), and the stage from which the tag is lit hot (`hot`).
+    pub dock: bool,
+    pub tag: String,
+    pub gauge: String,
+    pub label: String,
+    pub hot: u32,
 }
 
 /// Where each of a burn's stages begins, as a share of it: turning to the
@@ -1138,6 +1157,7 @@ impl Tour {
                 basis: frame_of(exit),
                 passage,
                 arrival,
+                base: None,
             };
             tour.cruise = tour.build_cruise();
             return tour;
@@ -1148,6 +1168,10 @@ impl Tour {
         let exit = exit_draw(&mut rng);
 
         let flybys = Self::choose_flybys(&system, &itinerary, entry, &mut rng);
+        let base = system
+            .starbase()
+            .filter(|stop| itinerary.contains(stop))
+            .map(|stop| Base::plan(&system, stop));
         let mut segments = Vec::new();
         let mut t = 0.0;
         let mut push = |phase, duration: f64, t: &mut f64| {
@@ -1168,7 +1192,14 @@ impl Tour {
                 TRANSFER
             };
             push(Phase::Transfer { from, to: stop }, duration, &mut t);
-            push(Phase::High(stop), HIGH, &mut t);
+            match &base {
+                Some(b) if b.stop == stop => {
+                    for (stage, length) in b.stages() {
+                        push(Phase::Base(stop, stage), length, &mut t);
+                    }
+                }
+                _ => push(Phase::High(stop), HIGH, &mut t),
+            }
             from = Some(stop);
         }
         let last = *itinerary.last().expect("a tour has stops");
@@ -1248,6 +1279,7 @@ impl Tour {
             basis: frame_of(exit),
             passage,
             arrival,
+            base,
         };
         tour.stage_moons();
         // Each orbit is entered the way the transfer reaching it comes in,
@@ -2029,11 +2061,14 @@ impl Tour {
         self.orbits[self.index_of(stop)]
     }
 
-    /// When the camera reaches `stop`'s high orbit.
+    /// When the camera reaches `stop`'s high orbit (at a starbase, the
+    /// orbit it calls in from).
     fn arrival(&self, stop: Stop) -> f64 {
         self.segments
             .iter()
-            .find(|s| s.phase == Phase::High(stop))
+            .find(|s| {
+                s.phase == Phase::High(stop) || s.phase == Phase::Base(stop, BaseStage::Approach)
+            })
             .map_or(0.0, |s| s.start)
     }
 
@@ -2240,6 +2275,7 @@ impl Tour {
         let (mut spool, mut spool_light, mut target_shown) = (0.0, 0.0, 0.0);
         let (mut look, mut drop_look) = (self.drive().0, self.arrival);
         let (mut deep, mut scene, mut flux, mut flash) = (segment.phase.deep(), None, None, 0.0);
+        let mut inside = false;
         // Dropping out: the jump's light tears open over the new system (or
         // a stopover, after a leg of `length` seconds), its drive slowing on
         // from 0.4 to 0.15.
@@ -2253,6 +2289,11 @@ impl Tour {
         };
         let (position, forward, up) = match segment.phase {
             Phase::High(p) => self.orbiting(p, t),
+            Phase::Base(p, stage) => {
+                let placed = self.base_view(p, stage, local, t);
+                inside = placed.inside;
+                (placed.position, placed.forward, placed.up)
+            }
             Phase::Transfer { from, to } => {
                 let k = self.index_of(to);
                 let t0 = segment.start;
@@ -2418,6 +2459,7 @@ impl Tour {
             look,
             drop_look,
             deep,
+            inside,
             scene,
             flux,
             flash,
@@ -2445,7 +2487,7 @@ impl Tour {
                 to,
             } if self.in_sight(from, t) => (Some(to), Some(from)),
             Phase::Transfer { to, .. } => (Some(to), second(to)),
-            Phase::High(p) => (Some(p), second(p)),
+            Phase::High(p) | Phase::Base(p, _) => (Some(p), second(p)),
             Phase::Depart(p) => (Some(p), p.moon.map(|_| Stop::planet(p.planet))),
             Phase::Cruise { from: Some(p) } if self.in_sight(p, t) => (Some(p), None),
             Phase::Cruise { .. }
@@ -2505,7 +2547,7 @@ impl Tour {
     pub fn current(&self, t: f64) -> Option<Stop> {
         match self.segment(t).0.phase {
             Phase::Transfer { to, .. } => Some(to),
-            Phase::High(p) | Phase::Depart(p) => Some(p),
+            Phase::High(p) | Phase::Base(p, _) | Phase::Depart(p) => Some(p),
             Phase::Cruise { .. }
             | Phase::Spool
             | Phase::Jump(_)
@@ -2736,6 +2778,7 @@ impl Tour {
                     }
                 }
             }
+            Phase::Base(p, stage) => Some(self.base_manoeuvre(p, stage, local, t)),
             Phase::Depart(p) => {
                 let world = self.world(p);
                 let mu = super::system::GM_EARTH * world.mass;
@@ -3008,6 +3051,7 @@ impl Tour {
                     ],
                 )
             }
+            Phase::Base(p, stage) => self.base_hud(p, stage, local, t),
             Phase::Depart(_) => (
                 "DEPARTURE".into(),
                 vec![
@@ -3268,6 +3312,13 @@ mod tests {
             let mut t = h;
             let mut last: Option<(usize, [f64; 3])> = None;
             while t < tour.total - JUMP - h {
+                // At a starbase the ship stops to dock, and turns about to
+                // leave: its own tests cover it.
+                if matches!(tour.segment(t).0.phase, Phase::Base(..)) {
+                    last = None;
+                    t += h;
+                    continue;
+                }
                 let Some((id, centre)) = frame_body(&tour, t) else {
                     break;
                 };
@@ -3312,6 +3363,11 @@ mod tests {
         let mut t = 0.0;
         while t < tour.total - JUMP {
             let view = tour.view(t);
+            // A starbase is flown into, through its mouth.
+            let docking = match tour.segment(t).0.phase {
+                Phase::Base(stop, _) => Some(stop),
+                _ => None,
+            };
             for (i, planet) in tour.system.planets.iter().enumerate() {
                 let d = length(sub(view.position, planet.position(t)));
                 assert!(d > planet.radius * 1.05, "inside planet {i} at {t}: {d}");
@@ -3325,6 +3381,9 @@ mod tests {
                         planet: i,
                         moon: Some(m),
                     };
+                    if docking == Some(stop) {
+                        continue;
+                    }
                     let d = length(sub(view.position, tour.system.centre(stop, t)));
                     assert!(
                         d > moon.radius * 1.05,
@@ -3616,5 +3675,106 @@ mod jump_point_tests {
         }
         // Four stages of each drive its own.
         assert_eq!(names.len(), 4 * DRIVES.len(), "{names:?}");
+    }
+}
+
+#[cfg(test)]
+mod starbase_tests {
+    use super::*;
+
+    /// A visit with a starbase, held for traffic or not, from the first
+    /// seeds that have one.
+    fn with_base(hold: bool) -> Tour {
+        (0..400)
+            .map(|seed| Tour::new(System::generate(seed), System::generate(seed + 1)))
+            .find(|t| t.base.as_ref().is_some_and(|b| b.traffic.is_some() == hold))
+            .expect("a starbase among the first systems")
+    }
+
+    #[test]
+    fn some_systems_have_a_starbase_and_some_hold_for_traffic() {
+        let (mut bases, mut held) = (0, 0);
+        for seed in 0..200 {
+            let tour = Tour::new(System::generate(seed), System::generate(seed + 1));
+            if let Some(base) = &tour.base {
+                bases += 1;
+                held += base.traffic.is_some() as u32;
+                assert!(tour.system.is_starbase(base.stop));
+                assert!(tour.itinerary.contains(&base.stop));
+                // Visited in place of an orbit.
+                assert!(!tour.segments.iter().any(|s| s.phase == Phase::High(base.stop)));
+            }
+        }
+        assert!((25..=80).contains(&bases), "{bases} starbases in 200 systems");
+        assert!(held > 0 && held < bases, "{held} of {bases} held for traffic");
+    }
+
+    #[test]
+    fn a_starbase_visit_runs_its_stages_in_order() {
+        for hold in [false, true] {
+            let tour = with_base(hold);
+            let base = tour.base.clone().expect("a starbase");
+            let stages: Vec<_> = tour
+                .segments
+                .iter()
+                .filter_map(|s| match s.phase {
+                    Phase::Base(stop, stage) => {
+                        assert_eq!(stop, base.stop);
+                        Some((stage, s.duration))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(stages, base.stages());
+            // The panel names the steps of the way in, the hold only when
+            // traffic has priority.
+            let start = tour.base_start(base.stop);
+            let panel = tour.manoeuvre(start + 1.0).expect("a docking panel");
+            assert!(panel.dock);
+            let labels: Vec<_> = panel.stages.iter().map(|s| s.0.as_str()).collect();
+            assert_eq!(labels.contains(&"HOLD"), hold, "{labels:?}");
+            assert_eq!(panel.stages.len(), panel.starts.len());
+            let (title, lines) = tour.hud(start + 1.0);
+            assert_eq!(title, "APPROACH CONTROL");
+            assert!(lines.iter().any(|(l, _)| l == "ATC"));
+        }
+    }
+
+    #[test]
+    fn the_ship_flies_in_and_out_without_a_jump() {
+        for hold in [false, true] {
+            let tour = with_base(hold);
+            let base = tour.base.clone().expect("a starbase");
+            let start = tour.base_start(base.stop);
+            let end = start + base.duration();
+            let centre = |t: f64| tour.system.centre(base.stop, t);
+            let radius = tour.world(base.stop).radius;
+            let h = 1.0 / 30.0;
+            let mut t = start - 1.0;
+            let mut deepest: f64 = f64::MAX;
+            let mut last = sub(tour.view(t).position, centre(t));
+            while t < end + 1.0 {
+                let view = tour.view(t);
+                let rel = sub(view.position, centre(t));
+                let r = length(rel);
+                deepest = deepest.min(r);
+                // Inside only from the mouth in.
+                if !view.inside {
+                    assert!(r > radius * 0.999, "below the surface at {t:.2}: {}", r / radius);
+                }
+                // No leap greater than the orbit's own pace.
+                let step = length(sub(rel, last));
+                assert!(step < radius * 0.02, "a leap of {} radii at {t:.2}", step / radius);
+                assert!((length(view.forward) - 1.0).abs() < 1e-6);
+                last = rel;
+                t += h;
+            }
+            assert!(deepest < radius, "never inside");
+            // Back in the orbit it left, and on from there.
+            let after = tour.view(end + 0.5);
+            assert!(!after.inside);
+            let (orbit, _, _) = tour.orbiting(base.stop, end + 0.5);
+            assert!(length(sub(after.position, orbit)) < radius * 0.05);
+        }
     }
 }

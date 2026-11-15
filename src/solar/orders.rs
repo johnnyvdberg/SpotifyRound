@@ -203,6 +203,15 @@ impl Solar {
                 "STATUS     IN ORBIT, {}",
                 self.tour.world(stop).name.to_uppercase()
             ),
+            Phase::Base(stop, stage) => format!(
+                "STATUS     {}, {}",
+                if stage == tour::BaseStage::Approach {
+                    "ON APPROACH"
+                } else {
+                    "AT THE STARBASE"
+                },
+                self.tour.world(stop).name.to_uppercase()
+            ),
             Phase::Depart(_) | Phase::Cruise { .. } => {
                 "STATUS     OUTBOUND FOR THE JUMP POINT".into()
             }
@@ -218,7 +227,7 @@ impl Solar {
         if !phase.deep() {
             // Past the last stop every world is behind the ship.
             let passed = here.unwrap_or(match phase {
-                Phase::Transfer { .. } | Phase::High(_) | Phase::Depart(_) => 0,
+                Phase::Transfer { .. } | Phase::High(_) | Phase::Base(..) | Phase::Depart(_) => 0,
                 _ => self.tour.itinerary.len(),
             });
             for (k, &stop) in self.tour.itinerary.iter().enumerate() {

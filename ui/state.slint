@@ -186,6 +186,14 @@ export global Idle {
     // A hyperdrive spooling up at the jump point (0: none; 1..5 which, for
     // its colours), and how charged it is, 0..1. Its stages are `man-stages`.
     in-out property <int> man-drive: 0;
+    // Docking at or serviced by a starbase: the drive's panel in approach
+    // control's colours, with its own tag, gauge and target words, the tag
+    // lit hot from stage `man-hot`.
+    in-out property <bool> man-dock: false;
+    in-out property <string> man-tag: "";
+    in-out property <string> man-gauge: "";
+    in-out property <string> man-label: "";
+    in-out property <int> man-hot: 4;
     in-out property <float> man-charge: 0;
     // The ship's alarm between the stars, 0..1: amber from 0.3, red from 0.7.
     in-out property <float> alert: 0;

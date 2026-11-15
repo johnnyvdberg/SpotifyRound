@@ -275,7 +275,7 @@ export component IdleScreen inherits Rectangle {
     // orbit, half the burn's height: its name, why the ship does it, and a
     // bar through it where it has one.
     // Between the stars, it takes the alarm's colour: amber, then red.
-    if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-dv <= 0 && Idle.man-drive == 0 : Rectangle {
+    if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-dv <= 0 && Idle.man-drive == 0 && !Idle.man-dock : Rectangle {
         property <color> ink: Idle.alert >= 0.7 ? #ff4a3a : Idle.alert >= 0.3 ? #ffb43c : Theme.accent;
         x: (parent.width - self.width) / 2;
         y: 150px;
@@ -568,19 +568,23 @@ export component IdleScreen inherits Rectangle {
     // colours: a ladder of charge, the drive's name and its target, a tag
     // pulsing as it spools and lit as it engages, and its stages, the one
     // under way lit with how far through it.
-    property <color> drive-ink: Idle.man-drive == 1 ? #9fdcff
+    // Docking at a starbase: approach control's green, lit white.
+    property <color> drive-ink: Idle.man-dock ? #7dffb0
+        : Idle.man-drive == 1 ? #9fdcff
         : Idle.man-drive == 2 ? #3fe6ff
         : Idle.man-drive == 3 ? #b0bcff
         : Idle.man-drive == 4 ? #2ee8b8
         : #a894ff;
-    property <color> drive-hot: Idle.man-drive == 1 ? #ffffff
+    property <color> drive-hot: Idle.man-dock ? #f0fff4
+        : Idle.man-drive == 1 ? #ffffff
         : Idle.man-drive == 2 ? #ff4fd8
         : Idle.man-drive == 3 ? #ff9a6a
         : Idle.man-drive == 4 ? #b4ff5a
         : #ff8ad8;
-    if Idle.man-name != "" && Idle.hud-scans.length == 0 && Idle.man-drive > 0 : Rectangle {
+    if Idle.man-name != "" && Idle.hud-scans.length == 0 && (Idle.man-drive > 0 || Idle.man-dock) : Rectangle {
         property <float> charge: Idle.man-charge;
-        property <bool> engaging: Idle.man-stage >= 4;
+        property <int> hot: Idle.man-dock ? Idle.man-hot : 4;
+        property <bool> engaging: Idle.man-stage >= hot;
         animate charge { duration: 250ms; }
         x: (parent.width - self.width) / 2;
         y: 150px;
@@ -605,7 +609,7 @@ export component IdleScreen inherits Rectangle {
             x: 14px;
             y: 198px;
             width: 50px;
-            text: "CHG";
+            text: Idle.man-dock ? Idle.man-gauge : "CHG";
             color: drive-ink.with-alpha(0.7);
             font-family: Theme.font;
             font-size: 12px;
@@ -632,7 +636,7 @@ export component IdleScreen inherits Rectangle {
             border-radius: 4px;
             background: (engaging ? drive-hot : drive-ink).with-alpha(pulse);
             Text {
-                text: engaging ? "ENGAGE" : "SPOOL";
+                text: Idle.man-dock ? Idle.man-tag : engaging ? "ENGAGE" : "SPOOL";
                 color: #02040a;
                 font-family: Theme.font;
                 font-size: 14px;
@@ -645,7 +649,7 @@ export component IdleScreen inherits Rectangle {
         Text {
             x: 76px;
             y: 44px;
-            text: "TARGET";
+            text: Idle.man-dock ? Idle.man-label : "TARGET";
             color: drive-ink.with-alpha(0.6);
             font-family: Theme.font;
             font-size: 14px;
@@ -679,7 +683,7 @@ export component IdleScreen inherits Rectangle {
         for stage[i] in Idle.man-stages : Rectangle {
             property <bool> past: i < Idle.man-stage;
             property <bool> now: i == Idle.man-stage;
-            property <color> ink: now ? (i >= 4 ? drive-hot : drive-ink) : drive-ink.with-alpha(past ? 0.55 : 0.28);
+            property <color> ink: now ? (i >= hot ? drive-hot : drive-ink) : drive-ink.with-alpha(past ? 0.55 : 0.28);
             x: 76px;
             y: 86px + i * 26px;
             width: parent.width - 100px;

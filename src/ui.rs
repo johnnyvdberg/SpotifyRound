@@ -499,6 +499,11 @@ impl WindowExt for AppWindow {
         idle.set_man_stage(stage as i32);
         idle.set_man_stage_progress(through);
         idle.set_man_drive(manoeuvre.drive as i32);
+        idle.set_man_dock(manoeuvre.dock);
+        idle.set_man_tag(manoeuvre.tag.as_str().into());
+        idle.set_man_gauge(manoeuvre.gauge.as_str().into());
+        idle.set_man_label(manoeuvre.label.as_str().into());
+        idle.set_man_hot(manoeuvre.hot as i32);
         idle.set_man_charge(manoeuvre.charge);
         idle.set_alert(hud.alert);
         let notice = hud.notice.clone().unwrap_or_default();

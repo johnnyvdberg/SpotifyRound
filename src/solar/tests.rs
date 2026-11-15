@@ -82,6 +82,23 @@ fn moments(tour: &Tour) -> Vec<(String, f64)> {
                 out.push((format!("transfer-{from}-to-{to}-arrival"), end - 1.5));
             }
             Phase::High(p) => out.push((format!("{p}-high-orbit"), at(0.5))),
+            Phase::Base(_, stage) => {
+                let name = stage.name();
+                if stage == tour::BaseStage::Approach {
+                    // Each step of the way in.
+                    let base = tour.base.as_ref().expect("a starbase");
+                    let steps = base.steps();
+                    for (i, &(step, start)) in steps.iter().enumerate() {
+                        let next = steps.get(i + 1).map_or(segment.duration, |s| s.1);
+                        out.push((
+                            format!("base-{name}-{}", format!("{step:?}").to_lowercase()),
+                            segment.start + (start + next) / 2.0,
+                        ));
+                    }
+                } else {
+                    out.push((format!("base-{name}"), at(0.5)));
+                }
+            }
             Phase::Depart(_) => {
                 out.push(("depart-start".into(), segment.start + 1.0));
                 out.push(("depart-spool".into(), end - 1.0));

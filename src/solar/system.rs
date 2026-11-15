@@ -270,6 +270,37 @@ pub struct Rings {
     pub seed: f32,
 }
 
+/// The chance a system has a starbase, when it has a giant to build it at.
+pub const STARBASE_CHANCE: f64 = 0.25;
+
+/// What a starbase is called.
+const STARBASE_NAMES: &[&str] = &[
+    "Halcyon Yard",
+    "Meridian Deep",
+    "Orison Station",
+    "Caldera Reach",
+    "Tessellate",
+    "Gantry Prime",
+    "Lantern Hollow",
+    "Verdigris Dock",
+    "Saltmarsh Ring",
+    "Cinder Vault",
+];
+
+/// `SOLAR_STARBASE`: unset, starbases as they come; `1` (or anything but
+/// the two below) a starbase in every system with a giant, its traffic as
+/// it comes; `hold` one where traffic always has priority on the way in;
+/// `clear` one where it never has.
+pub fn forced_starbase() -> Option<Option<bool>> {
+    let value = std::env::var("SOLAR_STARBASE").ok()?;
+    Some(match value.trim() {
+        "" | "0" => return None,
+        "hold" => Some(true),
+        "clear" => Some(false),
+        _ => None,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct Moon {
     pub name: String,
@@ -287,6 +318,9 @@ pub struct Moon {
     pub seed: u64,
     /// As big as a planet, with a planet's kind: visited and mapped in full.
     pub world: bool,
+    /// A starbase the size of a moon, built round it: visited (it is a
+    /// `world` too), flown into and docked at (`tour::starbase`).
+    pub starbase: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -718,6 +752,7 @@ fn moons_for(planet_kind: Kind, radius: f64, rng: &mut Rng) -> Vec<Moon> {
             palette: palette(kind, rng),
             seed: rng.next(),
             world,
+            starbase: false,
         });
         orbit *= rng.range(1.45, 1.8);
     }
@@ -984,13 +1019,71 @@ impl System {
                 rng.range(0.0, 100.0) as f32,
             ]
         };
-        System {
+        let mut system = System {
             seed,
             star,
             planets,
             distance: rng.range(4.0, 40.0),
             sky,
+        };
+        system.build_starbase();
+        system
+    }
+
+    /// Now and then (`STARBASE_CHANCE`, or always with `SOLAR_STARBASE`) a
+    /// giant's moon is a starbase: the moon as big as a planet if the
+    /// system has one, else a giant's second moon (or its only one), made
+    /// a world so the tour visits it after its giant. Drawn from a
+    /// generator of its own, so the rest of the system is as it was.
+    fn build_starbase(&mut self) {
+        let mut rng = Rng::new(self.seed ^ 0x57a8_ba5e);
+        let chance = if forced_starbase().is_some() {
+            1.0
+        } else {
+            STARBASE_CHANCE
+        };
+        if !rng.chance(chance) {
+            return;
         }
+        let existing = (0..self.planets.len()).find_map(|p| self.world_moon(p).map(|m| (p, m)));
+        let (p, m) = match existing {
+            Some(at) => at,
+            None => {
+                let giants: Vec<usize> = (0..self.planets.len())
+                    .filter(|&p| self.planets[p].kind.is_giant() && !self.planets[p].moons.is_empty())
+                    .collect();
+                if giants.is_empty() {
+                    return;
+                }
+                let p = *rng.pick(&giants);
+                (p, 1.min(self.planets[p].moons.len() - 1))
+            }
+        };
+        let moon = &mut self.planets[p].moons[m];
+        moon.world = true;
+        moon.starbase = true;
+        // Plated rock for now: grey and cratered (its own map is to come).
+        moon.kind = Kind::Barren;
+        moon.palette = palette(Kind::Barren, &mut rng);
+        // The size of a moon: 900 to 1,600 km in radius.
+        moon.radius = rng.range(900.0, 1600.0) / KM;
+        moon.name = rng.pick(STARBASE_NAMES).to_string();
+    }
+
+    /// The stop at the system's starbase, if it has one.
+    pub fn starbase(&self) -> Option<Stop> {
+        self.planets.iter().enumerate().find_map(|(p, planet)| {
+            planet.moons.iter().position(|m| m.starbase).map(|m| Stop {
+                planet: p,
+                moon: Some(m),
+            })
+        })
+    }
+
+    /// Whether `stop` is a starbase.
+    pub fn is_starbase(&self, stop: Stop) -> bool {
+        stop.moon
+            .is_some_and(|m| self.planets[stop.planet].moons.get(m).is_some_and(|m| m.starbase))
     }
 
     /// Where `stop` is at `seconds` into the visit.

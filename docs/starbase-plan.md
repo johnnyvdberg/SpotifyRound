@@ -50,7 +50,7 @@ equatorial trench.
 
 ## 2. Timeline and data (B1)
 
-- `system.rs`: a new body `Kind::Starbase` (the next free shader number after the existing kinds). It is placed as a moon of a giant, or as a stop of its own
+- `system.rs`: a `starbase` flag on a moon made a world (done in B1, painted as `Kind::Barren` until B2 gives it a map kind of its own). It is placed as a moon of a giant, or as a stop of its own
   round the star when the system has no giant. Seed it in about one system in four (`STARBASE_CHANCE`).
   Give it a name from a short list ("Halcyon Yard", "Meridian Deep", …), a radius of 900–1600 km, and
   a seed for the city palette and layout.
@@ -228,7 +228,7 @@ city); bake time at system arrival (spread it across frames, as `stream.rs` does
 
 | | Stage | Done when |
 |---|---|---|
-| B1 | Body kind, `Phase::Base` stages, `starbase.rs` camera script, `SOLAR_STARBASE` | The HUD names each stage, the camera follows the spline (flat-coloured placeholders), and the tour continues after it |
+| B1 ✓ | Body kind, `Phase::Base` stages, `starbase.rs` camera script, `SOLAR_STARBASE`; the way in staged on a docking panel, with a hold when other traffic has priority (one time in five) | The HUD names each stage, the camera follows the spline (flat-coloured placeholders), and the tour continues after it |
 | B2 | Exterior map kind and the mouth model | Approach screenshots read as a built moon by day and night |
 | B3 | Tunnel segments, instanced, with fog and draw order | Tunnel at 60 fps on the Pi with flat panes |
 | B4 | City bake and `fs_pane` parallax, traffic | Screenshot set through the tunnel; `fs_pane` ≤ 80 instructions on shader-db |

@@ -679,7 +679,7 @@ impl Solar {
         // burn's readout taller and the drive's taller still.
         let tall = match &hud.manoeuvre {
             _ if !hud.scans.is_empty() => Some(98.0),
-            Some(m) if m.drive > 0 => Some(224.0),
+            Some(m) if m.drive > 0 || m.dock => Some(224.0),
             Some(m) if m.dv > 0.0 => Some(196.0),
             Some(_) => Some(98.0),
             None => None,
@@ -702,7 +702,9 @@ impl Solar {
         // The now-playing card, when a track is up.
         panels.push([170.0, 784.0, 910.0, 920.0]);
         let view = self.view(t);
-        self.labels = if view.deep {
+        self.labels = if view.inside {
+            Vec::new()
+        } else if view.deep {
             encounter_label(&view, &panels).into_iter().collect()
         } else {
             labels::labels(&self.tour.system, &view, t, &panels)

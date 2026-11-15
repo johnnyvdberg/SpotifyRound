@@ -93,6 +93,22 @@ forces one; `cargo test --release solar::tests::encounters -- --ignored` shoots 
 
 <p align="center"><img src="solar-battle.jpg" width="640" alt="Six battles, from the fight through the blast"></p>
 
+## Starbases
+
+About one system in four has a starbase the size of a moon, round one of its giants, visited in
+place of an orbit (`src/solar/tour/starbase.rs`; the plan for the rest is in
+[starbase-plan.md](starbase-plan.md)). The way in is staged like a drive spooling up, on a docking
+panel in approach control's green: CONTACT (hailing approach control), CLEARANCE (a bay and a
+corridor), ALIGNMENT (off the orbit onto the corridor's beacon) and FINAL (down the corridor to the
+mouth), while the HUD carries approach control's calls. One time in five another ship has priority
+(a medical frigate with casualties aboard, an ore hauler with its reactor running hot, a colony ark
+too big to wait…): the clearance says to hold, and a HOLD step keeps the ship circling in its orbit
+while that ship goes in first. Then it flies the tunnel, berths, is serviced (hull plating, coolant,
+reaction mass, the drive's coil, nav sync), undocks, turns about, flies back out and climbs back into
+the orbit it left, and the tour goes on from there. For now the inside is a flat placeholder: the
+tunnel, the city through its windows and the bay are still to be drawn. `SOLAR_STARBASE=1` puts a
+starbase in every system with a giant (`hold`: traffic always has priority; `clear`: never).
+
 ## The ship's computer
 
 A long press on the solar tour opens the **ship's computer**, a green-phosphor terminal on a curved

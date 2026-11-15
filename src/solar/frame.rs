@@ -15,7 +15,7 @@ impl Solar {
         let f32x4 = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
 
         let star_rel = rel([0.0; 3]);
-        let hidden = view.warp > 0.3 || view.deep;
+        let hidden = view.warp > 0.3 || view.deep || view.inside;
         let mut bodies: Vec<(f64, Body, Vec<Pipe>)> = Vec::new();
         if !hidden {
             let mut star = Body {
@@ -327,12 +327,17 @@ impl Solar {
             .into_iter()
             .find(|e| e.id() == params.ev[EV_EVENT][0] as u32);
         let deep = params.ev[EV_SHIP][3] > 0.5;
+        // Inside a starbase: nothing of the system, and (until its tunnel
+        // and bay are drawn) nothing over the clear.
+        let inside = self.view(t).inside;
         // A stopover that replaces the sky, at full strength: nothing under it
         // to draw.
         let covered = event.is_some_and(|e| e.replaces_sky())
             && params.ev[EV_STATE][1] >= 1.0
             && params.warp[2] >= 1.0;
-        let background = if baked && params.spool[1] > 0.001 && params.warp[0] < 1.0 {
+        let background = if inside {
+            None
+        } else if baked && params.spool[1] > 0.001 && params.warp[0] < 1.0 {
             // The drive starting up, and on into the jump's first seconds
             // until its light is all there is; while it is still aligning,
             // the sky with the star marked, all that shows then.
@@ -359,7 +364,7 @@ impl Solar {
         // The star's glare over the baked background (`fs_space` draws its
         // own; the drives none).
         let glare = match background {
-            _ if deep => None,
+            _ if deep || inside => None,
             Some(Pipe::SpaceBaked | Pipe::Target) => glare_pass(&params),
             _ if spooling && params.warp[0] < 0.3 => glare_pass(&params),
             _ => None,
@@ -567,7 +572,18 @@ impl Solar {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        // Inside a starbase, a flat placeholder for its
+                        // tunnel and bay: a dim steel blue.
+                        load: wgpu::LoadOp::Clear(if inside {
+                            wgpu::Color {
+                                r: 0.035,
+                                g: 0.045,
+                                b: 0.07,
+                                a: 1.0,
+                            }
+                        } else {
+                            wgpu::Color::BLACK
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
