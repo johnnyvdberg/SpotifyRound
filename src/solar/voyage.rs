@@ -160,7 +160,7 @@ impl Event {
     /// The plasma storm or the remnant: drawn at half the frame's resolution
     /// before its pass, and laid over the sky from there (`fs_coarse`).
     pub fn coarse(self) -> bool {
-        matches!(self, Event::PlasmaStorm | Event::Remnant)
+        matches!(self, Event::PlasmaStorm | Event::Remnant | Event::BlackHole)
     }
 
     /// A star gate or a wormhole: it throws the ship on itself, no drive.

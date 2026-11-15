@@ -6,14 +6,18 @@
 //! Each model is a distance field with parameters of its own, drawn per
 //! variant from a seed, so no two variants are quite alike: a saucer
 //! cruiser's saucer size, its nacelles' number, height and spread; a wedge's
-//! tiers, its deck's machinery and its engine bank; a rock's stretch, lumps
-//! and craters; a ring station's breaks. Each is meshed once by surface nets
+//! tiers, its deck's machinery and its engine bank; a ring station's
+//! breaks. Each is meshed once by surface nets
 //! — a vertex in every cell of a lattice the surface crosses, at the mean of
 //! the crossings on its edges, then pulled onto the surface along the
 //! field's gradient — with the field's gradient for normals, the field's
 //! distance a little way out for ambient occlusion, and which part of the
 //! model each vertex lies on (hull, windows, glows, engines) for the shader
-//! to colour. Rocks come at three levels of detail.
+//! to colour.
+//!
+//! Two families are built otherwise: the rocks as radial height fields with
+//! their surfaces in maps (`rocks`), at three levels of detail; the hive
+//! cubes as exact blocks (`hive_mesh`).
 //!
 //! Building them all takes a few seconds (longer on the Pi), so they are
 //! built on a thread of their own and cached on disk, keyed by the
@@ -29,7 +33,7 @@ use glam::Vec3;
 use super::system::Rng;
 
 /// Bumped whenever a model's shape changes, so stale caches are rebuilt.
-pub const GENERATOR: u32 = 8;
+pub const GENERATOR: u32 = 9;
 /// Variants of each ship design and role.
 pub const VARIANTS: u32 = 3;
 /// Ship designs: as `voyage::FACTIONS`.
@@ -52,9 +56,10 @@ pub mod part {
     pub const ENGINE: u8 = 6;
     pub const WINDOWS: u8 = 7;
     pub const GREEN: u8 = 8;
-    /// A star gate's node; a rock's fresh crater rim.
+    /// A star gate's node.
     pub const NODE: u8 = 9;
-    pub const FRESH: u8 = 9;
+    /// A hive cube's open bay, its floor.
+    pub const BAY: u8 = 10;
 }
 
 /// A mesh vertex: where, its normal, and its occlusion, part and window
@@ -195,7 +200,7 @@ impl Key {
         match self {
             Key::Ship { role: 0, .. } => 120,
             Key::Ship { .. } => 100,
-            Key::Rock { lod, .. } => [80, 40, 18][lod.min(2) as usize],
+            Key::Rock { .. } => 0,
             Key::Gate { .. } => 150,
             Key::Hive { lod: 0, .. } => 150,
             Key::Hive { .. } => 50,
@@ -243,6 +248,9 @@ pub struct Library {
     pub indices: Vec<u32>,
     pub ranges: HashMap<Key, (u32, u32, i32)>,
     pub clusters: HashMap<Key, Vec<Cluster>>,
+    /// The rock shapes' surface and horizon maps (`rocks`), until they are
+    /// on the GPU.
+    pub rock_maps: Option<super::rocks::Maps>,
 }
 
 /// Meshes of at least this many triangles are drawn a cluster at a time,
@@ -439,7 +447,7 @@ impl Library {
 }
 
 /// Where the cache lives: `SOLAR_SHIP_CACHE`, or the user's cache directory.
-fn cache_dir() -> Option<PathBuf> {
+pub(super) fn cache_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("SOLAR_SHIP_CACHE") {
         return Some(PathBuf::from(dir));
     }
@@ -521,9 +529,18 @@ pub fn library() -> Library {
         indices: Vec::new(),
         ranges: HashMap::new(),
         clusters: HashMap::new(),
+        rock_maps: None,
     };
+    let (maps, mut rocks) = super::rocks::load_or_build();
+    lib.rock_maps = Some(maps);
     for key in Key::all() {
-        let m = mesh(key);
+        let m = match key {
+            Key::Rock { variant, lod } => std::mem::replace(
+                &mut rocks[variant as usize][lod as usize],
+                Mesh { vertices: Vec::new(), indices: Vec::new() },
+            ),
+            _ => mesh(key),
+        };
         let base = lib.vertices.len() as i32;
         let first = lib.indices.len() as u32;
         if m.indices.len() as u32 >= CLUSTERED * 3 {
@@ -577,7 +594,7 @@ impl Sample {
     }
 }
 
-fn hash(p: Vec3, seed: f32) -> f32 {
+pub(super) fn hash(p: Vec3, seed: f32) -> f32 {
     let mut q = (p * Vec3::new(0.1031, 0.1030, 0.0973) + Vec3::splat(seed * 0.137)).fract();
     q += Vec3::splat(q.dot(Vec3::new(q.y, q.z, q.x) + Vec3::splat(33.33)));
     ((q.x + q.y) * q.z).fract()
@@ -657,9 +674,9 @@ fn field(key: Key, k: &Params, p: Vec3) -> Sample {
             4 => trader(k, p),
             _ => collective(k, p),
         },
-        Key::Rock { .. } => rock(k, p),
+        Key::Rock { .. } => unreachable!("rocks are built by `rocks`"),
         Key::Gate { style, part } => gate(k, p, style, part),
-        Key::Hive { .. } => hive(k, p),
+        Key::Hive { .. } => unreachable!("hives are built as blocks"),
         Key::Ring { gaps, .. } => ring_station(k, p, gaps),
         Key::Debris { .. } => debris(k, p),
     }
@@ -1124,7 +1141,7 @@ fn collective(k: &Params, p: Vec3) -> Sample {
 
 /// Smooth value noise in -1..1 (a lattice of hashed values, quintic
 /// blended).
-fn noise3(p: Vec3) -> f32 {
+pub(super) fn noise3(p: Vec3) -> f32 {
     let i = p.floor();
     let f = p - i;
     let u = f * f * f * (f * (f * 6.0 - Vec3::splat(15.0)) + Vec3::splat(10.0));
@@ -1136,76 +1153,6 @@ fn noise3(p: Vec3) -> f32 {
     let y0 = x00 + (x10 - x00) * u.y;
     let y1 = x01 + (x11 - x01) * u.y;
     y0 + (y1 - y0) * u.z
-}
-
-/// A crater's profile across `x`, its distance from the middle over its
-/// radius: a bowl, a raised rim, the ground beyond.
-fn crater_profile(x: f32) -> f32 {
-    let s = ((x - 0.85) / 0.2).clamp(0.0, 1.0);
-    let s = s * s * (3.0 - 2.0 * s);
-    let fade = ((x - 1.3) / 0.5).clamp(0.0, 1.0);
-    let fade = fade * fade * (3.0 - 2.0 * fade);
-    (x * x - 1.0) * 0.35 * (1.0 - s) + 0.14 * (-((x - 1.0) / 0.32).powi(2)).exp() * (1.0 - fade)
-}
-
-/// Craters round `q` (a surface direction scaled up) from the eight cells
-/// about it: the ground's height from them, and how fresh a rim it is on.
-fn craters(q: Vec3, seed: f32) -> (f32, f32) {
-    let base = (q - Vec3::splat(0.5)).floor();
-    let mut height = 0.0;
-    let mut fresh: f32 = 0.0;
-    for i in 0..8 {
-        let cell = base + Vec3::new((i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32);
-        let k = hash(cell, seed);
-        if k > 0.7 {
-            continue;
-        }
-        let jitter = Vec3::new(
-            hash(cell, seed + 1.0),
-            hash(cell, seed + 2.0),
-            hash(cell, seed + 3.0),
-        );
-        let centre = cell + Vec3::splat(0.5) + (jitter - Vec3::splat(0.5)) * 0.4;
-        let radius = 0.16 + 0.26 * k / 0.7;
-        let x = (q - centre).length() / radius;
-        if x > 1.8 {
-            continue;
-        }
-        height += crater_profile(x) * radius;
-        if jitter.x > 0.55 && (x - 1.05).abs() < 0.25 {
-            fresh = fresh.max(1.0);
-        }
-    }
-    (height, fresh)
-}
-
-/// A rock: a stretched ellipsoid, pushed in and out by noise warped by
-/// noise, so its lumps flow into each other like broken stone; craters at
-/// two scales cut into it, the young ones' rims fresh and pale.
-fn rock(k: &Params, p: Vec3) -> Sample {
-    let seed = k.rng[0] * 40.0;
-    let stretch = Vec3::new(k.get(1, 0.62, 0.92), k.get(2, 0.55, 0.8), 0.92);
-    let warp = Vec3::new(
-        noise3(p * 1.2 + Vec3::splat(seed)),
-        noise3(p * 1.2 + Vec3::splat(seed + 9.0)),
-        noise3(p * 1.2 + Vec3::splat(seed + 17.0)),
-    ) * 0.22;
-    let q = p + warp;
-    let lumps = noise3(q * 1.7 + Vec3::splat(seed * 0.37)) * 0.17
-        + noise3(q * 4.1 + Vec3::splat(seed * 0.71)) * 0.055
-        + noise3(q * 9.0) * 0.015;
-    let dir = p.normalize_or_zero();
-    let (big, fresh_big) = craters(dir * 3.2, seed);
-    let (small, fresh_small) = craters(dir * 8.5 + Vec3::splat(31.0), seed + 5.0);
-    let d = sd_ellipsoid(p, stretch) - lumps - big * 0.14 - small * 0.05;
-    Sample::new(
-        d * 0.8,
-        if fresh_big.max(fresh_small) > 0.5 {
-            part::FRESH
-        } else {
-            part::HULL
-        },
-    )
 }
 
 /// A star gate, radius 1 about its axis (z): a segmented ring with ribs and
@@ -1284,59 +1231,129 @@ fn gate(_k: &Params, p: Vec3, style: u32, which: u32) -> Sample {
     }
 }
 
-/// A hive cube, half-size 1: each face built up of blocks of machinery at
-/// three scales standing out and sinking in, glowing slits in some, open
-/// bays sunk deep with light inside.
-fn hive(k: &Params, p: Vec3) -> Sample {
-    let mut relief = 0.0;
-    let mut glow = false;
-    for (scale, height) in [(0.33, 0.05), (0.11, 0.022), (0.037, 0.008)] {
-        let c = (p / scale).floor();
-        let h = hash(c, k.rng[0] * 50.0 + scale);
-        relief += (h - 0.45) * height;
-        if scale < 0.2 && h > 0.965 {
-            glow = true;
+/// Blocks along each side of a hive cube's face: large ones, each cut into
+/// 3 x 3 smaller (18 a side); the finest machinery, 3 x 3 again, is the
+/// shader's (`fs_model`, family 3).
+const HIVE_BLOCKS: usize = 6;
+
+/// A hive cube, half-size 1, built from blocks: each face a grid of blocks
+/// of machinery at two scales standing out and sinking in, flat-topped with
+/// straight walls, as exactly as a few thousand triangles a face can hold
+/// them (the surface nets took a quarter of a million for the same cube,
+/// its edges no sharper). A few small blocks glowing, a few large ones open
+/// bays sunk deep with light inside (`part::BAY`). Level 1, for the far
+/// escorts, has the large blocks alone.
+fn hive_mesh(variant: u32, lod: u32) -> Mesh {
+    let seed = Params::new(Key::Hive { variant, lod: 0 }).rng;
+    let n = if lod == 0 { HIVE_BLOCKS * 3 } else { HIVE_BLOCKS };
+    let cell = 2.0 / n as f32;
+    let per_big = n / HIVE_BLOCKS;
+    let core = -0.12;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    // A quad from its four corners in order round it (outward by `normal`).
+    let mut quad = |c: [Vec3; 4], normal: Vec3, ao: [f32; 4], part: u8| {
+        let base = vertices.len() as u32;
+        for k in 0..4 {
+            vertices.push(ShipVertex {
+                position: c[k].to_array(),
+                normal: normal.to_array(),
+                extra: [(ao[k].clamp(0.0, 1.0) * 255.0) as u8, part, 0, 255],
+            });
         }
-    }
-    let d = sd_box(p, Vec3::splat(1.0)) - relief;
-    let mut s = Sample::new(d * 0.8, if glow { part::GREEN } else { part::HULL });
-    // Open bays: deep, square, a grille over the light inside.
-    let bay = (p / 0.33).floor();
-    if hash(bay, k.rng[1] * 30.0) < 0.07 {
-        let f = (p / 0.33).fract() - Vec3::splat(0.5);
-        let a = p.abs();
-        let face = if a.x >= a.y && a.x >= a.z {
-            glam::Vec2::new(f.y, f.z)
-        } else if a.y >= a.z {
-            glam::Vec2::new(f.x, f.z)
+        let face = (c[1] - c[0]).cross(c[2] - c[0]);
+        if face.dot(normal) >= 0.0 {
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         } else {
-            glam::Vec2::new(f.x, f.y)
+            indices.extend_from_slice(&[base, base + 2, base + 1, base, base + 3, base + 2]);
+        }
+    };
+    for face in 0..6 {
+        let axis = face / 2;
+        let sign = if face % 2 == 0 { 1.0 } else { -1.0 };
+        let mut e = [Vec3::X, Vec3::Y, Vec3::Z];
+        let up = e[axis] * sign;
+        e.swap(0, axis);
+        let (eu, ev) = (e[1], e[2]);
+        let fi = face as f32;
+        let height = |i: usize, j: usize| -> (f32, u8) {
+            let (bi, bj) = (i / per_big, j / per_big);
+            let big = hash(Vec3::new(fi, bi as f32, bj as f32), seed[0] * 50.0 + 0.33);
+            if hash(Vec3::new(fi, bi as f32, bj as f32), seed[1] * 30.0) < 0.07 {
+                return (-0.09, part::BAY);
+            }
+            let mut h = (big - 0.45) * 0.05;
+            let mut p = part::HULL;
+            if lod == 0 {
+                let mid = hash(Vec3::new(fi + 0.5, i as f32, j as f32), seed[0] * 50.0 + 0.11);
+                h += (mid - 0.45) * 0.022;
+                if mid > 0.965 {
+                    p = part::GREEN;
+                }
+            }
+            (h, p)
         };
-        if face.x.abs() < 0.38 && face.y.abs() < 0.38 {
-            let sunk = d + 0.09;
-            s = Sample::new(sunk * 0.8, part::GREEN);
-            let grille = ((face.x * 18.0).fract() - 0.5)
-                .abs()
-                .min(((face.y * 18.0).fract() - 0.5).abs());
-            if grille < 0.08 {
-                s = s.or((d + 0.02) * 0.8, part::DARK);
+        let at = |u: f32, v: f32, h: f32| up * (1.0 + h) + eu * u + ev * v;
+        let coord = |i: usize| -1.0 + i as f32 * cell;
+        for i in 0..n {
+            for j in 0..n {
+                let (h, p) = height(i, j);
+                let (u0, u1, v0, v1) = (coord(i), coord(i + 1), coord(j), coord(j + 1));
+                // Each corner darker for every neighbour round it standing
+                // higher.
+                let rise = |di: i64, dj: i64| -> f32 {
+                    let (a, b) = (i as i64 + di, j as i64 + dj);
+                    if a < 0 || b < 0 || a >= n as i64 || b >= n as i64 {
+                        return 0.0;
+                    }
+                    ((height(a as usize, b as usize).0 - h) / 0.03).clamp(0.0, 1.0)
+                };
+                let corner = |di: i64, dj: i64| 1.0 - 0.17 * (rise(di, 0) + rise(0, dj) + rise(di, dj));
+                quad(
+                    [at(u0, v0, h), at(u1, v0, h), at(u1, v1, h), at(u0, v1, h)],
+                    up,
+                    [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)],
+                    p,
+                );
+                // The walls down to the lower neighbour on each side, or
+                // down into the cube at the face's edge.
+                for (di, dj) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                    let (a, b) = (i as i64 + di, j as i64 + dj);
+                    let edge = a < 0 || b < 0 || a >= n as i64 || b >= n as i64;
+                    let low = if edge { core } else { height(a as usize, b as usize).0 };
+                    if low >= h {
+                        continue;
+                    }
+                    let (w0, w1) = if di != 0 {
+                        let u = if di > 0 { u1 } else { u0 };
+                        ((u, v0), (u, v1))
+                    } else {
+                        let v = if dj > 0 { v1 } else { v0 };
+                        ((u0, v), (u1, v))
+                    };
+                    let out = (eu * di as f32 + ev * dj as f32).normalize();
+                    let wall_part = if p == part::BAY { part::DARK } else { part::HULL };
+                    let foot = if edge { 0.8 } else { 0.45 };
+                    quad(
+                        [
+                            at(w0.0, w0.1, low),
+                            at(w1.0, w1.1, low),
+                            at(w1.0, w1.1, h),
+                            at(w0.0, w0.1, h),
+                        ],
+                        out,
+                        [foot, foot, 1.0, 1.0],
+                        wall_part,
+                    );
+                }
             }
         }
     }
-    // Conduits along the largest seams.
-    let g = (p / 0.33 + Vec3::splat(0.5)).fract() - Vec3::splat(0.5);
-    let a = p.abs();
-    let seam = if a.x >= a.y && a.x >= a.z {
-        g.y.abs().min(g.z.abs())
-    } else if a.y >= a.z {
-        g.x.abs().min(g.z.abs())
-    } else {
-        g.x.abs().min(g.y.abs())
-    };
-    if seam < 0.02 && s.part == part::HULL && hash((p / 0.33).floor(), 77.0) > 0.5 {
-        s.part = part::GREEN;
-    }
-    s
+    let mut mesh = Mesh { vertices, indices };
+    meshopt::optimize_vertex_cache_in_place(&mut mesh.indices, mesh.vertices.len());
+    let kept = meshopt::optimize_vertex_fetch_in_place(&mut mesh.indices, &mut mesh.vertices);
+    mesh.vertices.truncate(kept);
+    mesh
 }
 
 /// A derelict ring station, radius 1 about z: a band with a deck inside
@@ -1424,6 +1441,9 @@ fn debris(k: &Params, p: Vec3) -> Sample {
 
 /// The mesh of `key`, by surface nets over a lattice of its field.
 pub fn build(key: Key) -> Mesh {
+    if let Key::Hive { variant, lod } = key {
+        return hive_mesh(variant, lod);
+    }
     let params = Params::new(key);
     let n = key.resolution();
     let extent = key.extent();
@@ -1610,17 +1630,10 @@ pub fn build(key: Key) -> Mesh {
                 + (f(p + normal * 0.09).d / 0.09).clamp(0.0, 1.0) * 0.5)
                 .clamp(0.25, 1.0);
             let part = f(p - normal * step * 0.2).part;
-            // A rock's fresh rims are a smooth amount (interpolated across
-            // its triangles), not a part (which would light whole ones).
-            let (part, fresh) = if part == part::FRESH && matches!(key, Key::Rock { .. }) {
-                (part::HULL, 255)
-            } else {
-                (part, 0)
-            };
             ShipVertex {
                 position: p.to_array(),
                 normal: normal.to_array(),
-                extra: [(ao * 255.0) as u8, part, fresh, 255],
+                extra: [(ao * 255.0) as u8, part, 0, 255],
             }
         })
         .collect();
@@ -1687,10 +1700,18 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore]
+    fn print_sizes() {
+        for key in Key::all().into_iter().filter(|k| !matches!(k, Key::Rock { .. })) {
+            println!("SIZE {key:?} {}", mesh(key).indices.len() / 3);
+        }
+    }
+
+    #[test]
     fn every_design_meshes_closed_and_sound() {
         for key in Key::all()
             .into_iter()
-            .filter(|k| !matches!(k, Key::Ship { variant: 1.., .. } | Key::Rock { lod: 0, .. }))
+            .filter(|k| !matches!(k, Key::Ship { variant: 1.., .. } | Key::Rock { .. }))
         {
             let mesh = build(key);
             assert!(
@@ -1715,13 +1736,14 @@ mod tests {
         }
     }
 
-    /// Seen from anywhere, every triangle facing the camera with a corner
-    /// on the frame lies in a cluster `Cluster::visible` keeps: leaving the
+    /// Seen from anywhere, every triangle of the biggest ring station facing
+    /// the camera with a corner on the frame lies in a cluster
+    /// `Cluster::visible` keeps: leaving the
     /// others out changes no pixel.
     #[test]
     fn clusters_keep_every_triangle_that_can_show() {
         use glam::Quat;
-        let key = Key::Hive { variant: 0, lod: 0 };
+        let key = Key::Ring { gaps: 4, variant: 0 };
         let mesh = build(key);
         assert!(mesh.indices.len() as u32 >= CLUSTERED * 3);
         let at = |i: u32| Vec3::from(mesh.vertices[i as usize].position);
@@ -1771,7 +1793,10 @@ mod tests {
                     let on_frame = p.iter().any(|q| {
                         q.z > 0.0 && q.x.abs() <= q.z * tan_half && q.y.abs() <= q.z * tan_half
                     });
-                    assert!(!(facing && on_frame), "a triangle that shows left out");
+                    // Slivers of no area cover no pixel, whichever way the
+                    // rounding turns them.
+                    let area = (at(t[1]) - at(t[0])).cross(at(t[2]) - at(t[0])).length();
+                    assert!(!(facing && on_frame && area > 1e-7), "a triangle that shows left out");
                 }
             }
         }

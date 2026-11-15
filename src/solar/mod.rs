@@ -19,6 +19,7 @@
 pub mod console;
 pub mod labels;
 pub mod models;
+pub mod rocks;
 pub mod scan;
 pub mod stream;
 pub mod system;
@@ -339,8 +340,10 @@ pub(crate) struct Solar {
     /// system it was painted for.
     rings: wgpu::Texture,
     rings_for: u64,
-    /// Each rock shape's small craters (`bake_craters`).
+    /// The rock shapes' surface and horizon maps (`rock_maps`), and the
+    /// layout of their group.
     craters: (wgpu::Texture, wgpu::BindGroup),
+    crater_layout: wgpu::BindGroupLayout,
     /// The nebula's gas and the plasma storm's (`bake_gas`, `bake_storm`).
     gas: [(wgpu::Texture, wgpu::BindGroup); 2],
     bound: (u64, usize, usize),
@@ -511,22 +514,8 @@ impl Solar {
             ],
             immediate_size: 0,
         });
-        let craters = {
-            let texture = bake_craters(gpu, &shader, streamer.noise());
-            let view = texture.create_view(&wgpu::TextureViewDescriptor {
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            });
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Solar rock craters"),
-                layout: &crater_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                }],
-            });
-            (texture, group)
-        };
+        // Until the models' thread has them, the rocks' maps are a texel each.
+        let craters = rock_maps(gpu, &crater_layout, None);
         // The nebula's and the plasma storm's gas, a group of its own for
         // their two pipelines (as the craters are, for the same limit).
         let gas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -992,7 +981,7 @@ impl Solar {
             );
         }
         // Between the legs of a jump: each stopover's own draw over the sky
-        // (`fs_event`, or in place of it, `fs_event_sky`), rocks or debris
+        // (`fs_event`; the black hole in place of it, `fs_coarse`), rocks or debris
         // round the ship for some; what is seen inside a leg over the
         // drive's light (`fs_flux`); and the ship's own effects over
         // everything (`fs_overlay`): the alarm, hits on the shield and
@@ -1003,11 +992,7 @@ impl Solar {
                 format!("event{}", event.id()),
                 format!("Solar event {}", event.slug()),
             );
-            let (vs, fs, blend) = if event.replaces_sky() {
-                ("vs_background", "fs_event_sky", None)
-            } else {
-                ("vs_background", "fs_event", over)
-            };
+            let (vs, fs, blend) = ("vs_background", "fs_event", over);
             // The leviathans and the encounters drawn in parts are drawn in pieces
             // instead (below).
             if event == voyage::Event::Nebula {
@@ -1061,6 +1046,12 @@ impl Solar {
             let label = format!("Solar event {} {name}", gate.slug());
             let made = pipeline(&label, vs, fs, blend, &[("PART", part as f64)]);
             pipelines.insert(format!("event{} {name}", gate.id()), made);
+        }
+        let hive = voyage::Event::HiveCube;
+        for (name, part) in [("haze", 1), ("beam", 2)] {
+            let label = format!("Solar event {} {name}", hive.slug());
+            let made = pipeline(&label, "vs_cube_glow", "fs_cube_glow", add, &[("PART", part as f64)]);
+            pipelines.insert(format!("event{} {name}", hive.id()), made);
         }
         let dyson = voyage::Event::DysonSwarm;
         for (name, part, blend, write, cull) in [
@@ -1209,13 +1200,15 @@ impl Solar {
             let made = gas_pipeline(&label, layout, fs, &constants, small, None, false);
             pipelines.insert(format!("coarse{}", event.id()), made);
             let label = format!("Solar event {}", event.slug());
+            // The black hole replaces the sky: nothing to blend over.
+            let blend = if event.replaces_sky() { None } else { over };
             let made = gas_pipeline(
                 &label,
                 &glow_layout,
                 "fs_coarse",
                 &constants,
                 frame,
-                over,
+                blend,
                 true,
             );
             pipelines.insert(format!("event{}", event.id()), made);
@@ -1788,6 +1781,7 @@ impl Solar {
             rings,
             rings_for: u64::MAX,
             craters,
+            crater_layout,
             gas,
             bound: (u64::MAX, usize::MAX, usize::MAX),
             starfields: [0, 1].map(|_| {
@@ -3036,7 +3030,8 @@ impl Solar {
         let Some(rx) = &self.model_library else {
             return;
         };
-        let Ok(library) = rx.try_recv() else { return };
+        let Ok(mut library) = rx.try_recv() else { return };
+        let library_maps = library.rock_maps.take();
         use wgpu::util::DeviceExt;
         let vertices = gpu
             .device
@@ -3063,7 +3058,11 @@ impl Solar {
             indices: Vec::new(),
             ranges: library.ranges,
             clusters: library.clusters,
+            rock_maps: None,
         };
+        if let Some(maps) = &library_maps {
+            self.craters = rock_maps(gpu, &self.crater_layout, Some(maps));
+        }
         self.models = Some(Models {
             vertices,
             indices,
@@ -3735,9 +3734,6 @@ fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &System) {
     );
 }
 
-/// Texels along each side of a rock shape's crater map (`CRATER_MAP` in the
-/// shader).
-const CRATER_MAP: u32 = 512;
 /// Texels along each side of a face of the gas map (`bake_gas`), as
 /// `GAS_MAP` in `encounter.wgsl`.
 const GAS_MAP: u32 = 512;
@@ -3745,27 +3741,73 @@ const GAS_MAP: u32 = 512;
 /// in `encounter.wgsl`.
 const STORM_MAP: u32 = 512;
 
-/// Bake each rock shape's small craters once, a layer a shape, over its
-/// directions octahedrally (`fs_bake_craters`): their height and slope, with
-/// the slope of the grain's middle octave, read by the rocks' shader in one
-/// filtered fetch where it worked out eight cells and a noise octave a
-/// pixel. (Each shape's craters lie where they lie on every rock of it;
-/// they were drawn for each rock's size before.)
-fn bake_craters(
+/// The rock shapes' surface and horizon maps on the GPU (`rocks::Maps`,
+/// `rock_maps` in the shader), and their group; a texel each until `maps`.
+fn rock_maps(
     gpu: &Graphics,
-    shader: &wgpu::ShaderModule,
-    noise: &crate::noise3d::Noise3d,
-) -> wgpu::Texture {
-    let label = "Solar rock craters";
-    bake(
-        gpu,
-        shader,
-        noise,
-        label,
-        "fs_bake_craters",
-        CRATER_MAP,
-        models::ROCKS,
-    )
+    layout: &wgpu::BindGroupLayout,
+    maps: Option<&rocks::Maps>,
+) -> (wgpu::Texture, wgpu::BindGroup) {
+    let device = &gpu.device;
+    let (size, mips) = match maps {
+        Some(m) => (rocks::MAP as u32, m.levels.len() as u32),
+        None => (1, 1),
+    };
+    let layers = 2 * models::ROCKS;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Solar rock maps"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: mips,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let flat = vec![128u8; 4 * layers as usize];
+    let levels: Vec<&[u8]> = match maps {
+        Some(m) => m.levels.iter().map(|l| l.as_slice()).collect(),
+        None => vec![&flat],
+    };
+    for (mip, data) in levels.iter().enumerate() {
+        let side = (size >> mip).max(1);
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: mip as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(side * 4),
+                rows_per_image: Some(side),
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: layers,
+            },
+        );
+    }
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Solar rock maps"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 2,
+            resource: wgpu::BindingResource::TextureView(&view),
+        }],
+    });
+    (texture, group)
 }
 
 /// The gas the nebula and the plasma storm are drawn from, baked once over
@@ -3909,6 +3951,8 @@ fn event_parts(
             ("buoys", 6, 0..GATE_BUOYS),
             ("nodes", 6, 0..GATE_NODES),
         ]),
+        // The hive cube's haze and tractor beam (`vs_cube_glow`).
+        voyage::Event::HiveCube => Some(vec![("haze", 6, 0..1), ("beam", 6, 0..1)]),
         // The near panels first, so nothing they hide is shaded.
         voyage::Event::DysonSwarm => {
             let ([near, far, all], n) = (panels, DYSON_PANEL_VERTICES);
