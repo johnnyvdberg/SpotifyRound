@@ -12935,8 +12935,8 @@ fn blue_hole(w: &World, f: &mut Frame) {
                 let s = 0.12 + 0.10 * h(5);
                 let hue = [[0.80, 0.42, 0.24], [0.86, 0.74, 0.30]][(h(6) * 2.0) as usize % 2];
                 f.put(Model::Fan, place(foot, yaw, 0.0, 0.0, [s; 3]), hue)
-                    .moving(anim::SWAY, yaw, 0.1, 0.5)
-                    .element(element::HOLE_LIFE);
+                    // Swaying: `anim[1]` is its phase, so no element tag.
+                    .moving(anim::SWAY, yaw, 0.1, 0.5);
             }
         }
         // Boulders fallen from the walls, heaped on the floor's cone and

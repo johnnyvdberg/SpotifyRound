@@ -3891,6 +3891,15 @@ mod tests {
     /// prints which pipelines the voyage used.
     /// The museum's models, baked into `mesh::baked::FILE`, are what they
     /// build to now. `DIVE3D_BAKE=1` bakes them again first.
+    ///
+    /// Not byte for byte: the file is baked on one machine and checked on
+    /// others, and floating point that rounds differently on arm64 and x86
+    /// tips a few of the simplifier's choices. The models, their levels and
+    /// every level's vertex and index counts must match exactly; a level's
+    /// error to a part in a thousand; and of the vertex and index bytes, no
+    /// more than one in ten thousand may differ (about one in fifty
+    /// thousand do between a Mac and Linux). A changed model changes far
+    /// more than that.
     #[test]
     fn museum_models_are_baked() {
         let baked = mesh::baked::bake();
@@ -3898,10 +3907,37 @@ mod tests {
             std::fs::write(mesh::baked::FILE, &baked).expect("writing the baked models");
         }
         let file = std::fs::read(mesh::baked::FILE).expect("the baked models");
+        let again = "DIVE3D_BAKE=1 cargo test --release museum_models_are_baked";
+        let (had, has) = (mesh::baked::read(&file), mesh::baked::read(&baked));
+        let names = |m: &[(mesh::Model, Vec<mesh::baked::Level>)]| {
+            m.iter().map(|(model, _)| *model).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&had),
+            names(&has),
+            "the museum's models changed: {again}"
+        );
+        let (mut bytes, mut differ) = (0usize, 0usize);
+        for ((model, old), (_, new)) in had.iter().zip(&has) {
+            assert_eq!(old.len(), new.len(), "{model:?}'s levels changed: {again}");
+            for (k, (a, b)) in old.iter().zip(new).enumerate() {
+                assert!(
+                    a.vertex_count() == b.vertex_count() && a.index_count() == b.index_count(),
+                    "{model:?} level {k} changed: {again}"
+                );
+                assert!(
+                    (a.error - b.error).abs() <= 1e-3 * a.error.abs().max(1e-6),
+                    "{model:?} level {k}'s error changed: {again}"
+                );
+                for (x, y) in [(a.vertices, b.vertices), (a.indices, b.indices)] {
+                    bytes += x.len();
+                    differ += x.iter().zip(y).filter(|(p, q)| p != q).count();
+                }
+            }
+        }
         assert!(
-            file == baked,
-            "the museum's models have changed since they were baked: \
-             DIVE3D_BAKE=1 cargo test --release museum_models_are_baked"
+            differ * 10_000 <= bytes,
+            "{differ} of {bytes} bytes of the museum's models changed: {again}"
         );
     }
 

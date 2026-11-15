@@ -6339,13 +6339,13 @@ pub mod baked {
 
     /// One level: its error against the full model, and its vertices and
     /// indices as the buffers take them.
-    pub struct Level {
+    pub struct Level<'a> {
         pub error: f32,
-        pub vertices: &'static [u8],
-        pub indices: &'static [u8],
+        pub vertices: &'a [u8],
+        pub indices: &'a [u8],
     }
 
-    impl Level {
+    impl Level<'_> {
         pub fn vertex_count(&self) -> u32 {
             (self.vertices.len() / size_of::<Packed>()) as u32
         }
@@ -6355,13 +6355,13 @@ pub mod baked {
         }
     }
 
-    /// Reads the file from its start.
-    struct Reader(usize);
+    /// Reads a baked file from its start.
+    struct Reader<'a>(&'a [u8], usize);
 
-    impl Reader {
-        fn take(&mut self, n: usize) -> &'static [u8] {
-            let bytes = &DATA[self.0..self.0 + n];
-            self.0 += n;
+    impl<'a> Reader<'a> {
+        fn take(&mut self, n: usize) -> &'a [u8] {
+            let bytes = &self.0[self.1..self.1 + n];
+            self.1 += n;
             bytes
         }
 
@@ -6371,8 +6371,13 @@ pub mod baked {
     }
 
     /// Every baked model with its levels, read from the file in place.
-    pub fn models() -> Vec<(Model, Vec<Level>)> {
-        let mut r = Reader(0);
+    pub fn models() -> Vec<(Model, Vec<Level<'static>>)> {
+        read(DATA)
+    }
+
+    /// Every model with its levels in baked `data`.
+    pub fn read(data: &[u8]) -> Vec<(Model, Vec<Level<'_>>)> {
+        let mut r = Reader(data, 0);
         assert_eq!(r.take(8), MAGIC, "{FILE} is not baked models");
         assert_eq!(
             r.word() as usize,

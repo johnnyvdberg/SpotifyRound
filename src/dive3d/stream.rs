@@ -29,7 +29,7 @@ fn level_bytes(size: u32) -> usize {
 
 pub struct Stream {
     /// The baked models still to come in, last first.
-    pending: Vec<(Model, Vec<mesh::baked::Level>)>,
+    pending: Vec<(Model, Vec<mesh::baked::Level<'static>>)>,
     /// How much of the buffers the models in so far fill: vertices and
     /// indices.
     filled: (u32, u32),
