@@ -61,8 +61,7 @@ pub(super) fn shadow_scissor(params: &Params, r: usize) -> Option<[u32; 4]> {
     let tan_half = params.frame[1] as f64;
     let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
     let mut any = false;
-    for k in 0..4 {
-        let j = body.shade[k];
+    for j in body.shade {
         if j < 0.0 {
             break;
         }

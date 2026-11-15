@@ -1034,7 +1034,7 @@ impl Streamer {
                     if let Ok(data) = self.readback.slice(..).get_mapped_range() {
                         for y in 0..PROBE_HEIGHT as usize {
                             let row = &data[y * padded as usize..][..(PROBE_WIDTH * 16) as usize];
-                            for texel in row.chunks_exact(16) {
+                            for texel in row.as_chunks::<16>().0 {
                                 heights.push(f32::from_le_bytes([
                                     texel[0], texel[1], texel[2], texel[3],
                                 ]));
@@ -1601,7 +1601,9 @@ mod tests {
             );
             let extra = read_map(&gpu, &maps.extra, 2);
             let extra: Vec<u8> = extra
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .flat_map(|c| [c[0], c[1], 0])
                 .collect();
             save("extra", extra, image::ExtendedColorType::Rgb8);

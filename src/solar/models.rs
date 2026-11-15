@@ -1500,7 +1500,7 @@ pub fn build(key: Key) -> Mesh {
 /// follows its triangles (the hive cube's 300,000 took 20 ms a frame).
 fn simplify(vertices: &[ShipVertex], indices: &[u32], error: f32) -> Vec<u32> {
     let mut edge = vec![false; vertices.len()];
-    for t in indices.chunks_exact(3) {
+    for t in indices.as_chunks::<3>().0 {
         let parts = [0, 1, 2].map(|k| vertices[t[k] as usize].extra[1]);
         if parts[0] != parts[1] || parts[1] != parts[2] {
             for &i in t {

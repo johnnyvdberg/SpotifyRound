@@ -111,7 +111,7 @@ fn inside_tunnel(seabed: &Seabed, p: [f32; 3]) -> Option<f32> {
     let (wide, high) = super::super::world::tunnel_stretch(p[0]);
     let a = (dy / (0.85 * high)).atan2(across / wide);
     // Below the arch's foot is the floor, which the ground covers.
-    if a < -0.2 * PI || a > 1.2 * PI {
+    if !(-0.2 * PI..=1.2 * PI).contains(&a) {
         return None;
     }
     let r = Seabed::tunnel_radius(p[0], a);

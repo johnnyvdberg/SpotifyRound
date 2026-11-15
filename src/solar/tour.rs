@@ -1256,8 +1256,9 @@ impl Tour {
         // over) whose meeting point is nearer the preferred one over the
         // night side. Drawn again a few times, as where it arrives bends
         // the transfer's end.
-        for k in 0..tour.itinerary.len() {
-            let path = tour.build_path(k, flybys[k], &mut rng);
+        let stops = tour.itinerary.len();
+        for (k, &flyby) in flybys.iter().enumerate().take(stops) {
+            let path = tour.build_path(k, flyby, &mut rng);
             tour.paths.push(path);
             let preferred = tour.orbits[k];
             for _ in 0..3 {
@@ -2078,16 +2079,17 @@ impl Tour {
                 p.radius * if p.kind.is_giant() { 2.8 } else { 2.0 },
                 false,
             ));
-            for m in 0..p.moons.len().min(super::stream::MOONS as usize) {
+            for (m, moon) in p
+                .moons
+                .iter()
+                .enumerate()
+                .take(super::stream::MOONS as usize)
+            {
                 let stop = Stop {
                     planet: i,
                     moon: Some(m),
                 };
-                obstacles.push((
-                    self.system.centre(stop, t),
-                    p.moons[m].radius * MOON_FLOOR,
-                    true,
-                ));
+                obstacles.push((self.system.centre(stop, t), moon.radius * MOON_FLOOR, true));
             }
         }
         obstacles.push(([0.0; 3], self.system.star.radius * 3.0, false));
@@ -3212,14 +3214,17 @@ mod tests {
     /// The body the camera moves against at `t`, as a viewer sees it: the
     /// nearest, in its own radii, of the stop made for, the one left and
     /// what a transfer flies past. Its centre, as a function of time.
-    fn frame_body(tour: &Tour, t: f64) -> Option<(usize, Box<dyn Fn(f64) -> [f64; 3] + '_>)> {
+    /// A body's centre as a function of time.
+    type Centre<'a> = Box<dyn Fn(f64) -> [f64; 3] + 'a>;
+
+    fn frame_body(tour: &Tour, t: f64) -> Option<(usize, Centre<'_>)> {
         let (segment, _) = tour.segment(t);
         let at = tour.view(t).position;
-        let mut bodies: Vec<(usize, f64, Box<dyn Fn(f64) -> [f64; 3] + '_>)> = Vec::new();
+        let mut bodies: Vec<(usize, f64, Centre<'_>)> = Vec::new();
         let stop_body = |stop: Stop| {
             let radius = tour.world(stop).radius;
             (
-                stop.key() as usize,
+                stop.key(),
                 radius,
                 Box::new(move |t: f64| tour.system.centre(stop, t)) as Box<dyn Fn(f64) -> [f64; 3]>,
             )
@@ -3246,9 +3251,7 @@ mod tests {
         bodies
             .into_iter()
             .min_by(|a, b| {
-                let d = |c: &(usize, f64, Box<dyn Fn(f64) -> [f64; 3] + '_>)| {
-                    length(sub(at, (c.2)(t))) / c.1
-                };
+                let d = |c: &(usize, f64, Centre<'_>)| length(sub(at, (c.2)(t))) / c.1;
                 d(a).total_cmp(&d(b))
             })
             .map(|(id, _, centre)| (id, centre))
@@ -3312,14 +3315,19 @@ mod tests {
             for (i, planet) in tour.system.planets.iter().enumerate() {
                 let d = length(sub(view.position, planet.position(t)));
                 assert!(d > planet.radius * 1.05, "inside planet {i} at {t}: {d}");
-                for m in 0..planet.moons.len().min(crate::solar::stream::MOONS as usize) {
+                for (m, moon) in planet
+                    .moons
+                    .iter()
+                    .enumerate()
+                    .take(crate::solar::stream::MOONS as usize)
+                {
                     let stop = Stop {
                         planet: i,
                         moon: Some(m),
                     };
                     let d = length(sub(view.position, tour.system.centre(stop, t)));
                     assert!(
-                        d > planet.moons[m].radius * 1.05,
+                        d > moon.radius * 1.05,
                         "inside moon {m} of planet {i} at {t}: {d} (seed {})",
                         tour.system.seed
                     );
