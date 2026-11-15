@@ -3339,7 +3339,10 @@ impl Nautilus {
         let encode_done = clock.elapsed();
         gpu.submit(encoder.finish());
         #[cfg(test)]
-        if std::env::var_os("DIVE3D_PHASES").is_some() {
+        if {
+            static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *SET.get_or_init(|| std::env::var_os("DIVE3D_PHASES").is_some())
+        } {
             let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
             eprintln!(
                 "dive3d phases: build {:.3} terrain {:.3} order {:.3} sort {:.3} stage {:.3} upload {:.3} encode {:.3}",

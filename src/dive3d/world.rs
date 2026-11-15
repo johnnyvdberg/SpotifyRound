@@ -2868,7 +2868,10 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
             moved > CACHE_CELL || turned < CACHE_TURN.cos()
         });
     #[cfg(test)]
-    let show_steps = std::env::var_os("DIVE3D_BUILD_STEPS").is_some();
+    let show_steps = {
+        static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *SET.get_or_init(|| std::env::var_os("DIVE3D_BUILD_STEPS").is_some())
+    };
     if stale {
         cache.frame.clear();
         // The cache stands until the window has moved a cell or turned
@@ -2969,7 +2972,7 @@ pub fn build(world: &World, frame: &mut Frame, cache: &mut StaticCache) {
         }
     }
     #[cfg(test)]
-    if std::env::var_os("DIVE3D_STATS").is_some() {
+    if super::stats() {
         let total = begun.elapsed();
         eprintln!(
             "dive3d build: placers {:.3} ms, grounding {:.3} ms",

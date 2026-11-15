@@ -135,6 +135,35 @@ pub enum Key {
     },
 }
 
+/// Keys order by kind in the alphabetical order of their names (debris,
+/// gate, hive, ring, rock, ship), then by their numbers in turn: the order
+/// the frame breaks ties in when grouping its model draws.
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        fn rank(key: &Key) -> (u8, [u32; 3]) {
+            match *key {
+                Key::Debris { variant } => (0, [variant, 0, 0]),
+                Key::Gate { style, part } => (1, [style, part, 0]),
+                Key::Hive { variant, lod } => (2, [variant, lod, 0]),
+                Key::Ring { gaps, variant } => (3, [gaps, variant, 0]),
+                Key::Rock { variant, lod } => (4, [variant, lod, 0]),
+                Key::Ship {
+                    design,
+                    role,
+                    variant,
+                } => (5, [design, role, variant]),
+            }
+        }
+        rank(self).cmp(&rank(other))
+    }
+}
+
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Key {
     pub fn all() -> Vec<Key> {
         let mut keys = Vec::new();

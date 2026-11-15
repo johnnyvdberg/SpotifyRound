@@ -20,6 +20,7 @@ pub mod console;
 pub mod labels;
 pub mod layout;
 pub mod models;
+mod pipe;
 pub mod scan;
 pub mod stream;
 pub mod system;
@@ -32,6 +33,7 @@ use slint::wgpu_30::wgpu;
 use crate::gpu::Graphics;
 use crate::visuals::Visual;
 use layout::*;
+use pipe::Pipe;
 use stream::{Key, Streamer, sampler_entry, texture_entry, uniform_entry};
 use system::{Kind, Planet, Stop, System, equatorial_to_system};
 use tour::{Phase, Tour, View, add, normalize, scale, sub};
@@ -104,6 +106,17 @@ struct Models {
     /// The frame's placings of the models, grouped by mesh.
     instances: wgpu::Buffer,
     library: models::Library,
+}
+
+/// The frame's model placings and draws, kept from frame to frame so
+/// sorting them allocates nothing once they have grown (`Solar::draw`).
+#[derive(Default)]
+struct ModelScratch {
+    placed: Vec<(models::Key, models::Instance)>,
+    nearest: std::collections::HashMap<models::Key, f64>,
+    order: Vec<(f64, models::Key, f64, usize)>,
+    flat: Vec<models::Instance>,
+    model_draws: Vec<ModelDraw>,
 }
 
 /// A draw of one mesh's placings: its family, where the mesh lies
@@ -206,6 +219,13 @@ fn grid_range(cells: u32) -> std::ops::Range<u32> {
     start - 128 * 128 * 6..start
 }
 
+/// `SOLAR_PROCEDURAL_STARS`: draw the sky per pixel (`fs_space`) even once
+/// the starfield is baked, to compare the two. Read once.
+fn procedural_stars() -> bool {
+    static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SET.get_or_init(|| std::env::var_os("SOLAR_PROCEDURAL_STARS").is_some())
+}
+
 /// Anisotropic filtering of the planet maps, for measuring on the Pi:
 /// `SOLAR_ANISO=<2..16>` sharpens them toward the limb and the poles. Off by
 /// default (on the Pi, `SOLAR_ANISO=4` cost 1.3-1.5 ms in orbit).
@@ -289,7 +309,7 @@ pub(crate) struct Solar {
     /// `globe0…` (`SurfaceLook`), moons `globemoon…` and worlds whose maps are
     /// not in `globeflat…`.
     /// Each with its label, which the Pi estimate matches to the shader-db.
-    pipelines: std::collections::HashMap<String, (String, wgpu::RenderPipeline)>,
+    pipelines: std::collections::HashMap<Pipe, (String, wgpu::RenderPipeline)>,
     /// A drive to use for every jump instead of each system's own, for the
     /// screenshots.
     drive_override: Option<u32>,
@@ -314,6 +334,8 @@ pub(crate) struct Solar {
     /// (or loading) them, then on the GPU, with where each one lies.
     model_library: Option<std::sync::mpsc::Receiver<models::Library>>,
     models: Option<Models>,
+    /// The model placings' working space (`ModelScratch`).
+    scratch: ModelScratch,
     /// Each ringed planet's ring density by radius, a row per planet, and the
     /// system it was painted for.
     rings: wgpu::Texture,
@@ -743,7 +765,7 @@ impl Solar {
         // The depth mask: each body's solid disc, at its distance rank.
         let none = wgpu::ColorWrites::empty();
         pipelines.insert(
-            "mask".to_string(),
+            Pipe::Mask,
             make(
                 "Solar mask",
                 "vs_body",
@@ -757,7 +779,7 @@ impl Solar {
         );
         // The frame's corners, which the round display never shows.
         pipelines.insert(
-            "corners".to_string(),
+            Pipe::Corners,
             make(
                 "Solar corners",
                 "vs_corners",
@@ -770,7 +792,7 @@ impl Solar {
             ),
         );
         pipelines.insert(
-            "maskinscribed".to_string(),
+            Pipe::MaskInscribed,
             make(
                 "Solar mask inscribed",
                 "vs_mask_inscribed",
@@ -784,7 +806,7 @@ impl Solar {
         );
         // For the Pi estimate only: what survives the mask, shaded by nothing.
         pipelines.insert(
-            "probe".to_string(),
+            Pipe::Probe,
             make(
                 "Solar probe",
                 "vs_body",
@@ -797,7 +819,7 @@ impl Solar {
             ),
         );
         pipelines.insert(
-            "probestrict".to_string(),
+            Pipe::ProbeStrict,
             make(
                 "Solar probe strict",
                 "vs_body",
@@ -810,7 +832,7 @@ impl Solar {
             ),
         );
         pipelines.insert(
-            "probefull".to_string(),
+            Pipe::ProbeFull,
             make(
                 "Solar probe full",
                 "vs_background",
@@ -824,7 +846,7 @@ impl Solar {
         );
         // The starfield, baked once a system, and the background reading it.
         pipelines.insert(
-            "bake".to_string(),
+            Pipe::Bake,
             make(
                 "Solar starfield bake",
                 "vs_bake",
@@ -837,7 +859,7 @@ impl Solar {
             ),
         );
         pipelines.insert(
-            "bakesky".to_string(),
+            Pipe::BakeSky,
             make(
                 "Solar sky cube bake",
                 "vs_bake",
@@ -852,7 +874,7 @@ impl Solar {
         // The baked background reads the cube and nothing else, the star's
         // glare added over it round the star.
         pipelines.insert(
-            "spacebaked".to_string(),
+            Pipe::SpaceBaked,
             pipeline(
                 "Solar space baked",
                 "vs_background",
@@ -862,30 +884,30 @@ impl Solar {
             ),
         );
         for (name, label, vs) in [
-            ("glare", "Solar glare", "vs_glare"),
-            ("glarefull", "Solar glare full", "vs_glare_full"),
+            (Pipe::Glare, "Solar glare", "vs_glare"),
+            (Pipe::GlareFull, "Solar glare full", "vs_glare_full"),
         ] {
-            pipelines.insert(name.to_string(), pipeline(label, vs, "fs_glare", add, &[]));
+            pipelines.insert(name, pipeline(label, vs, "fs_glare", add, &[]));
         }
         let (label, vs, fs) = ("Solar probe glare", "vs_glare", "fs_probe_glare");
         let made = make(label, vs, fs, None, &[], Some(false), none, false);
-        pipelines.insert("probeglare".to_string(), made);
+        pipelines.insert(Pipe::ProbeGlare, made);
         pipelines.insert(
-            "space".to_string(),
+            Pipe::Space,
             pipeline("Solar space", "vs_background", "fs_space", None, &[]),
         );
         pipelines.insert(
-            "dust".to_string(),
+            Pipe::Dust,
             pipeline("Solar burn dust", "vs_dust", "fs_dust", add, &[]),
         );
         pipelines.insert(
-            "rim".to_string(),
+            Pipe::Rim,
             pipeline("Solar burn rim", "vs_rim", "fs_rim", add, &[]),
         );
         // The baked sky with the next jump's star marked, out to the jump
         // point.
         pipelines.insert(
-            "target".to_string(),
+            Pipe::Target,
             pipeline(
                 "Solar space target",
                 "vs_background",
@@ -914,7 +936,7 @@ impl Solar {
                         if stage == stages { add } else { None },
                         &constants,
                     );
-                    pipelines.insert(format!("spool{k}-{stage}"), made);
+                    pipelines.insert(Pipe::Spool { drive: k, stage }, made);
                 }
                 let constants = [("WARP", k as f64), ("RISING", 1.0)];
                 let made = pipeline(
@@ -924,17 +946,14 @@ impl Solar {
                     None,
                     &constants,
                 );
-                pipelines.insert(format!("spoollight{k}"), made);
+                pipelines.insert(Pipe::SpoolLight(k), made);
             }
-            for (key, label, flare) in [
-                (format!("warp{k}"), format!("Solar warp {name}"), 0.0),
-                (
-                    format!("warpflare{k}"),
-                    format!("Solar warp flare {name}"),
-                    1.0,
-                ),
+            for (flare, label) in [
+                (false, format!("Solar warp {name}")),
+                (true, format!("Solar warp flare {name}")),
             ] {
-                let constants = [("WARP", k as f64), ("FLARE", flare)];
+                let key = Pipe::Warp { look: k, flare };
+                let constants = [("WARP", k as f64), ("FLARE", f64::from(u8::from(flare)))];
                 let made = pipeline(&label, "vs_background", "fs_warp", None, &constants);
                 pipelines.insert(key, made);
             }
@@ -954,9 +973,9 @@ impl Solar {
                 all,
                 false,
             );
-            pipelines.insert(format!("dropahead{k}"), ahead);
+            pipelines.insert(Pipe::DropAhead(k), ahead);
             pipelines.insert(
-                format!("dropout{k}"),
+                Pipe::DropOut(k),
                 pipeline(
                     &format!("Solar drop out {name}"),
                     "vs_drop_behind",
@@ -975,7 +994,7 @@ impl Solar {
         for event in voyage::Event::ALL {
             let constants = [("EVENT", event.id() as f64)];
             let (key, label) = (
-                format!("event{}", event.id()),
+                Pipe::Event(event.id()),
                 format!("Solar event {}", event.slug()),
             );
             let (vs, fs, blend) = if event.replaces_sky() {
@@ -1007,7 +1026,7 @@ impl Solar {
                     all,
                     false,
                 );
-                pipelines.insert(format!("rocks{}", event.id()), made);
+                pipelines.insert(Pipe::Rocks(event.id()), made);
             }
         }
         // The gate and the Dyson swarm drawn bounded instead, a pipeline a
@@ -1035,7 +1054,7 @@ impl Solar {
         ] {
             let label = format!("Solar event {} {name}", gate.slug());
             let made = pipeline(&label, vs, fs, blend, &[("PART", part as f64)]);
-            pipelines.insert(format!("event{} {name}", gate.id()), made);
+            pipelines.insert(Pipe::EventPart(gate.id(), name), made);
         }
         let dyson = voyage::Event::DysonSwarm;
         for (name, part, blend, write, cull) in [
@@ -1057,13 +1076,13 @@ impl Solar {
             let made = make_culled(
                 &label, vs, fs, blend, &constants, depth, all, strict, cull, buffers,
             );
-            pipelines.insert(format!("event{} {name}", dyson.id()), made);
+            pipelines.insert(Pipe::EventPart(dyson.id(), name), made);
         }
         for flux in voyage::Flux::ALL {
             let constants = [("EVENT", flux.id() as f64)];
             let label = format!("Solar flux {}", flux.slug());
             pipelines.insert(
-                format!("flux{}", flux.id()),
+                Pipe::Flux(flux.id()),
                 pipeline(&label, "vs_background", "fs_flux", add, &constants),
             );
         }
@@ -1075,11 +1094,11 @@ impl Solar {
             let constants = [("PART", part as f64)];
             let (vs, label) = ("vs_leviathan", format!("Solar event leviathans {name}"));
             let made = pipeline(&label, vs, "fs_leviathan", add, &constants);
-            pipelines.insert(format!("leviathan{part}"), made);
+            pipelines.insert(Pipe::Leviathan(part), made);
             let label = format!("Solar probe leviathans {name}");
             let fs = "fs_probe_leviathan";
             let made = make(&label, vs, fs, None, &constants, Some(false), none, false);
-            pipelines.insert(format!("probeleviathan{part}"), made);
+            pipelines.insert(Pipe::ProbeLeviathan(part), made);
         }
         let halo_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Solar leviathan halos"),
@@ -1148,7 +1167,7 @@ impl Solar {
             all,
             false,
         );
-        pipelines.insert("leviathan4".to_string(), made);
+        pipelines.insert(Pipe::Leviathan(4), made);
         let shaders = ("vs_leviathan", "fs_probe_leviathan");
         let made = leviathan(
             "Solar probe leviathans halos",
@@ -1158,7 +1177,7 @@ impl Solar {
             none,
             false,
         );
-        pipelines.insert("probeleviathan4".to_string(), made);
+        pipelines.insert(Pipe::ProbeLeviathan(4), made);
         let shaders = ("vs_leviathan_glow", "fs_leviathan_glow");
         let frame = wgpu::TextureFormat::Rgba8UnormSrgb;
         let made = leviathan(
@@ -1169,7 +1188,7 @@ impl Solar {
             all,
             true,
         );
-        pipelines.insert("leviathanglow".to_string(), made);
+        pipelines.insert(Pipe::LeviathanGlow, made);
         // The plasma storm and the remnant at half the frame's resolution
         // before its pass, then laid over the sky.
         for event in voyage::Event::ALL.into_iter().filter(|e| e.coarse()) {
@@ -1182,7 +1201,7 @@ impl Solar {
             };
             let small = LEVIATHAN_HALO_FORMAT;
             let made = gas_pipeline(&label, layout, fs, &constants, small, None, false);
-            pipelines.insert(format!("coarse{}", event.id()), made);
+            pipelines.insert(Pipe::Coarse(event.id()), made);
             let label = format!("Solar event {}", event.slug());
             let made = gas_pipeline(
                 &label,
@@ -1193,7 +1212,7 @@ impl Solar {
                 over,
                 true,
             );
-            pipelines.insert(format!("event{}", event.id()), made);
+            pipelines.insert(Pipe::Event(event.id()), made);
         }
         // The battle's starships as meshes (`ships`): from a vertex buffer,
         // placed by the shader's own battle (`vs_ship`), writing the depth.
@@ -1235,10 +1254,7 @@ impl Solar {
             multiview_mask: None,
             cache: None,
         });
-        pipelines.insert(
-            "ships".to_string(),
-            ("Solar ships".to_string(), ship_pipeline),
-        );
+        pipelines.insert(Pipe::Ships, ("Solar ships".to_string(), ship_pipeline));
         // Every other model family's meshes, instanced: a pipeline each.
         let instance_attributes =
             wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
@@ -1297,7 +1313,7 @@ impl Solar {
                 multiview_mask: None,
                 cache: None,
             });
-            pipelines.insert(format!("model{family}"), (label, made));
+            pipelines.insert(Pipe::Model(family), (label, made));
         }
         // A battle's effects after its meshes, each kind on its own bounded
         // geometry (`battle_effects`), tested against them at its own depth
@@ -1310,16 +1326,11 @@ impl Solar {
             .enumerate()
             .flat_map(|k| [(k, false), (k, true)])
         {
-            let (key, label) = if far {
-                (
-                    format!("battlefx{kind}far"),
-                    format!("Solar battle effects {part} dim"),
-                )
+            let key = Pipe::BattleFx { kind, far };
+            let label = if far {
+                format!("Solar battle effects {part} dim")
             } else {
-                (
-                    format!("battlefx{kind}"),
-                    format!("Solar battle effects {part}"),
-                )
+                format!("Solar battle effects {part}")
             };
             let constants = [("FX_FAR", if far { 1.0 } else { 0.0 })];
             let options = wgpu::PipelineCompilationOptions {
@@ -1366,32 +1377,32 @@ impl Solar {
         }
         for (name, label, vertex, fragment) in [
             (
-                "overlayflash",
+                Pipe::OverlayFlash,
                 "Solar ship overlay flash",
                 "vs_overlay",
                 "fs_overlay_flash",
             ),
             (
-                "overlayhit",
+                Pipe::OverlayHit,
                 "Solar ship overlay hit",
                 "vs_overlay_hit",
                 "fs_overlay_hit",
             ),
             (
-                "overlayrim",
+                Pipe::OverlayRim,
                 "Solar ship overlay rim",
                 "vs_overlay_rim",
                 "fs_overlay_beam",
             ),
             (
-                "overlaybeam",
+                Pipe::OverlayBeam,
                 "Solar ship overlay beam",
                 "vs_overlay_beam",
                 "fs_overlay_beam",
             ),
         ] {
             pipelines.insert(
-                name.to_string(),
+                name,
                 make(
                     label,
                     vertex,
@@ -1405,11 +1416,11 @@ impl Solar {
             );
         }
         for (name, entry, blend) in [
-            ("eclipse", "fs_eclipse", multiply),
-            ("ringshadow", "fs_ring_shadow", multiply),
+            (Pipe::Eclipse, "fs_eclipse", multiply),
+            (Pipe::RingShadow, "fs_ring_shadow", multiply),
         ] {
             pipelines.insert(
-                name.to_string(),
+                name,
                 pipeline(&format!("Solar {name}"), "vs_body", entry, blend, &[]),
             );
         }
@@ -1418,14 +1429,14 @@ impl Solar {
         let all = wgpu::ColorWrites::ALL;
         const STAR_GLOBE: [(&str, f64); 2] = [("GLOBE", 3.0), ("AIR", 0.0)];
         pipelines.insert(
-            "globestar".to_string(),
+            Pipe::GlobeStar,
             globe("Solar globestar", "fs_globe_star", over, &STAR_GLOBE, all),
         );
         for kind in Kind::ALL {
             let ringed = matches!(kind, Kind::GasGiant | Kind::IceGiant);
             for rings in [false, true].into_iter().filter(|&r| ringed || !r) {
                 let look = FlatLook::of(kind, rings);
-                let name = look.pipeline();
+                let name = Pipe::GlobeFlat(look);
                 if pipelines.contains_key(&name) {
                     continue;
                 }
@@ -1436,7 +1447,7 @@ impl Solar {
         }
         for slot in 0..2 {
             for air in [false, true] {
-                let name = moon_pipeline(slot, air);
+                let name = Pipe::GlobeMoon { slot, air };
                 let air = f64::from(u8::from(air));
                 let constants = [("GLOBE", 2.0), ("SLOT", slot as f64), ("AIR", air)];
                 let label = format!("Solar {name}");
@@ -1446,13 +1457,13 @@ impl Solar {
         }
         // The rings, drawn as an annulus (`vs_ring`).
         pipelines.insert(
-            "ring".to_string(),
+            Pipe::Ring,
             pipeline("Solar ring", "vs_ring", "fs_ring_annulus", over, &[]),
         );
         // The limb, off its own disc only (a strict depth test): an annulus
         // lit at its vertices for a body wholly ahead, else traced.
         pipelines.insert(
-            "limb".to_string(),
+            Pipe::Limb,
             make(
                 "Solar limb",
                 "vs_body",
@@ -1465,7 +1476,7 @@ impl Solar {
             ),
         );
         pipelines.insert(
-            "limbring".to_string(),
+            Pipe::LimbRing,
             make(
                 "Solar limb ring",
                 "vs_limb_ring",
@@ -1478,7 +1489,7 @@ impl Solar {
             ),
         );
         pipelines.insert(
-            "probelimbring".to_string(),
+            Pipe::ProbeLimbRing,
             make(
                 "Solar probe limb ring",
                 "vs_limb_ring",
@@ -1491,7 +1502,7 @@ impl Solar {
             ),
         );
         pipelines.insert(
-            "probeglobe".to_string(),
+            Pipe::ProbeGlobe,
             globe("Solar probe globe", "fs_probe_globe", None, &[], none),
         );
         let mut seen = std::collections::HashSet::new();
@@ -1507,8 +1518,8 @@ impl Solar {
                     .map(move |r| SurfaceLook::of(k, r))
             });
             for look in looks {
-                let mesh = look.globe(slot);
-                if !seen.insert(mesh.clone()) {
+                let mesh = Pipe::Globe(look, slot);
+                if !seen.insert(mesh) {
                     continue;
                 }
                 let mut constants = vec![("SLOT", slot as f64)];
@@ -1518,7 +1529,7 @@ impl Solar {
                 pipelines.insert(mesh, globe(&label, "fs_globe", over, &constants, all));
                 if look.sea {
                     // A sea's added light, a pass of its own.
-                    let glow = look.globe_glow(slot);
+                    let glow = Pipe::GlobeGlow(look, slot);
                     let label = format!("Solar {glow}");
                     let glow_pipeline = globe(&label, "fs_globe_glow", add, &constants, all);
                     pipelines.insert(glow, glow_pipeline);
@@ -1526,7 +1537,7 @@ impl Solar {
             }
             // The ground close up, its magnified map lookups made crisp.
             pipelines.insert(
-                format!("grounddetail{slot}"),
+                Pipe::GroundDetail(slot),
                 pipeline(
                     &format!("Solar ground detail {slot}"),
                     "vs_body",
@@ -1537,7 +1548,7 @@ impl Solar {
             );
             // The added light with the sea's glint, for worlds with seas.
             pipelines.insert(
-                format!("glowsea{slot}"),
+                Pipe::GlowSea(slot),
                 pipeline(
                     &format!("Solar glow sea {slot}"),
                     "vs_body",
@@ -1546,14 +1557,14 @@ impl Solar {
                     &[("SLOT", slot as f64), ("SEA", 1.0)],
                 ),
             );
-            for (name, entry, blend) in [
-                ("ground", "fs_ground", over),
-                ("detail", "fs_detail", double_multiply),
-                ("clouds", "fs_clouds", over),
-                ("glow", "fs_glow", add),
+            for (name, key, entry, blend) in [
+                ("ground", Pipe::Ground(slot), "fs_ground", over),
+                ("detail", Pipe::Detail(slot), "fs_detail", double_multiply),
+                ("clouds", Pipe::Clouds(slot), "fs_clouds", over),
+                ("glow", Pipe::Glow(slot), "fs_glow", add),
             ] {
                 pipelines.insert(
-                    format!("{name}{slot}"),
+                    key,
                     pipeline(
                         &format!("Solar {name} {slot}"),
                         "vs_body",
@@ -1568,7 +1579,7 @@ impl Solar {
         for slot in 0..2 {
             for layer in 1..=CLOUD_LAYERS {
                 pipelines.insert(
-                    format!("cloudlayer{slot}x{layer}"),
+                    Pipe::CloudLayer(slot, layer),
                     pipeline(
                         &format!("Solar cloud layer {slot} {layer}"),
                         "vs_body",
@@ -1760,6 +1771,7 @@ impl Solar {
             coarse: (coarse, coarse_group),
             model_library: Some(models::spawn_library()),
             models: None,
+            scratch: ModelScratch::default(),
             rings,
             rings_for: u64::MAX,
             craters,
@@ -2039,7 +2051,7 @@ impl Solar {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                let (label, pipeline) = &self.pipelines["bakesky"];
+                let (label, pipeline) = self.pipe(Pipe::BakeSky);
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &group, &[]);
                 pass.set_bind_group(1, &self.streamer.noise().group, &[]);
@@ -2075,7 +2087,7 @@ impl Solar {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            let (label, pipeline) = &self.pipelines["bake"];
+            let (label, pipeline) = self.pipe(Pipe::Bake);
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.set_bind_group(1, &self.streamer.noise().group, &[]);
@@ -2115,7 +2127,7 @@ impl Solar {
 
     /// The shader's parameters at `t` into the visit, and the draws: which
     /// pipeline over which body, in order.
-    fn params(&self, t: f64) -> (Params, Vec<(u32, String)>) {
+    fn params(&self, t: f64) -> (Params, Vec<(u32, Pipe)>) {
         let view = self.view(t);
         let throttle = self.throttle(t);
         let system = &self.tour.system;
@@ -2125,7 +2137,7 @@ impl Solar {
 
         let star_rel = rel([0.0; 3]);
         let hidden = view.warp > 0.3 || view.deep;
-        let mut bodies: Vec<(f64, Body, Vec<String>)> = Vec::new();
+        let mut bodies: Vec<(f64, Body, Vec<Pipe>)> = Vec::new();
         if !hidden {
             let mut star = Body {
                 place: f32x4(star_rel, system.star.radius),
@@ -2150,7 +2162,7 @@ impl Solar {
                 star.rect = rect;
                 // air.w: how far round the centre the body's draws reach.
                 star.air[3] = (system.star.radius * 1.02) as f32;
-                bodies.push((length(star_rel), star, vec!["globestar".into()]));
+                bodies.push((length(star_rel), star, vec![Pipe::GlobeStar]));
             }
             for (index, planet) in system.planets.iter().enumerate() {
                 let centre = planet.position(t);
@@ -2240,12 +2252,13 @@ impl Solar {
                             ),
                         ),
                         (None, Some(s)) => {
-                            let mut passes = vec![moon_pipeline(s, air[0] > 0.0)];
+                            let air = air[0] > 0.0;
+                            let mut passes = vec![Pipe::GlobeMoon { slot: s, air }];
                             if eclipsed {
-                                passes.push("eclipse".into());
+                                passes.push(Pipe::Eclipse);
                             }
-                            if air[0] > 0.0 {
-                                passes.push("limb".into());
+                            if air {
+                                passes.push(Pipe::Limb);
                             }
                             (
                                 [
@@ -2300,7 +2313,7 @@ impl Solar {
             slot.ring_colour[3] = 1.0 - (index as f32 + 1.0) / (count as f32 + 1.0);
             slot.shade = shadowers(&bodies, index, star_rel, system.star.radius);
             for pass in passes {
-                draws.push((index as u32, pass.clone()));
+                draws.push((index as u32, *pass));
             }
         }
 
@@ -2399,7 +2412,7 @@ impl Solar {
         // The meshes' windows and grids, from the frame's pixel size.
         let mut params = params;
         for (body, name) in &draws {
-            if name.starts_with("globe") {
+            if name.is_globe() {
                 let b = &mut params.bodies[*body as usize];
                 (b.window, b.mesh) = globe_mesh(b, params.frame[2]);
                 // The rings' shadow is not linear across a coarse cell.
@@ -2410,8 +2423,8 @@ impl Solar {
         }
         // The air past the limb of a body wholly ahead as an annulus.
         for (body, name) in &mut draws {
-            if name == "limb" && wholly_ahead(&params.bodies[*body as usize], &params, 1.08) {
-                *name = "limbring".into();
+            if *name == Pipe::Limb && wholly_ahead(&params.bodies[*body as usize], &params, 1.08) {
+                *name = Pipe::LimbRing;
             }
         }
         (params, draws)
@@ -2465,8 +2478,7 @@ impl Solar {
         self.bake_stars(gpu, &mut encoder);
         self.bind(gpu);
         let (params, draws) = self.params(t);
-        let baked = self.starfield_slot(self.tour.system.seed).is_some()
-            && std::env::var_os("SOLAR_PROCEDURAL_STARS").is_none();
+        let baked = self.starfield_slot(self.tour.system.seed).is_some() && !procedural_stars();
         let (look, drop_look) = (params.spool[2] as u32, params.spool[3] as u32);
         let event = voyage::Event::ALL
             .into_iter()
@@ -2482,31 +2494,36 @@ impl Solar {
             // until its light is all there is; while it is still aligning,
             // the sky with the star marked, all that shows then.
             match spool_stage(params.spool[0]) {
-                0 => "target".to_string(),
-                stage => format!("spool{}-{stage}", self.drive().0),
+                0 => Some(Pipe::Target),
+                stage => Some(Pipe::Spool {
+                    drive: self.drive().0,
+                    stage,
+                }),
             }
         } else if params.warp[0] > 0.02 {
-            let flare = if params.warp[1] > 0.0 { "flare" } else { "" };
-            format!("warp{flare}{look}")
+            let flare = params.warp[1] > 0.0;
+            Some(Pipe::Warp { look, flare })
         } else if covered {
-            String::new()
+            None
         } else if baked && params.goal[3] > 0.0 {
-            "target".to_string()
+            Some(Pipe::Target)
         } else if baked {
-            "spacebaked".to_string()
+            Some(Pipe::SpaceBaked)
         } else {
-            "space".to_string()
+            Some(Pipe::Space)
         };
+        let spooling = matches!(background, Some(Pipe::Spool { .. }));
         // The star's glare over the baked background (`fs_space` draws its
         // own; the drives none).
-        let glare = match background.as_str() {
+        let glare = match background {
             _ if deep => None,
-            "spacebaked" | "target" => glare_pass(&params),
-            b if b.starts_with("spool") && params.warp[0] < 0.3 => glare_pass(&params),
+            Some(Pipe::SpaceBaked | Pipe::Target) => glare_pass(&params),
+            _ if spooling && params.warp[0] < 0.3 => glare_pass(&params),
             _ => None,
         };
         #[cfg(test)]
         {
+            let background = background.map(|b| b.to_string()).unwrap_or_default();
             *self.drawn.borrow_mut() = format!(
                 "{background}{} {}",
                 glare.map(|g| format!(" {g}")).unwrap_or_default(),
@@ -2560,10 +2577,18 @@ impl Solar {
         }
         // The stopover's models, grouped by mesh: their placings into the
         // instance buffer, and a draw for each group.
-        let mut model_draws: Vec<ModelDraw> = Vec::new();
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.model_draws.clear();
         if let Some(meshes) = &self.models {
             let view = self.view(t);
-            let mut placed = model_instances(&view);
+            let ModelScratch {
+                placed,
+                nearest,
+                order,
+                flat,
+                model_draws,
+            } = &mut scratch;
+            model_instances(&view, placed);
             placed.truncate(MODEL_INSTANCES);
             // A draw a mesh, the group with the nearest model first and the
             // nearest first within each: the depth test then spares the
@@ -2573,31 +2598,32 @@ impl Solar {
                 let d = [0, 1, 2].map(|k| i.place[k] as f64 - ship[k]);
                 (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - i.place[3] as f64
             };
-            let mut nearest: std::collections::HashMap<models::Key, f64> =
-                std::collections::HashMap::new();
-            for (key, instance) in &placed {
+            nearest.clear();
+            for (key, instance) in placed.iter() {
                 let d = near(instance);
                 nearest
                     .entry(*key)
                     .and_modify(|n| *n = n.min(d))
                     .or_insert(d);
             }
-            let mut order: Vec<(f64, String, f64, usize)> = placed
-                .iter()
-                .enumerate()
-                .map(|(i, (key, instance))| (nearest[key], format!("{key:?}"), near(instance), i))
-                .collect();
+            order.clear();
+            order.extend(
+                placed
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (key, instance))| (nearest[key], *key, near(instance), i)),
+            );
             order.sort_by(|a, b| {
                 a.0.total_cmp(&b.0)
                     .then_with(|| a.1.cmp(&b.1))
                     .then_with(|| a.2.total_cmp(&b.2))
             });
-            let placed: Vec<_> = order.iter().map(|o| placed[o.3]).collect();
-            let mut flat = Vec::with_capacity(placed.len());
-            for (key, instance) in &placed {
+            flat.clear();
+            for &(_, key, _, i) in order.iter() {
+                let instance = placed[i].1;
                 let at = flat.len() as u32;
-                flat.push(*instance);
-                let Some(range) = meshes.library.get(*key) else {
+                flat.push(instance);
+                let Some(range) = meshes.library.get(key) else {
                     continue;
                 };
                 match model_draws.last_mut() {
@@ -2611,10 +2637,12 @@ impl Solar {
             }
             if !flat.is_empty() {
                 gpu.queue
-                    .write_buffer(&meshes.instances, 0, bytemuck::cast_slice(&flat));
+                    .write_buffer(&meshes.instances, 0, bytemuck::cast_slice(flat));
             }
         }
+        let model_draws = &scratch.model_draws;
         let Some(group) = &self.bind_group else {
+            self.scratch = scratch;
             return;
         };
         // The leviathans' halos, small, before the frame's pass reads them.
@@ -2640,10 +2668,10 @@ impl Solar {
             pass.set_bind_group(0, group, &[]);
             pass.set_bind_group(1, &self.streamer.noise().group, &[]);
             if crate::gpu::counting() {
-                pass.set_pipeline(&self.pipelines["probeleviathan4"].1);
+                pass.set_pipeline(&self.pipe(Pipe::ProbeLeviathan(4)).1);
                 crate::gpu::probe_draw(&mut pass, 0..6, 0..creatures * 9);
             }
-            let (label, pipeline) = &self.pipelines["leviathan4"];
+            let (label, pipeline) = self.pipe(Pipe::Leviathan(4));
             pass.set_pipeline(pipeline);
             crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..creatures * 9);
         }
@@ -2671,7 +2699,7 @@ impl Solar {
             if e.gas() {
                 pass.set_bind_group(2, &self.gas[1].1, &[]);
             }
-            let (label, pipeline) = &self.pipelines[&format!("coarse{}", e.id())];
+            let (label, pipeline) = self.pipe(Pipe::Coarse(e.id()));
             pass.set_pipeline(pipeline);
             let small = (SIZE / COARSE * (SIZE / COARSE)) as u64;
             crate::gpu::counted_draw(&mut pass, label, small, 0..3, 0..1);
@@ -2716,28 +2744,28 @@ impl Solar {
             // counts the pixels that pass the mask: what the Pi shades.
             let counting = crate::gpu::counting();
             // The corners off the round display, before everything.
-            let (label, corners) = &self.pipelines["corners"];
+            let (label, corners) = self.pipe(Pipe::Corners);
             pass.set_pipeline(corners);
             crate::gpu::counted_draw(&mut pass, label, 0, 0..CORNER_SIDES * 6, 0..1);
             for body in &masked {
                 if counting {
-                    pass.set_pipeline(&self.pipelines["probe"].1);
+                    pass.set_pipeline(&self.pipe(Pipe::Probe).1);
                     crate::gpu::probe_draw(&mut pass, 0..BODY_VERTICES, *body..*body + 1);
                 }
                 // Wholly ahead, its silhouette's polygon; close by, traced.
                 let b = &params.bodies[*body as usize];
                 let (name, vertices) = if inscribable(b, &params) {
-                    ("maskinscribed", MASK_VERTICES)
+                    (Pipe::MaskInscribed, MASK_VERTICES)
                 } else {
-                    ("mask", BODY_VERTICES)
+                    (Pipe::Mask, BODY_VERTICES)
                 };
-                let (label, mask) = &self.pipelines[name];
+                let (label, mask) = self.pipe(name);
                 pass.set_pipeline(mask);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, *body..*body + 1);
             }
             let full = (SIZE * SIZE) as u64;
             if counting {
-                pass.set_pipeline(&self.pipelines["probefull"].1);
+                pass.set_pipeline(&self.pipe(Pipe::ProbeFull).1);
                 crate::gpu::probe_draw(&mut pass, 0..3, 0..1);
             }
             // Dropping out of the jump: its light ahead of the front, in
@@ -2745,19 +2773,19 @@ impl Solar {
             // and the bodies it hides are not shaded.
             let dropping = params.warp[2] < 1.0;
             if dropping {
-                let (label, pipeline) = &self.pipelines[&format!("dropahead{drop_look}")];
+                let (label, pipeline) = self.pipe(Pipe::DropAhead(drop_look));
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..DROP_SIDES * 6, 0..1);
             }
             // The drive's light rising as it engages, its start-up added
             // over it.
-            if background.starts_with("spool") && params.warp[0] > 0.0 {
-                let (label, pipeline) = &self.pipelines[&format!("spoollight{}", self.drive().0)];
+            if spooling && params.warp[0] > 0.0 {
+                let (label, pipeline) = self.pipe(Pipe::SpoolLight(self.drive().0));
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
             }
-            if !background.is_empty() {
-                let (label, pipeline) = &self.pipelines[&background];
+            if let Some(background) = background {
+                let (label, pipeline) = self.pipe(background);
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
             }
@@ -2769,30 +2797,29 @@ impl Solar {
                     // each lobe's core, the fins and the filaments, each on
                     // its own quads.
                     pass.set_bind_group(2, &self.leviathan_halos.1, &[]);
-                    let (label, pipeline) = &self.pipelines["leviathanglow"];
+                    let (label, pipeline) = self.pipe(Pipe::LeviathanGlow);
                     pass.set_pipeline(pipeline);
                     crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
                     let fins = creatures * FIN_SLICES;
                     for (part, quads) in [(1, creatures * 9), (2, fins), (3, creatures)] {
                         if counting {
-                            let probe = &self.pipelines[&format!("probeleviathan{part}")];
+                            let probe = self.pipe(Pipe::ProbeLeviathan(part));
                             pass.set_pipeline(&probe.1);
                             crate::gpu::probe_draw(&mut pass, 0..6, 0..quads);
                         }
-                        let (label, pipeline) = &self.pipelines[&format!("leviathan{part}")];
+                        let (label, pipeline) = self.pipe(Pipe::Leviathan(part));
                         pass.set_pipeline(pipeline);
                         crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..quads);
                     }
                 } else if let Some(parts) = event_parts(e, panels) {
                     pass.set_vertex_buffer(0, self.panels.slice(..));
                     for (name, vertices, instances) in parts {
-                        let key = format!("event{} {name}", e.id());
-                        let (label, pipeline) = &self.pipelines[&key];
+                        let (label, pipeline) = self.pipe(Pipe::EventPart(e.id(), name));
                         pass.set_pipeline(pipeline);
                         crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, instances);
                     }
                 } else {
-                    let (label, pipeline) = &self.pipelines[&format!("event{}", e.id())];
+                    let (label, pipeline) = self.pipe(Pipe::Event(e.id()));
                     if coarse.is_some() {
                         pass.set_bind_group(2, &self.coarse.1, &[]);
                     } else if e.gas() {
@@ -2807,7 +2834,7 @@ impl Solar {
                     && let Some(meshes) = &self.models
                     && !crate::gpu::skipped("Solar ships")
                 {
-                    pass.set_pipeline(&self.pipelines["ships"].1);
+                    pass.set_pipeline(&self.pipe(Pipe::Ships).1);
                     pass.set_vertex_buffer(0, meshes.vertices.slice(..));
                     pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
                     let (local, kill) = (params.ev[EV_EVENT][1], params.ev[EV_OBJECT + 1][2]);
@@ -2841,9 +2868,9 @@ impl Solar {
                     pass.set_vertex_buffer(1, meshes.instances.slice(..));
                     pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
                     let mut bound = 0;
-                    for (family, (first, count, base), instances) in &model_draws {
+                    for (family, (first, count, base), instances) in model_draws {
                         if *family != bound {
-                            pass.set_pipeline(&self.pipelines[&format!("model{family}")].1);
+                            pass.set_pipeline(&self.pipe(Pipe::Model(*family)).1);
                             bound = *family;
                         }
                         pass.draw_indexed(*first..*first + *count, *base, instances.clone());
@@ -2856,8 +2883,8 @@ impl Solar {
                     // Their dim light only where no mesh is.
                     pass.set_vertex_buffer(0, self.effects.slice(..));
                     for (kind, instances) in &fx_draws {
-                        for key in [format!("battlefx{kind}"), format!("battlefx{kind}far")] {
-                            let (label, pipeline) = &self.pipelines[&key];
+                        for far in [false, true] {
+                            let (label, pipeline) = self.pipe(Pipe::BattleFx { kind: *kind, far });
                             pass.set_pipeline(pipeline);
                             let vertices = 0..FX_KINDS[*kind].3;
                             let instances = instances.clone();
@@ -2866,7 +2893,7 @@ impl Solar {
                     }
                 }
                 if e.rocks() {
-                    let (label, pipeline) = &self.pipelines[&format!("rocks{}", e.id())];
+                    let (label, pipeline) = self.pipe(Pipe::Rocks(e.id()));
                     pass.set_pipeline(pipeline);
                     crate::gpu::counted_draw(
                         &mut pass,
@@ -2880,26 +2907,26 @@ impl Solar {
             // Something seen inside a leg, over the drive's light.
             let flux = params.ev[EV_STATE][2] as u32;
             if flux > 0 && params.ev[EV_STATE][3] > 0.001 && params.warp[0] > 0.5 {
-                let (label, pipeline) = &self.pipelines[&format!("flux{flux}")];
+                let (label, pipeline) = self.pipe(Pipe::Flux(flux));
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
             }
             if let Some(name) = glare {
                 let (vertices, probe) = match name {
-                    "glare" => (GLARE_VERTICES, "probeglare"),
-                    _ => (3, "probefull"),
+                    Pipe::Glare => (GLARE_VERTICES, Pipe::ProbeGlare),
+                    _ => (3, Pipe::ProbeFull),
                 };
                 if counting {
-                    pass.set_pipeline(&self.pipelines[probe].1);
+                    pass.set_pipeline(&self.pipe(probe).1);
                     crate::gpu::probe_draw(&mut pass, 0..vertices, 0..1);
                 }
-                let (label, pipeline) = &self.pipelines[name];
+                let (label, pipeline) = self.pipe(name);
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, 0..1);
             }
             for (body, name) in &draws {
                 // An eclipse only over where the shadows fall, if any does.
-                let scissor = if name == "eclipse" {
+                let scissor = if *name == Pipe::Eclipse {
                     match shadow_scissor(&params, *body as usize) {
                         Some(r) => Some(r),
                         None => continue,
@@ -2911,30 +2938,30 @@ impl Solar {
                     pass.set_scissor_rect(x, y, w, h);
                 }
                 let instances = *body..*body + 1;
-                if name.starts_with("globe") {
+                if name.is_globe() {
                     // A mesh: its grid's triangles, probed with the same.
                     let indices = grid_range(params.bodies[*body as usize].mesh[0] as u32);
                     if counting {
-                        pass.set_pipeline(&self.pipelines["probeglobe"].1);
+                        pass.set_pipeline(&self.pipe(Pipe::ProbeGlobe).1);
                         let (probed, of) = (indices.clone(), instances.clone());
                         crate::gpu::probe_draw_indexed(&mut pass, probed, of);
                     }
-                    let (label, pipeline) = &self.pipelines[name];
+                    let (label, pipeline) = self.pipe(*name);
                     pass.set_pipeline(pipeline);
                     crate::gpu::counted_draw_indexed(&mut pass, label, 0, indices, instances);
                     continue;
                 }
-                let (vertices, probe, probed) = match name.as_str() {
-                    "ring" => (RING_VERTICES, "probe", BODY_VERTICES),
-                    "limb" => (BODY_VERTICES, "probestrict", BODY_VERTICES),
-                    "limbring" => (LIMB_RING_VERTICES, "probelimbring", LIMB_RING_VERTICES),
-                    _ => (BODY_VERTICES, "probe", BODY_VERTICES),
+                let (vertices, probe, probed) = match name {
+                    Pipe::Ring => (RING_VERTICES, Pipe::Probe, BODY_VERTICES),
+                    Pipe::Limb => (BODY_VERTICES, Pipe::ProbeStrict, BODY_VERTICES),
+                    Pipe::LimbRing => (LIMB_RING_VERTICES, Pipe::ProbeLimbRing, LIMB_RING_VERTICES),
+                    _ => (BODY_VERTICES, Pipe::Probe, BODY_VERTICES),
                 };
                 if counting {
-                    pass.set_pipeline(&self.pipelines[probe].1);
+                    pass.set_pipeline(&self.pipe(probe).1);
                     crate::gpu::probe_draw(&mut pass, 0..probed, instances.clone());
                 }
-                let (label, pipeline) = &self.pipelines[name];
+                let (label, pipeline) = self.pipe(*name);
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..vertices, instances);
                 if scissor.is_some() {
@@ -2944,17 +2971,17 @@ impl Solar {
             // An engine burn: the dust streaking past and the glow round
             // the rim, over everything.
             if params.burn[0] > 0.0 {
-                let (label, pipeline) = &self.pipelines["dust"];
+                let (label, pipeline) = self.pipe(Pipe::Dust);
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, (DUST * 400) as u64, 0..6, 0..DUST);
-                let (label, pipeline) = &self.pipelines["rim"];
+                let (label, pipeline) = self.pipe(Pipe::Rim);
                 pass.set_pipeline(pipeline);
                 let ring = full - (full as f64 * 0.82 * 0.82 * std::f64::consts::FRAC_PI_4) as u64;
                 crate::gpu::counted_draw(&mut pass, label, ring, 0..RIM_SIDES * 6, 0..1);
             }
             // And behind the front, over everything drawn.
             if dropping {
-                let (label, pipeline) = &self.pipelines[&format!("dropout{drop_look}")];
+                let (label, pipeline) = self.pipe(Pipe::DropOut(drop_look));
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..DROP_SIDES * 3, 0..1);
             }
@@ -2972,28 +2999,36 @@ impl Solar {
             let flash = params.ev[EV_Z][3];
             // Its white, linear, under half a step of the sRGB frame's darkest.
             if flash * flash > 0.5 / 255.0 / 12.92 {
-                let (label, pipeline) = &self.pipelines["overlayflash"];
+                let (label, pipeline) = self.pipe(Pipe::OverlayFlash);
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..OVERLAY_VERTICES, 0..1);
             }
             if params.ev[EV_X][3] > 0.01 {
-                let (label, pipeline) = &self.pipelines["overlayhit"];
+                let (label, pipeline) = self.pipe(Pipe::OverlayHit);
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..HIT_SIDES * 6, 0..2);
             }
             if params.ev[EV_Y][3] > 0.01 {
-                let (label, pipeline) = &self.pipelines["overlaybeam"];
+                let (label, pipeline) = self.pipe(Pipe::OverlayBeam);
                 pass.set_pipeline(pipeline);
                 let ring = full - (full as f64 * 0.4 * 0.4 * std::f64::consts::FRAC_PI_4) as u64;
                 crate::gpu::counted_draw(&mut pass, label, ring, 0..RIM_SIDES * 6, 0..1);
             } else if alarm > 0.3 {
-                let (label, pipeline) = &self.pipelines["overlayrim"];
+                let (label, pipeline) = self.pipe(Pipe::OverlayRim);
                 pass.set_pipeline(pipeline);
                 let ring = full - (full as f64 * 0.82 * 0.82 * std::f64::consts::FRAC_PI_4) as u64;
                 crate::gpu::counted_draw(&mut pass, label, ring, 0..RIM_SIDES * 6, 0..1);
             }
         }
+        self.scratch = scratch;
         gpu.submit(encoder.finish());
+    }
+
+    /// The pipeline `key` and its label.
+    fn pipe(&self, key: Pipe) -> &(String, wgpu::RenderPipeline) {
+        self.pipelines
+            .get(&key)
+            .unwrap_or_else(|| panic!("no solar pipeline `{key}`"))
     }
 
     /// The starship meshes onto the GPU, once their thread has them.
@@ -3966,14 +4001,15 @@ fn dyson_panels(ev: &[[f32; 4]; EV_ROWS]) -> (Vec<Panel>, [u32; 3]) {
     (panels, [limb, near, all])
 }
 
-fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
+fn model_instances(view: &View, out: &mut Vec<(models::Key, models::Instance)>) {
     use glam::{Mat3, Quat, Vec3};
     use models::{Instance, Key};
+    out.clear();
     let Some(scene) = &view.scene else {
-        return Vec::new();
+        return;
     };
     if scene.fade < 0.01 {
-        return Vec::new();
+        return;
     }
     let shot = &scene.shot;
     let v3 = |a: [f64; 4]| Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32);
@@ -3986,7 +4022,6 @@ fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
     // A pixel's angle, for the levels of detail.
     let pixel = (2.0 * view.half_fov / SIZE as f64) as f32;
     let seed = (scene.variant * 1e6) as u64;
-    let mut out = Vec::new();
     let unit = |rng: &mut system::Rng| rng.unit() as f32;
     let tumble = |rng: &mut system::Rng, rate: f32| {
         let axis =
@@ -4237,7 +4272,6 @@ fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
         }
         _ => {}
     }
-    out
 }
 
 fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel> {
@@ -5005,7 +5039,7 @@ fn shadow_scissor(params: &Params, r: usize) -> Option<[u32; 4]> {
 /// `index`: those whose disc, seen from it, comes near the star's. Up to four,
 /// as indices; -1 for the rest.
 fn shadowers(
-    bodies: &[(f64, Body, Vec<String>)],
+    bodies: &[(f64, Body, Vec<Pipe>)],
     index: usize,
     star: [f64; 3],
     star_radius: f64,
@@ -5051,7 +5085,7 @@ fn surface_passes(
     eclipsed: bool,
     rings: bool,
     close: bool,
-) -> Vec<String> {
+) -> Vec<Pipe> {
     if let Some(s) = slot
         && !close
     {
@@ -5060,75 +5094,75 @@ fn surface_passes(
         // rings' shadow is in it too; the air past the limb is a pass of its
         // own (`limb`, made `limbring` in `params`).
         let look = SurfaceLook::of(kind, rings);
-        let mut passes = vec![look.globe(s)];
+        let mut passes = vec![Pipe::Globe(look, s)];
         if look.sea {
-            passes.push(look.globe_glow(s));
+            passes.push(Pipe::GlobeGlow(look, s));
         }
         if eclipsed {
-            passes.push("eclipse".into());
+            passes.push(Pipe::Eclipse);
         }
         if kind.air()[0] > 0.0 {
-            passes.push("limb".into());
+            passes.push(Pipe::Limb);
         }
         if rings {
-            passes.push("ring".into());
+            passes.push(Pipe::Ring);
         }
         return passes;
     }
-    let mut passes: Vec<String> = match slot {
+    let mut passes: Vec<Pipe> = match slot {
         Some(s) => {
             // Close up, the ground with its detail (one pass); higher up the
             // map alone is fine enough.
             // Close up, the ground with its lookups made crisp, then the
             // detail the map is too coarse for; higher up the map alone.
             let mut passes = vec![if close && kind.has_ground() {
-                format!("grounddetail{s}")
+                Pipe::GroundDetail(s)
             } else {
-                format!("ground{s}")
+                Pipe::Ground(s)
             }];
             if close && kind.has_ground() {
-                passes.push(format!("detail{s}"));
+                passes.push(Pipe::Detail(s));
             }
             if kind.has_clouds() {
-                passes.push(format!("clouds{s}"));
+                passes.push(Pipe::Clouds(s));
                 // In low orbit, clouds that stand up from the deck.
                 if close {
                     for layer in 1..=CLOUD_LAYERS {
-                        passes.push(format!("cloudlayer{s}x{layer}"));
+                        passes.push(Pipe::CloudLayer(s, layer));
                     }
                 }
             }
             passes
         }
         // Its maps not in: as a mesh with its rings' shadow in it.
-        None => vec![FlatLook::of(kind, rings).pipeline()],
+        None => vec![Pipe::GlobeFlat(FlatLook::of(kind, rings))],
     };
     if eclipsed {
-        passes.push("eclipse".into());
+        passes.push(Pipe::Eclipse);
     }
     if rings && slot.is_some() {
-        passes.push("ringshadow".into());
+        passes.push(Pipe::RingShadow);
     }
     if let Some(s) = slot {
         // The added light: night lights, the sea's glint, the air's sheen.
         passes.push(if kind.has_sea() {
-            format!("glowsea{s}")
+            Pipe::GlowSea(s)
         } else {
-            format!("glow{s}")
+            Pipe::Glow(s)
         });
     }
     if kind.air()[0] > 0.0 {
-        passes.push("limb".into());
+        passes.push(Pipe::Limb);
     }
     if rings {
-        passes.push("ring".into());
+        passes.push(Pipe::Ring);
     }
     passes
 }
 
 /// What a kind's world from afar needs drawn (`fs_globe`'s constants).
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct SurfaceLook {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct SurfaceLook {
     sea: bool,
     clouds: bool,
     night: u8,
@@ -5164,17 +5198,6 @@ impl SurfaceLook {
         )
     }
 
-    /// Its mesh's pipeline: `globe` and the flags.
-    fn globe(self, slot: usize) -> String {
-        format!("globe{}", self.flags(slot))
-    }
-
-    /// A sea's added light over its mesh (`fs_globe_glow`): `globeglow` and
-    /// the same flags, so it is drawn as a mesh too.
-    fn globe_glow(self, slot: usize) -> String {
-        format!("globeglow{}", self.flags(slot))
-    }
-
     fn constants(self) -> [(&'static str, f64); 6] {
         [
             ("SEA", f64::from(u8::from(self.sea))),
@@ -5189,8 +5212,8 @@ impl SurfaceLook {
 
 /// What a world whose maps are not in yet needs drawn as a mesh
 /// (`fs_globe_flat`'s constants).
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct FlatLook {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FlatLook {
     air: bool,
     giant: bool,
     rings: bool,
@@ -5205,17 +5228,6 @@ impl FlatLook {
         }
     }
 
-    /// `globeflat` and its flags, so it is drawn as a mesh.
-    fn pipeline(self) -> String {
-        let flag = |on: bool, c: char| if on { c } else { '-' };
-        format!(
-            "globeflat{}{}{}",
-            flag(self.air, 'a'),
-            flag(self.giant, 'g'),
-            flag(self.rings, 'r'),
-        )
-    }
-
     fn constants(self) -> [(&'static str, f64); 4] {
         [
             ("GLOBE", 1.0),
@@ -5224,12 +5236,6 @@ impl FlatLook {
             ("RINGS", f64::from(u8::from(self.rings))),
         ]
     }
-}
-
-/// A moon's mesh pipeline (`fs_globe_moon`) for map slot `slot`, with air or
-/// without.
-fn moon_pipeline(slot: usize, air: bool) -> String {
-    format!("globemoon{slot}{}", if air { 'a' } else { '-' })
 }
 
 fn night_mode(kind: Kind) -> f32 {
@@ -5394,7 +5400,7 @@ fn inscribable(body: &Body, params: &Params) -> bool {
 /// it falls under `GLARE_FLOOR` (`glare`), over the whole frame when that
 /// reaches too far round the sky (`glarefull`), or not at all when the
 /// star's disc is hidden. The same sums as `vs_glare`.
-fn glare_pass(params: &Params) -> Option<&'static str> {
+fn glare_pass(params: &Params) -> Option<Pipe> {
     let shown = f64::from(params.star_colour[3]);
     let colour = (0..3).map(|i| f64::from(params.star_colour[i]) * shown);
     let bright = colour.fold(0.0, f64::max);
@@ -5404,7 +5410,7 @@ fn glare_pass(params: &Params) -> Option<&'static str> {
     let distance = length([0, 1, 2].map(|i| f64::from(params.star[i]))).max(1e-3);
     let chord = f64::from(params.star[3]) / distance * 0.012 * bright / GLARE_FLOOR;
     let wide = chord >= 2.0 * (GLARE_POLYGON / 2.0).sin();
-    Some(if wide { "glarefull" } else { "glare" })
+    Some(if wide { Pipe::GlareFull } else { Pipe::Glare })
 }
 
 /// Whether everything within `scale` of its radii of the body's centre is

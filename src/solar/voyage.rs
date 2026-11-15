@@ -290,9 +290,12 @@ fn dealt(base: u64, n: u64) -> Event {
 /// An encounter forced for every stopover, for the screenshots:
 /// `SOLAR_ENCOUNTER=<slug>` (see [`Event::slug`]).
 fn forced() -> Option<Event> {
-    std::env::var("SOLAR_ENCOUNTER")
-        .ok()
-        .and_then(|s| Event::from_slug(&s))
+    static FORCED: std::sync::OnceLock<Option<Event>> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| {
+        std::env::var("SOLAR_ENCOUNTER")
+            .ok()
+            .and_then(|s| Event::from_slug(&s))
+    })
 }
 
 impl Passage {
