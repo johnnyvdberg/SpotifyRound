@@ -156,6 +156,7 @@ cylinders' axis, so each intersection is a 2D quadratic: about 10 instructions e
 
 ## 5. Open-source resources
 
+Kenney's packs are left out on purpose: their art style does not fit the tour.
 Everything in the shipped build should be CC0 or public domain, as `assets/models/CREDITS.md`
 already requires. Bring imports in through `tools/decimate` (glTF → decimated, vertex-coloured OBJ)
 and list each in `models.tsv` and `CREDITS.md`.
@@ -165,8 +166,6 @@ procedural, so it matches the seeded variants and the scene's scale.)
 
 | Resource | Licence | Use |
 |---|---|---|
-| [Kenney Space Station Kit](https://kenney.nl/assets/space-station-kit) ([itch](https://kenney-assets.itch.io/space-station-kit), [OGA](https://opengameart.org/content/space-station-kit)) | CC0; OBJ/FBX/glTF; about 90 models | Bay gantries, bridges, docking pieces, consoles |
-| [Kenney Space Kit](https://kenney.nl/assets/space-kit) ([itch](https://kenney-assets.itch.io/space-kit)) · [Modular Space Kit](https://opengameart.org/content/modular-space-kit) | CC0 | Hangar pieces, craft for berths, cranes |
 | [Quaternius Modular Sci-Fi MegaKit](https://quaternius.com/packs/modularscifimegakit.html) ([OGA](https://opengameart.org/content/modular-sci-fi-megakit), [80.lv](https://80.lv/articles/a-free-modular-asset-pack-with-over-270-game-ready-models/)) | CC0; 270+ models, glTF | Corridor and wall reference for the tunnel and bay, props |
 | [Quaternius Sci-Fi Essentials Kit](https://quaternius.com/packs/scifiessentialskit.html) ([itch](https://quaternius.itch.io/sci-fi-essentials-kit), [OGA](https://opengameart.org/content/sci-fi-essentials-kit)) | CC0; glTF | Robots (service drones), animated screens, crates on the bay floor |
 | [Quaternius LowPoly Modular Sci-Fi Environments](https://opengameart.org/content/lowpoly-modular-sci-fi-environments) | CC0; FBX/OBJ/Blend | More interior props |
@@ -179,11 +178,11 @@ their polygon count never reaches the Pi)
 
 | Resource | Licence | Use |
 |---|---|---|
-| [Kenney City Kit (Commercial)](https://opengameart.org/content/city-kit-commercial) · [Industrial](https://opengameart.org/content/city-kit-industrial) · [Suburban](https://kenney-assets.itch.io/city-kit-suburban) | CC0 | Tower and block silhouettes, then restyled with neon in the bake |
-| [Kenney Retro Urban Kit](https://opengameart.org/content/retro-urban-kit) | CC0 | The closest Kenney style to cyberpunk |
-| [Kenney Building Kit](https://opengameart.org/content/building-kit) · [Quaternius LowPoly Buildings](https://opengameart.org/content/lowpoly-buildings-pack) | CC0 | More variety |
+| [Quaternius Downtown City MegaKit](https://quaternius.com/packs/downtowncitymegakit.html) | CC0; 300+ modular pieces, most of them free (some behind Patreon tiers) | Tower and block silhouettes, then restyled with neon in the bake |
+| [Quaternius LowPoly Buildings](https://opengameart.org/content/lowpoly-buildings-pack) | CC0; palette swaps through atlas textures | More variety |
+| [Frosty Cyberpunk Interior Pack (rubberduck)](https://rbduck.itch.io/cold-cyberpunk-asset-pack) | CC0 | Pipes, vents and signage for the bay and the near city layer |
 
-No CC0 *cyberpunk-specific* kit turned up. The cyberpunk look comes from the bake: neon bands,
+No CC0 cyberpunk *city exterior* kit turned up. The cyberpunk look comes from the bake: neon bands,
 vertical signs, haze and palette. Paid kits on CGTrader are royalty-free but not open, so leave them
 out.
 
