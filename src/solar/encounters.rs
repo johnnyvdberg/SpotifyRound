@@ -20,6 +20,9 @@ pub(super) fn event_parts(
             ("buoys", 6, 0..GATE_BUOYS),
             ("nodes", 6, 0..GATE_NODES),
         ]),
+        // The hive cube's haze and tractor beam (`vs_cube_glow`): after its
+        // meshes instead (`hive_glows`), tested against them.
+        voyage::Event::HiveCube => Some(Vec::new()),
         // The near panels first, so nothing they hide is shaded.
         voyage::Event::DysonSwarm => {
             let ([near, far, all], n) = (panels, DYSON_PANEL_VERTICES);
@@ -111,6 +114,43 @@ pub(super) fn dyson_panels(ev: &[[f32; 4]; EV_ROWS]) -> (Vec<Panel>, [u32; 3]) {
     let panels: Vec<Panel> = sides.concat();
     let all = panels.len() as u32;
     (panels, [limb, near, all])
+}
+
+/// The index ranges of a placing's clusters that can show this frame
+/// (`models::Cluster`), those next to each other merged: the camera as
+/// `vs_model` places it, at the ship, its axes `params.right`, `up` and
+/// `forward` in the world, the encounter frame's in `params.ev` rows `EV_X` to `EV_Z`.
+pub(super) fn visible_runs(
+    clusters: &[models::Cluster],
+    instance: &models::Instance,
+    params: &Params,
+) -> Vec<std::ops::Range<u32>> {
+    use glam::{Quat, Vec3};
+    let v = |a: [f32; 4]| Vec3::new(a[0], a[1], a[2]);
+    let ev = [v(params.ev[EV_X]), v(params.ev[EV_Y]), v(params.ev[EV_Z])];
+    let camera = [v(params.right), v(params.up), v(params.forward)];
+    // A direction in the encounter frame into the camera's.
+    let to_camera = |d: Vec3| {
+        let w = ev[0] * d.x + ev[1] * d.y + ev[2] * d.z;
+        Vec3::new(w.dot(camera[0]), w.dot(camera[1]), w.dot(camera[2]))
+    };
+    let turn = Quat::from_array(instance.turn);
+    let scale = instance.place[3];
+    let place = v(instance.place) - v(params.ev[EV_SHIP]);
+    let tan_half = params.frame[1];
+    let mut runs: Vec<std::ops::Range<u32>> = Vec::new();
+    for c in clusters {
+        let centre = to_camera(turn * c.centre * scale + place);
+        let axis = to_camera(turn * c.axis);
+        if !c.visible(centre, axis, scale, tan_half) {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(last) if last.end == c.first => last.end = c.first + c.count,
+            _ => runs.push(c.first..c.first + c.count),
+        }
+    }
+    runs
 }
 
 /// Every model the stopover in view has, placed for this moment, into

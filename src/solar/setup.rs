@@ -92,22 +92,8 @@ impl Solar {
             ],
             immediate_size: 0,
         });
-        let craters = {
-            let texture = bake_craters(gpu, &shader, streamer.noise());
-            let view = texture.create_view(&wgpu::TextureViewDescriptor {
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            });
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Solar rock craters"),
-                layout: &crater_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                }],
-            });
-            (texture, group)
-        };
+        // Until the models' thread has them, the rocks' maps are a texel each.
+        let craters = rock_maps(gpu, &crater_layout, None);
         // The nebula's and the plasma storm's gas, a group of its own for
         // their two pipelines (as the craters are, for the same limit).
         let gas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -515,7 +501,7 @@ impl Solar {
             );
         }
         // Between the legs of a jump: each stopover's own draw over the sky
-        // (`fs_event`, or in place of it, `fs_event_sky`), rocks or debris
+        // (`fs_event`; the black hole in place of it, `fs_coarse`), rocks or debris
         // round the ship for some; what is seen inside a leg over the
         // drive's light (`fs_flux`); and the ship's own effects over
         // everything (`fs_overlay`): the alarm, hits on the shield and
@@ -526,11 +512,7 @@ impl Solar {
                 Pipe::Event(event.id()),
                 format!("Solar event {}", event.slug()),
             );
-            let (vs, fs, blend) = if event.replaces_sky() {
-                ("vs_background", "fs_event_sky", None)
-            } else {
-                ("vs_background", "fs_event", over)
-            };
+            let (vs, fs, blend) = ("vs_background", "fs_event", over);
             // The leviathans and the encounters drawn in parts are drawn in pieces
             // instead (below).
             if event == voyage::Event::Nebula {
@@ -582,6 +564,18 @@ impl Solar {
             let label = format!("Solar event {} {name}", gate.slug());
             let made = pipeline(&label, vs, fs, blend, &[("PART", part as f64)]);
             pipelines.insert(Pipe::EventPart(gate.id(), name), made);
+        }
+        let hive = voyage::Event::HiveCube;
+        for (name, part) in [("haze", 1), ("beam", 2)] {
+            let label = format!("Solar event {} {name}", hive.slug());
+            let made = pipeline(
+                &label,
+                "vs_cube_glow",
+                "fs_cube_glow",
+                add,
+                &[("PART", part as f64)],
+            );
+            pipelines.insert(Pipe::EventPart(hive.id(), name), made);
         }
         let dyson = voyage::Event::DysonSwarm;
         for (name, part, blend, write, cull) in [
@@ -745,13 +739,15 @@ impl Solar {
             let made = gas_pipeline(&label, layout, fs, &constants, small, None, false);
             pipelines.insert(Pipe::Coarse(event.id()), made);
             let label = format!("Solar event {}", event.slug());
+            // The black hole replaces the sky: nothing to blend over.
+            let blend = if event.replaces_sky() { None } else { over };
             let made = gas_pipeline(
                 &label,
                 &glow_layout,
                 "fs_coarse",
                 &constants,
                 frame,
-                over,
+                blend,
                 true,
             );
             pipelines.insert(Pipe::Event(event.id()), made);
@@ -1308,6 +1304,7 @@ impl Solar {
             rings,
             rings_for: u64::MAX,
             craters,
+            crater_layout,
             gas,
             bound: (u64::MAX, usize::MAX, usize::MAX),
             starfields: [0, 1].map(|_| {
@@ -1585,7 +1582,10 @@ impl Solar {
         let Some(rx) = &self.model_library else {
             return;
         };
-        let Ok(library) = rx.try_recv() else { return };
+        let Ok(mut library) = rx.try_recv() else {
+            return;
+        };
+        let library_maps = library.rock_maps.take();
         use wgpu::util::DeviceExt;
         let vertices = gpu
             .device
@@ -1611,7 +1611,12 @@ impl Solar {
             vertices: Vec::new(),
             indices: Vec::new(),
             ranges: library.ranges,
+            clusters: library.clusters,
+            rock_maps: None,
         };
+        if let Some(maps) = &library_maps {
+            self.craters = rock_maps(gpu, &self.crater_layout, Some(maps));
+        }
         self.models = Some(Models {
             vertices,
             indices,

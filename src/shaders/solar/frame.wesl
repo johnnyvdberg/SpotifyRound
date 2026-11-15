@@ -143,9 +143,10 @@ struct Params {
 @group(0) @binding(14) var starfield: texture_cube<f32>;
 // The galaxy alone, small and soft (`fs_bake_sky`).
 @group(0) @binding(15) var sky_cube: texture_cube<f32>;
-// Each rock shape's small craters, a layer a shape (`fs_bake_craters`), in
+// The rock shapes' surface maps, a layer a shape, then their horizon maps
+// (`rocks.rs`, `fs_model`), in
 // a group of their own (`crater_layout`).
-@group(2) @binding(2) var rock_craters: texture_2d_array<f32>;
+@group(2) @binding(2) var rock_maps: texture_2d_array<f32>;
 // The nebula's gas over every direction (`fs_bake_gas`), or for the plasma
 // storm its disc from above on the face toward +z (`fs_bake_storm`); in a
 // group of its own for their pipelines (`gas_layout`).

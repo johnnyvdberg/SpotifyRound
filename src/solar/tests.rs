@@ -1242,6 +1242,10 @@ fn jump_costs() {
             }
             _ => {}
         }
+        // Finer parts to time as well (parts of draws' labels, comma
+        // separated): `SOLAR_PARTS="leviathans fins,battle effects beams"`.
+        let extra = std::env::var("SOLAR_PARTS").unwrap_or_default();
+        parts.extend(extra.split(',').filter(|p| !p.is_empty()));
         solar.tour = tour_through(seed, vec![voyage::Stopover { event, variant: 7 }]);
         let segments: Vec<_> = solar
             .tour

@@ -26,6 +26,7 @@ pub mod layout;
 pub mod models;
 mod orders;
 mod pipe;
+pub mod rocks;
 pub mod scan;
 mod setup;
 pub mod stream;
@@ -349,8 +350,10 @@ pub(crate) struct Solar {
     /// system it was painted for.
     rings: wgpu::Texture,
     rings_for: u64,
-    /// Each rock shape's small craters (`bake_craters`).
+    /// The rock shapes' surface and horizon maps (`rock_maps`), and the
+    /// layout of their group.
     craters: (wgpu::Texture, wgpu::BindGroup),
+    crater_layout: wgpu::BindGroupLayout,
     /// The nebula's gas and the plasma storm's (`bake_gas`, `bake_storm`).
     gas: [(wgpu::Texture, wgpu::BindGroup); 2],
     bound: (u64, usize, usize),

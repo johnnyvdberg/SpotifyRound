@@ -64,9 +64,6 @@ pub(super) fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &Syst
     );
 }
 
-/// Texels along each side of a rock shape's crater map (`CRATER_MAP` in the
-/// shader).
-pub(super) const CRATER_MAP: u32 = 512;
 /// Texels along each side of a face of the gas map (`bake_gas`), as
 /// `GAS_MAP` in `encounter.wesl`.
 pub(super) const GAS_MAP: u32 = 512;
@@ -74,27 +71,73 @@ pub(super) const GAS_MAP: u32 = 512;
 /// in `encounter.wesl`.
 pub(super) const STORM_MAP: u32 = 512;
 
-/// Bake each rock shape's small craters once, a layer a shape, over its
-/// directions octahedrally (`fs_bake_craters`): their height and slope, with
-/// the slope of the grain's middle octave, read by the rocks' shader in one
-/// filtered fetch where it worked out eight cells and a noise octave a
-/// pixel. (Each shape's craters lie where they lie on every rock of it;
-/// they were drawn for each rock's size before.)
-pub(super) fn bake_craters(
+/// The rock shapes' surface and horizon maps on the GPU (`rocks::Maps`,
+/// `rock_maps` in the shader), and their group; a texel each until `maps`.
+pub(super) fn rock_maps(
     gpu: &Graphics,
-    shader: &wgpu::ShaderModule,
-    noise: &crate::noise3d::Noise3d,
-) -> wgpu::Texture {
-    let label = "Solar rock craters";
-    bake(
-        gpu,
-        shader,
-        noise,
-        label,
-        "fs_bake_craters",
-        CRATER_MAP,
-        models::ROCKS,
-    )
+    layout: &wgpu::BindGroupLayout,
+    maps: Option<&rocks::Maps>,
+) -> (wgpu::Texture, wgpu::BindGroup) {
+    let device = &gpu.device;
+    let (size, mips) = match maps {
+        Some(m) => (rocks::MAP as u32, m.levels.len() as u32),
+        None => (1, 1),
+    };
+    let layers = 2 * models::ROCKS;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Solar rock maps"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: mips,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let flat = vec![128u8; 4 * layers as usize];
+    let levels: Vec<&[u8]> = match maps {
+        Some(m) => m.levels.iter().map(|l| l.as_slice()).collect(),
+        None => vec![&flat],
+    };
+    for (mip, data) in levels.iter().enumerate() {
+        let side = (size >> mip).max(1);
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: mip as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(side * 4),
+                rows_per_image: Some(side),
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: layers,
+            },
+        );
+    }
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Solar rock maps"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 2,
+            resource: wgpu::BindingResource::TextureView(&view),
+        }],
+    });
+    (texture, group)
 }
 
 /// The gas the nebula and the plasma storm are drawn from, baked once over

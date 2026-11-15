@@ -469,6 +469,18 @@ impl Solar {
                 let Some(range) = meshes.library.get(key) else {
                     continue;
                 };
+                if let Some(clusters) = meshes.library.clusters.get(&key) {
+                    // A big mesh a placing at a time, only its clusters
+                    // that can show, those next to each other in one draw.
+                    for run in visible_runs(clusters, &instance, &params) {
+                        model_draws.push((
+                            key.family(),
+                            (run.start, run.end - run.start, range.2),
+                            at..at + 1,
+                        ));
+                    }
+                    continue;
+                }
                 match model_draws.last_mut() {
                     Some((family, last, instances))
                         if *family == key.family() && *last == range =>
@@ -719,6 +731,15 @@ impl Solar {
                         pass.draw_indexed(*first..*first + *count, *base, instances.clone());
                     }
                     pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
+                }
+                if e == voyage::Event::HiveCube {
+                    // The cube's haze and tractor beam, after it: where it
+                    // stands in front of them, nothing of theirs is shaded.
+                    for name in ["haze", "beam"] {
+                        let (label, pipeline) = self.pipe(Pipe::EventPart(e.id(), name));
+                        pass.set_pipeline(pipeline);
+                        crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..1);
+                    }
                 }
                 if e == voyage::Event::Battle && !fx_draws.is_empty() {
                     // Its fire, shields and blasts, after the ships and wreckage, tested
