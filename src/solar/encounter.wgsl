@@ -295,11 +295,17 @@ fn disc_at(o: vec3<f32>, d: vec3<f32>, limit: f32, hole: vec3<f32>, rs: f32, n: 
     var e1 = normalize(cross(n, vec3<f32>(0.0, 0.0, 1.0)));
     let e2 = cross(n, e1);
     let spin = params.ev[9].w;
-    // Inner rings turn faster.
-    let a = atan2(dot(q, e2), dot(q, e1)) - spin * ev_t() * 2.5 * pow(3.0 * rs / r, 1.5);
+    // Inner rings turn faster: the point on the disc turned back by its
+    // ring's angle (no atan2: q lies in the disc, so its length is r).
+    let turned = spin * ev_t() * 2.5 * pow(3.0 * rs / r, 1.5);
+    let c = cos(turned);
+    let s = sin(turned);
+    let x1 = dot(q, e1);
+    let y1 = dot(q, e2);
+    let at = vec2<f32>(x1 * c + y1 * s, y1 * c - x1 * s) / rs;
     let rr = r / rs;
-    let bands = noise(vec3<f32>(cos(a) * rr * 0.5, sin(a) * rr * 0.5, rr * 1.7)) * 0.6
-        + noise(vec3<f32>(cos(a) * rr * 1.6, sin(a) * rr * 1.6, rr * 4.0)) * 0.4;
+    let bands = noise(vec3<f32>(at * 0.5, rr * 1.7)) * 0.6
+        + noise(vec3<f32>(at * 1.6, rr * 4.0)) * 0.4;
     let density = smoothstep01(0.0, 0.06, x) * (1.0 - smoothstep01(0.55, 1.0, x)) * (0.55 + 0.45 * bands);
     let hot = params.ev[9].z;
     let inner = mix(vec3<f32>(1.0, 0.92, 0.8), vec3<f32>(0.8, 0.88, 1.0), hot) * 3.2;
@@ -336,6 +342,15 @@ fn fs_event_sky(in: Full) -> @location(0) vec4<f32> {
     let away = normalize(closest - hole + vec3<f32>(1e-5));
     let bent = normalize(d * cos(bend) - away * sin(bend));
     let captured = tca > 0.0 && b < critical;
+    // The disc on the straight run in, then on the bent run out (the far
+    // side of it, seen over the shadow), front to back; the sky behind both.
+    let near = disc_at(ship, d, max(tca, 0.0), hole, rs, n);
+    let near_cover = near.a;
+    var colour = near.rgb;
+    var through = 1.0 - near.a;
+    let far = disc_at(closest, select(bent, d, captured), select(1e6, length(closest - hole), captured), hole, rs, n);
+    colour += far.rgb * through;
+    through *= 1.0 - far.a;
     var sky = vec3<f32>(0.0);
     if (!captured) {
         sky = ev_sky(bent);
@@ -345,16 +360,7 @@ fn fs_event_sky(in: Full) -> @location(0) vec4<f32> {
     if (tca > 0.0) {
         sky += vec3<f32>(1.0, 0.86, 0.66) * bump((b - critical) / (rs * 0.07)) * 1.2;
     }
-    // The disc on the straight run in, then on the bent run out (the far
-    // side of it, seen over the shadow).
-    let near = disc_at(ship, d, max(tca, 0.0), hole, rs, n);
-    var far = vec4<f32>(0.0);
-    if (!captured) {
-        far = disc_at(closest, bent, 1e6, hole, rs, n);
-    } else {
-        far = disc_at(closest, d, length(closest - hole), hole, rs, n);
-    }
-    var colour = near.rgb + (1.0 - near.a) * (far.rgb + (1.0 - far.a) * sky);
+    colour += sky * through;
     // The jets, out of its poles.
     for (var k = 0; k < 2; k++) {
         let pole = n * select(-1.0, 1.0, k == 0);
@@ -362,7 +368,7 @@ fn fs_event_sky(in: Full) -> @location(0) vec4<f32> {
         if (jet.y > 0.0 && jet.z > rs * 2.0) {
             let width = rs * 0.25 + jet.z * 0.025;
             let knots = 0.6 + 0.4 * sin(jet.z / rs * 0.8 - ev_t() * 6.0);
-            colour += vec3<f32>(0.45, 0.6, 1.0) * exp(-sq(jet.x / width)) * exp(-jet.z / (rs * 30.0)) * knots * 0.9 * (1.0 - near.a);
+            colour += vec3<f32>(0.45, 0.6, 1.0) * exp(-sq(jet.x / width)) * exp(-jet.z / (rs * 30.0)) * knots * 0.9 * (1.0 - near_cover);
         }
     }
     let fade = params.ev[10].y;
@@ -511,12 +517,16 @@ fn ev_rogue(d: vec3<f32>) -> vec4<f32> {
             let p = ship + d * t_k;
             let n = (p - centre) / (radius * 1.07);
             let lat = dot(n, axis);
-            let local = turn(n, axis, -params.ev[8].w * 0.5);
-            let band = bump((abs(lat) - 0.83 - 0.03 * noise(local * 4.0 + t * 0.05)) / 0.05);
-            let curtain = smoothstep01(-0.2, 0.7, noise(local * vec3<f32>(18.0, 3.0, 18.0) + vec3<f32>(t * 0.15, 0.0, 0.0)));
-            let hue = mix(vec3<f32>(0.15, 1.0, 0.45), vec3<f32>(0.9, 0.25, 0.6), params.ev[9].y * smoothstep01(0.86, 0.95, abs(lat)));
-            let mu = abs(dot(n, d));
-            colour += hue * band * curtain * 0.3 / max(mu, 0.2);
+            // The band is nothing more than 0.13 off its latitude (the bump
+            // ends at 2, its wobble moves it 0.03 at most): no noise there.
+            if (abs(abs(lat) - 0.83) < 0.13) {
+                let local = turn(n, axis, -params.ev[8].w * 0.5);
+                let band = bump((abs(lat) - 0.83 - 0.03 * noise(local * 4.0 + t * 0.05)) / 0.05);
+                let curtain = smoothstep01(-0.2, 0.7, noise(local * vec3<f32>(18.0, 3.0, 18.0) + vec3<f32>(t * 0.15, 0.0, 0.0)));
+                let hue = mix(vec3<f32>(0.15, 1.0, 0.45), vec3<f32>(0.9, 0.25, 0.6), params.ev[9].y * smoothstep01(0.86, 0.95, abs(lat)));
+                let mu = abs(dot(n, d));
+                colour += hue * band * curtain * 0.3 / max(mu, 0.2);
+            }
         }
     }
     // Airglow round the limb.
