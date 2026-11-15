@@ -5830,8 +5830,8 @@ fn temple(w: &World, f: &mut Frame) {
                 place([p[0], y, p[1]], turn, 0.0, 0.0, [s; 3]),
                 hue,
             )
-            .moving(anim::SWAY, turn, 0.15, 0.7)
-            .element(element::TEMPLE);
+            // Swaying: `anim[1]` is its phase, so no element tag (`Tweak::element`).
+            .moving(anim::SWAY, turn, 0.15, 0.7);
         } else if h < 0.7 {
             for j in 0..3 {
                 let a = j as f32 * 2.1 + turn;
