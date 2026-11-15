@@ -29,7 +29,7 @@ use glam::Vec3;
 use super::system::Rng;
 
 /// Bumped whenever a model's shape changes, so stale caches are rebuilt.
-pub const GENERATOR: u32 = 7;
+pub const GENERATOR: u32 = 8;
 /// Variants of each ship design and role.
 pub const VARIANTS: u32 = 3;
 /// Ship designs: as `voyage::FACTIONS`.
@@ -237,11 +237,184 @@ pub struct Mesh {
 }
 
 /// Every mesh, one after another: where each one's indices lie, and its
-/// first vertex.
+/// first vertex; and the big ones' clusters.
 pub struct Library {
     pub vertices: Vec<ShipVertex>,
     pub indices: Vec<u32>,
     pub ranges: HashMap<Key, (u32, u32, i32)>,
+    pub clusters: HashMap<Key, Vec<Cluster>>,
+}
+
+/// Meshes of at least this many triangles are drawn a cluster at a time,
+/// those off the frame or turned wholly away left out (`Cluster`); smaller
+/// ones whole, all their placings in one draw.
+pub const CLUSTERED: u32 = 30_000;
+
+/// Cells of the grid along each side of a mesh's bounds that its clusters
+/// are cut by, besides the way their triangles face.
+const CLUSTER_GRID: f32 = 4.0;
+
+/// A run of a mesh's triangles (its indices are ordered cluster by
+/// cluster) in one cell of a grid over the mesh, all facing much the same
+/// way: a sphere round them and a cone round their faces' normals, so a
+/// whole cluster off the frame, or turned away from the camera (the GPU
+/// would cull every one of its triangles), is never sent. On the Pi a
+/// mesh's cost follows the triangles sent, culled or not.
+#[derive(Clone, Copy, Debug)]
+pub struct Cluster {
+    /// Its indices in the library's.
+    pub first: u32,
+    pub count: u32,
+    /// The sphere round it, in the model's own units.
+    pub centre: Vec3,
+    pub radius: f32,
+    /// The cone round its faces' normals (outward): its axis, and the sine
+    /// of its half angle (1 or more: some face any way at all).
+    pub axis: Vec3,
+    pub spread: f32,
+}
+
+impl Cluster {
+    /// Whether any of it can show to a camera at the origin looking along
+    /// +z, a square frame `tan_half` across each half, the cluster's middle
+    /// at `centre` and its normals' axis `axis` (both turned into the
+    /// camera's frame), at `scale` times its own size.
+    pub fn visible(&self, centre: Vec3, axis: Vec3, scale: f32, tan_half: f32) -> bool {
+        // A margin over the sphere for rounding.
+        let r = self.radius * scale * 1.01 + 1e-3;
+        // Wholly behind the camera, or past a side of the frame.
+        if centre.z < -r {
+            return false;
+        }
+        let side = (1.0 + tan_half * tan_half).sqrt();
+        if (centre.x.abs() - tan_half * centre.z) / side > r
+            || (centre.y.abs() - tan_half * centre.z) / side > r
+        {
+            return false;
+        }
+        // Turned wholly away: a face at p, normal n is away when
+        // dot(n, p) > 0 (the camera at the origin). Every normal within the
+        // cone is when dot(axis, p) > spread * |p|; for every p in the
+        // sphere, when dot(axis, centre) - r > spread * (|centre| + r).
+        if self.spread < 1.0 && axis.dot(centre) - r > self.spread * (centre.length() + r) {
+            return false;
+        }
+        true
+    }
+}
+
+/// A triangle's cluster: the way it faces most (one of six), and the cell
+/// of the grid over `lo..lo + size` its middle lies in.
+fn cluster_of(t: [Vec3; 3], lo: Vec3, size: Vec3) -> u32 {
+    let n = (t[1] - t[0]).cross(t[2] - t[0]);
+    let a = n.abs();
+    let (axis, sign) = if a.x >= a.y && a.x >= a.z {
+        (0, n.x)
+    } else if a.y >= a.z {
+        (1, n.y)
+    } else {
+        (2, n.z)
+    };
+    let face = axis * 2 + u32::from(sign < 0.0);
+    let middle = (t[0] + t[1] + t[2]) / 3.0;
+    let cell = ((middle - lo) / size * CLUSTER_GRID)
+        .floor()
+        .clamp(Vec3::ZERO, Vec3::splat(CLUSTER_GRID - 1.0));
+    let g = CLUSTER_GRID as u32;
+    face * g * g * g + (cell.x as u32 * g + cell.y as u32) * g + cell.z as u32
+}
+
+/// The bounds of the vertices `indices` use.
+fn used_bounds(vertices: &[ShipVertex], indices: &[u32]) -> (Vec3, Vec3) {
+    let mut lo = Vec3::splat(f32::MAX);
+    let mut hi = Vec3::splat(f32::MIN);
+    for &i in indices {
+        let p = Vec3::from(vertices[i as usize].position);
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    (lo, (hi - lo).max(Vec3::splat(1e-6)))
+}
+
+/// A mesh's triangles ordered cluster by cluster, each cluster's ordered
+/// for the GPU's cache of shaded vertices and then outer ones first.
+fn clustered(vertices: &[ShipVertex], indices: &[u32]) -> Vec<u32> {
+    let (lo, size) = used_bounds(vertices, indices);
+    let at = |i: u32| Vec3::from(vertices[i as usize].position);
+    let mut tris: Vec<(u32, [u32; 3])> = indices
+        .chunks_exact(3)
+        .map(|t| (cluster_of([at(t[0]), at(t[1]), at(t[2])], lo, size), [t[0], t[1], t[2]]))
+        .collect();
+    tris.sort_by_key(|t| t.0);
+    let stride = std::mem::size_of::<ShipVertex>();
+    let positions = meshopt::VertexDataAdapter::new(bytemuck::cast_slice(vertices), stride, 0)
+        .expect("positions");
+    let mut out = Vec::with_capacity(indices.len());
+    for run in tris.chunk_by(|a, b| a.0 == b.0) {
+        let mut part: Vec<u32> = run.iter().flat_map(|t| t.1).collect();
+        meshopt::optimize_vertex_cache_in_place(&mut part, vertices.len());
+        meshopt::optimize_overdraw_in_place(&mut part, &positions, 1.05);
+        out.extend(part);
+    }
+    out
+}
+
+/// A mesh's clusters, read back from the order of its triangles; `first`
+/// counted from `offset`.
+fn clusters(mesh: &Mesh, offset: u32) -> Vec<Cluster> {
+    let (lo, size) = used_bounds(&mesh.vertices, &mesh.indices);
+    let at = |i: u32| Vec3::from(mesh.vertices[i as usize].position);
+    let tris: Vec<([Vec3; 3], u32)> = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| {
+            let p = [at(t[0]), at(t[1]), at(t[2])];
+            (p, cluster_of(p, lo, size))
+        })
+        .collect();
+    let mut out = Vec::new();
+    let mut start = 0;
+    for run in tris.chunk_by(|a, b| a.1 == b.1) {
+        let mut lo = Vec3::splat(f32::MAX);
+        let mut hi = Vec3::splat(f32::MIN);
+        let mut sum = Vec3::ZERO;
+        for (p, _) in run {
+            for q in p {
+                lo = lo.min(*q);
+                hi = hi.max(*q);
+            }
+            sum += (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+        }
+        let centre = (lo + hi) * 0.5;
+        let radius = run
+            .iter()
+            .flat_map(|(p, _)| p.iter())
+            .map(|q| (*q - centre).length())
+            .fold(0.0f32, f32::max);
+        let axis = sum.normalize_or_zero();
+        // The sine of the widest angle from the axis to any face's normal:
+        // the cone's half angle (1 once it reaches a right angle, or the
+        // faces cancel out).
+        let mut spread = if axis == Vec3::ZERO { 1.0 } else { 0.0f32 };
+        for (p, _) in run {
+            let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+            if n == Vec3::ZERO {
+                continue;
+            }
+            let c = n.dot(axis);
+            spread = spread.max(if c <= 0.0 { 1.0 } else { (1.0 - c * c).max(0.0).sqrt() });
+        }
+        out.push(Cluster {
+            first: offset + start,
+            count: run.len() as u32 * 3,
+            centre,
+            radius,
+            axis,
+            spread: (spread * 1.001).min(1.0),
+        });
+        start += run.len() as u32 * 3;
+    }
+    out
 }
 
 impl Library {
@@ -347,11 +520,15 @@ pub fn library() -> Library {
         vertices: Vec::new(),
         indices: Vec::new(),
         ranges: HashMap::new(),
+        clusters: HashMap::new(),
     };
     for key in Key::all() {
         let m = mesh(key);
         let base = lib.vertices.len() as i32;
         let first = lib.indices.len() as u32;
+        if m.indices.len() as u32 >= CLUSTERED * 3 {
+            lib.clusters.insert(key, clusters(&m, first));
+        }
         lib.indices.extend_from_slice(&m.indices);
         lib.vertices.extend_from_slice(&m.vertices);
         lib.ranges
@@ -1448,16 +1625,12 @@ pub fn build(key: Key) -> Mesh {
         })
         .collect();
     let indices = simplify(&vertices, &indices, step * 0.1);
+    // Ordered for the GPU: cluster by cluster (`Cluster`), within each the
+    // triangles for its cache of shaded vertices, then the outer ones first
+    // so fewer pixels are shaded and then covered; the vertices in the
+    // order they are first used.
+    let indices = clustered(&vertices, &indices);
     let mut mesh = Mesh { vertices, indices };
-    // Ordered for the GPU: triangles for its cache of shaded vertices, then
-    // the outer ones first so fewer pixels are shaded and then covered, the
-    // vertices in the order they are first used.
-    meshopt::optimize_vertex_cache_in_place(&mut mesh.indices, mesh.vertices.len());
-    let stride = std::mem::size_of::<ShipVertex>();
-    let positions =
-        meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&mesh.vertices), stride, 0)
-            .expect("positions");
-    meshopt::optimize_overdraw_in_place(&mut mesh.indices, &positions, 1.05);
     let kept = meshopt::optimize_vertex_fetch_in_place(&mut mesh.indices, &mut mesh.vertices);
     mesh.vertices.truncate(kept);
     mesh
@@ -1540,6 +1713,70 @@ mod tests {
                 assert!((n.length() - 1.0).abs() < 0.01 || n.length() == 0.0);
             }
         }
+    }
+
+    /// Seen from anywhere, every triangle facing the camera with a corner
+    /// on the frame lies in a cluster `Cluster::visible` keeps: leaving the
+    /// others out changes no pixel.
+    #[test]
+    fn clusters_keep_every_triangle_that_can_show() {
+        use glam::Quat;
+        let key = Key::Hive { variant: 0, lod: 0 };
+        let mesh = build(key);
+        assert!(mesh.indices.len() as u32 >= CLUSTERED * 3);
+        let at = |i: u32| Vec3::from(mesh.vertices[i as usize].position);
+        // Wound outward (counter-clockwise seen from outside): the
+        // enclosed volume comes out positive.
+        let volume: f32 = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|t| at(t[0]).dot(at(t[1]).cross(at(t[2]))))
+            .sum();
+        assert!(volume > 0.0, "volume {volume}");
+        let clusters = clusters(&mesh, 0);
+        assert!(clusters.len() > 20, "{} clusters", clusters.len());
+        let mut rng = Rng::new(7);
+        let mut kept = 0;
+        let mut total = 0;
+        for _ in 0..200 {
+            let turn = Quat::from_euler(
+                glam::EulerRot::XYZ,
+                rng.range(0.0, 6.3) as f32,
+                rng.range(0.0, 6.3) as f32,
+                rng.range(0.0, 6.3) as f32,
+            );
+            let scale = rng.range(20.0, 46.0) as f32;
+            // The model's middle in the camera's frame: ahead, aside,
+            // close enough to fill the frame and more, now and then behind.
+            let place = Vec3::new(
+                rng.range(-60.0, 60.0) as f32,
+                rng.range(-60.0, 60.0) as f32,
+                rng.range(-20.0, 200.0) as f32,
+            );
+            let tan_half = rng.range(0.3, 0.9) as f32;
+            let to_cam = |q: Vec3| turn * q * scale + place;
+            let shown: Vec<bool> = clusters
+                .iter()
+                .map(|c| c.visible(to_cam(c.centre), turn * c.axis, scale, tan_half))
+                .collect();
+            for (ci, c) in clusters.iter().enumerate() {
+                total += 1;
+                kept += usize::from(shown[ci]);
+                if shown[ci] {
+                    continue;
+                }
+                for t in mesh.indices[c.first as usize..(c.first + c.count) as usize].chunks_exact(3) {
+                    let p = [to_cam(at(t[0])), to_cam(at(t[1])), to_cam(at(t[2]))];
+                    let facing = (p[1] - p[0]).cross(p[2] - p[0]).dot(p[0]) < 0.0;
+                    let on_frame = p.iter().any(|q| {
+                        q.z > 0.0 && q.x.abs() <= q.z * tan_half && q.y.abs() <= q.z * tan_half
+                    });
+                    assert!(!(facing && on_frame), "a triangle that shows left out");
+                }
+            }
+        }
+        eprintln!("clusters kept {kept} of {total}");
+        assert!(kept * 10 < total * 8, "culling leaves out too little: {kept} of {total}");
     }
 
     #[test]

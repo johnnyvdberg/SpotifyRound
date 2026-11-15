@@ -863,13 +863,13 @@ Solar rocks asteroids #0         vs_rock        VS-bin   190   4     0   97    2
 Solar event hive-cube #0         fs_event       FS       285   4     0   76    28        0:0    3   24
 Solar event hive-cube #0         vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event hive-cube #0         vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar event black-hole #0        fs_event_sky   FS      1193   2     0  268    64        0:0    2   70
+Solar event black-hole #0        fs_event_sky   FS       843   2     1  200    61        0:0    5   63
 Solar event black-hole #0        vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event black-hole #0        vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar event nebula #0            fs_gas         FS       427   4     0  131    29        0:0    2   54
 Solar event nebula #0            vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event nebula #0            vs_background  VS-bin    31   4     0   22     7        0:0    0    0
-Solar event rogue-planet #0      fs_event       FS       715   2     1  169    64        0:0    4   43
+Solar event rogue-planet #0      fs_event       FS       712   2     1  170    64        0:0    2   40
 Solar event rogue-planet #0      vs_background  VS        60   4     0   35    10        0:0    0    2
 Solar event rogue-planet #0      vs_background  VS-bin    31   4     0   22     7        0:0    0    0
 Solar event derelict #0          fs_event       FS       227   4     0   58    21        0:0    4   33

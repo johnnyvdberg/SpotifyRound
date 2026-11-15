@@ -2621,6 +2621,14 @@ impl Solar {
                 let Some(range) = meshes.library.get(*key) else {
                     continue;
                 };
+                if let Some(clusters) = meshes.library.clusters.get(key) {
+                    // A big mesh a placing at a time, only its clusters
+                    // that can show, those next to each other in one draw.
+                    for run in visible_runs(clusters, instance, &params) {
+                        model_draws.push((key.family(), (run.start, run.end - run.start, range.2), at..at + 1));
+                    }
+                    continue;
+                }
                 match model_draws.last_mut() {
                     Some((family, last, instances))
                         if *family == key.family() && *last == range =>
@@ -3054,6 +3062,7 @@ impl Solar {
             vertices: Vec::new(),
             indices: Vec::new(),
             ranges: library.ranges,
+            clusters: library.clusters,
         };
         self.models = Some(Models {
             vertices,
@@ -3991,6 +4000,43 @@ fn dyson_panels(ev: &[[f32; 4]; EV_ROWS]) -> (Vec<Panel>, [u32; 3]) {
     let panels: Vec<Panel> = sides.concat();
     let all = panels.len() as u32;
     (panels, [limb, near, all])
+}
+
+/// The index ranges of a placing's clusters that can show this frame
+/// (`models::Cluster`), those next to each other merged: the camera as
+/// `vs_model` places it, at the ship, its axes `params.right`, `up` and
+/// `forward` in the world, the encounter frame's in `params.ev` rows 2-4.
+fn visible_runs(
+    clusters: &[models::Cluster],
+    instance: &models::Instance,
+    params: &Params,
+) -> Vec<std::ops::Range<u32>> {
+    use glam::{Quat, Vec3};
+    let v = |a: [f32; 4]| Vec3::new(a[0], a[1], a[2]);
+    let ev = [v(params.ev[2]), v(params.ev[3]), v(params.ev[4])];
+    let camera = [v(params.right), v(params.up), v(params.forward)];
+    // A direction in the encounter frame into the camera's.
+    let to_camera = |d: Vec3| {
+        let w = ev[0] * d.x + ev[1] * d.y + ev[2] * d.z;
+        Vec3::new(w.dot(camera[0]), w.dot(camera[1]), w.dot(camera[2]))
+    };
+    let turn = Quat::from_array(instance.turn);
+    let scale = instance.place[3];
+    let place = v(instance.place) - v(params.ev[1]);
+    let tan_half = params.frame[1];
+    let mut runs: Vec<std::ops::Range<u32>> = Vec::new();
+    for c in clusters {
+        let centre = to_camera(turn * c.centre * scale + place);
+        let axis = to_camera(turn * c.axis);
+        if !c.visible(centre, axis, scale, tan_half) {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(last) if last.end == c.first => last.end = c.first + c.count,
+            _ => runs.push(c.first..c.first + c.count),
+        }
+    }
+    runs
 }
 
 fn model_instances(view: &View) -> Vec<(models::Key, models::Instance)> {
