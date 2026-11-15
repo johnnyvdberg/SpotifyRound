@@ -102,11 +102,6 @@ impl BaseStage {
             BaseStage::Climb => "climb",
         }
     }
-
-    /// Inside the base: from the mouth in and back out to it.
-    pub fn inside(self) -> bool {
-        !matches!(self, BaseStage::Approach | BaseStage::Climb)
-    }
 }
 
 /// A ship given priority on the way in.
@@ -408,7 +403,10 @@ impl Tour {
     /// A point inside the base, metres in its own frame, relative to its
     /// centre in the world; and a direction in its frame, in the world.
     fn inside_rel(frame: &Frame, p: [f64; 3]) -> [f64; 3] {
-        add(scale(frame.out, frame.radius), scale(Self::inside_dir(frame, p), METRE))
+        add(
+            scale(frame.out, frame.radius),
+            scale(Self::inside_dir(frame, p), METRE),
+        )
     }
     fn inside_dir(frame: &Frame, d: [f64; 3]) -> [f64; 3] {
         add(
@@ -503,14 +501,7 @@ impl Tour {
                 )
             }
             BaseStage::Outbound => tunnel(
-                ease(
-                    cradle_z - BACK_OUT,
-                    0.0,
-                    0.0,
-                    -EXIT_SPEED,
-                    OUTBOUND,
-                    local,
-                ),
+                ease(cradle_z - BACK_OUT, 0.0, 0.0, -EXIT_SPEED, OUTBOUND, local),
                 -1.0,
             ),
             BaseStage::Climb => {
@@ -566,10 +557,9 @@ impl Tour {
                 "“Bay {} is yours, but hold your orbit: {} has priority.”",
                 base.bay, ship.name
             ),
-            (Step::Hold, Some(ship)) if into < HOLD * 0.6 => format!(
-                "“{} going in ahead of you: {}.”",
-                ship.name, ship.reason
-            ),
+            (Step::Hold, Some(ship)) if into < HOLD * 0.6 => {
+                format!("“{} going in ahead of you: {}.”", ship.name, ship.reason)
+            }
             (Step::Hold, _) => "“Traffic is in. You are cleared, corridor's yours.”".into(),
             (Step::Align, _) => format!("“Line up on the corridor {} beacon.”", base.corridor),
             (Step::Final, _) => format!("“Guidance lights on. Welcome to {name}.”"),
@@ -586,10 +576,7 @@ impl Tour {
             .iter()
             .map(|&(s, _)| {
                 let (label, value) = match s {
-                    Step::Contact => (
-                        "CONTACT",
-                        format!("hailing {} approach control", base.name),
-                    ),
+                    Step::Contact => ("CONTACT", format!("hailing {} approach control", base.name)),
                     Step::Clearance => match base.traffic {
                         None => ("CLEARANCE", format!("cleared to dock, bay {bay}")),
                         Some(_) => ("CLEARANCE", format!("bay {bay}, after priority traffic")),
@@ -604,7 +591,10 @@ impl Tour {
                     ),
                     Step::Final => (
                         "FINAL",
-                        format!("{} km to the mouth", thousands(self.range_to_mouth(base, t) / 1000.0)),
+                        format!(
+                            "{} km to the mouth",
+                            thousands(self.range_to_mouth(base, t) / 1000.0)
+                        ),
                     ),
                 };
                 (label.to_string(), value)
@@ -644,11 +634,26 @@ impl Tour {
         let mass = rng.int(140, 620);
         let (_, drive) = self.drive();
         let stages = vec![
-            ("HULL PLATING".to_string(), format!("welding the seams, {hull}% to 100%")),
-            ("COOLANT".to_string(), "loops flushed and refilled".to_string()),
-            ("REACTION MASS".to_string(), format!("{mass} t pumped aboard")),
-            ("DRIVE COIL".to_string(), format!("the {drive} recalibrated")),
-            ("NAV SYNC".to_string(), "charts and beacons brought up to date".to_string()),
+            (
+                "HULL PLATING".to_string(),
+                format!("welding the seams, {hull}% to 100%"),
+            ),
+            (
+                "COOLANT".to_string(),
+                "loops flushed and refilled".to_string(),
+            ),
+            (
+                "REACTION MASS".to_string(),
+                format!("{mass} t pumped aboard"),
+            ),
+            (
+                "DRIVE COIL".to_string(),
+                format!("the {drive} recalibrated"),
+            ),
+            (
+                "NAV SYNC".to_string(),
+                "charts and beacons brought up to date".to_string(),
+            ),
         ];
         let tag = if u >= 0.8 { "READY" } else { "SERVICE" };
         Manoeuvre {
@@ -668,7 +673,13 @@ impl Tour {
     }
 
     /// The panel `local` seconds into stage `stage` at the base at `stop`.
-    pub(super) fn base_manoeuvre(&self, stop: Stop, stage: BaseStage, local: f64, t: f64) -> Manoeuvre {
+    pub(super) fn base_manoeuvre(
+        &self,
+        stop: Stop,
+        stage: BaseStage,
+        local: f64,
+        t: f64,
+    ) -> Manoeuvre {
         let base = self.base_at(stop);
         let (start, end) = self.base_span(stop, stage);
         let u = (local / (end - start).max(1e-6)) as f32;
@@ -694,7 +705,9 @@ impl Tour {
             BaseStage::Service => self.service_panel(base, local),
             BaseStage::Undock => coast(
                 "UNDOCKING",
-                format!("Clamps released: backing out of bay {bay} on thrusters and turning about."),
+                format!(
+                    "Clamps released: backing out of bay {bay} on thrusters and turning about."
+                ),
             ),
             BaseStage::Outbound => coast(
                 "OUTBOUND",
@@ -702,7 +715,10 @@ impl Tour {
             ),
             BaseStage::Climb => coast(
                 "DEPARTURE",
-                format!("Out of {name}, climbing back into orbit for {}.", self.after_base(stop)),
+                format!(
+                    "Out of {name}, climbing back into orbit for {}.",
+                    self.after_base(stop)
+                ),
             ),
         }
     }
@@ -761,7 +777,10 @@ impl Tour {
                         name,
                         (
                             "".into(),
-                            format!("Starbase · {} km across · orbits {giant}", thousands(across)),
+                            format!(
+                                "Starbase · {} km across · orbits {giant}",
+                                thousands(across)
+                            ),
                         ),
                         (
                             "Range".into(),
@@ -795,7 +814,14 @@ impl Tour {
                     name,
                     ("Berth".into(), bay),
                     ("Speed".into(), speed()),
-                    ("Clamps".into(), if left < 1.5 { "locked".into() } else { "open".into() }),
+                    (
+                        "Clamps".into(),
+                        if left < 1.5 {
+                            "locked".into()
+                        } else {
+                            "open".into()
+                        },
+                    ),
                 ],
             ),
             BaseStage::Service => {

@@ -3520,6 +3520,16 @@ mod manoeuvre_tests {
                             );
                         }
                     }
+                    // At a starbase: the docking and service panels, or a
+                    // sentence.
+                    Phase::Base(..) => {
+                        let m = m.expect("a panel at the starbase");
+                        assert!(!m.name.is_empty() && !m.text.contains("NaN"), "{m:?}");
+                        assert!(
+                            m.stages.iter().all(|(_, what)| !what.contains("NaN")),
+                            "{m:?}"
+                        );
+                    }
                     _ => assert!(m.is_none()),
                 }
                 t += 0.5;
@@ -3702,11 +3712,22 @@ mod starbase_tests {
                 assert!(tour.system.is_starbase(base.stop));
                 assert!(tour.itinerary.contains(&base.stop));
                 // Visited in place of an orbit.
-                assert!(!tour.segments.iter().any(|s| s.phase == Phase::High(base.stop)));
+                assert!(
+                    !tour
+                        .segments
+                        .iter()
+                        .any(|s| s.phase == Phase::High(base.stop))
+                );
             }
         }
-        assert!((25..=80).contains(&bases), "{bases} starbases in 200 systems");
-        assert!(held > 0 && held < bases, "{held} of {bases} held for traffic");
+        assert!(
+            (25..=80).contains(&bases),
+            "{bases} starbases in 200 systems"
+        );
+        assert!(
+            held > 0 && held < bases,
+            "{held} of {bases} held for traffic"
+        );
     }
 
     #[test]
@@ -3760,11 +3781,19 @@ mod starbase_tests {
                 deepest = deepest.min(r);
                 // Inside only from the mouth in.
                 if !view.inside {
-                    assert!(r > radius * 0.999, "below the surface at {t:.2}: {}", r / radius);
+                    assert!(
+                        r > radius * 0.999,
+                        "below the surface at {t:.2}: {}",
+                        r / radius
+                    );
                 }
                 // No leap greater than the orbit's own pace.
                 let step = length(sub(rel, last));
-                assert!(step < radius * 0.02, "a leap of {} radii at {t:.2}", step / radius);
+                assert!(
+                    step < radius * 0.02,
+                    "a leap of {} radii at {t:.2}",
+                    step / radius
+                );
                 assert!((length(view.forward) - 1.0).abs() < 1e-6);
                 last = rel;
                 t += h;

@@ -1050,7 +1050,9 @@ impl System {
             Some(at) => at,
             None => {
                 let giants: Vec<usize> = (0..self.planets.len())
-                    .filter(|&p| self.planets[p].kind.is_giant() && !self.planets[p].moons.is_empty())
+                    .filter(|&p| {
+                        self.planets[p].kind.is_giant() && !self.planets[p].moons.is_empty()
+                    })
                     .collect();
                 if giants.is_empty() {
                     return;
@@ -1082,8 +1084,12 @@ impl System {
 
     /// Whether `stop` is a starbase.
     pub fn is_starbase(&self, stop: Stop) -> bool {
-        stop.moon
-            .is_some_and(|m| self.planets[stop.planet].moons.get(m).is_some_and(|m| m.starbase))
+        stop.moon.is_some_and(|m| {
+            self.planets[stop.planet]
+                .moons
+                .get(m)
+                .is_some_and(|m| m.starbase)
+        })
     }
 
     /// Where `stop` is at `seconds` into the visit.
