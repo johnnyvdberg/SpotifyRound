@@ -152,7 +152,7 @@ impl Ring {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: gpu.pipeline_cache(),
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Ring uniforms"),

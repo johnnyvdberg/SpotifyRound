@@ -636,7 +636,7 @@ impl Streamer {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.pipeline_cache(),
             })
         };
         let all = wgpu::ColorWrites::ALL;
@@ -822,7 +822,7 @@ impl Streamer {
             labels,
             terrain_sampler,
             noise,
-            mips: MipChain::new(device),
+            mips: MipChain::new(device, gpu.pipeline_cache()),
         }
     }
 
@@ -981,9 +981,11 @@ impl Streamer {
                     &group,
                     &self.noise.group,
                     &level_view(&self.probe, 0, 0),
-                    0,
-                    PROBE_HEIGHT,
-                    PROBE_WIDTH,
+                    Band {
+                        row: 0,
+                        count: PROBE_HEIGHT,
+                        width: PROBE_WIDTH,
+                    },
                     true,
                 );
                 let padded = (PROBE_WIDTH * 16).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
@@ -1133,9 +1135,7 @@ impl Streamer {
                     &group,
                     &self.noise.group,
                     &level_view(texture, 0, layer),
-                    row,
-                    count,
-                    width,
+                    Band { row, count, width },
                     row == 0 && pass.clear,
                 );
                 if row + count >= height {
@@ -1178,9 +1178,11 @@ impl Streamer {
             &group,
             &self.noise.group,
             &level_view(&self.skies[job.index], 0, 0),
-            job.row,
-            count,
-            SKY_WIDTH,
+            Band {
+                row: job.row,
+                count,
+                width: SKY_WIDTH,
+            },
             job.row == 0,
         );
         job.row += count;
@@ -1243,17 +1245,22 @@ impl Streamer {
     }
 }
 
-/// A full-target pass limited to `count` rows from `row`.
-#[allow(clippy::too_many_arguments)]
+/// Rows of a target a pass paints: `count` from `row`, `width` across.
+#[derive(Clone, Copy)]
+struct Band {
+    row: u32,
+    count: u32,
+    width: u32,
+}
+
+/// A full-target pass limited to `band`'s rows.
 fn draw(
     encoder: &mut wgpu::CommandEncoder,
     (label, pipeline): (&str, &wgpu::RenderPipeline),
     group: &wgpu::BindGroup,
     noise: &wgpu::BindGroup,
     target: &wgpu::TextureView,
-    row: u32,
-    count: u32,
-    width: u32,
+    Band { row, count, width }: Band,
     clear: bool,
 ) {
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1291,7 +1298,7 @@ struct MipChain {
 }
 
 impl MipChain {
-    fn new(device: &wgpu::Device) -> Self {
+    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Solar mip chain"),
             entries: &[
@@ -1334,7 +1341,7 @@ impl MipChain {
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
                     multiview_mask: None,
-                    cache: None,
+                    cache,
                 });
                 (format, pipeline)
             })

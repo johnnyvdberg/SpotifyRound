@@ -129,11 +129,14 @@ impl Scene {
     }
 
     fn build(self, gpu: &Graphics) -> Result<Box<dyn Visual>> {
-        match self {
-            Scene::Globe => Ok(Box::new(Globe::new(gpu)?)),
-            Scene::Nautilus => Ok(Box::new(Nautilus::new(gpu)?)),
-            Scene::Solar => Ok(Box::new(Solar::new(gpu)?)),
-        }
+        let scene: Box<dyn Visual> = match self {
+            Scene::Globe => Box::new(Globe::new(gpu)?),
+            Scene::Nautilus => Box::new(Nautilus::new(gpu)?),
+            Scene::Solar => Box::new(Solar::new(gpu)?),
+        };
+        // Its pipelines compiled: keep them for the next start.
+        gpu.save_pipeline_cache();
+        Ok(scene)
     }
 
     /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus` or `solar`), which

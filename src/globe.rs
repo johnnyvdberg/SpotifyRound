@@ -349,7 +349,7 @@ impl Globe {
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
                     multiview_mask: None,
-                    cache: None,
+                    cache: gpu.pipeline_cache(),
                 })
             })
             .collect();
@@ -681,7 +681,7 @@ fn draw_geometry(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
+        cache: gpu.pipeline_cache(),
     });
     gpu.queue
         .write_buffer(uniforms, 0, bytemuck::bytes_of(&uniforms_at(0.0)));

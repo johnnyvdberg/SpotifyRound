@@ -1447,7 +1447,7 @@ fn look_switches(underwater: bool, lowpoly: bool) -> u32 {
 /// switch is compiled in or out, never tested per pixel, so the kiosk's
 /// shaders carry none of the benchmarks' alternatives in their registers.
 fn compile(
-    device: &wgpu::Device,
+    gpu: &Graphics,
     shader: &wgpu::ShaderModule,
     pipeline_layout: &wgpu::PipelineLayout,
     colour: wgpu::TextureFormat,
@@ -1455,6 +1455,7 @@ fn compile(
     plain: bool,
     switches: u32,
 ) -> Pipelines {
+    let device = &gpu.device;
     let model_attributes = wgpu::vertex_attr_array![
         0 => Float32x3, 1 => Snorm8x4, 2 => Unorm8x4, 3 => Float16x2,
     ];
@@ -1573,7 +1574,7 @@ fn compile(
                 ..Default::default()
             },
             multiview_mask: None,
-            cache: None,
+            cache: gpu.pipeline_cache(),
         })
     };
     // Depth is reversed — near at 1, far toward 0 — for precision far out.
@@ -1782,7 +1783,7 @@ fn compile(
             ..Default::default()
         },
         multiview_mask: None,
-        cache: None,
+        cache: gpu.pipeline_cache(),
     });
     // One sample has no alpha-to-coverage: blending the coverage over the
     // water is the dissolve. Multisampled, the coverage itself does it.
@@ -2341,7 +2342,7 @@ impl Nautilus {
             plumes,
             impostors,
         } = compile(
-            device,
+            gpu,
             &shader,
             &pipeline_layout,
             colour,
@@ -2435,9 +2436,9 @@ impl Nautilus {
     }
 
     /// Compile every pipeline again with `switches`.
-    fn recompile(&mut self, device: &wgpu::Device, switches: u32) {
+    fn recompile(&mut self, gpu: &Graphics, switches: u32) {
         let p = compile(
-            device,
+            gpu,
             &self.shader,
             &self.pipeline_layout,
             self.colour_format,
@@ -2616,7 +2617,7 @@ impl Nautilus {
         }
         // Only a benchmark changes them, and it pays for the compile.
         if switches != self.switches {
-            self.recompile(&gpu.device, switches);
+            self.recompile(gpu, switches);
         }
         let sky = sky_mode(&uniforms);
         gpu.queue
@@ -3339,10 +3340,12 @@ impl Nautilus {
         let encode_done = clock.elapsed();
         gpu.submit(encoder.finish());
         #[cfg(test)]
-        if {
+        let phases = {
             static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *SET.get_or_init(|| std::env::var_os("DIVE3D_PHASES").is_some())
-        } {
+        };
+        #[cfg(test)]
+        if phases {
             let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
             eprintln!(
                 "dive3d phases: build {:.3} terrain {:.3} order {:.3} sort {:.3} stage {:.3} upload {:.3} encode {:.3}",

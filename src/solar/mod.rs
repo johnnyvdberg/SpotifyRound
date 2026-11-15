@@ -391,6 +391,43 @@ pub(crate) struct Solar {
     drawn: std::cell::RefCell<String>,
 }
 
+/// One of the frame's pipelines (`Solar::with_seed`): its entry points and
+/// what sets it apart; the layout, the target and the depth format are the
+/// frame's own. [`FrameDraw::new`] gives the usual case: no blending, every
+/// channel written, the depth mask tested but not written, nothing culled.
+#[derive(Clone, Copy)]
+struct FrameDraw<'a> {
+    vs: &'a str,
+    fs: &'a str,
+    blend: Option<wgpu::BlendState>,
+    constants: &'a [(&'a str, f64)],
+    /// Whether it writes the depth; `None` for no depth at all (drawn
+    /// outside the frame's pass: the starfield bake).
+    depth: Option<bool>,
+    writes: wgpu::ColorWrites,
+    /// Strictly in front of the mask (`Less`), for passes drawn only off
+    /// their own disc.
+    strict: bool,
+    cull: Option<wgpu::Face>,
+    buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
+}
+
+impl<'a> FrameDraw<'a> {
+    fn new(vs: &'a str, fs: &'a str) -> Self {
+        Self {
+            vs,
+            fs,
+            blend: None,
+            constants: &[],
+            depth: Some(false),
+            writes: wgpu::ColorWrites::ALL,
+            strict: false,
+            cull: None,
+            buffers: &[],
+        }
+    }
+}
+
 fn system_for(base: u64, visit: u64) -> System {
     System::generate(base ^ visit.wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
@@ -557,18 +594,9 @@ impl Solar {
         });
         // Every frame pipeline tests the depth mask (see `draw`); the mask's
         // own pipeline writes it and nothing else. Only the meshes cull.
-        let make_culled = |label: &str,
-                           vs: &str,
-                           fs: &str,
-                           blend: Option<wgpu::BlendState>,
-                           constants: &[(&str, f64)],
-                           write_depth: Option<bool>,
-                           writes: wgpu::ColorWrites,
-                           strict: bool,
-                           cull_mode: Option<wgpu::Face>,
-                           buffers: &[Option<wgpu::VertexBufferLayout>]| {
+        let make = |label: &str, d: FrameDraw| {
             let options = wgpu::PipelineCompilationOptions {
-                constants,
+                constants: d.constants,
                 ..Default::default()
             };
             let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -576,31 +604,31 @@ impl Solar {
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some(vs),
-                    buffers,
+                    entry_point: Some(d.vs),
+                    buffers: d.buffers,
                     compilation_options: options.clone(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some(fs),
+                    entry_point: Some(d.fs),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                        blend,
-                        write_mask: writes,
+                        blend: d.blend,
+                        write_mask: d.writes,
                     })],
                     compilation_options: options,
                 }),
                 primitive: wgpu::PrimitiveState {
-                    cull_mode,
+                    cull_mode: d.cull,
                     ..Default::default()
                 },
                 // None: drawn outside the frame's pass (the starfield bake).
-                depth_stencil: write_depth.map(|write| wgpu::DepthStencilState {
+                depth_stencil: d.depth.map(|write| wgpu::DepthStencilState {
                     format: DEPTH,
                     depth_write_enabled: Some(write),
                     // Strictly in front for passes that draw only off their
                     // own disc (the limb): its mask then rejects the disc.
-                    depth_compare: Some(if strict {
+                    depth_compare: Some(if d.strict {
                         wgpu::CompareFunction::Less
                     } else {
                         wgpu::CompareFunction::LessEqual
@@ -610,31 +638,9 @@ impl Solar {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.pipeline_cache(),
             });
             (label.to_string(), made)
-        };
-        let make = |label: &str,
-                    vs: &str,
-                    fs: &str,
-                    blend: Option<wgpu::BlendState>,
-                    constants: &[(&str, f64)],
-                    write_depth: Option<bool>,
-                    writes: wgpu::ColorWrites,
-                    strict: bool| {
-            let (depth, cull) = (write_depth, None);
-            make_culled(
-                label,
-                vs,
-                fs,
-                blend,
-                constants,
-                depth,
-                writes,
-                strict,
-                cull,
-                &[],
-            )
         };
         // A mapped world's mesh: its back faces culled (counter-clockwise
         // seen from outside, see `grid_indices`).
@@ -643,20 +649,14 @@ impl Solar {
                      blend: Option<wgpu::BlendState>,
                      constants: &[(&str, f64)],
                      writes: wgpu::ColorWrites| {
-            let (vs, back) = ("vs_globe", Some(wgpu::Face::Back));
-            let depth = Some(false);
-            make_culled(
-                label,
-                vs,
-                fs,
+            let draw = FrameDraw {
                 blend,
                 constants,
-                depth,
                 writes,
-                false,
-                back,
-                &[],
-            )
+                cull: Some(wgpu::Face::Back),
+                ..FrameDraw::new("vs_globe", fs)
+            };
+            make(label, draw)
         };
         let pipeline = |label: &str,
                         vs: &str,
@@ -665,13 +665,11 @@ impl Solar {
                         constants: &[(&str, f64)]| {
             make(
                 label,
-                vs,
-                fs,
-                blend,
-                constants,
-                Some(false),
-                wgpu::ColorWrites::ALL,
-                false,
+                FrameDraw {
+                    blend,
+                    constants,
+                    ..FrameDraw::new(vs, fs)
+                },
             )
         };
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
@@ -718,7 +716,7 @@ impl Solar {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.pipeline_cache(),
             });
             (label.to_string(), made)
         };
@@ -768,13 +766,11 @@ impl Solar {
             Pipe::Mask,
             make(
                 "Solar mask",
-                "vs_body",
-                "fs_mask",
-                None,
-                &[],
-                Some(true),
-                none,
-                false,
+                FrameDraw {
+                    depth: Some(true),
+                    writes: none,
+                    ..FrameDraw::new("vs_body", "fs_mask")
+                },
             ),
         );
         // The frame's corners, which the round display never shows.
@@ -782,26 +778,22 @@ impl Solar {
             Pipe::Corners,
             make(
                 "Solar corners",
-                "vs_corners",
-                "fs_corners",
-                None,
-                &[],
-                Some(true),
-                none,
-                false,
+                FrameDraw {
+                    depth: Some(true),
+                    writes: none,
+                    ..FrameDraw::new("vs_corners", "fs_corners")
+                },
             ),
         );
         pipelines.insert(
             Pipe::MaskInscribed,
             make(
                 "Solar mask inscribed",
-                "vs_mask_inscribed",
-                "fs_mask_inscribed",
-                None,
-                &[],
-                Some(true),
-                none,
-                false,
+                FrameDraw {
+                    depth: Some(true),
+                    writes: none,
+                    ..FrameDraw::new("vs_mask_inscribed", "fs_mask_inscribed")
+                },
             ),
         );
         // For the Pi estimate only: what survives the mask, shaded by nothing.
@@ -809,39 +801,31 @@ impl Solar {
             Pipe::Probe,
             make(
                 "Solar probe",
-                "vs_body",
-                "fs_probe",
-                None,
-                &[],
-                Some(false),
-                none,
-                false,
+                FrameDraw {
+                    writes: none,
+                    ..FrameDraw::new("vs_body", "fs_probe")
+                },
             ),
         );
         pipelines.insert(
             Pipe::ProbeStrict,
             make(
                 "Solar probe strict",
-                "vs_body",
-                "fs_probe",
-                None,
-                &[],
-                Some(false),
-                none,
-                true,
+                FrameDraw {
+                    writes: none,
+                    strict: true,
+                    ..FrameDraw::new("vs_body", "fs_probe")
+                },
             ),
         );
         pipelines.insert(
             Pipe::ProbeFull,
             make(
                 "Solar probe full",
-                "vs_background",
-                "fs_probe_full",
-                None,
-                &[],
-                Some(false),
-                none,
-                false,
+                FrameDraw {
+                    writes: none,
+                    ..FrameDraw::new("vs_background", "fs_probe_full")
+                },
             ),
         );
         // The starfield, baked once a system, and the background reading it.
@@ -849,26 +833,20 @@ impl Solar {
             Pipe::Bake,
             make(
                 "Solar starfield bake",
-                "vs_bake",
-                "fs_bake_stars",
-                None,
-                &[],
-                None,
-                wgpu::ColorWrites::ALL,
-                false,
+                FrameDraw {
+                    depth: None,
+                    ..FrameDraw::new("vs_bake", "fs_bake_stars")
+                },
             ),
         );
         pipelines.insert(
             Pipe::BakeSky,
             make(
                 "Solar sky cube bake",
-                "vs_bake",
-                "fs_bake_sky",
-                None,
-                &[],
-                None,
-                wgpu::ColorWrites::ALL,
-                false,
+                FrameDraw {
+                    depth: None,
+                    ..FrameDraw::new("vs_bake", "fs_bake_sky")
+                },
             ),
         );
         // The baked background reads the cube and nothing else, the star's
@@ -890,7 +868,13 @@ impl Solar {
             pipelines.insert(name, pipeline(label, vs, "fs_glare", add, &[]));
         }
         let (label, vs, fs) = ("Solar probe glare", "vs_glare", "fs_probe_glare");
-        let made = make(label, vs, fs, None, &[], Some(false), none, false);
+        let made = make(
+            label,
+            FrameDraw {
+                writes: none,
+                ..FrameDraw::new(vs, fs)
+            },
+        );
         pipelines.insert(Pipe::ProbeGlare, made);
         pipelines.insert(
             Pipe::Space,
@@ -962,16 +946,14 @@ impl Solar {
             // writing the depth so nothing it hides is shaded; behind the
             // front blended over everything drawn.
             let constants = [("WARP", k as f64)];
-            let (label, all) = (format!("Solar drop ahead {name}"), wgpu::ColorWrites::ALL);
+            let label = format!("Solar drop ahead {name}");
             let ahead = make(
                 &label,
-                "vs_drop_ahead",
-                "fs_drop_ahead",
-                None,
-                &constants,
-                Some(true),
-                all,
-                false,
+                FrameDraw {
+                    constants: &constants,
+                    depth: Some(true),
+                    ..FrameDraw::new("vs_drop_ahead", "fs_drop_ahead")
+                },
             );
             pipelines.insert(Pipe::DropAhead(k), ahead);
             pipelines.insert(
@@ -1015,16 +997,14 @@ impl Solar {
             }
             if event.rocks() {
                 let label = format!("Solar rocks {}", event.slug());
-                let all = wgpu::ColorWrites::ALL;
                 let made = make(
                     &label,
-                    "vs_rock",
-                    "fs_rock",
-                    over,
-                    &constants,
-                    Some(true),
-                    all,
-                    false,
+                    FrameDraw {
+                        blend: over,
+                        constants: &constants,
+                        depth: Some(true),
+                        ..FrameDraw::new("vs_rock", "fs_rock")
+                    },
                 );
                 pipelines.insert(Pipe::Rocks(event.id()), made);
             }
@@ -1071,10 +1051,18 @@ impl Solar {
                 Some(_) => ("vs_dyson_panel", "fs_dyson_panel", &panel[..]),
                 None => ("vs_dyson_star", "fs_dyson_star", &[][..]),
             };
-            let all = wgpu::ColorWrites::ALL;
             let (depth, strict) = (Some(write), true);
-            let made = make_culled(
-                &label, vs, fs, blend, &constants, depth, all, strict, cull, buffers,
+            let made = make(
+                &label,
+                FrameDraw {
+                    blend,
+                    constants: &constants,
+                    depth,
+                    strict,
+                    cull,
+                    buffers,
+                    ..FrameDraw::new(vs, fs)
+                },
             );
             pipelines.insert(Pipe::EventPart(dyson.id(), name), made);
         }
@@ -1097,7 +1085,14 @@ impl Solar {
             pipelines.insert(Pipe::Leviathan(part), made);
             let label = format!("Solar probe leviathans {name}");
             let fs = "fs_probe_leviathan";
-            let made = make(&label, vs, fs, None, &constants, Some(false), none, false);
+            let made = make(
+                &label,
+                FrameDraw {
+                    constants: &constants,
+                    writes: none,
+                    ..FrameDraw::new(vs, fs)
+                },
+            );
             pipelines.insert(Pipe::ProbeLeviathan(part), made);
         }
         let halo_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1153,7 +1148,7 @@ impl Solar {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.pipeline_cache(),
             });
             (label.to_string(), made)
         };
@@ -1252,7 +1247,7 @@ impl Solar {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: gpu.pipeline_cache(),
         });
         pipelines.insert(Pipe::Ships, ("Solar ships".to_string(), ship_pipeline));
         // Every other model family's meshes, instanced: a pipeline each.
@@ -1311,7 +1306,7 @@ impl Solar {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.pipeline_cache(),
             });
             pipelines.insert(Pipe::Model(family), (label, made));
         }
@@ -1371,7 +1366,7 @@ impl Solar {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.pipeline_cache(),
             });
             pipelines.insert(key, (label, made));
         }
@@ -1405,13 +1400,10 @@ impl Solar {
                 name,
                 make(
                     label,
-                    vertex,
-                    fragment,
-                    over,
-                    &[],
-                    Some(false),
-                    wgpu::ColorWrites::ALL,
-                    false,
+                    FrameDraw {
+                        blend: over,
+                        ..FrameDraw::new(vertex, fragment)
+                    },
                 ),
             );
         }
@@ -1466,39 +1458,33 @@ impl Solar {
             Pipe::Limb,
             make(
                 "Solar limb",
-                "vs_body",
-                "fs_limb",
-                add,
-                &[],
-                Some(false),
-                wgpu::ColorWrites::ALL,
-                true,
+                FrameDraw {
+                    blend: add,
+                    strict: true,
+                    ..FrameDraw::new("vs_body", "fs_limb")
+                },
             ),
         );
         pipelines.insert(
             Pipe::LimbRing,
             make(
                 "Solar limb ring",
-                "vs_limb_ring",
-                "fs_limb_ring",
-                add,
-                &[],
-                Some(false),
-                wgpu::ColorWrites::ALL,
-                true,
+                FrameDraw {
+                    blend: add,
+                    strict: true,
+                    ..FrameDraw::new("vs_limb_ring", "fs_limb_ring")
+                },
             ),
         );
         pipelines.insert(
             Pipe::ProbeLimbRing,
             make(
                 "Solar probe limb ring",
-                "vs_limb_ring",
-                "fs_probe",
-                None,
-                &[],
-                Some(false),
-                none,
-                true,
+                FrameDraw {
+                    writes: none,
+                    strict: true,
+                    ..FrameDraw::new("vs_limb_ring", "fs_probe")
+                },
             ),
         );
         pipelines.insert(
@@ -3849,7 +3835,7 @@ fn bake(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
+        cache: gpu.pipeline_cache(),
     });
     let mut encoder = device.create_command_encoder(&Default::default());
     for layer in 0..layers {

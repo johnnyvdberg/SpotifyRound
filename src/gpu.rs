@@ -41,6 +41,10 @@ pub struct Graphics {
     /// running. On the V3D the profiler is absent; `GpuLoad` reads its busy
     /// counters instead.
     last_gpu_ms: Arc<Mutex<Option<f32>>>,
+    /// The driver's compiled pipelines, kept on disk between runs where the
+    /// backend can (Vulkan), so a start-up need not compile every variant
+    /// again; and the file it is kept in.
+    pipeline_cache: Option<(wgpu::PipelineCache, PathBuf)>,
 }
 
 /// A point in the queue, made by [`Graphics::mark`]: set to the time the GPU
@@ -166,6 +170,38 @@ impl Graphics {
             .last_gpu_ms
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The pipeline cache to create pipelines with, where there is one.
+    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.pipeline_cache.as_ref().map(|(cache, _)| cache)
+    }
+
+    /// Write the pipeline cache to disk, with every pipeline compiled so far.
+    /// Called once a scene has made its pipelines; costs nothing without a
+    /// cache. Written beside the file and renamed over it, so a crash never
+    /// leaves half a cache.
+    pub fn save_pipeline_cache(&self) {
+        let Some((cache, path)) = &self.pipeline_cache else {
+            return;
+        };
+        let Some(data) = cache.get_data() else {
+            return;
+        };
+        let temporary = path.with_extension("tmp");
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&temporary, &data))
+            .and_then(|()| std::fs::rename(&temporary, path));
+        match written {
+            Ok(()) => {
+                tracing::debug!(path = %path.display(), bytes = data.len(), "pipeline cache saved")
+            }
+            Err(err) => {
+                tracing::warn!(%err, path = %path.display(), "cannot save the pipeline cache")
+            }
+        }
     }
 
     /// Whether timer-query profiling is active.
@@ -401,12 +437,36 @@ fn open(adapter: &wgpu::Adapter, label: &str, headless: bool) -> Result<Graphics
     {
         features |= wgpu::Features::PIPELINE_STATISTICS_QUERY;
     }
+    // A cache of compiled pipelines on disk, for the display (the
+    // benchmarks and screenshots compile from scratch each run).
+    let cache_file = (!headless)
+        .then(|| pipeline_cache_file(adapter))
+        .flatten()
+        .filter(|_| adapter.features().contains(wgpu::Features::PIPELINE_CACHE));
+    if cache_file.is_some() {
+        features |= wgpu::Features::PIPELINE_CACHE;
+    }
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some(label),
         required_features: features,
-        required_limits: adapter.limits(),
+        required_limits: required_limits(&adapter.limits()),
         ..Default::default()
     }))?;
+    let pipeline_cache = cache_file.map(|path| {
+        let data = std::fs::read(&path).ok();
+        // SAFETY: the data, if any, is what `PipelineCache::get_data` gave a
+        // previous run, in a file named by `pipeline_cache_key` for this
+        // adapter and driver; wgpu checks its header against the adapter and
+        // `fallback` starts the cache empty if it does not match.
+        let cache = unsafe {
+            device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                label: Some("Pipeline cache"),
+                data: data.as_deref(),
+                fallback: true,
+            })
+        };
+        (cache, path)
+    });
     let profiler = if features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
         let settings = GpuProfilerSettings {
             enable_debug_groups: false,
@@ -434,7 +494,35 @@ fn open(adapter: &wgpu::Adapter, label: &str, headless: bool) -> Result<Graphics
         profile_pending: Arc::new(AtomicBool::new(false)),
         marks: Arc::new(Mutex::new(Vec::new())),
         last_gpu_ms: Arc::new(Mutex::new(None)),
+        pipeline_cache,
     })
+}
+
+/// The limits the device is opened with: what the scenes need, no more, so
+/// a desktop GPU enforces what the Pi's V3D allows (sixteen sampled textures a
+/// stage, four colour targets, 16 KiB uniform blocks, fifteen varyings)
+/// instead of letting a scene grow past it unnoticed. That is wgpu's
+/// downlevel baseline with 8192-texel 2D textures (the largest planet maps
+/// and the Earth's), each limit lowered to the adapter's where it has less.
+fn required_limits(adapter: &wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_texture_dimension_1d: 8192,
+        max_texture_dimension_2d: 8192,
+        ..wgpu::Limits::downlevel_defaults()
+    }
+    .or_worse_values_from(adapter)
+}
+
+/// Where the pipeline cache for `adapter` is kept, if its backend has one
+/// and `SPOTIFY_ROUND_PIPELINE_CACHE` is not `0`: the user's cache
+/// directory, a file per adapter and driver.
+fn pipeline_cache_file(adapter: &wgpu::Adapter) -> Option<PathBuf> {
+    if std::env::var("SPOTIFY_ROUND_PIPELINE_CACHE").as_deref() == Ok("0") {
+        return None;
+    }
+    let key = wgpu::util::pipeline_cache_key(&adapter.get_info())?;
+    let dirs = directories::ProjectDirs::from("", "", "spotify-round")?;
+    Some(dirs.cache_dir().join("pipelines").join(key))
 }
 
 /// The Nautilus scope's GPU time from one finished profiler frame, in
