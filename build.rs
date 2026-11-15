@@ -46,17 +46,10 @@ fn main() {
 
     // WESL links the shared shader module into each root shader at build time.
     // The output is plain WGSL in OUT_DIR; wgpu never sees the WESL syntax.
-    let mut features = wesl::Features::default();
-    features.set(
-        "full_hd",
-        std::env::var_os("CARGO_FEATURE_FULL_HD").is_some(),
-    );
     let options = wesl::CompileOptions {
         validate: false,
-        features,
         ..Default::default()
     };
-    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FULL_HD");
     let compiler = wesl::Compiler::new(options)
         .with_resolver(wesl::resolver::FileResolver::new("src/shaders"));
     let main = wesl::syntax::ModulePath::new(

@@ -238,7 +238,7 @@ by `hotspots` pairs in one session (four visits, 168 places; `docs/handoff/water
 
 | feature | switch | seas (median ms there) | median ms | worst ms |
 |---|---|---|---|---|
-| water surface from below: mirror, wave facets, Snell's window (V2) | `DIVE3D_SKIP` bit 37 (`part::SURFACE_FACETS`) | shallows 0.26, coral 0.24, trench 0.37, forest 0.22, wrecks 0.14, atlantis 0.05, the rest under 0.05 | 0.10 | +0.59 at the worst place (coral s0 0.15: 9.66 -> 10.25) |
+| water surface from below: mirror, wave facets, Snell's window (V2) | bit 37 (`part::SURFACE_FACETS`), since removed | shallows 0.26, coral 0.24, trench 0.37, forest 0.22, wrecks 0.14, atlantis 0.05, the rest under 0.05 | 0.10 | +0.59 at the worst place (coral s0 0.15: 9.66 -> 10.25) |
 | finer seabed levels, 0.06/0.24/0.96 (V1 reinvestment) | `DIVE3D_SKIP` bit 36 (`part::COARSE_SEABED`) | cave 0.44, brine 0.42, forest 0.15, atlantis 0.07, the rest about 0.1 or noise | 0.12 | |
 | finer model levels, LOD 1.5/4.5 px (V1 reinvestment) | `DIVE3D_LOD=2,6` | forest 0.22, atlantis 0.08, city 0.08, the rest within the noise (+-0.15) | 0.04 | |
 | the sight's cull (V1) saves | `DIVE3D_SKIP` bit 35 (`part::NO_SIGHT_CULL`) draws everything as before | vents 1.71, forest 1.25, wrecks 1.23, bloom 1.21, atlantis 1.11, brine 1.06, city 0.98, arctic 0.95, abyss 0.78, shallows 0.71, coral 0.51, sargasso 0.51, cave 0.47, trench 0.44 | -0.85 | worst place 10.04 -> 9.39 |

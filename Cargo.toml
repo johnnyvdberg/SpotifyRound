@@ -15,16 +15,12 @@ path = "src/main.rs"
 # Render straight through DRM/KMS with the GPU, for a Pi running without a
 # compositor (`cargo build --release --features kms`).
 kms = ["slint/backend-linuxkms"]
-# The Nautilus dive is 1080 x 1080 only. This feature is mandatory (and on by
-# default); the app refuses to compile without it so no 448 profile can creep
-# back in.
-full-hd = []
 # The renderers Slint draws the window with, on the shared wgpu device: Skia on
 # Vulkan (Skia cannot draw on a GL wgpu device) and femtovg on OpenGL ES, whose
 # driver gives the Pi's V3D early-Z. The device's backend picks between them at
 # start-up (`gpu::install`); femtovg is vendored with its shader specialised per
 # pipeline for the V3D (`vendor/femtovg`).
-default = ["skia", "femtovg", "full-hd"]
+default = ["skia", "femtovg"]
 skia = ["slint/renderer-skia"]
 femtovg = ["slint/renderer-femtovg-wgpu"]
 

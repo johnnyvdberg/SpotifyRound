@@ -65,8 +65,8 @@ pub struct Point {
     pub glow: [f32; 4],
 }
 
-/// The surface texture each biome's floor wears, as `surface_of` in
-/// `scene.wesl`: sand, sand, silt, sand, basalt, silt, sand, silt, then reef,
+/// The surface texture each biome's floor wears, stored in the tiles for
+/// the shader: sand, sand, silt, sand, basalt, silt, sand, silt, then reef,
 /// silt, basalt, salt (the ice layer's crystalline tone), ooze (silt) and the
 /// drowned city's silted paving; the meadow's sand, the glass sponges' silt
 /// and the blue hole's sand.

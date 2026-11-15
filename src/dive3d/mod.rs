@@ -103,9 +103,6 @@ const MAX_SPRITES: usize = 8_192;
 const PLUME_SEGMENTS: u32 = 4;
 const MAX_TUNNEL_VERTICES: usize = 16_384;
 const MAX_TUNNEL_INDICES: usize = 98_304;
-/// The sea, at half its brightness (`SEA_SCALE` in `scene.wesl`): ten bits a
-/// channel are finer than the panel's eight, and half the size of half
-/// floats, so the GPU's tiles hold twice the pixels.
 /// The scene's shader, linked from `shaders/scene.wesl` by `build.rs`.
 pub(crate) const SCENE_SHADER: &str = include_str!(concat!(env!("OUT_DIR"), "/scene.wgsl"));
 const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -447,7 +444,6 @@ pub(crate) struct Nautilus {
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     colour_format: wgpu::TextureFormat,
-    scale: f64,
     plain: bool,
     /// The switches the pipelines are compiled with.
     switches: u32,
@@ -526,8 +522,6 @@ pub(crate) struct Nautilus {
     sea_texture: wgpu::Texture,
     /// The size `sea_texture` and the depth buffer are; `SIZE` is the panel.
     render: u32,
-    #[allow(dead_code)]
-    caustic: wgpu::Texture,
     depth: wgpu::TextureView,
     resolved: wgpu::TextureView,
     /// The static decor's placements, rebuilt when the camera crosses a cell.
@@ -891,9 +885,6 @@ mod part {
     /// The seabed's levels of detail as they were before the sight let them
     /// be finer (`terrain::COARSE_SPACING`).
     pub const COARSE_SEABED: u64 = 1 << 36;
-    /// The water surface's mirror, moving wave facets and Snell's window in
-    /// the ceiling of the shallow seas.
-    pub const SURFACE_FACETS: u64 = 1 << 37;
     /// The seabed's sand line following the slope under a grounded model
     /// and the silt drifted against its side that faces the current.
     pub const SEDIMENT: u64 = 1 << 38;
@@ -1398,8 +1389,6 @@ mod shader_switch {
     pub const UNDERWATER_GRADE: u32 = 32;
     /// The low-poly facet bands in `fs_terrain`.
     pub const TERRAIN_FACETS: u32 = 64;
-    /// The water's ceiling without its mirror, wave facets and Snell's window.
-    pub const OLD_CEILING: u32 = 128;
     /// No sand line on slopes nor silt drifts in `vs_model`.
     pub const NO_SEDIMENT: u32 = 256;
 }
@@ -1451,7 +1440,6 @@ fn compile(
     shader: &wgpu::ShaderModule,
     pipeline_layout: &wgpu::PipelineLayout,
     colour: wgpu::TextureFormat,
-    scale: f64,
     plain: bool,
     switches: u32,
 ) -> Pipelines {
@@ -1542,7 +1530,6 @@ fn compile(
                     constants: &[
                         constants,
                         &[
-                            ("SEA_SCALE", scale),
                             ("PLAIN_TEXTURES", f64::from(u8::from(plain))),
                             ("SWITCHES", f64::from(switches)),
                         ],
@@ -1985,27 +1972,17 @@ fn compile(
 
 impl Nautilus {
     pub(crate) fn new(gpu: &Graphics) -> Result<Self> {
-        Self::with_colour(gpu, COLOUR)
-    }
-
-    /// The scene with its sea stored as `colour`: half floats, or anything
-    /// that holds 0 to 1, at half brightness.
-    fn with_colour(gpu: &Graphics, colour: wgpu::TextureFormat) -> Result<Self> {
-        Self::build(gpu, colour, false)
+        Self::build(gpu, false)
     }
 
     /// The scene with every surface a flat grey, to see what texturing costs.
     #[cfg(test)]
     fn with_plain_textures(gpu: &Graphics) -> Result<Self> {
-        Self::build(gpu, COLOUR, true)
+        Self::build(gpu, true)
     }
 
-    fn build(gpu: &Graphics, colour: wgpu::TextureFormat, plain: bool) -> Result<Self> {
-        let scale = if cfg!(feature = "full-hd") || colour == wgpu::TextureFormat::Rgba16Float {
-            1.0
-        } else {
-            0.5
-        };
+    fn build(gpu: &Graphics, plain: bool) -> Result<Self> {
+        let colour = COLOUR;
         let device = &gpu.device;
         let library = Library::build();
         let buffer = |label, contents: &[u8], usage| {
@@ -2341,15 +2318,7 @@ impl Nautilus {
             beams,
             plumes,
             impostors,
-        } = compile(
-            gpu,
-            &shader,
-            &pipeline_layout,
-            colour,
-            scale,
-            plain,
-            switches,
-        );
+        } = compile(gpu, &shader, &pipeline_layout, colour, plain, switches);
 
         let levels = std::env::var("DIVE3D_TERRAIN_LEVELS")
             .ok()
@@ -2366,7 +2335,6 @@ impl Nautilus {
             shader,
             pipeline_layout,
             colour_format: colour,
-            scale,
             plain,
             switches,
             backgrounds,
@@ -2409,7 +2377,6 @@ impl Nautilus {
             colour: colour_target,
             sea_texture,
             render,
-            caustic,
             depth,
             resolved,
             static_cache: StaticCache::default(),
@@ -2442,7 +2409,6 @@ impl Nautilus {
             &self.shader,
             &self.pipeline_layout,
             self.colour_format,
-            self.scale,
             self.plain,
             switches,
         );
@@ -2608,9 +2574,6 @@ impl Nautilus {
         }
         if self.skips(part::TERRAIN_FACETS) {
             switches |= shader_switch::TERRAIN_FACETS;
-        }
-        if self.skips(part::SURFACE_FACETS) {
-            switches |= shader_switch::OLD_CEILING;
         }
         if self.skips(part::SEDIMENT) {
             switches |= shader_switch::NO_SEDIMENT;

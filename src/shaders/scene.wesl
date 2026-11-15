@@ -132,12 +132,6 @@ override ANIM: i32 = -1;
 // fraction of it.
 override CITY_PART: i32 = -1;
 
-// What every colour is multiplied by as it is stored: the sea is kept in ten
-// bits a channel, which hold no more than 1, so it is stored at half its
-// brightness, to keep the highlights up to 2 that the old grade and
-// its bending of the glass blend from.
-override SEA_SCALE: f32 = 1.0;
-
 // What the open water's pipeline opens on to overhead: the plain sea, or the
 // underside of the water surface (`sky_mode` on the CPU picks one a frame).
 // Each compiles only its own: together they kept the water at two threads
@@ -232,8 +226,6 @@ fn hash(ix: i32, iz: i32, salt: u32) -> f32 {
 // seabed's instructions.
 override SWITCHES: u32 = 0u;
 const NO_NOISE: u32 = 2u;
-// The water's ceiling as it was before its mirror and Snell's window.
-const OLD_CEILING: u32 = 128u;
 
 // Every surface a flat grey, for the benchmarks. A pipeline constant of its
 // own, like `SWITCHES`: tested per pixel, it would cost the Pi's GPU about
@@ -280,11 +272,6 @@ fn corridor(x: f32) -> f32 {
     return 2.2 * sin(x * 0.11 + 0.7) + 0.8 * sin(x * 0.031);
 }
 
-fn voyage_x(x: f32, z: f32) -> f32 {
-    let off = z - corridor(x);
-    return x + 1.2 * sin(off * 0.31) + 0.8 * (sin(off * 0.73 + 1.3) - sin(1.3));
-}
-
 struct Leg {
     a: i32,
     b: i32,
@@ -297,15 +284,6 @@ fn leg(x: f32) -> Leg {
     let a = order(i32(k));
     let b = order(i32(k) + 1);
     return Leg(a, b, smooth01(1.0 - BLEND, 1.0, u - k));
-}
-
-fn presence(l: Leg, id: i32) -> f32 {
-    return select(0.0, 1.0 - l.w, l.a == id) + select(0.0, l.w, l.b == id);
-}
-
-fn by_biome(l: Leg, values: array<f32, 18>) -> f32 {
-    var v = values;
-    return mix(v[l.a], v[l.b], l.w);
 }
 
 // ---------------------------------------------------------------------------
@@ -388,13 +366,11 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     let c3 = cos((at.x + at.y) * 1.7 + t * 0.50);
     var sx = 0.06 * c1 + 0.05 * c3;
     var sz = 0.07 * c2 + 0.05 * c3;
-    if (!debug(OLD_CEILING)) {
-        // The fine layer turned against the broad one, so their crests cross.
-        let f = fine.gb * 2.0 - 1.0;
-        let b = broad.gb * 2.0 - 1.0;
-        sx += 0.16 * b.x + 0.30 * (f.x * 0.93 + f.y * 0.36);
-        sz += 0.16 * b.y + 0.30 * (f.y * 0.93 - f.x * 0.36);
-    }
+    // The fine layer turned against the broad one, so their crests cross.
+    let f = fine.gb * 2.0 - 1.0;
+    let b = broad.gb * 2.0 - 1.0;
+    sx += 0.16 * b.x + 0.30 * (f.x * 0.93 + f.y * 0.36);
+    sz += 0.16 * b.y + 0.30 * (f.y * 0.93 - f.x * 0.36);
     // The ray against the surface's normal (-sx, 1, -sz).
     let inv = inverseSqrt(1.0 + sx * sx + sz * sz);
     let facing = (dir.y - dir.x * sx - dir.z * sz) * inv;
@@ -427,7 +403,6 @@ fn water_ceiling(dir: vec3<f32>, t: f32) -> vec3<f32> {
     colour = mix(colour, open, haze);
     return colour;
 }
-
 
 fn switched(bit: u32) -> bool {
     return debug(bit);
@@ -571,63 +546,16 @@ fn fs_mask() -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-@if(!full_hd)
-@fragment
-fn fs_background(in: Screen) -> @location(0) vec4<f32> {
-    let s = in.ndc * g.view.x;
-    let local = normalize(vec3<f32>(s, 1.0));
-    // The boat's attitude turns the view; the water stays level. The sun's
-    // shafts are drawn in the water, as `fs_shaft`, rather than on it.
-    let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
-    return vec4<f32>(water_at(dir) * SEA_SCALE, 1.0);
-}
-
-@if(!full_hd)
-@fragment
-fn fs_background_cheap(in: Screen) -> @location(0) vec4<f32> {
-    let s = in.ndc * g.view.x;
-    let local = normalize(vec3<f32>(s, 1.0));
-    let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
-    let col = mix(g.deep.rgb, g.water.rgb, smooth01(-0.6, 0.5, dir.y)) * g.tint.rgb;
-    return vec4<f32>(col * SEA_SCALE, 1.0);
-}
-
-@if(!full_hd)
-@fragment
-fn fs_background_shimmer(in: Screen) -> @location(0) vec4<f32> {
-    let s = in.ndc * g.view.x;
-    let local = normalize(vec3<f32>(s, 1.0));
-    let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
-    var col = water_at(dir);
-    let up = smooth01(0.05, 0.65, dir.y);
-    if (up > 0.0) {
-        let t = g.camera.w;
-        let shimmer = textureSampleLevel(
-            caustic_map,
-            caustic_sampler,
-            dir.xz * 1.2 + vec2<f32>(t * 0.010, t * -0.013),
-            0.0,
-        ).r;
-        let surface = mix(g.water.rgb, vec3<f32>(0.10, 0.32, 0.35), 0.55)
-            * (0.85 + 0.50 * shimmer)
-            + vec3<f32>(0.95, 0.88, 0.68) * (shimmer * shimmer) * (0.35 + g.sun.w * 0.8) * 0.6;
-        col = mix(col, surface, up * 0.88);
-    }
-    return vec4<f32>(col * SEA_SCALE, 1.0);
-}
-
-
 // The mobile-style sea: one depth/height mix and the water's tint, no wave,
 // glint or panel-sized arithmetic. Its own pipeline, so the expensive path is
 // not merely branched around but absent from the shader's register budget.
-@if(full_hd)
 @fragment
 fn fs_background_cheap(in: Screen) -> @location(0) vec4<f32> {
     let s = in.ndc * g.view.x;
     let local = normalize(vec3<f32>(s, 1.0));
     let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
     let col = mix(g.deep.rgb, g.water.rgb, smooth01(-0.6, 0.5, dir.y)) * g.tint.rgb;
-    return vec4<f32>(col * SEA_SCALE, 1.0);
+    return vec4<f32>(col, 1.0);
 }
 
 // The surface band: one caustic fetch that drifts across the underside,
@@ -635,7 +563,6 @@ fn fs_background_cheap(in: Screen) -> @location(0) vec4<f32> {
 // This is the cheap-water recommendation from the survey (WaltGD's
 // screen-space caustic water, quantised to the top of the view): the fetch
 // replaces three quarter-rate SFU ops on a fill-bound GPU.
-@if(full_hd)
 @fragment
 fn fs_background_shimmer(in: Screen) -> @location(0) vec4<f32> {
     let s = in.ndc * g.view.x;
@@ -656,10 +583,9 @@ fn fs_background_shimmer(in: Screen) -> @location(0) vec4<f32> {
             + vec3<f32>(0.95, 0.88, 0.68) * (shimmer * shimmer) * (0.35 + g.sun.w * 0.8) * 0.6;
         col = mix(col, surface, up * 0.88);
     }
-    return vec4<f32>(col * SEA_SCALE, 1.0);
+    return vec4<f32>(col, 1.0);
 }
 
-@if(full_hd)
 @fragment
 fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     let s = in.ndc * g.view.x;
@@ -667,7 +593,7 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     let dir = local.x * g.right.xyz + local.y * g.up.xyz + local.z * g.out.xyz;
     if (switched(16u)) {
         let col = mix(g.deep.rgb, g.water.rgb, smooth01(-0.6, 0.5, dir.y)) * g.tint.rgb;
-        return vec4<f32>(col * SEA_SCALE, 1.0);
+        return vec4<f32>(col, 1.0);
     }
     var col = water_at(dir);
     // Above the horizon, the underside of the water surface: its ripples,
@@ -675,7 +601,7 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
     if (SKY == SKY_CEILING && dir.y > 0.0) {
         col = mix(col, water_ceiling(dir, g.camera.w), smooth01(0.0, 0.06, dir.y));
     }
-    return vec4<f32>(col * SEA_SCALE, 1.0);
+    return vec4<f32>(col, 1.0);
 
 }
 
@@ -683,155 +609,9 @@ fn fs_background(in: Screen) -> @location(0) vec4<f32> {
 // Seabed
 // ---------------------------------------------------------------------------
 
-@if(!full_hd)
-struct Ground {
-    @builtin(position) position: vec4<f32>,
-    @location(0) world: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    // `fog_at` the vertex.
-    @location(2) fog: vec4<f32>,
-    // `voyage_x` at the vertex. It bends gently, so it is worked out per
-    // vertex, and only which biome it falls in is found per pixel.
-    @location(3) voyage: f32,
-    // Sun, lamp, point lights and caustics at the vertex, and the albedo
-    // modifier from the fine noise, sand ripples and paving.
-    @location(4) light_scale: vec4<f32>,
-    // The lava cave's glow at the vertex.
-    @location(5) emissive: vec3<f32>,
-};
-
-@if(!full_hd)
-@vertex
-fn vs_terrain(@location(0) world: vec3<f32>, @location(1) normal: vec3<f32>) -> Ground {
-    // Built on the CPU a tile at a time, already in the world (`terrain.rs`).
-    var out: Ground;
-    out.world = world;
-    out.normal = normal;
-    out.position = project(world);
-    out.fog = fog_at(world);
-    let voyage = voyage_x(world.x, world.z);
-    out.voyage = voyage;
-    let l = leg(voyage);
-    let n = normalize(normal);
-    let detail = exp(-length(world - g.camera.xyz) * 0.25);
-    let steep = smooth01(0.12, 0.40, 1.0 - n.y);
-    var scale = 1.0;
-    var emissive = vec3<f32>(0.0);
-    if (!switched(8u)) {
-        var scale = 1.0;
-        if (detail > 0.02) {
-            scale *= mix(1.0, 0.65 + 0.5 * vnoise(world.x * 14.0, world.z * 14.0, 9u), detail * (1.0 - steep));
-            let sand = presence(l, SHALLOWS) + 0.5 * presence(l, FOREST) + 0.5 * presence(l, ARCTIC);
-            if (sand > 0.0) {
-                let ripple = sin((world.x * 0.8 + world.z) * 26.0 + vnoise(world.x * 3.0, world.z * 3.0, 5u) * 4.0);
-                scale *= 1.0 - 0.16 * sand * detail * smooth01(0.3, 1.0, ripple);
-            }
-        }
-        let paving = presence(l, ATLANTIS);
-        if (paving > 0.0) {
-            let row = floor(world.z * 4.0);
-            let joint = min(abs(fract(world.x * 3.0 + row * 0.5) - 0.5), abs(fract(world.z * 4.0) - 0.5));
-            scale *= 1.0 - paving * 0.45 * smooth01(0.45, 0.5, joint) * detail;
-        }
-        var emissive = vec3<f32>(0.0);
-        let cave = presence(l, CAVE);
-        if (cave > 0.0) {
-            let flicker = 0.80 + 0.20 * sin(g.camera.w * 1.7 + world.x * 3.0) * sin(g.camera.w * 2.9 + world.z * 2.0);
-            let veins = 1.0 - smooth01(0.0, 0.04, abs(vnoise(world.x * 1.4, world.z * 1.9, 6u) - 0.5));
-            var fine = 0.0;
-            if (detail > 0.01) {
-                fine = (1.0 - smooth01(0.0, 0.03, abs(vnoise(world.x * 4.0, world.z * 5.0, 7u) - 0.5))) * detail;
-            }
-            let pools = smooth01(0.66, 0.74, vnoise(world.x * 0.55 + 7.0, world.z * 0.55, 8u));
-            emissive = vec3<f32>(1.0, 0.36, 0.07) * (veins * 0.9 + fine * 0.5 + pools * 1.4) * flicker * cave * (1.0 - steep);
-        }
-    }
-    if (switched(8u)) {
-        let sun = g.sun.w * exp(-max(g.levels.x - world.y, 0.0) * 0.22);
-        let cheap = g.tint.rgb * (
-            vec3<f32>(0.55, 0.92, 0.86) * sun * max(dot(n, g.sun.xyz) * 0.75 + 0.25, 0.0) * 1.5
-            + vec3<f32>(0.05, 0.10, 0.12) * (0.35 + 0.65 * (n.y * 0.5 + 0.5)) * (sun * 2.0 + 0.25)
-        );
-        out.light_scale = vec4<f32>(cheap, 1.0);
-    } else {
-        out.light_scale = vec4<f32>(light_at(world, n), scale);
-    }
-    out.emissive = emissive;
-    return out;
-}
-
-fn floor_albedo(l: Leg) -> vec3<f32> {
-    var albedos = array<vec3<f32>, 18>(
-        vec3<f32>(0.62, 0.56, 0.42),
-        vec3<f32>(0.40, 0.36, 0.26),
-        vec3<f32>(0.32, 0.30, 0.26),
-        vec3<f32>(0.46, 0.44, 0.39),
-        vec3<f32>(0.10, 0.09, 0.09),
-        vec3<f32>(0.17, 0.16, 0.17),
-        vec3<f32>(0.36, 0.37, 0.38),
-        vec3<f32>(0.58, 0.55, 0.47),
-        vec3<f32>(0.80, 0.72, 0.58),
-        vec3<f32>(0.39, 0.36, 0.22),
-        vec3<f32>(0.08, 0.07, 0.07),
-        vec3<f32>(0.74, 0.73, 0.68),
-        vec3<f32>(0.20, 0.20, 0.24),
-        vec3<f32>(0.25, 0.27, 0.23),
-        vec3<f32>(0.55, 0.52, 0.38),
-        vec3<f32>(0.30, 0.31, 0.31),
-        vec3<f32>(0.72, 0.68, 0.56),
-        vec3<f32>(0.45, 0.42, 0.36),
-    );
-    return mix(albedos[l.a], albedos[l.b], l.w);
-}
-
-fn surface_of(l: Leg) -> vec2<i32> {
-    // Sand, sand, silt, sand, basalt, silt, sand, silt, then reef, silt,
-    // basalt, salt (ice's crystalline layer), ooze (silt) and the drowned
-    // city's silted paving, then the meadow's sand, the glass sponges' silt
-    // and the blue hole's sand, and the silt over the museum's forecourt:
-    // by biome.
-    var layers = array<i32, 18>(12, 12, 13, 12, 10, 13, 12, 13, 17, 13, 10, 11, 13, 13, 12, 13, 12, 13);
-    return vec2<i32>(layers[l.a], layers[l.b]);
-}
-
-@if(!full_hd)
-@fragment
-fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
-    let p = in.world;
-    let l = leg(in.voyage);
-    let n = normalize(in.normal);
-    // Sampled first, while every pixel is still doing the same thing.
-    let layers = surface_of(l);
-    // Projected along all three axes: the floor's own material on the level,
-    // rock on whichever vertical faces a slope turns toward, so nothing smears.
-    let w = facing_weights(n);
-    let at = p * 1.3;
-    let dx = dpdx(at);
-    let dy = dpdy(at);
-    // The two biomes' floors are blended only while one sea gives way to the
-    // next; the rest of the time one of them has no weight and is skipped.
-    let flat_a = tap(at.xz, dx.xz, dy.xz, layers.x, w.y * (1.0 - l.w));
-    let flat_b = tap(at.xz, dx.xz, dy.xz, layers.y, w.y * l.w);
-    let side_x = tap(at.zy, dx.zy, dy.zy, 1, w.x);
-    let side_z = tap(at.xy, dx.xy, dy.xy, 1, w.z);
-    let steep = smooth01(0.12, 0.40, 1.0 - n.y);
-    let texture = (flat_a + flat_b + side_x + side_z) * TEXTURE_RANGE;
-    var albedo = floor_albedo(l) * mix(vec3<f32>(1.0), texture, 0.85);
-    albedo = mix(albedo, vec3<f32>(0.22, 0.21, 0.20) * texture, steep * 0.6);
-    albedo *= in.light_scale.w;
-    let colour = albedo * in.light_scale.xyz + in.emissive;
-    let far = smooth01(10.0, 35.0, length(p - g.camera.xyz));
-    return vec4<f32>(
-        mix(colour, in.fog.rgb, max(in.fog.a, far * 0.55)) * SEA_SCALE,
-        1.0,
-    );
-}
-
-
-// The full-HD profile shades at 1080 × 1080, so the seabed gets a single
+// The seabed is shaded at 1080 × 1080, so the seabed gets a single
 // texture lookup and a light worked out per vertex: no triplanar projections,
-// no point-light loop, no lava noise. WESL leaves this out of the 448 build.
-@if(full_hd)
+// no point-light loop, no lava noise.
 struct Ground {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -848,7 +628,6 @@ struct Ground {
     @location(8) reef: f32,
 };
 
-@if(full_hd)
 @vertex
 fn vs_terrain(
     @location(0) world: vec3<f32>,
@@ -897,7 +676,6 @@ fn vs_terrain(
 // How bright the city's lamplight is on the floor it pools on.
 const CITY_SPILL: f32 = 2.2;
 
-@if(full_hd)
 @fragment
 fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
     // The cave's massif is a cliff of rock, not a floor: projecting it from
@@ -969,9 +747,8 @@ fn fs_terrain(in: Ground) -> @location(0) vec4<f32> {
         let band = floor(base * 3.0 + 0.5) / 3.0;
         shaded *= 0.65 + 0.55 * band;
     }
-    return vec4<f32>(shaded * SEA_SCALE, 1.0);
+    return vec4<f32>(shaded, 1.0);
 }
-
 
 // ---------------------------------------------------------------------------
 // Models
@@ -1645,128 +1422,6 @@ fn vault(in: Lit) -> vec3<f32> {
     return colour;
 }
 
-@if(!full_hd)
-@fragment
-fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if (MATERIAL == VAULT) {
-        return vec4<f32>(mix(vault(in), in.fog.rgb, in.fog.a) * SEA_SCALE, in.fade);
-    }
-    let p = in.world;
-    // Things that move carry their texture; things that stay put wear it in
-    // world space, at the same scale everywhere.
-    let carried = in.surface.z > 0.5;
-    let at = select(p, in.local, carried) * in.surface.y;
-    let facing = select(in.normal, in.local_normal, carried);
-    let texture = triplanar(at, normalize(facing + vec3<f32>(1e-5)), i32(in.surface.x + 0.5));
-    var n = normalize(in.normal);
-    let to_camera = normalize(g.camera.xyz - p);
-    // Fins, sails and fronds are single sheets, lit from whichever side is seen.
-    if (dot(n, to_camera) < 0.0) {
-        n = -n;
-    }
-    var albedo = in.albedo * texture;
-    // Bedded in the sand: the foot of anything on the seabed takes its colour.
-    // Only the foot: the rest of the model, most of its pixels, skips finding
-    // the biome, which costs five sines a pixel.
-    if (GROUNDED) {
-        let buried = 1.0 - smooth01(in.floor_y + 0.005, in.floor_y + 0.05, p.y);
-        if (buried > 0.0) {
-            albedo = mix(albedo, in.floor, buried * 0.85);
-        }
-    }
-    var colour = albedo * light_at(p, n);
-    colour += in.albedo * in.glow;
-    let t = g.camera.w;
-    // Fading things out as their biome passes: the pipeline blends the
-    // coverage over the water when there is one sample, or alpha-to-coverage
-    // carries it when there are more.
-    var lamps = vec3<f32>(0.0);
-    if (MATERIAL == CITY_LIGHTS) {
-        let city = city_light(in, n, to_camera, length(p - g.camera.xyz), t);
-        colour = colour * city.keep + city.sheen;
-        lamps = city.lamps;
-    }
-    var coverage = in.fade;
-    // Per-vertex fog would be the far corners' fog on these four-vertex
-    // planes; the ice overrides this with its own pixel distance.
-    var haze = in.fog.a;
-    switch (select(in.material, u32(MATERIAL), MATERIAL >= 0)) {
-        // Pillow lava, molten through its cracks.
-        case 1u: {
-            let crack = 1.0 - smooth01(0.0, 0.05, abs(vnoise(in.local.x * 6.0 + in.local.y * 3.0, in.local.z * 6.0, 11u) - 0.5));
-            colour += vec3<f32>(1.0, 0.38, 0.08) * crack * smooth01(0.3, -0.5, in.local.y) * (0.8 + 0.2 * sin(t * 2.0));
-        }
-        // Copper and brass: a hot specular highlight from the searchlight.
-        case 2u: {
-            let h = normalize(to_camera - g.lamp.xyz);
-            colour += vec3<f32>(1.0, 0.75, 0.45) * pow(max(dot(n, h), 0.0), 24.0) * (0.3 + g.lamp.w);
-        }
-        // Gold, glittering.
-        case 8u: {
-            if (fenced()) {
-                return vec4<f32>(0.0);
-            }
-            let sparkle = pow(fract(sin(dot(floor(p * 140.0), vec3<f32>(12.9, 78.2, 37.7)) + floor(t * 3.0)) * 43758.5), 20.0);
-            colour += vec3<f32>(1.0, 0.85, 0.45) * sparkle * 2.0;
-        }
-        // A keel under the pack: translucent ice, brightest at its
-        // silhouette where the light crosses the least of it; the sheet's
-        // thinner haze, since the water up by the ice is lit from above.
-        case 12u: {
-            let rim = 1.0 - abs(dot(n, normalize(g.camera.xyz - p)));
-            colour = in.albedo * texture * (0.78 + 0.30 * rim * rim);
-            haze = (1.0 - exp(-length(p - g.camera.xyz) * g.water.w)) * 0.7;
-        }
-        // The pack ice from below: floes glowing with daylight, open leads.
-        // Its three noise fields and its arctic coverage come baked into one
-        // texture instead of three `vnoise` stacks per pixel.
-        case 6u: {
-            let baked = textureSampleLevel(
-                ice_bake,
-                surface_sampler,
-                (p.xz - g.ice.xy) * g.ice.z,
-                0.0,
-            );
-            // Soften the sheet at its own edges, so the 40-unit plane and
-            // the cut that follows the arctic's border do not end in a hard
-            // rectangle across the window.
-            let edge = 1.0 - smooth01(0.80, 1.0, max(abs(in.local.x), abs(in.local.z)));
-            coverage = baked.a * edge;
-            haze = fog_of(length(p - g.camera.xyz)) * 0.55;
-            let floes = baked.r;
-            let lead = baked.g;
-            let bumps = baked.b;
-            colour = vec3<f32>(0.44, 0.70, 0.78) * (0.62 + 0.30 * bumps + 0.55 * floes);
-            colour = mix(colour * texture, vec3<f32>(0.82, 0.98, 1.00), lead)
-                * (0.95 + 0.75 * g.sun.w);
-        }
-        default: {}
-    }
-    if (FADING) {
-        if (coverage <= 0.01) {
-            discard;
-        }
-    }
-    var shaded = mix(colour, in.fog.rgb, haze);
-    // Lights show further through the water than what they light: the
-    // windows of a tower the haze has all but hidden still glow.
-    if (MATERIAL == CITY_LIGHTS) {
-        shaded += lamps * (1.0 - fog_of(length(p - g.camera.xyz) / LIGHT_SIGHT));
-    }
-    if (switched(32u)) {
-        let t = in.fog.a;
-        let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
-        shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
-            + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
-    }
-    if (FADE_OPAQUE) {
-        shaded = mix(shaded, in.fog.rgb, 1.0 - coverage);
-    }
-    // The sea texture is opaquely composited by Slint; the fade lives in the
-    // colour, never in the alpha.
-    return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FADE_OPAQUE));
-}
-
 // The jellies' tissues, for both profiles' glass pass. `in.floor_y` is how
 // hard the bell is contracted at this vertex (`vs_model`), late down the
 // arms and threads; `in.floor` is the animal's own tint, unlit, so its glow
@@ -1831,41 +1486,6 @@ fn jelly_glass(in: Lit, n: vec3<f32>, v: vec3<f32>, rim: f32) -> vec3<f32> {
         + own * (0.18 + 0.35 * along) * (0.85 + 0.40 * beat);
 }
 
-// Translucent models — jellyfish bells and tentacles — add light, brightest at
-// their rims, and fade with distance.
-@if(!full_hd)
-@fragment
-fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
-    let material = select(in.material, u32(MATERIAL), MATERIAL >= 0);
-    let p = in.world;
-    let n = normalize(in.normal);
-    let v = normalize(g.camera.xyz - p);
-    let rim = 1.0 - abs(dot(n, v));
-    let lit = light_at(p, v) * 0.25 + vec3<f32>(0.3);
-    var glow = in.albedo * (0.15 + 0.85 * rim * rim) * lit + in.albedo * in.glow;
-    if (material == 3u) {
-        // A crystal: its facets are read by a warm key from the searchlight,
-        // or from the passage's mouth where the beam does not reach, and a
-        // violet heart where the point faces the window.
-        let to_lamp = normalize(lamp_origin() - p);
-        let cone = smooth01(0.78, 0.96, dot(-to_lamp, g.lamp.xyz));
-        let key = normalize(mix(vec3<f32>(0.10, 0.55, -0.95), to_lamp, cone));
-        let half = normalize(v + key);
-        let spec = pow(max(dot(n, half), 0.0), 26.0);
-        let core = pow(max(dot(n, v), 0.0), 3.0);
-        let tip = smooth01(0.22, 0.92, in.local.y);
-        glow += vec3<f32>(0.10, 0.05, 0.26) * in.glow * (1.0 - 0.6 * tip)
-            + vec3<f32>(1.0, 0.72, 0.45) * tip * (0.08 + 0.7 * in.glow)
-            + vec3<f32>(1.0, 0.90, 0.76) * spec * (0.10 + 0.4 * cone)
-            + vec3<f32>(0.45, 0.30, 0.85) * core * in.glow * 0.10;
-    }
-    if (material == 7u || material == 9u || material == 10u) {
-        glow = jelly_glass(in, n, v, rim);
-    }
-    return vec4<f32>(glow * in.fade * (1.0 - fog_of(length(p - g.camera.xyz))) * SEA_SCALE, 0.0);
-}
-
-
 // The tunnel's slopes as stored, read back as heights a world unit
 // (`textures::SLOPE`, either way of the middle of the channel), and drawn
 // a little shallower than the tile's own: enough for a ledge's lip or a joint
@@ -1886,7 +1506,6 @@ const VAULT_RELIEF: f32 = 2.0 * 10.0 * 0.22;
 // the wet rock glints where the beam strikes it. The pools' light and the
 // passages' come summed per vertex; nothing here loops over lights or runs a
 // noise.
-@if(full_hd)
 fn vault_hd(in: Lit, rock: vec4<f32>, distance: f32) -> vec3<f32> {
     let p = in.world;
     let t = g.camera.w;
@@ -1929,11 +1548,9 @@ fn vault_hd(in: Lit, rock: vec4<f32>, distance: f32) -> vec3<f32> {
     return colour;
 }
 
-// The full-HD profile's models: one texture projection, a sun/ambient light
+// The models: one texture projection, a sun/ambient light
 // worked out per pixel, no point-light loop, caustics, triplanar blend or
-// per-material switch. Enough for the silhouette and colour; the 448 build
-// keeps the full shading.
-@if(full_hd)
+// per-material switch. Enough for the silhouette and colour.
 @fragment
 fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let p = in.world;
@@ -2158,7 +1775,7 @@ fn fs_model(in: Lit, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     // The sea texture is opaquely composited by Slint; the fade lives in the
     // colour, never in the alpha.
-    return vec4<f32>(shaded * SEA_SCALE, select(coverage, 1.0, FADE_OPAQUE));
+    return vec4<f32>(shaded, select(coverage, 1.0, FADE_OPAQUE));
 }
 
 // A painting's canvas (`world::material::CANVAS`): layer `surface.x` of the
@@ -2173,7 +1790,7 @@ fn fs_canvas(in: Lit) -> @location(0) vec4<f32> {
     let uv = vec2<f32>(in.local.x + 0.5, 0.5 - in.local.y);
     let paint = textureSample(paintings, surface_sampler, uv, i32(in.surface.x + 0.5)).rgb;
     let colour = paint * (in.albedo + vec3<f32>(in.glow));
-    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 1.0);
+    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a), 1.0);
 }
 
 // The tunnel's own fragment shader: `vault_hd` with everything that varies
@@ -2182,7 +1799,6 @@ fn fs_canvas(in: Lit) -> @location(0) vec4<f32> {
 // and the shader runs at the full four threads. Per pixel only what needs
 // the tap is left: the bumped normal, the two N.L terms, the tone and the
 // shine. Entry point of the opaque vault pipelines only.
-@if(full_hd)
 @fragment
 fn fs_vault(in: Lit) -> @location(0) vec4<f32> {
     var sample = vec4<f32>(0.6 / TEXTURE_RANGE, 0.5, 0.5, 0.0);
@@ -2215,10 +1831,9 @@ fn fs_vault(in: Lit) -> @location(0) vec4<f32> {
         shaded = mix(shaded, vec3<f32>(luma), 0.15 * t)
             + vec3<f32>(0.010, 0.030, 0.040) * (t * 0.3);
     }
-    return vec4<f32>(shaded * SEA_SCALE, 1.0);
+    return vec4<f32>(shaded, 1.0);
 }
 
-@if(full_hd)
 @fragment
 fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
     let material = select(in.material, u32(MATERIAL), MATERIAL >= 0);
@@ -2254,10 +1869,10 @@ fn fs_glass(in: Lit) -> @location(0) vec4<f32> {
         // shoal of them shine down the bloom; near, its own colours show.
         // It fades in with its placement, as the other profile's glass does.
         let own = jelly_glass(in, n, v, rim);
-        return vec4<f32>(mix(own, in.fog.rgb, in.fog.a) * in.fade * SEA_SCALE, 0.0);
+        return vec4<f32>(mix(own, in.fog.rgb, in.fog.a) * in.fade, 0.0);
     }
     return vec4<f32>(
-        mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE,
+        mix(colour, in.fog.rgb, in.fog.a),
         0.0,
     );
 }
@@ -2381,7 +1996,7 @@ fn fs_sprite(in: Sprite) -> @location(0) vec4<f32> {
             a = exp(-r * r * 4.0);
         }
     }
-    return vec4<f32>(in.colour * a * SEA_SCALE, 0.0);
+    return vec4<f32>(in.colour * a, 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -2544,7 +2159,7 @@ fn vs_shaft(
     let onward = 0.8 + 0.8 * smooth01(-0.2, 0.9, toward);
     // A shaft is light in the water: it shows further than the sight.
     out.colour = tint.rgb * strength * onward * smooth01(0.35, 1.1, d)
-        * (1.0 - fog_of(d / LIGHT_SIGHT)) * SEA_SCALE;
+        * (1.0 - fog_of(d / LIGHT_SIGHT));
     return out;
 }
 
@@ -2647,7 +2262,7 @@ fn fs_plume(in: Plume) -> @location(0) vec4<f32> {
     let beads = 2.0 * exp(-380.0 * half_width * half_width);
     let ripple = 1.0 + beads * cos(TAU * in.shape.z * (rho - in.shape.w));
     let along = (1.0 - max(rho, 0.0)) * smooth01(-0.08, 0.03, rho);
-    return vec4<f32>(in.colour * (half_width * along * across * ripple) * SEA_SCALE, 0.0);
+    return vec4<f32>(in.colour * (half_width * along * across * ripple), 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -2679,7 +2294,7 @@ fn vs_beam(
     out.position = project(at);
     out.corner = corner;
     let d = length(at - g.camera.xyz);
-    out.colour = tint.rgb * smooth01(0.2, 0.8, d) * (1.0 - fog_of(d)) * SEA_SCALE;
+    out.colour = tint.rgb * smooth01(0.2, 0.8, d) * (1.0 - fog_of(d));
     return out;
 }
 
@@ -2911,5 +2526,5 @@ fn fs_impostor(in: Impostor) -> @location(0) vec4<f32> {
         shade = round * (1.0 - groove);
     }
     let colour = mix(in.colour * shade, in.colour * 1.2 + vec3<f32>(0.05), tip * 0.55);
-    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a) * SEA_SCALE, 0.0);
+    return vec4<f32>(mix(colour, in.fog.rgb, in.fog.a), 0.0);
 }

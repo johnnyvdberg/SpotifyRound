@@ -149,8 +149,7 @@ What lies on the bottom is bedded into it, by rules kept as data (`world::bed`, 
 
 ### Performance on the Raspberry Pi 5
 
-- The sea is the panel's **1080 × 1080 with one sample**; there is no smaller profile, and building
-  without the `full-hd` feature is a compile error.
+- The sea is the panel's **1080 × 1080 with one sample**; there is no smaller profile.
 - **Every place must fit the 16.7 ms frame of a 60 Hz panel**, with room for the rest of the app:
   the kiosk has about 2 ms of its own, so a place should measure **at most about 14 ms** in the
   `hotspots` benchmark.
