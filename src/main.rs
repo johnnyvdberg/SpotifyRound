@@ -20,6 +20,8 @@ mod motion;
 mod noise3d;
 mod ring;
 mod service;
+#[cfg(test)]
+mod shader_check;
 mod shader_lab;
 mod solar;
 mod ui;
