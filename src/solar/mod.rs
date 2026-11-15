@@ -18,6 +18,7 @@
 
 pub mod console;
 pub mod labels;
+pub mod layout;
 pub mod models;
 pub mod scan;
 pub mod stream;
@@ -30,13 +31,16 @@ use slint::wgpu_30::wgpu;
 
 use crate::gpu::Graphics;
 use crate::visuals::Visual;
+use layout::*;
 use stream::{Key, Streamer, sampler_entry, texture_entry, uniform_entry};
 use system::{Kind, Planet, Stop, System, equatorial_to_system};
 use tour::{Phase, Tour, View, add, normalize, scale, sub};
 
+/// The frame's shader, linked from `shaders/solar` by `build.rs`.
+pub(crate) const FRAME_SHADER: &str = include_str!(concat!(env!("OUT_DIR"), "/solar_frame.wgsl"));
+
 /// Size of the rendered frame.
 pub const SIZE: u32 = 1080;
-const MAX_BODIES: usize = 16;
 /// Cloud layers stacked over the deck in low orbit: each a pass of about
 /// 330 instructions where clouds are, so one (a second added little).
 const CLOUD_LAYERS: u32 = 1;
@@ -44,7 +48,7 @@ const SLOTS: usize = crate::visuals::SLOTS;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct Body {
+pub(crate) struct Body {
     place: [f32; 4],
     rot: [[f32; 4]; 3],
     look: [f32; 4],
@@ -66,7 +70,7 @@ struct Body {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Params {
+pub(crate) struct Params {
     frame: [f32; 4],
     right: [f32; 4],
     up: [f32; 4],
@@ -81,13 +85,13 @@ struct Params {
     motion: [f32; 4],
     /// The star the jump makes for: xyz its direction, w how brightly it is
     /// marked; and its colour.
-    target: [f32; 4],
-    target_colour: [f32; 4],
+    goal: [f32; 4],
+    goal_colour: [f32; 4],
     /// The drive spooling up: x how far through its preparation, y how much
     /// of its start-up effect shows.
     spool: [f32; 4],
     /// The stopover between legs of the jump, or what is seen inside one
-    /// (`EV_*` in `encounter.wgsl`).
+    /// (the `EV_*` rows of [`layout`]).
     ev: [[f32; 4]; EV_ROWS],
     bodies: [Body; MAX_BODIES],
 }
@@ -109,46 +113,26 @@ type ModelDraw = (u32, (u32, u32, i32), std::ops::Range<u32>);
 /// The most model placings drawn in a frame.
 const MODEL_INSTANCES: usize = 1024;
 
-/// Rows of the stopover's parameters (`Params::ev`).
-const EV_ROWS: usize = 12 + 2 * BATTLE_SHIPS;
-/// Ships in a battle, placed once a frame into `Params::ev` from row 12
-/// (`fleet_rows`, read by `battle_ship` in `encounter.wgsl`).
-const BATTLE_SHIPS: usize = 8;
 /// Rocks or debris drawn round the ship in a stopover (`vs_rock`).
 const ROCKS: u32 = 260;
 /// How many times coarser than the frame the leviathans' halos are drawn
-/// (`HALO_SCALE` in `encounter.wgsl`), and in what.
+/// (the scale `vs_leviathan_glow` reads them at), and in what.
 const LEVIATHAN_HALO: u32 = 4;
 const LEVIATHAN_HALO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// How many times coarser than the frame the plasma storm and the remnant
-/// are drawn (`COARSE` in `encounter.wgsl`), in the leviathans' halos'
-/// format.
-const COARSE: u32 = 2;
-/// Slices of the frame each leviathan's fins are bounded in (`FIN_SLICES`).
-const LEVIATHAN_FIN_SLICES: u32 = 16;
 /// A gate's guide buoys (two a step down the approach) and the most nodes
 /// round its ring (`vs_glow`).
 const GATE_BUOYS: u32 = 24;
 const GATE_NODES: u32 = 9;
-/// The sides of a gate's field (`GATE_SIDES` in `encounter.wgsl`).
-const GATE_SIDES: u32 = 48;
 /// The most panels a Dyson swarm has: six rings of three rows, each of up
 /// to 150 cells and one more where the ring's seam cuts one in two.
 const DYSON_PANELS: u32 = 6 * 3 * 151;
-/// A panel's quads (`DYSON_GRID` in `encounter.wgsl`), two triangles each.
+/// A panel's quads (`DYSON_GRID` in `encounter.wesl`), two triangles each.
 const DYSON_PANEL_VERTICES: u32 = 2 * 3 * 6;
 /// Vertices of the ship's own effects' quad (`vs_overlay`).
 const OVERLAY_VERTICES: u32 = 3;
-/// Sides of the ring a hit on the shield is drawn on (`HIT_SIDES` in
-/// `encounter.wgsl`).
-const HIT_SIDES: u32 = 32;
 
-/// Motes of dust streaking past in a burn (`DUST` in the shader), the sides
-/// of the engines' glow round the rim (`RIM_SIDES`), how fast the dust
-/// drifts (box widths a second) and how long its streaks grow at full
-/// throttle (in box widths).
-const DUST_MOTES: u32 = 160;
-const RIM_SIDES: u32 = 48;
+/// How fast the dust drifts (box widths a second) and how long its streaks
+/// grow at full throttle (in box widths).
 const DUST_SPEED: f64 = 1.4;
 const DUST_STREAK: f32 = 0.14;
 
@@ -165,19 +149,15 @@ const STARFIELD_HEIGHT: u32 = STARFIELD_FACE * 6;
 const STARFIELD_ROWS: u32 = 64;
 /// Vertices of a body's draw: a fan of 16 triangles round its silhouette.
 const BODY_VERTICES: u32 = 48;
-/// The inscribed depth mask's draw: `MASK_SIDES` triangles in `frame.wgsl`.
-const MASK_VERTICES: u32 = 64 * 3;
-/// The ring's draw: `RING_SIDES` quads in `frame.wgsl`.
-const RING_VERTICES: u32 = 32 * 6;
-/// The limb's annulus: `LIMB_SIDES` sides of two quads in `frame.wgsl`.
-const LIMB_RING_VERTICES: u32 = 128 * 2 * 6;
-/// The drop-out's annulus and disc: `DROP_SIDES` sides in `frame.wgsl`.
-const DROP_SIDES: u32 = 64;
-/// The sides of the polygon round the display's circle in `vs_corners`.
-const CORNER_SIDES: u32 = 32;
-/// The star's glare polygon (`vs_glare`): a fan of `GLARE_SIDES` 32 sides,
+/// The inscribed depth mask's draw: `MASK_SIDES` triangles.
+const MASK_VERTICES: u32 = MASK_SIDES * 3;
+/// The ring's draw: `RING_SIDES` quads.
+const RING_VERTICES: u32 = RING_SIDES * 6;
+/// The limb's annulus: `LIMB_SIDES` sides of two quads.
+const LIMB_RING_VERTICES: u32 = LIMB_SIDES * 2 * 6;
+/// The star's glare polygon (`vs_glare`): a fan of `GLARE_SIDES` sides,
 /// drawn as a list of triangles.
-const GLARE_VERTICES: u32 = (32 - 2) * 3;
+const GLARE_VERTICES: u32 = (GLARE_SIDES - 2) * 3;
 /// Half a step of the 8-bit frame near black, in linear light: where the
 /// glare's polygon ends (`GLARE_FLOOR`).
 const GLARE_FLOOR: f64 = 1.5e-4;
@@ -190,7 +170,6 @@ const GLARE_POLYGON: f64 = 1.35;
 /// buffer). One index buffer holds each grid's triangles in turn
 /// ([`grid_indices`], [`grid_range`]).
 const GRIDS: [u32; 6] = [8, 16, 32, 64, 96, 128];
-const GRID_STRIDE: u32 = 129;
 /// The fewest cells a side for a ringed world's mesh, whose rings' shadow
 /// is worked out at the vertices.
 const RINGED_GRID: u32 = 32;
@@ -489,13 +468,9 @@ impl Solar {
             label: Some("Solar rock craters"),
             entries: &[texture_entry(2, array)],
         });
-        let mut source = String::from(include_str!("noise.wgsl"));
-        source.push_str(crate::noise3d::WGSL);
-        source.push_str(include_str!("frame.wgsl"));
-        source.push_str(include_str!("encounter.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Solar frame"),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
+            source: wgpu::ShaderSource::Wgsl(FRAME_SHADER.into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Solar frame"),
@@ -2391,8 +2366,8 @@ impl Solar {
                 DUST_STREAK * throttle,
             ],
             motion: f32x4(self.motion(t), 0.0),
-            target: f32x4(view.target, view.target_shown),
-            target_colour: {
+            goal: f32x4(view.target, view.target_shown),
+            goal_colour: {
                 let c = self.tour.next.star.colour;
                 let top = c[0].max(c[1]).max(c[2]).max(1e-3);
                 [c[0] / top, c[1] / top, c[2] / top, 0.0]
@@ -2406,11 +2381,15 @@ impl Solar {
             ev: {
                 let mut ev = encounter_rows(&view);
                 if let Some((faction, index)) = self.showcase {
-                    ev[9][1] = 1.0;
-                    ev[9][2] = index as f32;
-                    (ev[6][0], ev[6][1], ev[6][2]) = (faction as f32, faction as f32, 1e4);
-                    ev[7][3] = -1.0;
-                    (ev[10][0], ev[2][3], ev[3][3], ev[4][3]) = (0.0, 0.0, 0.0, 0.0);
+                    ev[EV_EXTRA][1] = 1.0;
+                    ev[EV_EXTRA][2] = index as f32;
+                    (
+                        ev[EV_OBJECT + 1][0],
+                        ev[EV_OBJECT + 1][1],
+                        ev[EV_OBJECT + 1][2],
+                    ) = (faction as f32, faction as f32, 1e4);
+                    ev[EV_OBJECT + 2][3] = -1.0;
+                    (ev[EV_STATE][0], ev[EV_X][3], ev[EV_Y][3], ev[EV_Z][3]) = (0.0, 0.0, 0.0, 0.0);
                 }
                 fleet_rows(&mut ev);
                 ev
@@ -2491,12 +2470,12 @@ impl Solar {
         let (look, drop_look) = (params.spool[2] as u32, params.spool[3] as u32);
         let event = voyage::Event::ALL
             .into_iter()
-            .find(|e| e.id() == params.ev[0][0] as u32);
-        let deep = params.ev[1][3] > 0.5;
+            .find(|e| e.id() == params.ev[EV_EVENT][0] as u32);
+        let deep = params.ev[EV_SHIP][3] > 0.5;
         // A stopover that replaces the sky, at full strength: nothing under it
         // to draw.
         let covered = event.is_some_and(|e| e.replaces_sky())
-            && params.ev[10][1] >= 1.0
+            && params.ev[EV_STATE][1] >= 1.0
             && params.warp[2] >= 1.0;
         let background = if baked && params.spool[1] > 0.001 && params.warp[0] < 1.0 {
             // The drive starting up, and on into the jump's first seconds
@@ -2511,7 +2490,7 @@ impl Solar {
             format!("warp{flare}{look}")
         } else if covered {
             String::new()
-        } else if baked && params.target[3] > 0.0 {
+        } else if baked && params.goal[3] > 0.0 {
             "target".to_string()
         } else if baked {
             "spacebaked".to_string()
@@ -2556,7 +2535,7 @@ impl Solar {
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&params));
         // A battle's effects, grouped by kind, and a draw for each kind.
         let mut fx_draws = Vec::new();
-        if params.ev[0][0] as u32 == voyage::Event::Battle.id() {
+        if params.ev[EV_EVENT][0] as u32 == voyage::Event::Battle.id() {
             let mut flat = Vec::new();
             for (kind, list) in battle_effects(&params.ev).into_iter().enumerate() {
                 let at = flat.len().min(FX_INSTANCES) as u32;
@@ -2639,8 +2618,8 @@ impl Solar {
             return;
         };
         // The leviathans' halos, small, before the frame's pass reads them.
-        let creatures = params.ev[5][3] as u32;
-        let leviathans = event == Some(voyage::Event::Leviathans) && params.ev[10][1] > 0.001;
+        let creatures = params.ev[EV_OBJECT][3] as u32;
+        let leviathans = event == Some(voyage::Event::Leviathans) && params.ev[EV_STATE][1] > 0.001;
         if leviathans {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Solar leviathan halos"),
@@ -2669,7 +2648,7 @@ impl Solar {
             crate::gpu::counted_draw(&mut pass, label, 0, 0..6, 0..creatures * 9);
         }
         // The plasma storm or the remnant, at half the resolution, likewise.
-        let coarse = event.filter(|e| e.coarse() && params.ev[10][1] > 0.001);
+        let coarse = event.filter(|e| e.coarse() && params.ev[EV_STATE][1] > 0.001);
         if let Some(e) = coarse {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Solar coarse"),
@@ -2784,7 +2763,7 @@ impl Solar {
             }
             // A stopover: its own draw over the sky (or in place of it), and
             // the rocks round the ship, in front of everything.
-            if let Some(e) = event.filter(|_| params.ev[10][1] > 0.001) {
+            if let Some(e) = event.filter(|_| params.ev[EV_STATE][1] > 0.001) {
                 if leviathans {
                     // Their halos and the plankton over the whole sky, then
                     // each lobe's core, the fins and the filaments, each on
@@ -2793,7 +2772,7 @@ impl Solar {
                     let (label, pipeline) = &self.pipelines["leviathanglow"];
                     pass.set_pipeline(pipeline);
                     crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
-                    let fins = creatures * LEVIATHAN_FIN_SLICES;
+                    let fins = creatures * FIN_SLICES;
                     for (part, quads) in [(1, creatures * 9), (2, fins), (3, creatures)] {
                         if counting {
                             let probe = &self.pipelines[&format!("probeleviathan{part}")];
@@ -2831,17 +2810,17 @@ impl Solar {
                     pass.set_pipeline(&self.pipelines["ships"].1);
                     pass.set_vertex_buffer(0, meshes.vertices.slice(..));
                     pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    let (local, kill) = (params.ev[0][1], params.ev[6][2]);
-                    let lost = params.ev[7][3] as i32;
-                    let seed = params.ev[9][0] as u32;
+                    let (local, kill) = (params.ev[EV_EVENT][1], params.ev[EV_OBJECT + 1][2]);
+                    let lost = params.ev[EV_OBJECT + 2][3] as i32;
+                    let seed = params.ev[EV_EXTRA][0] as u32;
                     for i in 0..8u32 {
                         if i as i32 == lost && local > kill {
                             continue;
                         }
                         let design = if i < 4 {
-                            params.ev[6][0]
+                            params.ev[EV_OBJECT + 1][0]
                         } else {
-                            params.ev[6][1]
+                            params.ev[EV_OBJECT + 1][1]
                         } as u32;
                         if let Some((first, count, base)) = meshes.library.for_ship(design, i, seed)
                         {
@@ -2899,8 +2878,8 @@ impl Solar {
                 }
             }
             // Something seen inside a leg, over the drive's light.
-            let flux = params.ev[10][2] as u32;
-            if flux > 0 && params.ev[10][3] > 0.001 && params.warp[0] > 0.5 {
+            let flux = params.ev[EV_STATE][2] as u32;
+            if flux > 0 && params.ev[EV_STATE][3] > 0.001 && params.warp[0] > 0.5 {
                 let (label, pipeline) = &self.pipelines[&format!("flux{flux}")];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..3, 0..1);
@@ -2967,13 +2946,7 @@ impl Solar {
             if params.burn[0] > 0.0 {
                 let (label, pipeline) = &self.pipelines["dust"];
                 pass.set_pipeline(pipeline);
-                crate::gpu::counted_draw(
-                    &mut pass,
-                    label,
-                    (DUST_MOTES * 400) as u64,
-                    0..6,
-                    0..DUST_MOTES,
-                );
+                crate::gpu::counted_draw(&mut pass, label, (DUST * 400) as u64, 0..6, 0..DUST);
                 let (label, pipeline) = &self.pipelines["rim"];
                 pass.set_pipeline(pipeline);
                 let ring = full - (full as f64 * 0.82 * 0.82 * std::f64::consts::FRAC_PI_4) as u64;
@@ -2987,28 +2960,28 @@ impl Solar {
             }
             // The ship's own effects over everything: the alarm round the
             // rim, a hit on the shield, a flash.
-            let alarm = params.ev[10][0]
-                .max(params.ev[2][3])
-                .max(params.ev[4][3])
-                .max(params.ev[3][3]);
+            let alarm = params.ev[EV_STATE][0]
+                .max(params.ev[EV_X][3])
+                .max(params.ev[EV_Z][3])
+                .max(params.ev[EV_Y][3]);
             // A flash whitens the whole frame (drawn first: the rest is
             // dimmed as much); a hit lights round where it struck alone
             // (`vs_overlay_hit`); the alarm only the band round the rim (from
             // 0.86 of the radius out), and nothing below 0.3; the tractor
             // beam's hold only from 0.4 of it out (`BEAM_INNER`).
-            let flash = params.ev[4][3];
+            let flash = params.ev[EV_Z][3];
             // Its white, linear, under half a step of the sRGB frame's darkest.
             if flash * flash > 0.5 / 255.0 / 12.92 {
                 let (label, pipeline) = &self.pipelines["overlayflash"];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, full, 0..OVERLAY_VERTICES, 0..1);
             }
-            if params.ev[2][3] > 0.01 {
+            if params.ev[EV_X][3] > 0.01 {
                 let (label, pipeline) = &self.pipelines["overlayhit"];
                 pass.set_pipeline(pipeline);
                 crate::gpu::counted_draw(&mut pass, label, 0, 0..HIT_SIDES * 6, 0..2);
             }
-            if params.ev[3][3] > 0.01 {
+            if params.ev[EV_Y][3] > 0.01 {
                 let (label, pipeline) = &self.pipelines["overlaybeam"];
                 pass.set_pipeline(pipeline);
                 let ring = full - (full as f64 * 0.4 * 0.4 * std::f64::consts::FRAC_PI_4) as u64;
@@ -3730,10 +3703,10 @@ fn paint_rings(gpu: &Graphics, texture: &wgpu::Texture, system: &System) {
 /// shader).
 const CRATER_MAP: u32 = 512;
 /// Texels along each side of a face of the gas map (`bake_gas`), as
-/// `GAS_MAP` in `encounter.wgsl`.
+/// `GAS_MAP` in `encounter.wesl`.
 const GAS_MAP: u32 = 512;
 /// Texels along each side of the storm's map (`bake_storm`), as `STORM_MAP`
-/// in `encounter.wgsl`.
+/// in `encounter.wesl`.
 const STORM_MAP: u32 = 512;
 
 /// Bake each rock shape's small craters once, a layer a shape, over its
@@ -3917,7 +3890,7 @@ fn event_parts(
 }
 
 /// A Dyson swarm's panel, placed for the frame (`PanelIn` in
-/// `encounter.wgsl`).
+/// `encounter.wesl`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Panel {
@@ -3936,13 +3909,13 @@ struct Panel {
 fn dyson_panels(ev: &[[f32; 4]; EV_ROWS]) -> (Vec<Panel>, [u32; 3]) {
     use glam::Vec3;
     use std::f32::consts::{PI, TAU};
-    let (t, seed) = (ev[0][1], ev[9][0]);
-    let ship = Vec3::new(ev[1][0], ev[1][1], ev[1][2]);
-    let star = Vec3::new(ev[5][0], ev[5][1], ev[5][2]);
+    let (t, seed) = (ev[EV_EVENT][1], ev[EV_EXTRA][0]);
+    let ship = Vec3::new(ev[EV_SHIP][0], ev[EV_SHIP][1], ev[EV_SHIP][2]);
+    let star = Vec3::new(ev[EV_OBJECT][0], ev[EV_OBJECT][1], ev[EV_OBJECT][2]);
     let mut sides: [Vec<Panel>; 3] = Default::default();
     for shell in 0..3 {
         let fs = shell as f32;
-        let (rr, cells) = (ev[5][3] * (0.7 + 0.2 * fs), 90.0 + 30.0 * fs);
+        let (rr, cells) = (ev[EV_OBJECT][3] * (0.7 + 0.2 * fs), 90.0 + 30.0 * fs);
         for k in 0..2 {
             let fk = k as f32 + fs * 2.0;
             let h = |n: f32| hash_cell([fk, seed, n]);
@@ -4332,11 +4305,11 @@ fn encounter_label(view: &View, panels: &[[f64; 4]]) -> Option<labels::BodyLabel
     })
 }
 
-/// The stopover's parameters for the shaders (`EV_*` in `encounter.wgsl`):
+/// The stopover's parameters for the shaders (the `EV_*` rows of [`layout`]):
 /// the event, how far into it and its draw; the ship in its frame, and the
 /// frame's axes; its objects, rotation and own numbers; the alarm, how much
 /// of it shows and what is seen inside a leg; and where a hit lands.
-/// WGSL's `hash_cell` (`frame.wgsl`), to the same bits.
+/// WGSL's `hash_cell` (`frame.wesl`), to the same bits.
 fn hash_cell(p: [f32; 3]) -> f32 {
     let fract = |x: f32| x - x.floor();
     let mut q = [
@@ -4350,17 +4323,17 @@ fn hash_cell(p: [f32; 3]) -> f32 {
 }
 
 /// A battle's ships where they are this frame, as `battle_ship` in
-/// `encounter.wgsl` would place them, into rows 12 on of the stopover's
+/// `encounter.wesl` would place them, into rows 12 on of the stopover's
 /// parameters: two rows a ship, where it is and its size, which way it heads
 /// and how hard the shock strikes it. Worked out once here rather than for
 /// every pixel and vertex.
 fn fleet_rows(ev: &mut [[f32; 4]; EV_ROWS]) {
-    if ev[0][0] as u32 != voyage::Event::Battle.id() {
+    if ev[EV_EVENT][0] as u32 != voyage::Event::Battle.id() {
         return;
     }
-    let t = ev[0][1];
-    let (o, seed) = (ev[5], ev[9][0]);
-    let (fa, fb) = (ev[6][0] as usize, ev[6][1] as usize);
+    let t = ev[EV_EVENT][1];
+    let (o, seed) = (ev[EV_OBJECT], ev[EV_EXTRA][0]);
+    let (fa, fb) = (ev[EV_OBJECT + 1][0] as usize, ev[EV_OBJECT + 1][1] as usize);
     let faction = |i: usize| if i >= 4 { fb } else { fa };
     let size = |i: usize| {
         const BIG: [f32; 6] = [13.0, 32.0, 9.5, 27.0, 9.5, 40.0];
@@ -4412,15 +4385,15 @@ fn fleet_rows(ev: &mut [[f32; 4]; EV_ROWS]) {
         };
         (p, heading)
     };
-    let (kill, lost) = (ev[6][2], ev[7][3] as i32);
-    let (blast, speed) = ([ev[8][0], ev[8][1], ev[8][2]], ev[8][3]);
-    let ship = [ev[1][0], ev[1][1], ev[1][2]];
+    let (kill, lost) = (ev[EV_OBJECT + 1][2], ev[EV_OBJECT + 2][3] as i32);
+    let (blast, speed) = ([ev[EV_ROT][0], ev[EV_ROT][1], ev[EV_ROT][2]], ev[EV_ROT][3]);
+    let ship = [ev[EV_SHIP][0], ev[EV_SHIP][1], ev[EV_SHIP][2]];
     for i in 0..BATTLE_SHIPS {
         let s = size(i);
-        let (at, heading, jolt) = if ev[9][1] > 0.5 {
+        let (at, heading, jolt) = if ev[EV_EXTRA][1] > 0.5 {
             // The screenshots' showcase: the one ship asked for, alone,
             // ahead of the camera at a distance by its size, three-quarters.
-            let shown = i as f32 == ev[9][2];
+            let shown = i as f32 == ev[EV_EXTRA][2];
             let at = [
                 ship[0],
                 ship[1],
@@ -4454,13 +4427,13 @@ fn fleet_rows(ev: &mut [[f32; 4]; EV_ROWS]) {
                 jolt,
             )
         };
-        ev[12 + 2 * i] = [at[0], at[1], at[2], s];
-        ev[13 + 2 * i] = [heading[0], heading[1], heading[2], jolt];
+        ev[EV_FLEET + 2 * i] = [at[0], at[1], at[2], s];
+        ev[EV_FLEET + 1 + 2 * i] = [heading[0], heading[1], heading[2], jolt];
     }
 }
 
 /// One of a battle's effects this frame, drawn on its own bounded geometry
-/// (`vs_fx_*` in `encounter.wgsl`): four rows its kind reads its own way,
+/// (`vs_fx_*` in `encounter.wesl`): four rows its kind reads its own way,
 /// the last how far its light reaches (pixels round it, units round it, how
 /// far its front stands towards the camera, and the part of that within
 /// which its light is bright, [`FX_BRIGHT`]).
@@ -4496,7 +4469,7 @@ const FX_WAVE: usize = 5;
 /// Linear light under which the sRGB frame rounds a pixel to black: where
 /// each effect's glow is cut.
 const FX_DIM: f32 = 0.5 / 255.0 / 12.92;
-/// Light under which an effect is dim (`FX_BRIGHT` in `encounter.wgsl`):
+/// Light under which an effect is dim (`FX_BRIGHT` in `encounter.wesl`):
 /// drawn behind every mesh, not at its own depth.
 const FX_BRIGHT: f32 = 0.015;
 
@@ -4507,7 +4480,7 @@ fn fx_falloff(peak: f32, floor: f32) -> f32 {
 }
 
 /// A battle's effects this frame, by kind ([`FX_KINDS`]), as
-/// `encounter.wgsl` once worked them out for every pixel: the ships'
+/// `encounter.wesl` once worked them out for every pixel: the ships'
 /// engines, shields flaring where the shock strikes them; fire between the
 /// fleets, each its own way, the target's shield flaring where it lands;
 /// torpedoes arcing over and bursting on the shields; fighters weaving round
@@ -4620,20 +4593,26 @@ fn battle_effects(ev: &[[f32; 4]; EV_ROWS]) -> [Vec<Fx>; 6] {
             [0.3, 1.0, 0.4],
         ][f]
     };
-    let faction =
-        |i: usize| ((if i >= 4 { ev[6][1] } else { ev[6][0] }) as i32).clamp(0, 5) as usize;
-    let at = |i: usize| ev[12 + 2 * i];
-    let ship = v3(ev[1]);
-    let t = ev[0][1];
-    let seed = ev[9][0];
-    let (kill, lost) = (ev[6][2], ev[7][3] as i32);
-    let blast = v3(ev[8]);
+    let faction = |i: usize| {
+        ((if i >= 4 {
+            ev[EV_OBJECT + 1][1]
+        } else {
+            ev[EV_OBJECT + 1][0]
+        }) as i32)
+            .clamp(0, 5) as usize
+    };
+    let at = |i: usize| ev[EV_FLEET + 2 * i];
+    let ship = v3(ev[EV_SHIP]);
+    let t = ev[EV_EVENT][1];
+    let seed = ev[EV_EXTRA][0];
+    let (kill, lost) = (ev[EV_OBJECT + 1][2], ev[EV_OBJECT + 2][3] as i32);
+    let blast = v3(ev[EV_ROT]);
     for i in 0..BATTLE_SHIPS {
         if i as i32 == lost && t > kill {
             continue;
         }
         let (c, size) = (v3(at(i)), at(i)[3]);
-        let (heading, jolt) = (v3(ev[13 + 2 * i]), ev[13 + 2 * i][3]);
+        let (heading, jolt) = (v3(ev[EV_FLEET + 1 + 2 * i]), ev[EV_FLEET + 1 + 2 * i][3]);
         let f = faction(i);
         if jolt > 0.01 {
             let toward = norm(sub(blast, c));
@@ -4652,7 +4631,7 @@ fn battle_effects(ev: &[[f32; 4]; EV_ROWS]) -> [Vec<Fx>; 6] {
     }
     // Fire between the fleets: beams, or bolts in short dashes for the wedge
     // fleet and the raiders. Not for the screenshots' one ship.
-    for k in (0..7).filter(|_| ev[9][1] <= 0.5) {
+    for k in (0..7).filter(|_| ev[EV_EXTRA][1] <= 0.5) {
         let fk = k as f32;
         let clock = t * 1.6 + fk * 0.37;
         let on = fract(clock);
@@ -4737,8 +4716,8 @@ fn battle_effects(ev: &[[f32; 4]; EV_ROWS]) -> [Vec<Fx>; 6] {
         }
     }
     // Fighters weaving round the wedge fleet, bolts flicking between them.
-    if ev[6][0] as i32 == 1 || ev[6][1] as i32 == 1 {
-        let o = ev[5];
+    if ev[EV_OBJECT + 1][0] as i32 == 1 || ev[EV_OBJECT + 1][1] as i32 == 1 {
+        let o = ev[EV_OBJECT];
         for k in 0..10 {
             let fk = k as f32;
             let h = hash_cell([fk, seed, 21.0]);
@@ -4789,7 +4768,7 @@ fn battle_effects(ev: &[[f32; 4]; EV_ROWS]) -> [Vec<Fx>; 6] {
         glint(&mut out, blast, 6.0, flash);
     }
     if age > 0.0 && age < 1.0 {
-        let wave = (t - kill) * ev[8][3];
+        let wave = (t - kill) * ev[EV_ROT][3];
         let colour = scale([0.7, 0.85, 1.0], (1.0 - age).powi(2) * 0.7);
         // Bright within this part of its band (`bump`).
         let bright = (1.0 - (FX_BRIGHT / brightest(colour)).min(1.0).sqrt()).sqrt();
@@ -4801,7 +4780,11 @@ fn battle_effects(ev: &[[f32; 4]; EV_ROWS]) -> [Vec<Fx>; 6] {
         });
     }
     // Stray fire: a beam past the ship, a torpedo bursting close by.
-    let (laser_at, torpedo_at, side) = (ev[7][0], ev[7][1], ev[6][3]);
+    let (laser_at, torpedo_at, side) = (
+        ev[EV_OBJECT + 2][0],
+        ev[EV_OBJECT + 2][1],
+        ev[EV_OBJECT + 1][3],
+    );
     if t > laser_at && t < laser_at + 0.6 {
         let a = v3(at(4));
         let near = add(ship, [side * 14.0, 6.0, 28.0]);
@@ -4836,23 +4819,23 @@ fn encounter_rows(view: &View) -> [[f32; 4]; EV_ROWS] {
     let x4 = |v: [f64; 4]| v.map(|x| x as f32);
     if let Some(scene) = &view.scene {
         let shot = &scene.shot;
-        ev[0] = [
+        ev[EV_EVENT] = [
             scene.event.id() as f32,
             scene.local as f32,
             scene.duration as f32,
             scene.variant as f32,
         ];
-        ev[1] = v4(shot.ship, 1.0);
-        ev[2] = v4(scene.basis[0], shot.hit);
-        ev[3] = v4(scene.basis[1], shot.beam);
-        ev[4] = v4(scene.basis[2], shot.flash);
+        ev[EV_SHIP] = v4(shot.ship, 1.0);
+        ev[EV_X] = v4(scene.basis[0], shot.hit);
+        ev[EV_Y] = v4(scene.basis[1], shot.beam);
+        ev[EV_Z] = v4(scene.basis[2], shot.flash);
         for (k, object) in shot.objects.iter().enumerate() {
-            ev[5 + k] = x4(*object);
+            ev[EV_OBJECT + k] = x4(*object);
         }
-        ev[8] = x4(shot.rot);
-        ev[9] = x4(shot.extra);
-        ev[10] = [shot.alert as f32, scene.fade as f32, 0.0, 0.0];
-        ev[11] = [
+        ev[EV_ROT] = x4(shot.rot);
+        ev[EV_EXTRA] = x4(shot.extra);
+        ev[EV_STATE] = [shot.alert as f32, scene.fade as f32, 0.0, 0.0];
+        ev[EV_HIT] = [
             shot.hit_at[0] as f32,
             shot.hit_at[1] as f32,
             shot.shake as f32,
@@ -4860,12 +4843,12 @@ fn encounter_rows(view: &View) -> [[f32; 4]; EV_ROWS] {
         ];
     }
     if let Some((kind, amount, local)) = view.flux {
-        ev[10][2] = kind as f32;
-        ev[10][3] = amount as f32;
-        ev[11][3] = local as f32;
+        ev[EV_STATE][2] = kind as f32;
+        ev[EV_STATE][3] = amount as f32;
+        ev[EV_HIT][3] = local as f32;
     }
-    ev[4][3] = ev[4][3].max(view.flash as f32);
-    ev[1][3] = if view.deep { 1.0 } else { 0.0 };
+    ev[EV_Z][3] = ev[EV_Z][3].max(view.flash as f32);
+    ev[EV_SHIP][3] = if view.deep { 1.0 } else { 0.0 };
     ev
 }
 

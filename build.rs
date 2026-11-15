@@ -1,5 +1,44 @@
 #[path = "src/etc.rs"]
 mod etc;
+#[allow(dead_code)]
+#[path = "src/solar/layout.rs"]
+mod solar_layout;
+
+/// The solar scene's two shaders, linked from `src/shaders/solar` into plain
+/// WGSL in OUT_DIR: the frame (`encounter.wesl` is the root; it imports from
+/// `frame.wesl`, so the frame's entry points come along) and the map
+/// generator. Every constant of `solar/layout.rs` is importable as
+/// `constants::NAME`.
+///
+/// Nothing is stripped: every entry point of every module linked is kept, as
+/// when the files were concatenated, and names are not mangled, because the
+/// pipelines name their entry points and `override`s as written.
+fn solar_shaders() {
+    println!("cargo:rerun-if-changed=src/solar/layout.rs");
+    for (root, artifact) in [("encounter", "solar_frame"), ("generate", "solar_generate")] {
+        let mut resolver = wesl::resolver::StandardResolver::new("src/shaders");
+        for (name, value) in solar_layout::WESL {
+            resolver.add_constant(*name, *value);
+        }
+        let options = wesl::CompileOptions {
+            validate: false,
+            strip: false,
+            mangler: wesl::ManglerKind::None,
+            ..Default::default()
+        };
+        let compiler = wesl::Compiler::new(options).with_resolver(resolver);
+        let main = wesl::syntax::ModulePath::new(
+            wesl::syntax::PathOrigin::Absolute,
+            vec!["solar".to_string(), root.to_string()],
+        );
+        let result = compiler
+            .compile_module(&main)
+            .inspect_err(|e| eprintln!("{e}"))
+            .unwrap_or_else(|_| panic!("failed to compile the solar {root} shader"));
+        result.emit_rerun_if_changed();
+        result.write_artifact(artifact);
+    }
+}
 
 fn main() {
     println!("cargo:rerun-if-changed=ui");
@@ -32,6 +71,7 @@ fn main() {
     result.write_artifact("scene");
     println!("cargo:rerun-if-changed=src/shaders");
 
+    solar_shaders();
     earth_maps();
     museum_paintings();
 }

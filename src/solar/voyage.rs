@@ -15,7 +15,7 @@
 //! ship drops out at the origin heading along +z, the way the jump goes, +y
 //! up and +x to the right. A script gives, at any moment, where the ship is
 //! in that frame, which way it looks, the objects the shaders draw (in
-//! `encounter.wgsl`) and the alarms on the HUD; like the rest of the tour, a
+//! `encounter.wesl`) and the alarms on the HUD; like the rest of the tour, a
 //! pure function of the time, so any moment can be shown on its own.
 //!
 //! Which encounter comes up is dealt from a shuffled deck of all of them, a
@@ -93,7 +93,7 @@ impl Event {
         Event::DysonSwarm,
     ];
 
-    /// Its number in the shaders (`EVENT` in `encounter.wgsl`), from 1.
+    /// Its number in the shaders (`EVENT` in `encounter.wesl`), from 1.
     pub fn id(self) -> u32 {
         self as u32
     }
@@ -1006,7 +1006,7 @@ fn wormhole(rng: &mut Rng, local: f64, duration: f64) -> Shot {
 }
 
 /// The fleets a battle draws from, each its own design of ship (`hull_sdf`
-/// in `encounter.wgsl`): saucer cruisers on nacelles, wedge destroyers with
+/// in `encounter.wesl`): saucer cruisers on nacelles, wedge destroyers with
 /// fighters, winged raiders, crescent warbirds, horseshoe traders and the
 /// cube collective.
 pub const FACTIONS: [&str; 6] = [

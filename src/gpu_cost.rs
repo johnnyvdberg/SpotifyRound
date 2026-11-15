@@ -14,7 +14,7 @@ use slint::wgpu_30::wgpu;
 const SIZE: u32 = 1080;
 const FRAMES: u32 = 120;
 
-const SHADER: &str = r#"
+pub(crate) const SHADER: &str = r#"
 @group(0) @binding(0) var image: texture_2d<f32>;
 @group(0) @binding(1) var image_sampler: sampler;
 

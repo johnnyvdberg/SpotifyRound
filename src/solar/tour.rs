@@ -76,7 +76,7 @@ const FLARE: f64 = 1.0;
 /// How long the drive's light takes to tear open on arrival, over the new
 /// system (`View::reveal`).
 pub const DROP_OUT: f64 = 2.4;
-/// The hyperjump drives, each its own look (`fs_warp` in `frame.wgsl`); a
+/// The hyperjump drives, each its own look (`fs_warp` in `frame.wesl`); a
 /// gate's conduit and a wormhole's throat follow them in `voyage::LOOKS`.
 pub const DRIVES: [&str; 5] = [
     "Lumen Drift",

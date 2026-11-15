@@ -1,5 +1,7 @@
 // Between the legs of a jump: what the ship meets out in the deep (`voyage.rs`).
-// Appended to `frame.wgsl`, sharing its parameters, textures and helpers.
+// Linked with `frame.wesl` into one shader, sharing its parameters, textures
+// and helpers: this is the root `build.rs` compiles, and importing from the
+// frame brings the whole of it in.
 //
 // Each stopover is drawn in its own frame, the encounter frame: the ship at
 // `EV_SHIP`, +z the way the jump goes, its axes in the world in rows 2-4. A
@@ -18,43 +20,59 @@
 // - `vs_overlay` / `fs_overlay`, over everything: the alarm round the rim,
 //   hits on the shield, the tractor beam's hold and flashes.
 //
-// Rows of `params.ev` (`encounter_rows` in `mod.rs`):
-//   0: event, seconds into it, its duration, its draw 0..1
-//   1: the ship in the frame, w 1 out in the deep
-//   2-4: the frame's x, y and z in the world; w the hit, the beam, the flash
-//   5-7: the event's objects (place, size)
-//   8: a rotation (axis, angle)
-//   9: the event's own four numbers
-//   10: the alarm, how much of the stopover shows, the flux and how much of it
-//   11: where a hit lands on the frame (across the half frame), the shake,
-//       and seconds into the flux
-//   12-27: a battle's ships this frame, two rows each (`battle_ship`)
+// Rows of `params.ev` (`encounter_rows` in `mod.rs`), named in
+// `solar/layout.rs` and imported from there:
+//   EV_EVENT: event, seconds into it, its duration, its draw 0..1
+//   EV_SHIP: the ship in the frame, w 1 out in the deep
+//   EV_X, EV_Y, EV_Z: the frame's x, y and z in the world; w the hit, the
+//       beam, the flash
+//   EV_OBJECT + 0..2: the event's objects (place, size)
+//   EV_ROT: a rotation (axis, angle)
+//   EV_EXTRA: the event's own four numbers
+//   EV_STATE: the alarm, how much of the stopover shows, the flux and how
+//       much of it
+//   EV_HIT: where a hit lands on the frame (across the half frame), the
+//       shake, and seconds into the flux
+//   EV_FLEET..EV_ROWS: a battle's ships this frame, two rows each
+//       (`battle_ship`)
+
+import package::noise3d::{noise, noised};
+import package::solar::noise::{PI, TAU};
+import package::solar::frame::{
+    Full, bump, cube_dir, flare, full_vertex, gas_map, glare, hash_cell, map_sampler, params,
+    ray_at, rim_vertex, ring_vertex, rock_craters, sky_cube, smoothstep01, sq, starfield, streaks,
+    through,
+};
+import constants::{
+    EV_EVENT, EV_SHIP, EV_X, EV_Y, EV_Z, EV_OBJECT, EV_ROT, EV_EXTRA, EV_STATE, EV_HIT, EV_FLEET,
+    FIN_SLICES, GATE_SIDES, HIT_SIDES, COARSE,
+};
 
 override EVENT: i32 = 0;
 
 fn ev_t() -> f32 {
-    return params.ev[0].y;
+    return params.ev[EV_EVENT].y;
 }
 
 fn ev_u() -> f32 {
-    return clamp(params.ev[0].y / max(params.ev[0].z, 1e-3), 0.0, 1.5);
+    return clamp(params.ev[EV_EVENT].y / max(params.ev[EV_EVENT].z, 1e-3), 0.0, 1.5);
 }
 
 fn ev_ship() -> vec3<f32> {
-    return params.ev[1].xyz;
+    return params.ev[EV_SHIP].xyz;
 }
 
 fn ev_obj(k: i32) -> vec4<f32> {
-    return params.ev[5 + k];
+    return params.ev[EV_OBJECT + k];
 }
 
 // A world direction in the encounter frame, and back.
 fn to_ev(d: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(dot(d, params.ev[2].xyz), dot(d, params.ev[3].xyz), dot(d, params.ev[4].xyz));
+    return vec3<f32>(dot(d, params.ev[EV_X].xyz), dot(d, params.ev[EV_Y].xyz), dot(d, params.ev[EV_Z].xyz));
 }
 
 fn from_ev(d: vec3<f32>) -> vec3<f32> {
-    return params.ev[2].xyz * d.x + params.ev[3].xyz * d.y + params.ev[4].xyz * d.z;
+    return params.ev[EV_X].xyz * d.x + params.ev[EV_Y].xyz * d.y + params.ev[EV_Z].xyz * d.z;
 }
 
 // A fully saturated colour round the wheel.
@@ -130,13 +148,13 @@ fn glint(px: f32, size: f32) -> f32 {
 // ---------------------------------------------------------------------------
 
 fn ev_light() -> vec3<f32> {
-    return normalize(vec3<f32>(params.ev[9].z, params.ev[9].w, params.ev[8].x));
+    return normalize(vec3<f32>(params.ev[EV_EXTRA].z, params.ev[EV_EXTRA].w, params.ev[EV_ROT].x));
 }
 
 fn ev_asteroids(d: vec3<f32>) -> vec4<f32> {
     let l = ev_light();
     let mu = dot(d, l);
-    let kind = params.ev[9].x;
+    let kind = params.ev[EV_EXTRA].x;
     let tint = select(select(vec3<f32>(1.0, 0.8, 0.55), vec3<f32>(0.7, 0.85, 1.0), kind > 0.5), vec3<f32>(1.0, 0.55, 0.35), kind > 1.5);
     // The far star: a hard point and its glare.
     let px = acos(clamp(mu, -1.0, 1.0)) / params.frame.z;
@@ -146,7 +164,7 @@ fn ev_asteroids(d: vec3<f32>) -> vec4<f32> {
     let ship = ev_ship();
     let dust = noise(d * 3.0 + ship * 0.002) * 0.5 + noise(d * 7.1 - ship * 0.003) * 0.5;
     let scatter = 0.25 + 1.5 * pow(max(mu, 0.0), 8.0);
-    colour += tint * smoothstep01(-0.2, 0.8, dust) * scatter * 0.035 * params.ev[9].y;
+    colour += tint * smoothstep01(-0.2, 0.8, dust) * scatter * 0.035 * params.ev[EV_EXTRA].y;
     return vec4<f32>(colour, 0.0);
 }
 
@@ -192,7 +210,7 @@ fn vs_rock(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
         let z = ship.z - 20.0 + fract((h.z * span.z - ship.z + 20.0) / span.z) * span.z;
         p = vec3<f32>(xy, z);
         radius = mix(0.15, 0.6, h.w);
-        glow = 0.3 + 2.5 * params.ev[2].w;
+        glow = 0.3 + 2.5 * params.ev[EV_X].w;
     }
     let w = from_ev(p - ship);
     let cam = vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
@@ -238,7 +256,7 @@ fn ev_cube(d: vec3<f32>) -> vec4<f32> {
     // The cube itself is a mesh (`fs_model`, family 4): here only the haze of
     // its light round it, and its tractor beam.
     let ship = ev_ship();
-    let glow = mix(hue_of(params.ev[9].x), vec3<f32>(1.0), 0.12) * 1.1;
+    let glow = mix(hue_of(params.ev[EV_EXTRA].x), vec3<f32>(1.0), 0.12) * 1.1;
     let primary = ev_obj(0);
     var colour = vec3<f32>(0.0);
     let v = primary.xyz - ship;
@@ -247,7 +265,7 @@ fn ev_cube(d: vec3<f32>) -> vec4<f32> {
         let across = length(v - d * tca);
         colour += glow * exp(-max(across - primary.w * 1.05, 0.0) / (primary.w * 0.3)) * 0.025;
     }
-    let beam = params.ev[3].w;
+    let beam = params.ev[EV_Y].w;
     if (beam > 0.001) {
         let start = primary.xyz + normalize(ship - primary.xyz) * primary.w;
         let end = ship + vec3<f32>(0.0, -7.0, 9.0);
@@ -260,7 +278,7 @@ fn ev_cube(d: vec3<f32>) -> vec4<f32> {
             let width = mix(primary.w * 0.2, 1.6, f * f);
             let core = exp(-sq(near.x / width));
             var stripes = 0.6 + 0.4 * sin(near.z * 0.35 - ev_t() * 14.0);
-            if (params.ev[9].z > 0.5) {
+            if (params.ev[EV_EXTRA].z > 0.5) {
                 stripes = 0.35 + 0.65 * smoothstep01(0.5, 0.95, abs(sin(near.x / width * 7.0 + near.z * 0.2 - ev_t() * 4.0)));
             }
             colour += glow * core * stripes * beam * (0.45 + 0.3 * f) * (1.0 - smoothstep01(0.9, 1.0, f));
@@ -294,14 +312,14 @@ fn disc_at(o: vec3<f32>, d: vec3<f32>, limit: f32, hole: vec3<f32>, rs: f32, n: 
     }
     var e1 = normalize(cross(n, vec3<f32>(0.0, 0.0, 1.0)));
     let e2 = cross(n, e1);
-    let spin = params.ev[9].w;
+    let spin = params.ev[EV_EXTRA].w;
     // Inner rings turn faster.
     let a = atan2(dot(q, e2), dot(q, e1)) - spin * ev_t() * 2.5 * pow(3.0 * rs / r, 1.5);
     let rr = r / rs;
     let bands = noise(vec3<f32>(cos(a) * rr * 0.5, sin(a) * rr * 0.5, rr * 1.7)) * 0.6
         + noise(vec3<f32>(cos(a) * rr * 1.6, sin(a) * rr * 1.6, rr * 4.0)) * 0.4;
     let density = smoothstep01(0.0, 0.06, x) * (1.0 - smoothstep01(0.55, 1.0, x)) * (0.55 + 0.45 * bands);
-    let hot = params.ev[9].z;
+    let hot = params.ev[EV_EXTRA].z;
     let inner = mix(vec3<f32>(1.0, 0.92, 0.8), vec3<f32>(0.8, 0.88, 1.0), hot) * 3.2;
     let outer = mix(vec3<f32>(1.0, 0.42, 0.1), vec3<f32>(1.0, 0.65, 0.35), hot) * 1.1;
     let colour = mix(inner, outer, sqrt(x));
@@ -324,7 +342,7 @@ fn fs_event_sky(in: Full) -> @location(0) vec4<f32> {
     var closest = ship + d * max(tca, 0.0);
     let b = length(closest - hole);
     let critical = 2.6 * rs;
-    let n = normalize(vec3<f32>(params.ev[9].x, 1.0, params.ev[9].y));
+    let n = normalize(vec3<f32>(params.ev[EV_EXTRA].x, 1.0, params.ev[EV_EXTRA].y));
     // Bent toward the hole: weakly far off, ever harder near the photon
     // sphere.
     let reach = max(b, 1e-3);
@@ -365,7 +383,7 @@ fn fs_event_sky(in: Full) -> @location(0) vec4<f32> {
             colour += vec3<f32>(0.45, 0.6, 1.0) * exp(-sq(jet.x / width)) * exp(-jet.z / (rs * 30.0)) * knots * 0.9 * (1.0 - near.a);
         }
     }
-    let fade = params.ev[10].y;
+    let fade = params.ev[EV_STATE].y;
     return vec4<f32>(colour * fade, fade);
 }
 
@@ -403,9 +421,9 @@ fn gas_layer(n: f32, intensity: f32, falloff: f32) -> f32 {
 
 fn ev_nebula(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
     let ship = ev_ship();
-    let palette = params.ev[6].x;
-    let density = params.ev[6].y;
-    let seed = params.ev[6].z;
+    let palette = params.ev[EV_OBJECT + 1].x;
+    let density = params.ev[EV_OBJECT + 1].y;
+    let seed = params.ev[EV_OBJECT + 1].z;
     var c1 = vec3<f32>(0.95, 0.16, 0.36);
     var c2 = vec3<f32>(0.35, 0.12, 0.65);
     if (palette > 2.5) {
@@ -463,9 +481,9 @@ fn ev_rogue(d: vec3<f32>) -> vec4<f32> {
     let o = ev_obj(0);
     let centre = o.xyz;
     let radius = o.w;
-    let axis = normalize(params.ev[8].xyz);
-    let kind = params.ev[9].x;
-    let seed = params.ev[9].w;
+    let axis = normalize(params.ev[EV_ROT].xyz);
+    let kind = params.ev[EV_EXTRA].x;
+    let seed = params.ev[EV_EXTRA].w;
     let t = ev_t();
     var colour = vec3<f32>(0.0);
     var alpha = 0.0;
@@ -475,7 +493,7 @@ fn ev_rogue(d: vec3<f32>) -> vec4<f32> {
         reach = ground.x;
         let p = ship + d * ground.x;
         let n = (p - centre) / radius;
-        let local = turn(n, axis, -params.ev[8].w);
+        let local = turn(n, axis, -params.ev[EV_ROT].w);
         let lat = dot(n, axis);
         var albedo = vec3<f32>(0.5, 0.58, 0.68);
         var crack_colour = vec3<f32>(0.2, 0.75, 1.0);
@@ -497,7 +515,7 @@ fn ev_rogue(d: vec3<f32>) -> vec4<f32> {
         // Faint light from the galaxy above, the cracks', the aurorae's.
         let sky_light = 0.025 + 0.05 * max(dot(n, normalize(vec3<f32>(0.3, 0.8, 0.2))), 0.0);
         let aurora_glow = bump((abs(lat) - 0.86) / 0.06) * vec3<f32>(0.1, 0.9, 0.45) * 0.08;
-        colour = albedo * sky_light + crack_colour * crack * heat * params.ev[9].z + albedo * aurora_glow * 6.0;
+        colour = albedo * sky_light + crack_colour * crack * heat * params.ev[EV_EXTRA].z + albedo * aurora_glow * 6.0;
         colour += vec3<f32>(0.15, 0.25, 0.5) * pow(1.0 - max(dot(n, -d), 0.0), 4.0) * 0.25;
         let edge = (radius - length(ship + d * dot(centre - ship, d) - centre)) / (ground.x * params.frame.z);
         alpha = clamp(edge + 0.5, 0.0, 1.0);
@@ -511,10 +529,10 @@ fn ev_rogue(d: vec3<f32>) -> vec4<f32> {
             let p = ship + d * t_k;
             let n = (p - centre) / (radius * 1.07);
             let lat = dot(n, axis);
-            let local = turn(n, axis, -params.ev[8].w * 0.5);
+            let local = turn(n, axis, -params.ev[EV_ROT].w * 0.5);
             let band = bump((abs(lat) - 0.83 - 0.03 * noise(local * 4.0 + t * 0.05)) / 0.05);
             let curtain = smoothstep01(-0.2, 0.7, noise(local * vec3<f32>(18.0, 3.0, 18.0) + vec3<f32>(t * 0.15, 0.0, 0.0)));
-            let hue = mix(vec3<f32>(0.15, 1.0, 0.45), vec3<f32>(0.9, 0.25, 0.6), params.ev[9].y * smoothstep01(0.86, 0.95, abs(lat)));
+            let hue = mix(vec3<f32>(0.15, 1.0, 0.45), vec3<f32>(0.9, 0.25, 0.6), params.ev[EV_EXTRA].y * smoothstep01(0.86, 0.95, abs(lat)));
             let mu = abs(dot(n, d));
             colour += hue * band * curtain * 0.3 / max(mu, 0.2);
         }
@@ -539,11 +557,11 @@ fn ev_derelict(d: vec3<f32>) -> vec4<f32> {
     // beacon, blinking red on the rim as it turns.
     let ship = ev_ship();
     let o = ev_obj(0);
-    let axis = normalize(params.ev[8].xyz);
+    let axis = normalize(params.ev[EV_ROT].xyz);
     var e1 = cross(axis, vec3<f32>(0.0, 1.0, 0.0));
     e1 = normalize(select(e1, vec3<f32>(1.0, 0.0, 0.0), length(e1) < 1e-3));
     let e2 = cross(axis, e1);
-    let ba = 0.6 + params.ev[8].w;
+    let ba = 0.6 + params.ev[EV_ROT].w;
     let beacon = o.xyz + (e1 * cos(ba) + e2 * sin(ba)) * o.w + axis * o.w * 0.13;
     let blink = step(0.85, fract(ev_t() * 0.7));
     return vec4<f32>(vec3<f32>(1.0, 0.15, 0.1) * glint(point_pixels(ship, d, beacon), 1.4) * blink * 1.5, 0.0);
@@ -573,16 +591,16 @@ fn ev_comet(d: vec3<f32>) -> vec4<f32> {
     let nucleus = ev_obj(0).xyz;
     let tail = normalize(ev_obj(1).xyz);
     let length_ = ev_obj(1).w;
-    let bright = params.ev[9].z;
+    let bright = params.ev[EV_EXTRA].z;
     let px = point_pixels(ship, d, nucleus);
     let v = nucleus - ship;
     let across = length(v - d * max(dot(v, d), 0.0));
     var colour = vec3<f32>(1.0, 0.98, 0.92) * glint(px, 1.6) * 2.0;
     colour += vec3<f32>(0.45, 0.95, 0.8) * (exp(-across / 9.0) * 0.6 + exp(-across / 40.0) * 0.25) * bright;
     let ion = tail_glow(d, nucleus, tail, length_, 3.0, 0.045, 1.0);
-    colour += mix(vec3<f32>(0.3, 0.55, 1.0), vec3<f32>(0.45, 0.4, 1.0), params.ev[9].y) * ion * 0.9 * bright;
+    colour += mix(vec3<f32>(0.3, 0.55, 1.0), vec3<f32>(0.45, 0.4, 1.0), params.ev[EV_EXTRA].y) * ion * 0.9 * bright;
     let side = normalize(cross(tail, vec3<f32>(0.0, 1.0, 0.0)));
-    let dust_way = normalize(tail + side * params.ev[9].x);
+    let dust_way = normalize(tail + side * params.ev[EV_EXTRA].x);
     let dust = tail_glow(d, nucleus, dust_way, length_ * 0.7, 8.0, 0.16, 0.3);
     colour += vec3<f32>(1.0, 0.88, 0.66) * dust * 0.55 * bright;
     return vec4<f32>(colour, 0.0);
@@ -687,7 +705,6 @@ fn segment_corner(a: vec3<f32>, b: vec3<f32>, r: f32, corner: vec2<f32>) -> vec2
 
 // Slices of the frame each creature's fins are bounded in, a quad each
 // (`LEVIATHAN_FIN_SLICES` in `mod.rs`).
-const FIN_SLICES: u32 = 16u;
 
 // The fins' light falls under `FAINT` where the ray's offset from the
 // shoulder `v`, off, has |off·m| over `width` (m the fins' normal). For the
@@ -784,13 +801,13 @@ fn vs_leviathan(@builtin(vertex_index) vertex: u32, @builtin(instance_index) ins
     let pod = ev_obj(0);
     let heading = normalize(ev_obj(1).xyz);
     let length_ = ev_obj(1).w;
-    let seed = params.ev[9].z;
+    let seed = params.ev[EV_EXTRA].z;
     let t = ev_t();
-    let fade = params.ev[10].y;
+    let fade = params.ev[EV_STATE].y;
     let side = normalize(cross(heading, vec3<f32>(0.0, 1.0, 0.0)));
     let upward = cross(side, heading);
-    let ca = hue_of(params.ev[9].x) * 0.6 + vec3<f32>(0.1, 0.35, 0.45);
-    let cb = hue_of(params.ev[9].y) * 0.6 + vec3<f32>(0.3, 0.1, 0.4);
+    let ca = hue_of(params.ev[EV_EXTRA].x) * 0.6 + vec3<f32>(0.1, 0.35, 0.45);
+    let cb = hue_of(params.ev[EV_EXTRA].y) * 0.6 + vec3<f32>(0.3, 0.1, 0.4);
     // A quad a lobe for the cores and halos, a slice of the frame a creature
     // for the fins, a creature for the filaments.
     let lobes = PART == 1 || PART == 4;
@@ -926,10 +943,10 @@ fn vs_leviathan_glow(@builtin(vertex_index) index: u32) -> LeviathanGlow {
     var out: LeviathanGlow;
     out.position = full.position;
     out.dir = to_ev(full.dir);
-    let fade = params.ev[10].y;
-    let ca = hue_of(params.ev[9].x) * 0.6 + vec3<f32>(0.1, 0.35, 0.45);
+    let fade = params.ev[EV_STATE].y;
+    let ca = hue_of(params.ev[EV_EXTRA].x) * 0.6 + vec3<f32>(0.1, 0.35, 0.45);
     out.plankton = ca * 0.5 * fade;
-    out.look = vec3<f32>(params.ev[9].z, ev_t() * 3.0, fade);
+    out.look = vec3<f32>(params.ev[EV_EXTRA].z, ev_t() * 3.0, fade);
     return out;
 }
 
@@ -956,8 +973,8 @@ fn ev_remnant(d: vec3<f32>) -> vec4<f32> {
     let o = ev_obj(0);
     let centre = o.xyz;
     let radius = o.w;
-    let scale = params.ev[9].y;
-    let seed = params.ev[9].w;
+    let scale = params.ev[EV_EXTRA].y;
+    let seed = params.ev[EV_EXTRA].w;
     let t = ev_t();
     var colour = vec3<f32>(0.0);
     let hits = sphere_hits(ship, d, centre, radius);
@@ -973,7 +990,7 @@ fn ev_remnant(d: vec3<f32>) -> vec4<f32> {
             let f2 = 1.0 - abs(noise(n * 13.0 * scale + warp_ * 2.0 + 5.0));
             let filaments = pow(f1, 14.0) * 1.1 + pow(f2, 18.0) * 0.7;
             let mixer = smoothstep01(-0.35, 0.45, noise(n * 1.8 + seed));
-            let tint = mix(vec3<f32>(1.0, 0.22, 0.32), vec3<f32>(0.18, 0.92, 0.85), mixer * (0.4 + 0.6 * params.ev[9].x));
+            let tint = mix(vec3<f32>(1.0, 0.22, 0.32), vec3<f32>(0.18, 0.92, 0.85), mixer * (0.4 + 0.6 * params.ev[EV_EXTRA].x));
             colour += tint * filaments * limb * 0.09 / (1.0 + tk / 2500.0);
         }
     }
@@ -1021,11 +1038,11 @@ fn gate() -> Gate {
     let o = ev_obj(0);
     g.centre = o.xyz;
     g.radius = o.w;
-    g.normal = normalize(params.ev[8].xyz);
-    let spin = params.ev[8].w;
-    g.style = params.ev[9].x;
-    g.hue = mix(vec3<f32>(1.0, 0.72, 0.3), select(vec3<f32>(0.75, 0.45, 1.0), vec3<f32>(0.4, 0.85, 1.0), params.ev[9].y < 0.66), step(0.33, params.ev[9].y));
-    g.u = params.ev[9].z;
+    g.normal = normalize(params.ev[EV_ROT].xyz);
+    let spin = params.ev[EV_ROT].w;
+    g.style = params.ev[EV_EXTRA].x;
+    g.hue = mix(vec3<f32>(1.0, 0.72, 0.3), select(vec3<f32>(0.75, 0.45, 1.0), vec3<f32>(0.4, 0.85, 1.0), params.ev[EV_EXTRA].y < 0.66), step(0.33, params.ev[EV_EXTRA].y));
+    g.u = params.ev[EV_EXTRA].z;
     let e1 = normalize(cross(g.normal, vec3<f32>(0.0, 1.0, 0.0)));
     let e2 = cross(g.normal, e1);
     let c = cos(spin);
@@ -1095,7 +1112,6 @@ fn gate_field(q: vec2<f32>, d: vec3<f32>, bend: vec3<f32>, hue: vec4<f32>) -> ve
 }
 
 // The sides of the field's polygon, round its circle.
-const GATE_SIDES: u32 = 48u;
 
 struct GateField {
     @builtin(position) position: vec4<f32>,
@@ -1135,7 +1151,7 @@ fn vs_gate_field(@builtin(vertex_index) vertex: u32) -> GateField {
 
 @fragment
 fn fs_gate_field(in: GateField) -> @location(0) vec4<f32> {
-    return gate_field(in.q, normalize(in.ray), in.bend, in.hue) * params.ev[10].y;
+    return gate_field(in.q, normalize(in.ray), in.bend, in.hue) * params.ev[EV_STATE].y;
 }
 
 struct Glow {
@@ -1162,7 +1178,7 @@ fn vs_glow(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
     var out: Glow;
     out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     let g = gate();
-    let fade = params.ev[10].y;
+    let fade = params.ev[EV_STATE].y;
     let peak = max(g.hue.r, max(g.hue.g, g.hue.b)) * fade;
     var strength = 0.0;
     var reach = 0.0;
@@ -1223,7 +1239,7 @@ fn fs_gate_glint(in: Glow) -> @location(0) vec4<f32> {
     if (PART == 1) {
         light = in.tint * glint(px, 1.2) * (1.0 - field.a);
     }
-    let under = field.rgb * params.ev[10].y;
+    let under = field.rgb * params.ev[EV_STATE].y;
     return vec4<f32>(max(under + light, vec3<f32>(0.0)) - max(under, vec3<f32>(0.0)), 0.0);
 }
 
@@ -1237,9 +1253,9 @@ fn ev_wormhole(d: vec3<f32>) -> vec4<f32> {
     let o = ev_obj(0);
     let centre = o.xyz;
     let radius = o.w;
-    let tint = hue_of(params.ev[9].x) * 0.5 + vec3<f32>(0.5);
-    let swirl = params.ev[9].y;
-    let strength = params.ev[9].z;
+    let tint = hue_of(params.ev[EV_EXTRA].x) * 0.5 + vec3<f32>(0.5);
+    let swirl = params.ev[EV_EXTRA].y;
+    let strength = params.ev[EV_EXTRA].z;
     let t = ev_t();
     let v = centre - ship;
     let tca = dot(v, d);
@@ -1346,11 +1362,11 @@ fn battle_lost() -> i32 {
 
 // The blast: where, when, and how far its shock has come at `t`.
 fn blast_at() -> vec3<f32> {
-    return params.ev[8].xyz;
+    return params.ev[EV_ROT].xyz;
 }
 
 fn shock_radius(t: f32) -> f32 {
-    return max(t - ev_obj(1).z, 0.0) * params.ev[8].w;
+    return max(t - ev_obj(1).z, 0.0) * params.ev[EV_ROT].w;
 }
 
 // Ship `i` of the battle now (0-3 one fleet, 4-7 the other), placed once a
@@ -1359,7 +1375,7 @@ fn shock_radius(t: f32) -> f32 {
 // one flies on to the blast as it dies; the rest are shoved aside by the
 // shock as it passes them.
 fn battle_ship(i: i32) -> array<vec4<f32>, 2> {
-    return array<vec4<f32>, 2>(params.ev[12 + 2 * i], params.ev[13 + 2 * i]);
+    return array<vec4<f32>, 2>(params.ev[EV_FLEET + 2 * i], params.ev[EV_FLEET + 1 + 2 * i]);
 }
 
 // Painted markings, a factor on a hull's colour: the warbird's feathers.
@@ -1942,8 +1958,8 @@ fn ev_battle(d: vec3<f32>) -> vec4<f32> {
     var colour = vec3<f32>(0.0);
     var alpha = 0.0;
     let wave = shock_radius(t);
-    let wave_age = wave / (params.ev[8].w * 9.0);
-    if (wave > 0.0 && wave_age < 1.0 && params.ev[9].y < 0.5) {
+    let wave_age = wave / (params.ev[EV_ROT].w * 9.0);
+    if (wave > 0.0 && wave_age < 1.0 && params.ev[EV_EXTRA].y < 0.5) {
         let v = blast - ship;
         let tca = dot(v, d);
         if (tca > 0.0) {
@@ -2023,7 +2039,7 @@ fn fx_part(reach: vec4<f32>) -> f32 {
 // An effect's light if this pipeline draws it.
 fn fx_keep(light: vec3<f32>) -> vec4<f32> {
     let bright = max(light.x, max(light.y, light.z)) > FX_BRIGHT;
-    return vec4<f32>(select(vec3<f32>(0.0), light * params.ev[10].y, bright != FX_FAR), 0.0);
+    return vec4<f32>(select(vec3<f32>(0.0), light * params.ev[EV_STATE].y, bright != FX_FAR), 0.0);
 }
 
 // A point in the encounter frame in the camera's frame.
@@ -2237,9 +2253,9 @@ fn ev_storm(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
     let o = ev_obj(0);
     let eye = o.xyz;
     let radius = o.w;
-    let axis = normalize(params.ev[8].xyz);
-    let seed = params.ev[9].y;
-    let turn_way = params.ev[9].z;
+    let axis = normalize(params.ev[EV_ROT].xyz);
+    let seed = params.ev[EV_EXTRA].y;
+    let turn_way = params.ev[EV_EXTRA].z;
     let strike = ev_obj(1);
     let t = ev_t();
     var e1 = normalize(cross(axis, vec3<f32>(0.0, 0.0, 1.0)));
@@ -2307,7 +2323,7 @@ fn ev_storm(d: vec3<f32>, s: vec2<f32>) -> vec4<f32> {
         lit += through * span * gas * vec3<f32>(0.0065 * shade, 0.02 * wall, 0.02 * flash);
         through *= exp(-gas * 0.006 * span);
     }
-    let tint = mix(vec3<f32>(0.25, 0.4, 1.0), mix(vec3<f32>(1.0, 0.45, 0.15), vec3<f32>(0.35, 1.0, 0.55), step(0.66, params.ev[9].x)), step(0.33, params.ev[9].x));
+    let tint = mix(vec3<f32>(0.25, 0.4, 1.0), mix(vec3<f32>(1.0, 0.45, 0.15), vec3<f32>(0.35, 1.0, 0.55), step(0.66, params.ev[EV_EXTRA].x)), step(0.33, params.ev[EV_EXTRA].x));
     let hot = mix(tint, vec3<f32>(1.0), 0.55);
     var light = tint * lit.x + hot * lit.y + vec3<f32>(0.9, 0.9, 1.0) * lit.z;
     // The strike's bolt on the frame.
@@ -2425,7 +2441,7 @@ fn dyson_star(d: vec3<f32>, disc: f32, glow: f32) -> vec3<f32> {
 
 @fragment
 fn fs_dyson_panel(in: Panel) -> @location(0) vec4<f32> {
-    let fade = params.ev[10].y;
+    let fade = params.ev[EV_STATE].y;
     var colour = vec4<f32>(0.0);
     if (PART == 1) {
         colour = vec4<f32>(0.0, 0.0, 0.0, 1.0);
@@ -2455,7 +2471,7 @@ fn vs_dyson_star(@builtin(vertex_index) vertex: u32) -> DysonStar {
     var out: DysonStar;
     let o = ev_obj(0);
     // Where the glow's tail, or the disc's own halo, falls past `FAINT`.
-    let light = params.ev[10].y / FAINT;
+    let light = params.ev[EV_STATE].y / FAINT;
     var reach = log(max(0.12 * light, 1.0)) / 0.004;
     if (PART == 2) {
         let r = o.w * 0.11;
@@ -2477,7 +2493,7 @@ fn fs_dyson_star(in: DysonStar) -> @location(0) vec4<f32> {
     } else {
         light = star_disc(ev_ship(), d, ev_obj(0).xyz, ev_obj(0).w * 0.11);
     }
-    return vec4<f32>(light * params.ev[10].y, 0.0);
+    return vec4<f32>(light * params.ev[EV_STATE].y, 0.0);
 }
 
 // The star's disc: limb-darkened, its surface churning.
@@ -2513,12 +2529,11 @@ fn fs_gas(in: Full) -> @location(0) vec4<f32> {
     } else {
         c = ev_storm(d, s);
     }
-    return c * params.ev[10].y;
+    return c * params.ev[EV_STATE].y;
 }
 
 // How many times coarser than the frame the plasma storm and the remnant
 // are drawn (`COARSE` in `mod.rs`).
-const COARSE: f32 = 2.0;
 
 // The plasma storm (14) or the remnant (10) over the sky, from where it was
 // drawn at half the frame's resolution (`fs_gas`, `fs_event`); the
@@ -2528,7 +2543,7 @@ fn fs_coarse(in: Full) -> @location(0) vec4<f32> {
     let uv = in.position.xy / (params.frame.x * 2.0);
     var c = textureSampleLevel(leviathan_halo, halo_sampler, uv, 0.0);
     if (EVENT == 10) {
-        c += vec4<f32>(remnant_star(to_ev(normalize(in.dir))), 0.0) * params.ev[10].y;
+        c += vec4<f32>(remnant_star(to_ev(normalize(in.dir))), 0.0) * params.ev[EV_STATE].y;
     }
     return c;
 }
@@ -2556,7 +2571,7 @@ fn fs_event(in: Full) -> @location(0) vec4<f32> {
     } else if (EVENT == 13) {
         c = ev_battle(d);
     }
-    return c * params.ev[10].y;
+    return c * params.ev[EV_STATE].y;
 }
 
 // ---------------------------------------------------------------------------
@@ -2569,8 +2584,8 @@ fn fs_flux(in: Full) -> @location(0) vec4<f32> {
     let r = max(length(s), 1e-4);
     let theta = atan2(s.y, s.x);
     let logr = log(r);
-    let amount = params.ev[10].w;
-    let t = params.ev[11].w;
+    let amount = params.ev[EV_STATE].w;
+    let t = params.ev[EV_HIT].w;
     var colour = vec3<f32>(0.0);
     if (EVENT == 1) {
         // An ion storm: lightning running out along the field's walls, a
@@ -2723,7 +2738,7 @@ fn vs_overlay_beam(@builtin(vertex_index) index: u32) -> Full {
 
 // The alarm round the round frame's rim.
 fn overlay_alarm(r: f32, t: f32) -> vec3<f32> {
-    let alert = params.ev[10].x;
+    let alert = params.ev[EV_STATE].x;
     if (alert <= 0.3) {
         return vec3<f32>(0.0);
     }
@@ -2737,11 +2752,11 @@ fn overlay_alarm(r: f32, t: f32) -> vec3<f32> {
 
 // The tractor beam's hold: its colour washing in, scan lines rolling.
 fn overlay_beam(y: f32, r: f32, t: f32) -> vec3<f32> {
-    let beam = params.ev[3].w;
+    let beam = params.ev[EV_Y].w;
     if (beam <= 0.01 || EVENT != 0) {
         return vec3<f32>(0.0);
     }
-    let tone = hue_of(params.ev[9].x);
+    let tone = hue_of(params.ev[EV_EXTRA].x);
     let lines = 0.5 + 0.5 * sin(y * 0.5 - t * 20.0);
     return tone * beam * (0.015 + 0.015 * lines) * smoothstep01(BEAM_INNER, 0.95, r) * (1.0 - smoothstep01(0.99, 1.01, r));
 }
@@ -2752,7 +2767,7 @@ fn overlay_beam(y: f32, r: f32, t: f32) -> vec3<f32> {
 // the overlay added over it dimmed as much (`overlay_flash`), as one draw
 // of both would have it.
 fn overlay_white() -> f32 {
-    return clamp(sq(params.ev[4].w), 0.0, 1.0);
+    return clamp(sq(params.ev[EV_Z].w), 0.0, 1.0);
 }
 
 fn overlay_flash(colour: vec3<f32>) -> vec4<f32> {
@@ -2769,12 +2784,11 @@ fn fs_overlay_flash(in: Full) -> @location(0) vec4<f32> {
 // where it falls under `FAINT`. Two instances of a polygon of `HIT_SIDES`
 // round it: a disc for the glow and the ring, or while the glow reaches the
 // ring's inside, one disc for both and nothing.
-const HIT_SIDES: u32 = 32u;
 
 @vertex
 fn vs_overlay_hit(@builtin(vertex_index) index: u32, @builtin(instance_index) part: u32) -> Full {
-    let hit = params.ev[2].w;
-    let at = params.ev[11].xy;
+    let hit = params.ev[EV_X].w;
+    let at = params.ev[EV_HIT].xy;
     let front = (1.0 - hit) * 0.8 + 0.06;
     let glow = log(max(hit * 0.2 / FAINT, 1.0)) / 14.0;
     let flat = cos(PI / f32(HIT_SIDES));
@@ -2814,9 +2828,9 @@ fn fs_overlay_beam(in: Full) -> @location(0) vec4<f32> {
 fn fs_overlay_hit(in: Full) -> @location(0) vec4<f32> {
     let s = half_frame(in.position);
     let r = length(s);
-    let hit = params.ev[2].w;
+    let hit = params.ev[EV_X].w;
     // A ring of hexagons rippling out from it.
-    let at = params.ev[11].xy;
+    let at = params.ev[EV_HIT].xy;
     let dist = length(s - at);
     let front = (1.0 - hit) * 0.8 + 0.06;
     let ring = bump((dist - front) / 0.05) * (1.0 - smoothstep01(0.97, 1.0, r));

@@ -1,6 +1,6 @@
 // The solar tour's map generator: every kind of planet and moon, painted
-// into equirectangular maps from 3D noise on the sphere. Prepended with
-// `noise.wgsl` and the noise volume's declarations (`noise3d.rs`).
+// into equirectangular maps from 3D noise on the sphere. Linked by `build.rs`
+// with the noise it imports (`solar_generate.wgsl`).
 //
 // It runs as many small pipelines, each within the V3D's four-thread
 // register budget, a band of rows per frame (`stream.rs`):
@@ -19,6 +19,9 @@
 // - `fs_lights` (red), `fs_towns` (added) and `fs_clouds` (green): the night
 //   glow and the cloud sheet, for planets.
 // - `fs_sky`: the system's sky (the galactic band).
+
+import package::noise3d::{noise, noised};
+import package::solar::noise::{OCTAVE, PI, TAU, fbm, hash3};
 
 struct Gen {
     // x, y: target size in texels; z: sea level; w: the kind.

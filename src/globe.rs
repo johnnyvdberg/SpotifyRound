@@ -119,7 +119,7 @@ struct Frame {
 /// Per-frame parameters, laid out as 16-byte aligned vectors.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
+pub(crate) struct Uniforms {
     /// x, y: centre in pixels; z: planet radius in pixels; w: atmosphere radius in pixels.
     frame: [f32; 4],
     /// x: surface rotation in turns; y: the cloud sheet's, a little ahead.
@@ -868,7 +868,7 @@ fn upload(gpu: &Graphics, label: &str, packed: &Packed) -> wgpu::TextureView {
 }
 
 /// The globe shader, with the fixed lighting numbers folded in.
-fn shader_source() -> String {
+pub(crate) fn shader_source() -> String {
     format!(
         r#"
 struct Uniforms {{

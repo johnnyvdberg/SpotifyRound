@@ -39,6 +39,11 @@ pub const SKY_HEIGHT: u32 = 512;
 const PROBE_WIDTH: u32 = 128;
 const PROBE_HEIGHT: u32 = 64;
 
+/// The map generator's shader, linked from `shaders/solar/generate.wesl` by
+/// `build.rs`.
+pub(crate) const GENERATE_SHADER: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/solar_generate.wgsl"));
+
 /// The planet maps' width and height: `SOLAR_MAP_SIZE` (the width, rounded
 /// to a power of two from 1024 to 8192), else `MAP_WIDTH`; never more than
 /// the GPU's `limit`.
@@ -67,7 +72,7 @@ const CLIMATE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The generator's parameters, as the shader's `Gen`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GenParams {
+pub(crate) struct GenParams {
     size: [f32; 4],
     offsets: [[f32; 4]; 4],
     plates: [[f32; 4]; 12],
@@ -548,12 +553,9 @@ impl Streamer {
         };
 
         let noise = crate::noise3d::Noise3d::new(device, &gpu.queue);
-        let mut source = String::from(include_str!("noise.wgsl"));
-        source.push_str(crate::noise3d::WGSL);
-        source.push_str(include_str!("generate.wgsl"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Solar generator"),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
+            source: wgpu::ShaderSource::Wgsl(GENERATE_SHADER.into()),
         });
         let height_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Solar height"),
@@ -1403,7 +1405,7 @@ impl MipChain {
     }
 }
 
-const MIP_SHADER: &str = r#"
+pub(crate) const MIP_SHADER: &str = r#"
 struct Varying {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,

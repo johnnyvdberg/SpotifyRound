@@ -1,3 +1,7 @@
+// Hashing and fractal noise shared by the solar shaders.
+
+import package::noise3d::noise;
+
 const TAU: f32 = 6.283185307;
 const PI: f32 = 3.141592653;
 

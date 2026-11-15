@@ -77,7 +77,7 @@ impl Input {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
+pub(crate) struct Uniforms {
     /// Centre x, centre y, radius, thickness.
     geometry: [f32; 4],
     /// Progress, unused, how much of the ring shows, glow strength.
@@ -328,7 +328,7 @@ pub fn render_once(input: &Input) -> Result<Vec<u8>> {
     Ok(ring.read_back(0))
 }
 
-const SHADER: &str = r#"
+pub(crate) const SHADER: &str = r#"
 struct Uniforms {
     geometry: vec4<f32>, // centre x, centre y, radius, thickness
     state: vec4<f32>,    // progress, unused, ring shown, glow strength

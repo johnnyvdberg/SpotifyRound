@@ -20,7 +20,7 @@ mod places;
 mod stream;
 mod terrain;
 mod textures;
-mod world;
+pub(crate) mod world;
 
 /// The museum's paintings, built from `assets/museum` by `build.rs`: their
 /// canvases' sizes and an ETC2 texture array of them, one layer each.
@@ -106,6 +106,8 @@ const MAX_TUNNEL_INDICES: usize = 98_304;
 /// The sea, at half its brightness (`SEA_SCALE` in `scene.wesl`): ten bits a
 /// channel are finer than the panel's eight, and half the size of half
 /// floats, so the GPU's tiles hold twice the pixels.
+/// The scene's shader, linked from `shaders/scene.wesl` by `build.rs`.
+pub(crate) const SCENE_SHADER: &str = include_str!(concat!(env!("OUT_DIR"), "/scene.wgsl"));
 const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -365,7 +367,7 @@ fn ripple_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
 /// Per-frame parameters, in the layout of `Globals` in `scene.wesl`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Globals {
+pub(crate) struct Globals {
     camera: [f32; 4],
     view: [f32; 4],
     right: [f32; 4],
@@ -2310,9 +2312,7 @@ impl Nautilus {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Dive3d shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!(concat!(env!("OUT_DIR"), "/scene.wgsl")).into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(SCENE_SHADER.into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Dive3d pipeline layout"),

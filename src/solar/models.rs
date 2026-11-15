@@ -79,7 +79,7 @@ pub struct Instance {
 }
 
 /// The families of models, each with a pipeline of its own (`MODEL` in
-/// `encounter.wgsl`): rocks, star gates, hive cubes, ring
+/// `encounter.wesl`): rocks, star gates, hive cubes, ring
 /// stations and debris.
 pub const FAMILIES: [&str; 5] = ["rock", "gate", "hive", "ring", "debris"];
 

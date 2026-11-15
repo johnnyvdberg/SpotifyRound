@@ -1,5 +1,7 @@
-// The solar tour's frame. Prepended with `noise.wgsl` and the noise volume's
-// declarations (`noise3d.rs`).
+// The solar tour's frame. `encounter.wesl` imports what it shares from here,
+// and `build.rs` links the two, with the noise they import, into one shader
+// (`solar_frame.wgsl`); the sizes and counts it shares with Rust come from
+// `solar/layout.rs` (`constants::`).
 //
 // Many small pipelines, drawn one after another in a single render pass, each
 // within the V3D's four-thread register budget; the tile buffer blends them on
@@ -44,6 +46,13 @@
 //   are built per map slot (`SLOT`), so each reads one set of textures.
 // - Shadows multiplied into what is drawn: `fs_eclipse` (only when another
 //   body is near the line to the star) and, close up, `fs_ring_shadow`.
+
+import package::noise3d::{noise, noised};
+import package::solar::noise::{PI, TAU, hash3};
+import constants::{
+    MAX_BODIES, EV_ROWS, GLARE_SIDES, DROP_SIDES, CORNER_SIDES, RING_SIDES, MASK_SIDES,
+    LIMB_SIDES, GRID_STRIDE, RIM_SIDES,
+};
 
 struct Body {
     // xyz: centre relative to the camera; w: radius.
@@ -110,9 +119,9 @@ struct Params {
     // effect shows.
     spool: vec4<f32>,
     // The stopover between legs of the jump, and what is seen inside a leg
-    // (`EV_*` in `encounter.wgsl`).
-    ev: array<vec4<f32>, 28>,
-    bodies: array<Body, 16>,
+    // (`EV_*` in `encounter.wesl`).
+    ev: array<vec4<f32>, EV_ROWS>,
+    bodies: array<Body, MAX_BODIES>,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -348,7 +357,6 @@ fn fs_space_baked(in: Full) -> @location(0) vec4<f32> {
 // range, like the background, so every body's mask hides it. Over the
 // whole frame instead (`vs_glare_full`) when it reaches too far round the
 // sky for a polygon (a star flyby).
-const GLARE_SIDES: u32 = 32u;
 // Half a step of the 8-bit sRGB frame near black, in linear light.
 const GLARE_FLOOR: f32 = 1.5e-4;
 
@@ -750,7 +758,6 @@ fn flare(s: vec2<f32>, r: f32) -> vec3<f32> {
 // before the background and writing the depth (`vs_drop_ahead`); behind it,
 // after everything else, a disc out to just past the front, blended over
 // the new system (`vs_drop_behind`, `fs_drop_out`).
-const DROP_SIDES: u32 = 64u;
 
 // How far the front has come across the half frame.
 fn drop_front() -> f32 {
@@ -782,7 +789,6 @@ fn vs_drop_ahead(@builtin(vertex_index) vertex: u32) -> Drop {
 // pass starts with them masked, in front of everything, and nothing drawn
 // after is shaded there (a fifth of the frame). The inner edge is a polygon
 // round the display's circle, never inside it.
-const CORNER_SIDES: u32 = 32u;
 
 @vertex
 fn vs_corners(@builtin(vertex_index) vertex: u32) -> Drop {
@@ -1079,7 +1085,6 @@ fn body_vertex(vertex: u32, instance: u32, bound: f32) -> Quad {
 // behind the planet's depth, so its mask hides them where its disc is in
 // front. Edge on it covers the pixels a ray per pixel would find the rings
 // in, which are next to none; what reaches behind the camera is clipped.
-const RING_SIDES: u32 = 32u;
 
 struct RingQuad {
     @builtin(position) position: vec4<f32>,
@@ -1160,7 +1165,6 @@ fn fs_mask(in: Quad) -> @location(0) vec4<f32> {
 // so every pixel it covers is fully the body's. The few between it and the
 // soft edge are shaded behind the body as well, which costs less than
 // tracing every pixel of the disc.
-const MASK_SIDES: u32 = 64u;
 const MASK_VERTICES: u32 = MASK_SIDES * 3u;
 
 @vertex
@@ -1683,7 +1687,6 @@ fn limb_glow(i: u32, h: Hit, sun: vec3<f32>) -> vec3<f32> {
 // out at the vertices, as at each ray's closest point to the body; per pixel
 // only the air's depth along the ray and the soft edge. Added, strictly in
 // front of the depth mask as `fs_limb` is, so the mask rejects the disc.
-const LIMB_SIDES: u32 = 128u;
 
 struct Limb {
     @builtin(position) position: vec4<f32>,
@@ -1821,7 +1824,6 @@ override RINGS: bool = false;
 // (`SurfaceLook`): only its own code, in as few registers as it needs.
 // ---------------------------------------------------------------------------
 
-const GRID_STRIDE: u32 = 129u;
 
 // What the mesh is of: 0 a mapped world (`fs_globe`); 1 a world whose maps
 // are not in yet (`fs_globe_flat`: its colour folded into `direct`, its
@@ -2146,9 +2148,7 @@ fn fs_probe_globe(in: Globe) -> @location(0) vec4<f32> {
 // ---------------------------------------------------------------------------
 
 // Motes of dust in the box.
-const DUST: u32 = 160u;
 // Sides of the ring the glow is drawn over.
-const RIM_SIDES: u32 = 48u;
 // Where the glow starts, as a share of the view's radius.
 const RIM_INNER: f32 = 0.82;
 

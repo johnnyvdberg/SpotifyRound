@@ -15,36 +15,13 @@
 //! fetches for a finite difference cost as many registers as the hashing.
 //!
 //! Shaders take it as bind group 1: `noise_volume` at binding 0 and
-//! `noise_sampler` at binding 1 (see `WGSL`).
+//! `noise_sampler` at binding 1 (see `shaders/noise3d.wesl`, which shaders
+//! import).
 
 use slint::wgpu_30::wgpu;
 
 /// Cells along each side of the volume.
 pub const SIZE: u32 = 64;
-
-/// The declarations and the noise functions, for shaders to prepend.
-pub const WGSL: &str = r#"
-@group(1) @binding(0) var noise_volume: texture_3d<f32>;
-@group(1) @binding(1) var noise_sampler: sampler;
-
-// Value noise in [-1, 1]: one filtered fetch, the fraction faded first so
-// the linear filter blends along the quintic curve.
-fn noise(x: vec3<f32>) -> f32 {
-    let i = floor(x);
-    let f = x - i;
-    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    return textureSampleLevel(noise_volume, noise_sampler, (i + u + 0.5) / 64.0, 0.0).r * 2.0 - 1.0;
-}
-
-// Value noise and its gradient in one fetch: the gradient is the lattice's,
-// blended along the same curve.
-fn noised(x: vec3<f32>) -> vec4<f32> {
-    let i = floor(x);
-    let f = x - i;
-    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    return textureSampleLevel(noise_volume, noise_sampler, (i + u + 0.5) / 64.0, 0.0) * 2.0 - 1.0;
-}
-"#;
 
 /// The volume, its bind group and the layout pipelines declare it with.
 pub struct Noise3d {

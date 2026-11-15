@@ -28,7 +28,7 @@ mod tests {
         }
     }
 
-    /// Write the scenes' composed shader sources to `SHADER_DUMP_DIR`, as
+    /// Write the scenes' linked shader sources to `SHADER_DUMP_DIR`, as
     /// starting points for variants.
     #[test]
     #[ignore = "writes shader sources; set SHADER_DUMP_DIR"]
@@ -36,17 +36,10 @@ mod tests {
         let Ok(dir) = std::env::var("SHADER_DUMP_DIR") else {
             return;
         };
-        let solar = |file: &str| {
-            format!(
-                "{}{}{}",
-                include_str!("solar/noise.wgsl"),
-                crate::noise3d::WGSL,
-                file
-            )
-        };
         for (name, source) in [
-            ("solar-generate", solar(include_str!("solar/generate.wgsl"))),
-            ("solar-frame", solar(include_str!("solar/frame.wgsl"))),
+            ("solar-generate", crate::solar::stream::GENERATE_SHADER),
+            ("solar-frame", crate::solar::FRAME_SHADER),
+            ("dive3d-scene", crate::dive3d::SCENE_SHADER),
         ] {
             std::fs::write(
                 std::path::Path::new(&dir).join(format!("{name}.wgsl")),
