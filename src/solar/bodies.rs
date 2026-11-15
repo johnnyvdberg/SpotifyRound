@@ -210,8 +210,12 @@ pub(super) fn surface_passes(
     rings: bool,
     close: bool,
 ) -> Vec<Pipe> {
+    // A starbase has no air, sea or clouds, and plating wants none of the
+    // rock's close-up grain: the mesh serves it close up too (its grid
+    // narrows to the patch in view), one pass where the ground close up is
+    // three. Filling the frame on the way in, those were 30 ms on the Pi.
     if let Some(s) = slot
-        && !close
+        && (!close || kind == Kind::Starbase)
     {
         // From afar, the ground, clouds and added light as a mesh in one
         // pass (two for a world with seas: its added light over it). The
