@@ -810,7 +810,7 @@ struct Draw {
 }
 
 /// The parts of the scene a benchmark can leave out, as bits of `skip`
-/// (`DIVE3D_SKIP` in `frame_time`). The bits are the ones `frame_cost` has
+/// (`DIVE3D_SKIP` in `frame_time`). The bits are the ones the benchmarks have
 /// always used; the mask is a `u64` now, so the pass-level switches added for
 /// `effect_cost` get bits of their own without renumbering these.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -4341,87 +4341,6 @@ mod tests {
             scene.draw(&gpu, seconds, 0, 0).expect("a frame");
             wait(&gpu);
         });
-    }
-
-    #[test]
-    #[ignore = "a benchmark; needs a working GPU adapter"]
-    fn frame_cost() {
-        let gpu = crate::gpu::headless().expect("a GPU adapter");
-        println!("adapter: {}, profiler: {}", gpu.adapter, gpu.profiling());
-        let mut scene = Nautilus::new(&gpu).expect("a 3D dive");
-        // The same scene, its sea in half floats as it was before.
-        let mut floats =
-            Nautilus::with_colour(&gpu, wgpu::TextureFormat::Rgba16Float).expect("a 3D dive");
-        // And with every surface a flat grey.
-        let mut plain = Nautilus::with_plain_textures(&gpu).expect("a 3D dive");
-        let variants = [
-            ("everything", 0),
-            ("no terrain", part::TERRAIN),
-            ("no solid models", part::MODELS),
-            ("no glass models", part::GLASS),
-            ("no sprites", part::SPRITES),
-            ("no sun shafts", part::SHAFTS),
-            ("no point lights", part::LIGHTS),
-            ("empty sea", part::SEA),
-            ("quarter pixels", part::QUARTER),
-            ("plain textures", part::PLAIN_TEXTURES),
-            ("no noise", part::NO_NOISE),
-            ("full detail", part::FULL_DETAIL),
-            ("coarsest detail", part::COARSE_DETAIL),
-            ("empty model draws", part::DRAW_CALLS),
-            ("no water", part::BACKGROUND),
-            ("quarter model pixels", part::QUARTER_MODELS),
-            ("cheap models", part::CHEAP_MODELS),
-            ("cheap terrain", part::CHEAP_TERRAIN),
-            ("cheap background", part::CHEAP_BACKGROUND),
-            (
-                "all cheap lights",
-                part::CHEAP_MODELS | part::CHEAP_TERRAIN | part::CHEAP_BACKGROUND,
-            ),
-            ("half-float sea", 0),
-        ];
-        let legs = [1.0, 3.0, 4.0];
-        let frames = 20;
-        // Warm up, so the first variant does not pay for anything the rest skip.
-        for scene in [&mut scene, &mut floats, &mut plain] {
-            for i in 0..10 {
-                scene
-                    .draw(&gpu, leg(1.0) + f64::from(i), 0, 0)
-                    .expect("a frame");
-                gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-            }
-        }
-        let mut everything = 0.0;
-        for (name, skip) in variants {
-            let scene = if name == "half-float sea" {
-                &mut floats
-            } else if skip == part::PLAIN_TEXTURES {
-                &mut plain
-            } else {
-                &mut scene
-            };
-            scene.skip = skip;
-            let mut drawn = 0.0;
-            for &n in &legs {
-                for i in 0..frames {
-                    let seconds = leg(n) + i as f64 * 0.25;
-                    let begun = std::time::Instant::now();
-                    scene
-                        .draw(&gpu, seconds, 0, i as usize % crate::visuals::SLOTS)
-                        .expect("a frame");
-                    gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-                    drawn += begun.elapsed().as_secs_f64();
-                }
-            }
-            let mean = drawn / (legs.len() * frames as usize) as f64 * 1e3;
-            if skip == 0 {
-                everything = mean;
-            }
-            println!(
-                "dive3d cost, {name:>16}: {mean:7.2} ms ({:+.2} ms)",
-                mean - everything
-            );
-        }
     }
 
     /// Price every switch the renderer has, in one build and one process: each

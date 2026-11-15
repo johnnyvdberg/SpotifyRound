@@ -1113,36 +1113,63 @@ fn pi_estimate() {
     std::fs::write(dir.join("solar.tsv"), out).expect("the counts");
 }
 
-/// Frame times through a whole visit, a frame every `SWEEP_STEP`
-/// seconds (default 4) from `SWEEP_FROM` to `SWEEP_TO` (default the
-/// whole tour) of seed `SWEEP_SEED` (default 11; `SWEEP_DRIVE` 1..5 for
-/// another jump drive), each with its phase,
-/// background and draws: where the time goes.
+/// Frame times on whatever adapter is present.
+///
+/// By default: how long the first planet and sky take to stream in, then the
+/// frame time at each key moment of seed `SWEEP_SEED` (default 5), the
+/// heaviest views. With `SWEEP_STEP` set, a sweep instead: a frame every
+/// `SWEEP_STEP` seconds from `SWEEP_FROM` (default 1) to `SWEEP_TO` (default
+/// the whole tour) of seed `SWEEP_SEED` (default 11; `SWEEP_DRIVE` 1..5 for
+/// another jump drive), each with its phase, background and draws: where the
+/// time goes through a whole visit.
 #[test]
 #[ignore = "a benchmark; needs a working GPU adapter"]
-fn frame_sweep() {
+fn frame_time() {
     let gpu = crate::gpu::headless().expect("a GPU adapter");
-    let seed = std::env::var("SWEEP_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(11);
+    let var = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<f64>().ok());
+    let Some(step) = var("SWEEP_STEP") else {
+        let seed = var("SWEEP_SEED").map_or(5, |s| s as u64);
+        let mut solar = Solar::with_seed(&gpu, seed);
+        let started = std::time::Instant::now();
+        let mut frames = 0;
+        let t0 = 1.0;
+        loop {
+            solar.stream(t0);
+            solar.draw(&gpu, t0, frames % SLOTS);
+            frames += 1;
+            if !solar.streamer.busy() || frames > 5000 {
+                break;
+            }
+        }
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        println!(
+            "solar: first planet and sky streamed in {frames} frames, {:.0} ms",
+            started.elapsed().as_secs_f64() * 1e3
+        );
+        for (label, t) in moments(&solar.tour) {
+            settle(&mut solar, &gpu, t);
+            let n = 30;
+            let started = std::time::Instant::now();
+            for i in 0..n {
+                solar.draw(&gpu, t + i as f64 * 0.05, i % SLOTS);
+            }
+            gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+            println!(
+                "solar {label}: {:.2} ms a frame",
+                started.elapsed().as_secs_f64() * 1e3 / n as f64
+            );
+        }
+        return;
+    };
+    let seed = var("SWEEP_SEED").map_or(11, |s| s as u64);
     let mut solar = Solar::with_seed(&gpu, seed);
     // With the meshes, as the app has them seconds in: without, the
     // stopovers that need them are swapped for others.
     wait_for_models(&mut solar, &gpu);
     solar.tour = tour_for(seed, 0, true, None);
-    solar.drive_override = std::env::var("SWEEP_DRIVE")
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let var = |k: &str, d: f64| {
-        std::env::var(k)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(d)
-    };
-    let end = var("SWEEP_TO", solar.tour.total);
-    let step = var("SWEEP_STEP", 4.0);
-    let mut t = var("SWEEP_FROM", 1.0);
+    solar.drive_override = var("SWEEP_DRIVE").map(|d| d as u32);
+    let end = var("SWEEP_TO").unwrap_or(solar.tour.total);
+    let mut t = var("SWEEP_FROM").unwrap_or(1.0);
     while t < end {
         settle(&mut solar, &gpu, t);
         let n = 10;
@@ -1162,44 +1189,6 @@ fn frame_sweep() {
             solar.drawn.borrow()
         );
         t += step;
-    }
-}
-
-/// Frame times in the heaviest views, and how long streaming a planet
-/// takes in frames.
-#[test]
-#[ignore = "a benchmark; needs a working GPU adapter"]
-fn frame_time() {
-    let gpu = crate::gpu::headless().expect("a GPU adapter");
-    let mut solar = Solar::with_seed(&gpu, 5);
-    let started = std::time::Instant::now();
-    let mut frames = 0;
-    let t0 = 1.0;
-    loop {
-        solar.stream(t0);
-        solar.draw(&gpu, t0, frames % SLOTS);
-        frames += 1;
-        if !solar.streamer.busy() || frames > 5000 {
-            break;
-        }
-    }
-    gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-    println!(
-        "solar: first planet and sky streamed in {frames} frames, {:.0} ms",
-        started.elapsed().as_secs_f64() * 1e3
-    );
-    for (label, t) in moments(&solar.tour) {
-        settle(&mut solar, &gpu, t);
-        let n = 30;
-        let started = std::time::Instant::now();
-        for i in 0..n {
-            solar.draw(&gpu, t + i as f64 * 0.05, i % SLOTS);
-        }
-        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        println!(
-            "solar {label}: {:.2} ms a frame",
-            started.elapsed().as_secs_f64() * 1e3 / n as f64
-        );
     }
 }
 

@@ -34,7 +34,7 @@ Budget: at the panel's 60.07 Hz a frame has 16.6 ms of render engine. The **scen
 
 ## The scene plus the UI, live vs benchmark
 
-Solar seed 11, the scene alone (`solar::tests::frame_sweep`, kiosk service stopped) against the
+Solar seed 11, the scene alone (`solar::tests::frame_time` with `SWEEP_STEP` set (formerly `frame_time` sweep), kiosk service stopped) against the
 kiosk running it live (`gpu_ms` in the visualizer log):
 
 | Stretch | Scene alone | Live | Gap |
@@ -55,13 +55,13 @@ kiosk running it live (`gpu_ms` in the visualizer log):
   0.01 ms, but nothing else is left on the GPU.
 - **`gpu_ms` in the visualizer log and the stats overlay is the whole render engine** (scene, UI
   and anything else on the GPU) divided by the scene's frames. It is not the scene's time.
-  `frame_sweep` and `hotspots` time the scene alone.
+  `frame_time` sweep and `hotspots` time the scene alone.
 - **Per-process split**: `sudo cat /proc/<pid>/fdinfo/<fd>` for each v3d fd gives
   `drm-engine-render` and `drm-engine-tfu` in ns. Read it twice and take the difference. cage
   and the kiosk it launched share cage's client id.
 - **The solar tour's system comes from `SOLAR_SEED`.** `SPOTIFY_ROUND_SEED` seeds the other
   scenes. Without `SOLAR_SEED` a live run flies a random system and cannot be compared with
-  `frame_sweep`.
+  `frame_time` sweep.
 - **`SPOTIFY_ROUND_DISPLAY=gl` cannot show the solar tour.** Its frame texture needs
   `VIEW_FORMATS`, which wgpu's GL backend lacks, and the app falls back to another scene. The
   kiosk runs Vulkan.

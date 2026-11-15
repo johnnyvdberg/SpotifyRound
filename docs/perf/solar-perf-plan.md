@@ -18,7 +18,7 @@ What was measured for this plan, and what was not:
 
 ## 0. Measured on the Pi (2026-11-11)
 
-`solar::tests::frame_sweep` on the Pi 5, kiosk stopped, a frame every 8 s through seeds 5 and 23
+`solar::tests::frame_time` with `SWEEP_STEP` set (formerly `frame_time` sweep) on the Pi 5, kiosk stopped, a frame every 8 s through seeds 5 and 23
 (medians; run to run within 0.01 ms). Headless runs need `WGPU_BACKEND=vulkan` on the Pi: GL lacks
 the frame texture's `VIEW_FORMATS`. Base `5e6a964`, before S1–S5:
 
@@ -169,7 +169,7 @@ and fmt). For the solar tour in particular:
    what may differ and by how much.
 2. **Estimate**: `deploy/pi-estimate.sh` before and after, after
    `deploy/v3d-shaderdb/check.sh . --update` so new pipelines have rows.
-3. **On the Pi**: `solar::tests::frame_sweep` (`SWEEP_SEED=5` and `23`) through the test binary, in
+3. **On the Pi**: `solar::tests::frame_time` with `SWEEP_STEP` set (formerly `frame_time` sweep) (`SWEEP_SEED=5` and `23`) through the test binary, in
    the same session before and after, kiosk frozen (rule 3 of §4.0). Report orbit, transfer and jump
    medians and the worst frame.
 4. **No `discard`** in any shader of the frame's pass: one shader that can discard turns the V3D's

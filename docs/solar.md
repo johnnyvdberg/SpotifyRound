@@ -1,8 +1,7 @@
 # The Solar tour
 
 One of the idle visualisers (see the [feature overview](features.md)). The code is in `src/solar/`
-(timeline in `tour.rs`, systems in `system.rs`, shaders in `frame.wgsl`, `encounter.wgsl` and
-`generate.wgsl`); performance notes are in [solar-perf-plan.md](perf/solar-perf-plan.md).
+(timeline in `tour.rs`, systems in `system.rs`), its shaders in `src/shaders/solar/`; performance notes are in [solar-perf-plan.md](perf/solar-perf-plan.md).
 
 ## Systems and the tour
 

@@ -110,7 +110,7 @@ ssh -t <user>@<pi> 'cd spotify-round/target/release && mv spotify-round.new spot
 ```
 
 `--tests` also builds the test binary, `target/pi/spotify-round-tests`, to run the benchmarks on the
-Pi without a Rust toolchain there, for example `./spotify-round-tests dive3d::tests::frame_cost
+Pi without a Rust toolchain there, for example `./spotify-round-tests dive3d::tests::frame_time
 --ignored --nocapture`. Arguments after `--` go to cargo: `deploy/build-for-pi.sh -- --features kms`.
 
 Debug builds are usable too: `Cargo.toml` keeps the app at `opt-level = 1` with line tables but

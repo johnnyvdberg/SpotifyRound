@@ -11,17 +11,35 @@ src/
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
 ├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
 ├── noise3d.rs         a 64³ volume of smooth noise and its gradient, which the planet and solar shaders sample
-├── shader_lab.rs      tests that compile WGSL experiments and dump the planet and solar shaders for shader-db
+├── shader_lab.rs      tests that compile WGSL experiments and dump the shaders for shader-db
+├── shader_check.rs    tests: every shader validated with naga, every uniform struct checked against it
+├── gpu_cost.rs        tests: what the GPU at hand charges for instructions, passes and uploads
+├── v3d_perf.rs        tests: the Pi's V3D performance counters
 ├── solar/             idle scene: the grand tour of star systems
+│   ├── mod.rs         the scene: its state, the frame loop's entry points
+│   ├── setup.rs       pipelines, bind groups and render targets, built once
+│   ├── pipe.rs        the pipeline keys
+│   ├── layout.rs      sizes and `ev` rows shared with the shaders (injected by build.rs)
+│   ├── frame.rs       one frame: uniforms, instance buffers and the passes
+│   ├── orders.rs      draw order of the bodies and models
+│   ├── bodies.rs      the bodies in view and how each is drawn
+│   ├── encounters.rs  what the stopovers between stars place each frame: fleets, panels, effects
+│   ├── bake.rs        the starfield, sky, crater and gas maps baked once a system
 │   ├── system.rs      seeded stars, planets, rings and moons, with real masses and orbital speeds
 │   ├── tour.rs        the timeline: transfers, orbits, departure, hyperjump; camera and HUD at any moment
+│   ├── voyage.rs      the encounters between the stars and when they happen
+│   ├── models.rs      the starship and station meshes, built on a worker thread
 │   ├── scan.rs        the orbital survey: what each scan finds about a planet, and when
+│   ├── labels.rs      the labels on the worlds in view
+│   ├── console.rs     the ship's computer
 │   ├── stream.rs      paints planet, moon and sky maps on the GPU a band of rows per frame, into two slots
-│   ├── generate.wgsl  the map generator for every kind of body
-│   └── frame.wgsl     background (stars, galaxy, glare, warp) and one ray-traced quad per body
+│   └── tests.rs       unit tests, screenshots and benchmarks
 ├── shaders/           WESL package, linked to WGSL by `build.rs`
 │   ├── common.wesl    shared smoothing, distance and noise functions
+│   ├── noise3d.wesl   sampling the 64³ noise volume
 │   ├── scene.wesl     the dive: water, seabed, models, glass and sprites
+│   └── solar/         the tour: frame.wesl (background, glare, warp, bodies), encounter.wesl
+│                      (the stopovers), generate.wesl (the map generator), noise.wesl
 ├── dive3d/            idle scene: the Nautilus' voyage, rasterised in 3D
 │   ├── mod.rs         renderer: passes, pipelines, lighting; draws the sea full-panel
 │   ├── helm.rs        how the boat moves: a 20 m hull's track, height, pitch, roll and clearances
@@ -54,8 +72,9 @@ build.rs               Slint + WESL build steps; the WGSL artifacts go to OUT_DI
 ```
 
 **Shader and mesh tooling.** The shaders are a small [WESL](https://wesl-lang.dev/) package under
-`src/shaders/`: `common.wesl` is imported by the two root shaders, and `build.rs` links each root to
-plain WGSL in `OUT_DIR` before wgpu sees it. The models are reordered with
+`src/shaders/`. `build.rs` links each root (the dive's `scene.wesl`, the tour's
+`solar/encounter.wesl` and `solar/generate.wesl`) to plain WGSL in `OUT_DIR` before wgpu sees it,
+and injects the layout constants of `src/solar/layout.rs` so Rust and the shaders cannot disagree. The models are reordered with
 [meshoptimizer](https://github.com/zeux/meshoptimizer) (`meshopt`) for vertex fetch and post-transform
 cache locality, and the CPU mesh math uses [`glam`](https://github.com/bitshifter/glam-rs).
 `wgpu-profiler` wraps the Nautilus encoder when `SPOTIFY_ROUND_PROFILE=1` and the adapter exposes
@@ -93,11 +112,19 @@ constant rate instead of twitching as the answers arrive.
 
 How the costs are measured is in [benchmarking.md](benchmarking.md). What the measurements led to:
 
-- Slint draws the window with **Skia**, which compiles a small shader for each kind of draw.
-  femtovg, Slint's other GPU renderer, runs one 1090-instruction shader for every paint type: a
-  full-screen femtovg layer cost about 5 ms on the Pi against 0.4 ms for a trivial shader, and the
-  player alone 25 ms of the 16.7 ms a frame has. `--no-default-features --features femtovg,full-hd`
-  switches back, to compare.
+- The display opens its device on **Vulkan** and Slint draws the window with **Skia**, which compiles
+  a small shader for each kind of draw. `SPOTIFY_ROUND_DISPLAY=gl` opens it on OpenGL ES instead,
+  where Skia cannot draw, so the window is drawn by **femtovg**. Stock femtovg runs one
+  1090-instruction shader for every paint type (a full-screen layer cost about 5 ms on the Pi), so
+  the copy in `vendor/femtovg` specialises its shader per pipeline. GL measured as fast or faster in
+  the benchmarks, but on the kiosk in daily use Vulkan was faster and GL's driver costs more CPU on
+  the UI thread, so Vulkan is the default (`DISPLAY_GL_DEFAULT` in `gpu.rs`).
+- Headless, the tests and benchmarks open OpenGL ES first on the Pi: Mesa's GL driver runs the V3D's
+  early-Z and its Vulkan driver does not, which made every frame of the dive 0.9–2.6 ms slower.
+- The device is opened with explicit limits, the Pi's baseline (16 textures a stage, 16 KiB uniform
+  blocks) lowered further wherever an adapter offers less, so a desktop run fails on what the Pi
+  could not draw. On Vulkan, compiled pipelines are kept in a disk cache in the user's cache
+  directory (`SPOTIFY_ROUND_PIPELINE_CACHE=0` turns it off).
 - The Nautilus' sea is the panel's full **1080 × 1080** with **one** sample, handed to Slint as one
   texture. Its budget and what it spends it on are in [docs/nautilus.md](nautilus.md) and
   [docs/perf/pipeline-optimization.md](perf/pipeline-optimization.md).
@@ -116,11 +143,6 @@ How the costs are measured is in [benchmarking.md](benchmarking.md). What the me
 - The visualizer keeps two frames in flight, no more. A scene thread that submits on its own clock
   queues work ahead of the window's frames faster than the GPU finishes it, until every frame on
   screen is late.
-
-`SPOTIFY_ROUND_SCENE=globe` (or `nautilus` or `solar`) shows that scene from the start, for measuring one with
-`SPOTIFY_ROUND_FULL_SPEED`. `WGPU_BACKEND` picks the backend (`gl`, `vulkan`). The display runs on
-Vulkan, because wgpu's OpenGL ES backend cannot present to cage's window; the tests and benchmarks
-run headless on the Pi's OpenGL ES driver, which is faster there (it has early-Z).
 
 ## Idle scenes
 
