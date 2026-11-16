@@ -7,11 +7,11 @@ use super::super::layout::*;
 use super::super::models::{Instance, Key};
 use super::super::tour::starbase::{
     BEND, BERTH, BORE, CRADLE, FUNNEL, LOCK, LOCK_SEGMENTS, SEGMENT, SEGMENTS, SERVICE,
-    TUNNEL_LENGTH, bend, tunnel_end,
+    TUNNEL_LENGTH, bend, far_lock, far_wall, tunnel_end,
 };
 use super::super::tour::{BaseScene, BaseStage};
 use super::mesh::piece;
-use super::{port, smoothstep, traffic, world};
+use super::{deep, port, smoothstep, traffic, world};
 
 /// Segments drawn either side of the camera: the fog hides the rest.
 const REACH: i32 = 11;
@@ -66,10 +66,16 @@ pub fn segments(b: &BaseScene) -> (u32, u32) {
     (first as u32, (last - first).max(0) as u32)
 }
 
-/// Whether the port is in view, and with it the world in the open round
-/// it (`vs_shell`).
+/// Whether the world in the open shows round the camera (`vs_shell`):
+/// from the tunnel's end on, while the way to it is open.
+pub fn world_shown(b: &BaseScene) -> bool {
+    b.inside && !b.far && b.doors[1] > 0.0 && b.ship[2] >= tunnel_end() - 2500.0
+}
+
+/// Whether the port is in view: in it, and until the crossing has left it
+/// well behind.
 pub fn port_shown(b: &BaseScene) -> bool {
-    b.inside && b.doors[1] > 0.0 && b.ship[2] >= tunnel_end() - 2500.0
+    world_shown(b) && b.ship[2] < tunnel_end() + (CRADLE + port::LENGTH as f64) + 3000.0
 }
 
 /// Whether the ship's own bow is drawn, below the cockpit: while it
@@ -223,9 +229,11 @@ pub fn instances(b: &BaseScene, out: &mut Vec<(Key, Instance)>) {
     if count > 0 {
         traffic::cavern(b, out);
     }
-    if b.doors[1] > 0.0 {
+    if b.doors[1] > 0.0 && !b.far {
         world::towns(b, out);
     }
+    deep::features(b, out);
+    far_airlock(b, out);
     if !port_shown(b) {
         return;
     }
@@ -269,6 +277,43 @@ pub fn instances(b: &BaseScene, out: &mut Vec<(Key, Instance)>) {
             base(piece::BOW),
             instance(at, 1.0, Quat::from_rotation_arc(Vec3::Z, heading), none),
         ));
+    }
+}
+
+/// The far wall's airlock, from the crossing until the scene turns: its
+/// chamber turned end for end (the world's door first), its doors' leaves.
+fn far_airlock(b: &BaseScene, out: &mut Vec<(Key, Instance)>) {
+    if !b.inside || b.far || !matches!(b.stage, BaseStage::Crossing | BaseStage::Egress) {
+        return;
+    }
+    // Where the wall is drawn, the scene drawn back along the world.
+    let (wall, lock) = ((far_wall() - b.fold) as f32, (far_lock() - b.fold) as f32);
+    if (b.ship[2] as f32) < wall - 6000.0 {
+        return;
+    }
+    let x = BEND as f32;
+    let status = if b.doors[0] >= 1.0 { 1.0 } else { 0.0 };
+    out.push((
+        base(piece::LOCK),
+        instance(
+            Vec3::new(x, 0.0, lock),
+            1.0,
+            Quat::from_rotation_y(std::f32::consts::PI),
+            [status, 0.0, 0.0, 0.0],
+        ),
+    ));
+    let length = (SEGMENT * LOCK_SEGMENTS as f64) as f32;
+    for (open, depth) in [(b.doors[1], wall + 1.5), (b.doors[0], wall + length - 1.5)] {
+        let slide = open as f32 * (BORE as f32 + 6.0);
+        for (side, turn) in [
+            (1.0f32, Quat::IDENTITY),
+            (-1.0, Quat::from_rotation_z(std::f32::consts::PI)),
+        ] {
+            out.push((
+                base(piece::LEAF),
+                instance(Vec3::new(x + side * slide, 0.0, depth), 1.0, turn, [0.0; 4]),
+            ));
+        }
     }
 }
 

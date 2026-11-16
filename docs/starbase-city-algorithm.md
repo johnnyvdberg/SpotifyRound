@@ -85,5 +85,11 @@ figures, and the skyline advice is reasoning from those sources rather than find
 - The noise the density is cut against is value noise scaled ×1.6, as its spread is narrower than
   the ±1 the 0.22 assumed.
 - Houses (low suburbs) are roofs on the map only, never meshes; the sprawl patch is no longer placed.
+- The cores were made more prominent after: blocks of 130 m and lots of 55 (not 110 and 45), heights
+  `(30 + 520 k²) e^(0.45 g)` up to 700 m, lighter hulls and brighter windows, and the tallest kept to
+  32 km. Cars are lights on the road table's pieces (`roads.rs`), not the map alone.
+- The haze is now exponential on both, two-thirds at 11 km, for the 2,000 km world (its far end
+  out of sight); the map's lengths are mirrored past the port and their relief lowered at their
+  ends, under the bulkheads (`sections.rs`).
 - The map's haze was brought to the buildings' (9 km), not theirs to the map's (14 km): the
   per-pixel test to tell a world building from a port structure cost `fs_base` its four threads.

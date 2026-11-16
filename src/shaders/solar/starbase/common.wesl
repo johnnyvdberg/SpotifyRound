@@ -15,7 +15,7 @@
 
 import package::solar::noise::TAU;
 import package::solar::frame::params;
-import package::solar::starbase::pane::WORLD_HAZE;
+import package::solar::starbase::pane::{WORLD_FOG, WORLD_HAZE};
 import constants::{EV_BASE, EV_SHIP};
 
 // Drawn over the moon-sized body it stands on (whose depth is its place in
@@ -53,7 +53,8 @@ fn base_fog(colour: vec3<f32>, distance: f32, p: vec3<f32>) -> vec3<f32> {
 // in the world (`open`), and the world's there.
 fn base_haze(colour: vec3<f32>, distance: f32, p: vec3<f32>, open: f32) -> vec3<f32> {
     let port = max(step(params.ev[EV_BASE + 2].w, p.z), open);
-    return mix(colour, mix(TUNNEL_FOG, WORLD_HAZE, port), distance / (distance + mix(1500.0, 9000.0, port)));
+    let thick = select(distance / (distance + 1500.0), 1.0 - exp(-distance / WORLD_FOG), port > 0.5);
+    return mix(colour, mix(TUNNEL_FOG, WORLD_HAZE, port), thick);
 }
 
 // The tunnel's line: how far right it is at depth `z` (`tour::starbase::bend`).

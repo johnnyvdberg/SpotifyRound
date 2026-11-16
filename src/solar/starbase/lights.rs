@@ -1,13 +1,14 @@
 //! The base's lights that are not its meshes' own, drawn as the battles'
 //! effects are: seen from outside, the corridor's beacons running in to
 //! the mouth and the ship given priority, its engines; in the port, the
-//! beacons at the ship's own dock.
+//! beacons at the ship's own dock, and the cars on the world's roads.
 
 use glam::Vec3;
 
 use super::super::encounters::{FX_BRIGHT, FX_DIM, FX_GLINT, Fx, fx_falloff};
 use super::super::tour::starbase::{SERVICE, tunnel_end};
 use super::super::tour::{BaseScene, BaseStage};
+use super::roads;
 use super::scene::{cradle, ship};
 
 /// A glint at `p`, `size` pixels.
@@ -89,6 +90,10 @@ pub fn effects(b: &BaseScene) -> [Vec<Fx>; 6] {
                 colour,
             );
         }
+    }
+    // The cars on the world's roads.
+    for car in roads::cars(b) {
+        glint(&mut out, car.at, car.size, car.colour);
     }
     out
 }

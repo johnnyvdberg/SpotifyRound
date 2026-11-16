@@ -162,9 +162,10 @@ fn base_structure(q: vec3<f32>, n: vec3<f32>, part: i32, p: vec3<f32>, tone: f32
         albedo = mix(vec3<f32>(0.03), vec3<f32>(0.8, 0.6, 0.05), step(0.5, fract((q.x + q.y + q.z) * 0.25)));
     } else if (part == 7) {
         // Windows in a row: a ship's, a cabin's, or a tower's (dimmer by
-        // its tone, for a town far off).
+        // its tone, for a town far off; brighter in a city's core, its
+        // `look.x` negative).
         let pane = step(0.2, fract(q.y * 0.2)) * step(0.25, fract((q.z + q.x) * 0.13));
-        glow = vec3<f32>(1.0, 0.82, 0.55) * (0.12 + 0.7 * pane) * tone;
+        glow = vec3<f32>(1.0, 0.82, 0.55) * (0.12 + 0.7 * pane) * tone * (1.0 - 1.2 * min(look.x, 0.0));
         albedo = vec3<f32>(0.02);
     } else {
         // A ship's engines and lamps: dim at rest, bright under way.

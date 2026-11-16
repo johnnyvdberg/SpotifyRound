@@ -3779,6 +3779,7 @@ mod starbase_tests {
             let mut t = start - 1.0;
             let mut deepest: f64 = f64::MAX;
             let mut last = sub(tour.view(t).position, centre(t));
+            let mut last_inside = false;
             while t < end + 1.0 {
                 let view = tour.view(t);
                 let rel = sub(view.position, centre(t));
@@ -3792,15 +3793,19 @@ mod starbase_tests {
                         r / radius
                     );
                 }
-                // No leap greater than the orbit's own pace.
+                // No leap greater than the orbit's own pace; but for the
+                // turn to the far side, made inside the sealed far lock,
+                // where nothing outside is drawn.
                 let step = length(sub(rel, last));
+                let turned = view.inside && last_inside;
                 assert!(
-                    step < radius * 0.02,
+                    turned || step < radius * 0.02,
                     "a leap of {} radii at {t:.2}",
                     step / radius
                 );
                 assert!((length(view.forward) - 1.0).abs() < 1e-6);
                 last = rel;
+                last_inside = view.inside;
                 t += h;
             }
             // Down through the mouth, at the megastructure's top, and well

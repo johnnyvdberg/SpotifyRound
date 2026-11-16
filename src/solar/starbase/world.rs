@@ -17,6 +17,7 @@ use super::super::tour::starbase::FUNNEL;
 use super::city::{self, ALONG, GROUND, ROUND, kind, shape};
 use super::mesh::piece;
 use super::scene::{base, instance, seen, ship};
+use super::sections;
 
 /// The cylinder's axis across the base's frame (`WORLD_AXIS`).
 const AXIS: f32 = 200.0;
@@ -30,13 +31,16 @@ const BUDGET: usize = 2200;
 /// Within this, every building in its own shape; beyond, towers plain.
 const NEAR: f32 = 6500.0;
 const FAR: f32 = 20_000.0;
+/// The tallest, the skylines' peaks, are drawn this far, and so tall.
+const FAR_TALL: f32 = 32_000.0;
+const TALL: f32 = 150.0;
 /// The squares the buildings are kept in, round and along a tile.
 const SQUARES: [usize; 2] = [24, 12];
 
 /// Muted hulls, low in saturation, by district (the core's cool greys,
 /// the works' dark, the high-rise's warm stone), two each.
 const TINTS: [[[f32; 3]; 2]; 3] = [
-    [[0.8, 0.84, 0.92], [0.9, 0.92, 0.95]],
+    [[1.12, 1.18, 1.3], [1.25, 1.25, 1.3]],
     [[0.6, 0.6, 0.62], [0.7, 0.66, 0.62]],
     [[0.94, 0.88, 0.8], [0.88, 0.84, 0.82]],
 ];
@@ -52,6 +56,9 @@ struct Ready {
     far: u32,
     scale: f32,
     turn: Quat,
+    /// Its turn where its length of the map is laid mirrored round
+    /// (`sections::mirrored`), standing at `out` mirrored.
+    mirrored: Quat,
     look: [f32; 4],
 }
 
@@ -77,6 +84,11 @@ fn prepare() -> Vec<Vec<Ready>> {
         let east = Vec3::new(-s, c, 0.0);
         let x = east * b.turn.cos() + Vec3::Z * b.turn.sin();
         let turn = Quat::from_mat3(&Mat3::from_cols(x, up.cross(x), up));
+        // Mirrored round: at the angle's negative, its way along the
+        // ground reflected (a turn, not a reflection, of its mesh).
+        let up_m = -Vec3::new(c, -s, 0.0);
+        let x_m = -Vec3::new(s, c, 0.0) * b.turn.cos() + Vec3::Z * b.turn.sin();
+        let mirrored = Quat::from_mat3(&Mat3::from_cols(x_m, up_m.cross(x_m), up_m));
         let tower = matches!(b.shape, shape::SLAB | shape::TAPER | shape::ROUND);
         let near = match b.shape {
             shape::BLOCK => piece::TOWER_BLOCK,
@@ -102,7 +114,15 @@ fn prepare() -> Vec<Vec<Ready>> {
             far: if tower { piece::TOWER_FAR } else { near },
             scale: 1.0 / city::extent(b.shape)[2],
             turn,
-            look: [0.0, tint[0], tint[1], tint[2]],
+            mirrored,
+            // The core's windows lit brighter (`base_structure` reads a
+            // negative `look.x` so; a ship's is 0 or more).
+            look: [
+                if district == 0 { -1.0 } else { 0.0 },
+                tint[0],
+                tint[1],
+                tint[2],
+            ],
         });
     }
     squares
@@ -117,18 +137,23 @@ pub(super) fn towns(b: &BaseScene, out: &mut Vec<(Key, Instance)>) {
 fn place(b: &BaseScene, squares: &[Vec<Ready>], out: &mut Vec<(Key, Instance)>) {
     let eye = ship(b);
     // The map's own place along this base (`shift` in `pane.wesl`).
-    let shift = (b.seed % 997) as f32 * 0.0173;
-    let tiles = ((eye.z - FAR) / ALONG + shift).floor() as i32
-        ..=((eye.z + FAR) / ALONG + shift).ceil() as i32;
+    let shift = sections::shift(b);
+    let tiles = ((eye.z - FAR_TALL) / ALONG + shift).floor() as i32
+        ..=((eye.z + FAR_TALL) / ALONG + shift).ceil() as i32;
     let size = [ROUND / SQUARES[0] as f32, ALONG / SQUARES[1] as f32];
-    let mut seen_now: Vec<(f32, f32, Vec3, &Ready)> = Vec::new();
+    let mut seen_now: Vec<(f32, f32, Vec3, &Ready, bool)> = Vec::new();
     for n in tiles {
+        let flip = if sections::mirrored(n, shift) {
+            -1.0
+        } else {
+            1.0
+        };
         for gz in 0..SQUARES[1] {
             for gx in 0..SQUARES[0] {
                 let theta = (gx as f32 + 0.5) * size[0] / GROUND;
                 let z = ((gz as f32 + 0.5) * size[1] / ALONG - shift + n as f32) * ALONG;
-                let middle = Vec3::new(AXIS + GROUND * theta.cos(), GROUND * theta.sin(), z);
-                if (middle - eye).length() > FAR + size[0] || !seen(b, middle, size[0]) {
+                let middle = Vec3::new(AXIS + GROUND * theta.cos(), flip * GROUND * theta.sin(), z);
+                if (middle - eye).length() > FAR_TALL + size[0] || !seen(b, middle, size[0]) {
                     continue;
                 }
                 for r in &squares[gz * SQUARES[0] + gx] {
@@ -136,11 +161,11 @@ fn place(b: &BaseScene, squares: &[Vec<Ready>], out: &mut Vec<(Key, Instance)>) 
                     if z < FUNNEL as f32 + 200.0 {
                         continue;
                     }
-                    let at = Vec3::new(AXIS + GROUND * r.out[0], GROUND * r.out[1], z);
+                    let at = Vec3::new(AXIS + GROUND * r.out[0], flip * GROUND * r.out[1], z);
                     let away = (at - eye).length();
                     let tall = r.height / away;
-                    if tall > SHOWN && away < FAR {
-                        seen_now.push((tall, away, at, r));
+                    if tall > SHOWN && (away < FAR || (away < FAR_TALL && r.height > TALL)) {
+                        seen_now.push((tall, away, at, r, flip < 0.0));
                     }
                 }
             }
@@ -157,7 +182,7 @@ fn place(b: &BaseScene, squares: &[Vec<Ready>], out: &mut Vec<(Key, Instance)>) 
             .fold(f32::MAX, f32::min)
             .max(SHOWN);
     }
-    for (tall, away, at, r) in seen_now {
+    for (tall, away, at, r, mirrored) in seen_now {
         // Grown out of its roof from the cut, full size half as tall again.
         let t = ((tall - cut) / (cut * (FADE - 1.0))).clamp(0.0, 1.0);
         let grown = t * t * (3.0 - 2.0 * t);
@@ -167,7 +192,12 @@ fn place(b: &BaseScene, squares: &[Vec<Ready>], out: &mut Vec<(Key, Instance)>) 
         let key = if away > NEAR { r.far } else { r.near };
         out.push((
             base(key),
-            instance(at, r.height * r.scale * grown, r.turn, r.look),
+            instance(
+                at,
+                r.height * r.scale * grown,
+                if mirrored { r.mirrored } else { r.turn },
+                r.look,
+            ),
         ));
     }
 }

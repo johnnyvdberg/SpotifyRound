@@ -2,8 +2,16 @@
 //! ship calls approach control, is cleared to dock (or told to hold while
 //! priority traffic goes in first), lines up on its corridor, flies in
 //! through the mouth and down a tunnel to a bay, docks, is serviced, then
-//! undocks, turns about, flies back out and climbs back into the orbit it
-//! left, from where the tour goes on as after any other orbit.
+//! undocks and flies on through the whole of the world inside, along its
+//! axis, to a second airlock in the wall at its far end, and leaves by it
+//! from the far side of the base, climbing back into the orbit from there,
+//! from where the tour goes on as after any other orbit.
+//!
+//! The far side is the near side turned about: while both of the far
+//! lock's doors are shut and nothing but its chamber is drawn, the scene
+//! changes to the frame of a mouth on the far side of the base (`far`), in
+//! which the ship stands in the near lock's place facing out; so the way out
+//! is the way in, flown backward, with nothing new to draw.
 //!
 //! The way in is staged like a drive spooling up: one segment
 //! (`BaseStage::Approach`) whose steps (contact, clearance, the hold,
@@ -37,8 +45,9 @@ pub const TUNNEL: f64 = 25.0;
 pub const BERTH: f64 = 15.0;
 pub const SERVICE: f64 = 40.0;
 pub const UNDOCK: f64 = 12.0;
-pub const OUTBOUND: f64 = 22.0;
-pub const CLIMB: f64 = 14.0;
+pub const CROSSING: f64 = 180.0;
+pub const EGRESS: f64 = 24.0;
+pub const CLIMB: f64 = 24.0;
 /// The chance another ship is given priority and goes in first.
 pub const TRAFFIC_CHANCE: f64 = 0.2;
 
@@ -69,10 +78,9 @@ pub const ELEVATION: f64 = 30_000.0;
 /// How fast the ship comes out of the tunnel into the bay, metres a second.
 const BAY_SPEED: f64 = 60.0;
 /// The cradle: this far into the bay past the tunnel's end, and this far
-/// below its line, metres; how far the ship backs out of it.
+/// below its line, metres.
 pub const CRADLE: f64 = 520.0;
 pub const CRADLE_DROP: f64 = 15.0;
-pub const BACK_OUT: f64 = 60.0;
 /// The base's surface round the mouth as a mesh, this far out from it,
 /// metres: armour plating and the blocks on it (`starbase::mesh::city`).
 pub const CITY: f64 = 32_000.0;
@@ -84,6 +92,32 @@ const INSIDE_FROM: f64 = CORRIDOR + 2000.0;
 const INSIDE_UNTIL: f64 = 2000.0;
 /// How fast the ship leaves through the mouth, metres a second.
 const EXIT_SPEED: f64 = 400.0;
+/// The crossing: how high the ship lifts out of the cradle and how far it
+/// creeps on, metres, and how fast it is going then; how far beyond the
+/// cradle the world's far wall stands, metres, and how fast the ship comes
+/// up to its lock; how long it takes to come up to its cruise along the
+/// world, and to slow from it.
+const LIFT: f64 = 55.0;
+const CREEP: f64 = 90.0;
+const CREEP_SPEED: f64 = 25.0;
+pub const WORLD_LENGTH: f64 = 2_000_000.0;
+const WALL_SPEED: f64 = 50.0;
+const RAMP: f64 = 30.0;
+/// The scene is drawn this many metres back along the world while the ship
+/// is deep in it, so its coordinates stay small enough for `f32`: whole
+/// lengths of the world's map (`starbase::city::ALONG`), eight of them
+/// (`starbase::sections`), so what repeats with them is drawn the same.
+pub const FOLD: f64 = 8.0 * 13_194.0;
+/// How far past the cradle the scene is first drawn back.
+const FOLD_FROM: f64 = 70_000.0;
+/// Seconds into the way out: stopped in the far lock, the door behind
+/// shut, the scene turned to the far side, the door ahead begun to open and
+/// open, and out of the lock up the entrance.
+const FAR_STOPPED: f64 = 7.0;
+const FAR_SHUT: f64 = 9.0;
+pub const FLIP: f64 = 9.5;
+const FAR_OPENING: f64 = 10.5;
+const FAR_OPEN: f64 = 13.0;
 
 /// Where in a starbase visit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -99,23 +133,26 @@ pub enum BaseStage {
     Berth,
     /// Docked, the crews at work.
     Service,
-    /// Released, backed out and turned about.
+    /// Released, lifted out of the cradle and on.
     Undock,
-    /// Back up the tunnel to the mouth.
-    Outbound,
+    /// On along the world's axis, the whole of it, to its far wall.
+    Crossing,
+    /// Into the far wall's airlock, through it and up its entrance.
+    Egress,
     /// Out of the mouth, climbing back into orbit.
     Climb,
 }
 
 impl BaseStage {
-    pub const ALL: [BaseStage; 8] = [
+    pub const ALL: [BaseStage; 9] = [
         BaseStage::Approach,
         BaseStage::Airlock,
         BaseStage::Tunnel,
         BaseStage::Berth,
         BaseStage::Service,
         BaseStage::Undock,
-        BaseStage::Outbound,
+        BaseStage::Crossing,
+        BaseStage::Egress,
         BaseStage::Climb,
     ];
 
@@ -134,7 +171,8 @@ impl BaseStage {
             BaseStage::Berth => "berth",
             BaseStage::Service => "service",
             BaseStage::Undock => "undock",
-            BaseStage::Outbound => "outbound",
+            BaseStage::Crossing => "crossing",
+            BaseStage::Egress => "egress",
             BaseStage::Climb => "climb",
         }
     }
@@ -299,7 +337,8 @@ impl Base {
                     BaseStage::Berth => BERTH,
                     BaseStage::Service => SERVICE,
                     BaseStage::Undock => UNDOCK,
-                    BaseStage::Outbound => OUTBOUND,
+                    BaseStage::Crossing => CROSSING,
+                    BaseStage::Egress => EGRESS,
                     BaseStage::Climb => CLIMB,
                 };
                 (stage, length)
@@ -327,6 +366,74 @@ struct Frame {
 /// Where the tunnel ends and the bay begins, metres in from the mouth.
 pub const fn tunnel_end() -> f64 {
     FUNNEL + TUNNEL_LENGTH
+}
+
+/// The world's far wall, metres in from the mouth, and the middle of the
+/// airlock in it (as long as the near one, on the port's line).
+pub const fn far_wall() -> f64 {
+    tunnel_end() + CRADLE + WORLD_LENGTH
+}
+pub const fn far_lock() -> f64 {
+    far_wall() + SEGMENT * LOCK_SEGMENTS as f64 * 0.5
+}
+
+/// How far back along the world the scene is drawn with the ship `z`
+/// metres in (in the near frame): a whole number of `FOLD`s, none until
+/// it is well clear of the port.
+pub fn fold(z: f64) -> f64 {
+    let past = z - (tunnel_end() + CRADLE + FOLD_FROM);
+    if past <= 0.0 {
+        0.0
+    } else {
+        (past / FOLD).floor() * FOLD
+    }
+}
+
+/// How far the ship has come `local` seconds into the crossing, metres
+/// past where it set out: its speed eased up from the creep to a cruise
+/// over `RAMP` seconds, held, and eased down to `WALL_SPEED` for the lock.
+pub fn crossing_way(local: f64) -> f64 {
+    let length = far_wall() - 300.0 - (tunnel_end() + CRADLE + CREEP);
+    let cruise = (length - (CREEP_SPEED + WALL_SPEED) * RAMP * 0.5) / (CROSSING - RAMP);
+    // The distance under a speed eased from `v0` to `v1` over `RAMP`, `t`
+    // seconds into it (the integral of a smoothstep).
+    let ramp = |v0: f64, v1: f64, t: f64| {
+        let s = (t / RAMP).clamp(0.0, 1.0);
+        v0 * t + (v1 - v0) * RAMP * (s * s * s - 0.5 * s * s * s * s)
+    };
+    let t = local.clamp(0.0, CROSSING);
+    let up = ramp(CREEP_SPEED, cruise, t.min(RAMP));
+    let held = cruise * (t.min(CROSSING - RAMP) - RAMP).max(0.0);
+    let down = if t > CROSSING - RAMP {
+        ramp(cruise, WALL_SPEED, t - (CROSSING - RAMP))
+    } else {
+        0.0
+    };
+    up + held + down
+}
+
+/// Whether the scene is in the frame of the far side's mouth: from when
+/// the far lock is sealed on.
+pub fn far_side(stage: BaseStage, local: f64) -> bool {
+    match stage {
+        BaseStage::Egress => local >= FLIP,
+        BaseStage::Climb => true,
+        _ => false,
+    }
+}
+
+/// Where the ship is in the far lock's chamber `local` seconds into the way
+/// out, before the scene turns (in the near frame): coming in from the
+/// world at `WALL_SPEED` to a stop in its middle.
+fn far_depth(local: f64) -> f64 {
+    ease(
+        far_wall() - 300.0,
+        WALL_SPEED,
+        far_lock(),
+        0.0,
+        FAR_STOPPED,
+        local,
+    )
 }
 
 /// The tunnel's line: how far to the right at depth `z`, metres, and how
@@ -383,7 +490,11 @@ pub fn doors(stage: BaseStage, local: f64) -> [f64; 2] {
             1.0 - smoothstep(LOCK_STOPPED - 1.0, LOCK_SHUT, local),
             smoothstep(LOCK_OPENING, AIRLOCK - 0.5, local),
         ],
-        BaseStage::Outbound => [1.0, 1.0],
+        // The far lock's, as the near one's: the door toward space first,
+        // the world's second. Sealed behind the ship, the scene turned, and
+        // the door to the far entrance opened.
+        BaseStage::Egress if local < FLIP => [0.0, 1.0 - smoothstep(FAR_STOPPED, FAR_SHUT, local)],
+        BaseStage::Egress => [smoothstep(FAR_OPENING, FAR_OPEN, local), 0.0],
         _ => [0.0, 1.0],
     }
 }
@@ -452,8 +563,16 @@ pub struct BaseScene {
     pub traffic: Option<[f64; 4]>,
     /// The hull's shudder as the clamps close and let go, 0..1.
     pub shake: f64,
-    /// How far open the airlock's doors are, the outer and the inner.
+    /// How far open the airlock's doors are, the outer and the inner: the
+    /// near lock's, or through the crossing and into the way out the far
+    /// lock's, the door toward space first.
     pub doors: [f64; 2],
+    /// Whether this is the far side's frame (`far_side`).
+    pub far: bool,
+    /// How far back along the world the scene is drawn (`fold`): `ship` is
+    /// that much short of where the ship truly is, and everything placed
+    /// at a true depth is drawn that much short of it.
+    pub fold: f64,
 }
 
 impl Tour {
@@ -489,6 +608,22 @@ impl Tour {
             sub(self.orbit_rel(stop, t + h), self.orbit_rel(stop, t - h)),
             0.5 / h,
         )
+    }
+
+    /// The frame of the near mouth, or of the far one: the near turned
+    /// about its up, on the far side of the base.
+    fn frame_for(&self, base: &Base, far: bool) -> Frame {
+        let f = self.base_frame(base);
+        if far {
+            Frame {
+                out: scale(f.out, -1.0),
+                up: f.up,
+                right: scale(f.right, -1.0),
+                radius: f.radius,
+            }
+        } else {
+            f
+        }
     }
 
     /// The base's frame: the mouth faces where the orbit is as the ship
@@ -540,7 +675,7 @@ impl Tour {
     /// base at `stop` (`t` into the visit).
     fn base_place(&self, stop: Stop, stage: BaseStage, local: f64, t: f64) -> Pose {
         let base = self.base_at(stop);
-        let frame = self.base_frame(base);
+        let frame = self.frame_for(base, far_side(stage, local));
         let centre = self.system.centre(stop, t);
         let inward = scale(frame.out, -1.0);
         let at = |rel: [f64; 3]| add(centre, rel);
@@ -604,36 +739,70 @@ impl Tour {
             }
             BaseStage::Service => placed([BEND, -CRADLE_DROP, cradle_z], [0.0, 0.0, 1.0]),
             BaseStage::Undock => {
-                // Backed out of the cradle, then turned about, to the left.
+                // Lifted out of the cradle, clear of the clamps, and on.
                 let u = local / UNDOCK;
-                let back = smoothstep(0.0, 0.5, u);
-                let yaw = std::f64::consts::PI * smoothstep(0.35, 1.0, u);
+                let rise = smoothstep(0.05, 0.6, u);
+                let z = ease(cradle_z, 0.0, cradle_z + CREEP, CREEP_SPEED, UNDOCK, local);
                 placed(
-                    [
-                        BEND,
-                        -CRADLE_DROP * (1.0 - smoothstep(0.0, 0.4, u)),
-                        cradle_z - BACK_OUT * back,
-                    ],
-                    [-yaw.sin(), 0.0, yaw.cos()],
+                    [BEND, -CRADLE_DROP + (CRADLE_DROP + LIFT) * rise, z],
+                    [0.0, 0.0, 1.0],
                 )
             }
-            BaseStage::Outbound => tunnel(
-                ease(cradle_z - BACK_OUT, 0.0, 0.0, -EXIT_SPEED, OUTBOUND, local),
-                -1.0,
-            ),
+            BaseStage::Crossing => {
+                // On along the axis through the whole of the world, at a
+                // cruise in its middle, slowing to the far wall's lock;
+                // easing down to its line on the way.
+                let z = cradle_z + CREEP + crossing_way(local);
+                let y = LIFT * (1.0 - smoothstep(CROSSING - 20.0, CROSSING, local));
+                placed([BEND, y, z], [0.0, 0.0, 1.0])
+            }
+            BaseStage::Egress if local < FLIP => {
+                placed([BEND, 0.0, far_depth(local)], [0.0, 0.0, 1.0])
+            }
+            BaseStage::Egress => {
+                // Turned: in the near lock's place on the far side, facing
+                // out, up the entrance and out of the mouth.
+                let z = ease(
+                    LOCK,
+                    0.0,
+                    0.0,
+                    -EXIT_SPEED,
+                    EGRESS - FAR_OPENING,
+                    local - FAR_OPENING,
+                );
+                placed([0.0, 0.0, z], [0.0, 0.0, -1.0])
+            }
             BaseStage::Climb => {
-                // Out of the mouth and back into the orbit, as it would be
-                // had the ship never left it.
+                // Out of the far mouth, up and round the base to the orbit
+                // as it would be had the ship never left it: along a great
+                // circle from the far mouth's way out to the orbit's, high
+                // over the surface in the middle.
                 let (_, end) = self.base_span(stop, BaseStage::Climb);
-                let s = local / CLIMB;
-                let p0 = scale(frame.out, frame.radius);
-                let v0 = scale(frame.out, EXIT_SPEED * METRE * CLIMB);
                 let p1 = self.orbit_rel(stop, end);
-                let v1 = scale(self.orbit_velocity(stop, end), CLIMB);
+                let r1 = length(p1);
+                let path = |s: f64| {
+                    let d = turn(
+                        frame.out,
+                        normalize(p1),
+                        smoothstep(0.08, 0.95, s),
+                        frame.up,
+                    );
+                    let r = frame.radius
+                        + (r1 - frame.radius) * smoothstep(0.0, 1.0, s)
+                        + 0.6
+                            * frame.radius
+                            * (std::f64::consts::PI * s).sin()
+                            * smoothstep(0.0, 0.3, s);
+                    scale(normalize(d), r)
+                };
+                let s = (local / CLIMB).clamp(0.0, 1.0);
+                // Up the mouth's line at first, then along the way it flies.
+                let ahead = normalize(sub(path((s + 0.01).min(1.0)), path((s - 0.01).max(0.0))));
                 let (_, f1, u1) = self.orbiting(stop, t);
+                let forward = turn(frame.out, ahead, smoothstep(0.05, 0.3, s), frame.up);
                 Pose {
-                    position: at(hermite(p0, v0, p1, v1, s)),
-                    forward: turn(frame.out, f1, smoothstep(0.25, 1.0, s), frame.right),
+                    position: at(path(s)),
+                    forward: turn(forward, f1, smoothstep(0.75, 1.0, s), frame.up),
                     up: normalize(turn(frame.up, u1, smoothstep(0.0, 1.0, s), frame.right)),
                 }
             }
@@ -644,9 +813,13 @@ impl Tour {
     /// base at `stop` (`t` into the visit), and the interior as drawn then.
     pub(super) fn base_view(&self, stop: Stop, stage: BaseStage, local: f64, t: f64) -> Placed {
         let base = self.base_at(stop);
-        let frame = self.base_frame(base);
+        let far = far_side(stage, local);
+        let frame = self.frame_for(base, far);
         let pose = self.base_place(stop, stage, local, t);
-        let ship = self.to_base(&frame, base.stop, pose.position, t);
+        let mut ship = self.to_base(&frame, base.stop, pose.position, t);
+        // Drawn back along the world while deep in it (`fold`).
+        let fold = if far { 0.0 } else { fold(ship[2]) };
+        ship[2] -= fold;
         // Inside from where the funnel fills the view, down and back up.
         let reach = if stage == BaseStage::Climb {
             INSIDE_UNTIL
@@ -699,6 +872,8 @@ impl Tour {
                 traffic: self.traffic_at(base, &frame, stage, local, t),
                 shake,
                 doors: doors(stage, local),
+                far,
+                fold,
             },
         }
     }

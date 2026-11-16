@@ -33,7 +33,7 @@ use glam::Vec3;
 use super::system::Rng;
 
 /// Bumped whenever a model's shape changes, so stale caches are rebuilt.
-pub const GENERATOR: u32 = 18;
+pub const GENERATOR: u32 = 20;
 /// Variants of each ship design and role.
 pub const VARIANTS: u32 = 3;
 /// Ship designs: as `voyage::FACTIONS`.

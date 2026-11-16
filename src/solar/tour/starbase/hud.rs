@@ -5,8 +5,8 @@
 use super::super::super::system::{KM, Rng, Stop};
 use super::super::{Manoeuvre, Phase, Tour, add, clock, length, scale, sub, thousands};
 use super::{
-    BACK_OUT, BAY_SPEED, BERTH, Base, BaseStage, CONTACT, CRADLE, EXIT_SPEED, HOLD, LOCK, METRE,
-    OUTBOUND, SERVICE, Step, TUNNEL, doors, ease, lock_depth, tunnel_end,
+    BAY_SPEED, BERTH, Base, BaseStage, CONTACT, FLIP, HOLD, LOCK, METRE, SERVICE, Step, TUNNEL,
+    WORLD_LENGTH, doors, ease, far_wall, lock_depth, tunnel_end,
 };
 
 impl Tour {
@@ -198,17 +198,26 @@ impl Tour {
             BaseStage::Undock => coast(
                 "UNDOCKING",
                 format!(
-                    "Clamps released: backing out of bay {bay} on thrusters and turning about."
+                    "Clamps released: lifting out of bay {bay} on thrusters, cleared on through."
                 ),
             ),
-            BaseStage::Outbound => coast(
-                "OUTBOUND",
-                format!("Back up corridor {corridor} to the mouth, cleared out by {name} control."),
+            BaseStage::Crossing => coast(
+                "CROSSING",
+                format!(
+                    "On along the axis of {name}'s world, all {} km of it, to the lock in its far wall.",
+                    thousands(WORLD_LENGTH / 1000.0)
+                ),
+            ),
+            BaseStage::Egress => coast(
+                "FAR AIRLOCK",
+                format!(
+                    "Through the far wall's lock and up its entrance, out of the far side of {name}."
+                ),
             ),
             BaseStage::Climb => coast(
                 "DEPARTURE",
                 format!(
-                    "Out of {name}, climbing back into orbit for {}.",
+                    "Out of {name}'s far side, climbing round it into orbit for {}.",
                     self.after_base(stop)
                 ),
             ),
@@ -361,21 +370,55 @@ impl Tour {
                     ("Cleared by".into(), format!("{} control", base.name)),
                 ],
             ),
-            BaseStage::Outbound => {
-                let z = ease(
-                    tunnel_end() + CRADLE - BACK_OUT,
-                    0.0,
-                    0.0,
-                    -EXIT_SPEED,
-                    OUTBOUND,
-                    local,
-                );
+            BaseStage::Crossing => {
+                let scene = self.base_view(stop, stage, local, t).scene;
+                let (ship, fold) = (scene.ship, scene.fold);
                 (
-                    "OUTBOUND TUNNEL".into(),
+                    "CROSSING".into(),
                     vec![
                         name,
-                        ("Mouth in".into(), format!("{} m", thousands(z.max(0.0)))),
+                        (
+                            "Far wall in".into(),
+                            format!(
+                                "{} km",
+                                thousands((far_wall() - ship[2] - fold).max(0.0) / 1000.0)
+                            ),
+                        ),
                         ("Speed".into(), speed()),
+                        (
+                            "Corridor".into(),
+                            format!("axis · {corridor} cleared", corridor = base.corridor),
+                        ),
+                    ],
+                )
+            }
+            BaseStage::Egress => {
+                let [outer, inner] = doors(stage, local);
+                let door = |open: f64| {
+                    if open >= 1.0 {
+                        "open"
+                    } else if open <= 0.0 {
+                        "sealed"
+                    } else {
+                        "cycling"
+                    }
+                };
+                // Still in the lock as the scene turns: no speed to show.
+                let speed = if (local - FLIP).abs() < 0.3 {
+                    "0 m/s".into()
+                } else {
+                    speed()
+                };
+                (
+                    "FAR AIRLOCK".into(),
+                    vec![
+                        name,
+                        (
+                            "Door behind".into(),
+                            door(if local < FLIP { inner } else { 0.0 }).into(),
+                        ),
+                        ("Door ahead".into(), door(outer).into()),
+                        ("Speed".into(), speed),
                     ],
                 )
             }

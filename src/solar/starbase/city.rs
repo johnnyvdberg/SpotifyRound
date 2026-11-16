@@ -581,8 +581,8 @@ impl City {
         District {
             kind,
             turn: row[1],
-            block: [170.0, 120.0, 110.0, 190.0, 120.0, 145.0][k],
-            lot: [80.0, 60.0, 45.0, 80.0, 38.0, 28.0][k],
+            block: [170.0, 120.0, 130.0, 190.0, 120.0, 145.0][k],
+            lot: [80.0, 60.0, 55.0, 80.0, 38.0, 28.0][k],
             street: [2.0, 3.0, 7.0, 7.0, 6.0, 5.0][k],
         }
     }
@@ -775,12 +775,12 @@ impl City {
         let k = here.kernel;
         let pick = u(4.0);
         let (mut h, mut s) = match d.kind {
-            kind::CORE => ((22.0 + 300.0 * k * k) * (0.5 * g).exp(), shape::TAPER),
+            kind::CORE => ((30.0 + 520.0 * k * k) * (0.45 * g).exp(), shape::TAPER),
             kind::HIGH => ((12.0 + 45.0 * k) * (0.35 * g).exp(), shape::ROUND),
             kind::WORKS => (8.0 + 14.0 * pick, shape::SHED),
             _ => (5.0 + 4.0 * pick, shape::HOUSE),
         };
-        h = h.clamp(5.0, 460.0);
+        h = h.clamp(5.0, 700.0);
         if d.kind == kind::CORE {
             s = if h > 150.0 {
                 shape::NEEDLE
@@ -1054,7 +1054,7 @@ mod tests {
                 length(off) < 0.5 && (d.turn - b.turn).abs() < 5e-3,
                 "{b:?} {off:?}"
             );
-            assert!(b.height < 470.0);
+            assert!(b.height < 710.0);
             if b.height > 150.0 {
                 tall += 1;
             }

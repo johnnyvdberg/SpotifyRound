@@ -230,8 +230,11 @@ The design changed on the way; this section is what the code does now, and secti
 plan it started from.
 
 **The visit.** The ship calls in from orbit, comes straight down on the mouth, goes down the stepped
-entrance into the airlock, then along the tunnel to the port, docks, is serviced, undocks, turns
-about and flies back out the way it came.
+entrance into the airlock, then along the tunnel to the port, docks, is serviced and undocks. It
+does not go back: it crosses the whole world inside (`BaseStage::Crossing`, 2,000 km in three
+minutes, cruising at about 13 km/s), through
+its deep sections, to a second airlock in the wall at its far end (`Egress`), and climbs out of a
+mouth on the far side of the base (`Climb`).
 
 - **The base's world is a living one** (`Kind::Terran`), its cities grown into megacities
   (`Planet::megacities`, `fs_lights`). There is no starbase kind of world any more.
@@ -267,6 +270,29 @@ about and flies back out the way it came.
   noise; Voronoi districts with a block grid each; lots, a building on each, lognormal in height,
   its roof painted into the map. The buildings are meshes (`world.rs`) kept while three pixels tall,
   the tallest first, shrinking into their roofs rather than popping; towers plain beyond 6.5 km.
+- **The crossing and the far side.** The world is 2,000 km long: its 13 km map laid end to end,
+  past the port each length as it is or mirrored round by an eight-length pattern
+  (`starbase/sections.rs`, `world_varied` in `pane.wesl`; the suns stand mirror-wise, so they line
+  up). A bulkhead stands at every seam (`mesh/deep.rs`): a sill round the ground over the break,
+  the relief brought low there in the bake, and a ring braced across on spokes that the ship flies
+  through; every eighth a great gate, a wall over a kilometre high all the way round. Each section of
+  eight has its own station turning about the axis, mostly, and two to six arcologies, by its own
+  numbers (`starbase/deep.rs`); the far wall closes the end, the lock's mouth in it. While the ship
+  is deep in, the whole scene is drawn back by whole sections (`tour::starbase::fold`,
+  `BaseScene::fold`), so its `f32` coordinates stay within a couple of hundred kilometres; what
+  repeats with the map is drawn the same, and what stands at a true depth is placed short by the
+  fold. The haze is exponential (two-thirds at 11 km, `WORLD_FOG`), on the map and the meshes alike,
+  so what is culled at 20 to 48 km has all but gone into it, and the world runs on out of sight. The far lock is the near one turned about: while both its doors are shut the scene switches
+  to a frame turned half a turn about up (`frame_for`, `BaseScene::far`), so the ship sits in the
+  near lock's place facing out, and climbs the same entrance out of the same megastructure, which
+  is drawn turned to the base's far side.
+- **The cores** stand taller (up to 700 m) on larger lots, their hulls lighter and their windows
+  lit brighter (a negative `look.x`, read by `base_structure`); the tallest, over 150 m, are drawn to
+  32 km. On the map the streets and yards are lamp-lit, brightest in the cores.
+- **Cars on the roads** are lights (`starbase/roads.rs`): on each road piece of the city's table, a
+  lane each way, headlights one way and tail lights the other, moving along the network; the 96
+  nearest in view are drawn as glints (`lights::effects`), hazed as the ground is, and the map's own
+  streaks along the highways carry the rest.
 - **Traffic.** Ships of the fleets (every design but the cube's), freighters, shuttles and cars fly
   past the tunnel's windows and on circuits round the port (`starbase/traffic.rs`).
 - **The port** is out in the open of that world: a spine of catwalks on from the tunnel's deck, a
@@ -275,7 +301,8 @@ about and flies back out the way it came.
   under a gantry.
 
 **Files.** The flight script is `tour/starbase.rs` and its panels' text `tour/starbase/hud.rs`. The
-drawing is `solar/starbase/` (`scene`, `port`, `traffic`, `world`, `lights`, and `mesh/` a
+drawing is `solar/starbase/` (`scene`, `port`, `traffic`, `world`, `city`, `deep`, `roads`,
+`lights`, and `mesh/` a
 file a group of pieces). The shaders are `shaders/solar/starbase/` (`common`, `surface`, `pane`,
 `world`).
 

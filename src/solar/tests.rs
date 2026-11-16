@@ -98,8 +98,8 @@ fn moments(tour: &Tour) -> Vec<(String, f64)> {
                 } else {
                     // Each stage at the moments worth a look: the funnel and
                     // the tunnel's windows, the clamps closing, the service
-                    // through its steps, the turn about, the way out and
-                    // out of the mouth.
+                    // through its steps, the lift out of the cradle, the crossing
+                    // of the world, the far lock and out of the far mouth.
                     let points: &[(&str, f64)] = match stage {
                         tour::BaseStage::Airlock => {
                             &[("entrance", 0.2), ("sealed", 0.7), ("opening", 0.9)]
@@ -118,8 +118,23 @@ fn moments(tour: &Tour) -> Vec<(String, f64)> {
                             ("scan", 0.7),
                             ("ready", 0.95),
                         ],
-                        tour::BaseStage::Undock => &[("back", 0.3), ("turn", 0.8)],
-                        tour::BaseStage::Outbound => &[("tunnel", 0.5), ("funnel", 0.95)],
+                        tour::BaseStage::Undock => &[("lift", 0.3), ("on", 0.9)],
+                        tour::BaseStage::Crossing => &[
+                            ("port", 0.02),
+                            ("bulkheads", 0.045),
+                            ("speeding", 0.1),
+                            ("cruise", 0.3),
+                            ("deep", 0.62),
+                            ("slowing", 0.93),
+                            ("wall", 0.97),
+                        ],
+                        tour::BaseStage::Egress => &[
+                            ("lock", 0.2),
+                            ("sealed", 0.39),
+                            ("opening", 0.5),
+                            ("entrance", 0.75),
+                            ("mouth", 0.97),
+                        ],
                         _ => &[("out", 0.15), ("orbit", 0.8)],
                     };
                     for &(what, u) in points {

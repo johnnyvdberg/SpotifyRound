@@ -18,6 +18,7 @@ use super::super::models::{Mesh, ShipVertex};
 
 mod city;
 mod craft;
+mod deep;
 mod entrance;
 mod lock;
 mod megastructure;
@@ -67,7 +68,17 @@ pub mod piece {
     pub const TOWER_NEEDLE: u32 = 21;
     pub const TOWER_BLOCK: u32 = 22;
     pub const SHED: u32 = 23;
-    pub const COUNT: u32 = 24;
+    /// Deep in the world, for the crossing (`mesh::deep`): its far wall,
+    /// rings braced across it, a wheel of a station, an arcology.
+    pub const FAR_WALL: u32 = 24;
+    pub const SPOKES: u32 = 25;
+    pub const STATION: u32 = 26;
+    pub const ARCOLOGY: u32 = 27;
+    /// A bulkhead's sill over the seam between two lengths of the world's
+    /// map, and the great gate every eighth.
+    pub const SILL: u32 = 28;
+    pub const GATE: u32 = 29;
+    pub const COUNT: u32 = 30;
 }
 
 /// Whether `piece` is the megastructure or its entrance, shaded apart from
@@ -260,6 +271,12 @@ pub fn build(piece: u32) -> Mesh {
         piece::TOWER_NEEDLE => city::needle(&mut b),
         piece::TOWER_BLOCK => city::block(&mut b),
         piece::SHED => city::shed(&mut b),
+        piece::FAR_WALL => deep::wall(&mut b),
+        piece::SPOKES => deep::spokes(&mut b),
+        piece::STATION => deep::station(&mut b),
+        piece::ARCOLOGY => deep::arcology(&mut b),
+        piece::SILL => deep::sill(&mut b),
+        piece::GATE => deep::gate(&mut b),
         _ => craft::liner(&mut b),
     }
     b.mesh()

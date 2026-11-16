@@ -15,7 +15,7 @@ use super::super::super::system::Rng;
 use super::{Builder, neon, parts};
 
 /// How bright a tower's windows are, of 255: dim, for a skyline far off.
-const WINDOWS: u8 = 110;
+pub(super) const WINDOWS: u8 = 140;
 
 /// A tier round the axis `at` (x, y): `sides` of them, from radius `r0` at
 /// height `z0` to `r1` at `z1`, turned by `turn`, squashed to `flat` across

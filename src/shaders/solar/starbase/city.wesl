@@ -239,8 +239,8 @@ fn city_district(c: CityCell) -> CityDistrict {
     let row = city_table.districts[u32(c.id.x) + u32(c.id.y) * 66u];
     let kind = u32(row.x + 0.5);
     let turn = row.y;
-    let block = city_by_kind(kind, vec3<f32>(170.0, 120.0, 110.0), vec3<f32>(190.0, 120.0, 145.0));
-    let lot = city_by_kind(kind, vec3<f32>(80.0, 60.0, 45.0), vec3<f32>(80.0, 38.0, 28.0));
+    let block = city_by_kind(kind, vec3<f32>(170.0, 120.0, 130.0), vec3<f32>(190.0, 120.0, 145.0));
+    let lot = city_by_kind(kind, vec3<f32>(80.0, 60.0, 55.0), vec3<f32>(80.0, 38.0, 28.0));
     let street = city_by_kind(kind, vec3<f32>(2.0, 3.0, 7.0), vec3<f32>(7.0, 6.0, 5.0));
     return CityDistrict(kind, turn, block, lot, street);
 }
@@ -339,14 +339,14 @@ fn city_lot(c: CityCell, d: CityDistrict, lc: CityLotCell) -> CityLot {
     var h = 5.0 + 4.0 * pick;
     var s = SHAPE_HOUSE;
     if (d.kind == CITY_CORE) {
-        h = (22.0 + 300.0 * k * k) * exp(0.5 * g);
+        h = (30.0 + 520.0 * k * k) * exp(0.45 * g);
     } else if (d.kind == CITY_HIGH) {
         h = (12.0 + 45.0 * k) * exp(0.35 * g);
     } else if (d.kind == CITY_WORKS) {
         h = 8.0 + 14.0 * pick;
         s = SHAPE_SHED;
     }
-    h = clamp(h, 5.0, 460.0);
+    h = clamp(h, 5.0, 700.0);
     if (d.kind == CITY_CORE) {
         if (h > 150.0) {
             s = SHAPE_NEEDLE;

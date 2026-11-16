@@ -123,12 +123,27 @@ fn vs_shell(@builtin(vertex_index) vertex: u32) -> Pane {
 
 // What the world's far end fades into, and the haze of the port out in it.
 const WORLD_HAZE: vec3<f32> = vec3<f32>(0.075, 0.095, 0.14);
+// The haze's reach in the world, metres: two-thirds hazed at this.
+const WORLD_FOG: f32 = 11000.0;
 
 // Where round the cylinder a point across it lies, 0..1: not its angle
 // but near enough, for a division.
 fn around(q: vec2<f32>) -> f32 {
     let s = q.x / (abs(q.x) + abs(q.y));
     return select(3.0 + s, 1.0 - s, q.y >= 0.0) * 0.25;
+}
+
+// Past the port (metres past the tunnel's end), each length of the map
+// laid along the world is laid as it is or mirrored round, the eight-bit
+// pattern of which repeating (`starbase::sections`).
+const WORLD_VARIED: f32 = 4820.0;
+
+// The map's place `v` (round, and along in lengths) as laid: mirrored round
+// in the lengths that are, `shift` lengths along.
+fn world_varied(v: vec2<f32>, shift: f32) -> vec2<f32> {
+    let n = floor(v.y);
+    let flip = (n - shift) * WORLD_TILE > params.ev[EV_BASE + 2].w + WORLD_VARIED && ((0xB4u >> u32(i32(n) & 7)) & 1u) == 1u;
+    return vec2<f32>(select(v.x, 1.0 - v.x, flip), v.y);
 }
 
 // How far the world's highest ground stands above its lowlands, metres.
@@ -155,11 +170,11 @@ fn world(o: vec3<f32>, d: vec3<f32>, seed: f32, time: f32, fine: bool) -> vec3<f
     // The mip level, from how far: the ground's texels are thirteen metres.
     let coarse = max(level - 14.0, 0.0);
     let hit = o2 + d.xy * t0;
-    let relief = textureSampleLevel(city_map, city_sampler, vec2<f32>(around(hit), (o.z + d.z * t0) / WORLD_TILE) + shift, RELIEF_LAYER, coarse).rgb * 2.0;
+    let relief = textureSampleLevel(city_map, city_sampler, world_varied(vec2<f32>(around(hit), (o.z + d.z * t0) / WORLD_TILE) + shift, shift.y), RELIEF_LAYER, coarse).rgb * 2.0;
     // Back along the ray to where it met ground that high: the faster the
     // ray is leaving the axis, the less far.
     let t = t0 - relief.r * WORLD_RELIEF * WORLD_GROUND / max(dot(d.xy, hit), 0.12 * WORLD_GROUND);
-    let g = vec2<f32>(around(o2 + d.xy * t), (o.z + d.z * t) / WORLD_TILE) + shift;
+    let g = world_varied(vec2<f32>(around(o2 + d.xy * t), (o.z + d.z * t) / WORLD_TILE) + shift, shift.y);
     let c = vec2<f32>(around(o2 + d.xy * t1) + time * 0.0005, (o.z + d.z * t1) / WORLD_TILE) + shift;
     let ground = textureSampleLevel(city_map, city_sampler, g, 0, coarse);
     let clouds = textureSampleLevel(city_map, city_sampler, c, CLOUDS_LAYER, coarse);
@@ -170,8 +185,10 @@ fn world(o: vec3<f32>, d: vec3<f32>, seed: f32, time: f32, fine: bool) -> vec3<f
     let traffic = relief.g * step(0.72, fract(relief.b * 70.0 - time * 0.3));
     // The clouds' colour is stored already times their cover.
     let colour = (land * 2.0 + vec3<f32>(1.0, 0.85, 0.6) * traffic) * (1.0 - clouds.a) + clouds.rgb * 2.0;
-    // The same haze as the buildings standing on it (`base_haze`).
-    return mix(colour, WORLD_HAZE, t0 / (t0 + 9000.0));
+    // The same haze as the buildings standing on it (`base_haze`): thick
+    // enough that what is drawn no further than tens of kilometres is all
+    // but gone into it there, and the world runs on out of sight.
+    return mix(colour, WORLD_HAZE, 1.0 - exp(-t0 / WORLD_FOG));
 }
 
 // A pane: the world through its glass, a faint tint; and the tunnel's haze

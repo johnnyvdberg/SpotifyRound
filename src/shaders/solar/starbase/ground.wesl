@@ -98,10 +98,14 @@ fn ground_colour(x: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
             top = vec3<f32>(0.12, 0.08, 0.068);
         }
         urban = mix(urban, top * (0.7 + 0.6 * lot.tone), roof);
-        // Its streets, and the collector streets along the district's
-        // edges: lamp-lit.
+        // Lit: the windows and yards between the buildings, a speckle of
+        // them, thickest in the core; its streets, and the collector
+        // streets along the district's edges, lamp-lit, brightest there.
+        let lamps = select(select(0.07, 0.11, d.kind == CITY_HIGH), 0.17, d.kind == CITY_CORE);
+        let speck = step(1.0 - 1.6 * lamps, hash_cell(vec3<f32>(floor(l / 9.0), lot.tone * 37.0)));
+        urban += vec3<f32>(1.0, 0.8, 0.52) * speck * lamps * 0.35 * (1.0 - roof);
         let street = max(ground_cover(lc.street - d.street, w), ground_cover(c.edge - 7.0, w));
-        urban = mix(urban, vec3<f32>(0.022, 0.023, 0.028) + vec3<f32>(1.0, 0.76, 0.46) * 0.06, street);
+        urban = mix(urban, vec3<f32>(0.022, 0.023, 0.028) + vec3<f32>(1.0, 0.76, 0.46) * lamps, street);
         colour = urban;
         relief = 1.0;
         built = 0.5 + 0.5 * roof;
@@ -114,7 +118,7 @@ fn ground_colour(x: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
     let roads = city_roads(m);
     let road = ground_cover(roads.near, w);
     let highway = ground_cover(roads.highway, w);
-    colour = mix(colour, vec3<f32>(0.04, 0.04, 0.045) * day, road) + vec3<f32>(1.0, 0.76, 0.46) * highway * 0.3;
+    colour = mix(colour, vec3<f32>(0.04, 0.04, 0.045) * day, road) + vec3<f32>(1.0, 0.76, 0.46) * (highway * 0.3 + road * 0.08);
     // The suns: a white strip, the trench it lies in aglow.
     colour = mix(colour, vec3<f32>(2.0, 1.95, 1.8), 1.0 - smoothstep(3.0, 5.0, sun.x));
     colour += vec3<f32>(0.5, 0.48, 0.42) * exp(-sun.x / 22.0) * 0.6;
@@ -131,5 +135,8 @@ fn ground_relief(x: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
     let here = city_here(m);
     let urban = smoothstep(-0.12, 0.02, here.total - 0.35 + 0.22 * city_noise(m));
     let traffic = max(ground_cover(here.roads.highway, w), 0.6 * ground_cover(here.roads.near, w));
-    return vec4<f32>(smoothstep(-0.05, 0.5, here.height) * (1.0 - urban), traffic, 0.5 + 0.5 * sin(here.roads.along * TAU / 1500.0), 1.0);
+    // Low at the ends of the length, where the bulkheads stand over the
+    // seams between lengths laid as they are and mirrored (`sections`).
+    let seam = smoothstep(150.0, 1500.0, min(m.y, CITY_ALONG - m.y));
+    return vec4<f32>(smoothstep(-0.05, 0.5, here.height) * (1.0 - urban) * seam, traffic, 0.5 + 0.5 * sin(here.roads.along * TAU / 1500.0), 1.0);
 }

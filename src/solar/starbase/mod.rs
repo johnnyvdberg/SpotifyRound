@@ -19,20 +19,26 @@
 //! - `scene`: the shaders' rows and every mesh placed for a moment.
 //! - `port`: the port's catwalks and what is moored along them.
 //! - `traffic`: the ships and cars flying past the tunnel and round the port.
+//! - `roads`: the cars' lights on the world's roads.
+//! - `sections`: the world's length in sections, its map varied and folded.
 //! - `city`: the cities of the world inside, the same as `city.wesl` paints them.
 //! - `world`: their buildings, placed for the moment.
+//! - `deep`: what stands deeper in, past the port, for the crossing.
 //! - `lights`: its beacons, sparks and beams.
 
 pub mod city;
+mod deep;
 mod lights;
 pub mod mesh;
 mod port;
+mod roads;
 mod scene;
+mod sections;
 mod traffic;
 mod world;
 
 pub(super) use lights::effects;
-pub(super) use scene::{PANE_VERTICES, PANES, instances, port_shown, rows, segments};
+pub(super) use scene::{PANE_VERTICES, PANES, instances, rows, segments, world_shown};
 
 fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -68,5 +74,7 @@ pub(super) fn test_scene(
         traffic: None,
         shake: 0.0,
         doors: super::tour::starbase::doors(stage, local),
+        far: false,
+        fold: 0.0,
     }
 }

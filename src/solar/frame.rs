@@ -938,7 +938,7 @@ impl Solar {
                         0..quads,
                     );
                 }
-                if starbase::port_shown(b) {
+                if starbase::world_shown(b) {
                     let (label, pipeline) = self.pipe(Pipe::BaseShell);
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(2, &self.city.1, &[]);
