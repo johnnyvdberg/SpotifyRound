@@ -1041,7 +1041,7 @@ pub(super) fn encounter_rows(view: &View) -> [[f32; 4]; EV_ROWS] {
         ev[EV_HIT][3] = local as f32;
     }
     if let Some(base) = &view.base {
-        super::interior::rows(base, &mut ev);
+        super::starbase::rows(base, &mut ev);
     }
     ev[EV_Z][3] = ev[EV_Z][3].max(view.flash as f32);
     ev[EV_SHIP][3] = if view.deep { 1.0 } else { 0.0 };

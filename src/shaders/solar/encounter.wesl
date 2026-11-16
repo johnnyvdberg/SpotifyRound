@@ -44,6 +44,8 @@ import package::solar::frame::{
     ray_at, rim_vertex, ring_vertex, rock_craters, sky_cube, smoothstep01, sq, starfield, streaks,
     through,
 };
+import package::solar::starbase::common::{base_depth, base_reach};
+import package::solar::starbase::surface::base_light;
 import constants::{
     EV_EVENT, EV_SHIP, EV_X, EV_Y, EV_Z, EV_OBJECT, EV_ROT, EV_EXTRA, EV_STATE, EV_HIT, EV_FLEET,
     EV_BASE, FIN_SLICES, GATE_SIDES, HIT_SIDES, COARSE,
@@ -1659,6 +1661,8 @@ struct ModelOut {
     @location(7) @interpolate(flat) turn: vec4<f32>,
     // Rocks: their ground's shade, mottled (`vs_model`).
     @location(8) tone: f32,
+    // A starbase's meshes: the light at the vertex (`base_light`).
+    @location(9) lit: vec4<f32>,
 };
 
 fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
@@ -1672,7 +1676,7 @@ fn vs_model(v: ModelIn) -> ModelOut {
     let rel = quat_rotate(v.turn, v.position) * v.place.w + v.place.xyz - ev_ship();
     let w = from_ev(rel);
     let cam = vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
-    let depth = clamp(cam.z / (cam.z + 400.0), 0.0, 0.999) * base_depth();
+    let depth = clamp(cam.z / (cam.z + base_reach()), 0.0, 0.999) * base_depth();
     out.clip = vec4<f32>(cam.x / params.frame.y, cam.y / params.frame.y, depth * cam.z, cam.z);
     out.local = v.position;
     out.normal = quat_rotate(v.turn, v.normal);
@@ -1682,6 +1686,9 @@ fn vs_model(v: ModelIn) -> ModelOut {
     out.toward = -rel;
     out.size = v.place.w;
     out.turn = v.turn;
+    if (MODEL >= 6) {
+        out.lit = base_light(rel + ev_ship(), out.normal);
+    }
     if (MODEL == 3) {
         // Which face of the cube a block's top lies across (0..5: +x, -x,
         // +y, ...), or 6 for a wall: the same at a quad's every corner.
@@ -2011,9 +2018,10 @@ fn fs_model(in: ModelOut) -> @location(0) vec4<f32> {
         } else if (part == 4) {
             colour += vec3<f32>(1.0, 0.4, 0.08) * smoothstep01(0.4, 0.8, noise(q * 14.0 + vec3<f32>(t * 0.6))) * 0.9;
         }
-    } else if (MODEL == 6) {
-        colour = base_surface(in.local, n, part, ev_ship() - in.toward, in.size);
-        colour = base_fog(colour, length(in.toward));
+    } else if (MODEL >= 6) {
+        // A starbase's meshes have entry points of their own (`fs_base`,
+        // `fs_plating`).
+        colour = in.lit.rgb;
     } else {
         // Debris: torn plates of hull, the derelict's grey or a fleet's own
         // colour, edges smouldering, hotter the newer.
@@ -2157,7 +2165,7 @@ fn fx_cam(p: vec3<f32>) -> vec3<f32> {
 // tangents), clipped as the meshes are (`vs_ship`); behind the camera, a z
 // the clipper cuts at the near side. Dim light at the back.
 fn fx_clip(c: vec3<f32>, across: vec2<f32>) -> vec4<f32> {
-    let depth = clamp(c.z / (c.z + 400.0), 0.0, 0.999);
+    let depth = clamp(c.z / (c.z + base_reach()), 0.0, 0.999);
     let xy = c.xy / params.frame.y + across * c.z;
     return vec4<f32>(xy, select(select(c.z, depth * c.z, c.z > 0.0), c.z, FX_FAR) * base_depth(), c.z);
 }
@@ -2959,270 +2967,4 @@ fn fs_overlay_hit(in: Full) -> @location(0) vec4<f32> {
     var colour = vec3<f32>(0.35, 0.75, 1.0) * ring * (0.1 + 0.9 * edge) * hit * 0.55;
     colour += vec3<f32>(0.6, 0.85, 1.0) * exp(-dist * 14.0) * hit * 0.2;
     return overlay_flash(colour);
-}
-
-// ---------------------------------------------------------------------------
-// A starbase's interior (`interior.rs`), in the base's own frame, metres:
-// the mouth at the origin, +z in down the funnel and the tunnel to the bay.
-// Its meshes are family 6 of the models (`base_surface`); its panes, the
-// city behind them, are `vs_pane` / `fs_pane`. Rows `EV_BASE..+3`: whether
-// it is drawn (1 from outside, 2 inside), seconds into the visit, the
-// city's seed and the bay's green once serviced; the funnel's depth, the
-// tunnel's length, its bend and its bore; a segment's length, the first
-// segment with panes and how many, where the bay begins; the arc light.
-// ---------------------------------------------------------------------------
-
-// Seen from outside, the base's lights and meshes are in front of the
-// moon-sized body they belong to (whose depth is its place in the bodies'
-// order, not a distance): pushed to the front of the depth range.
-fn base_depth() -> f32 {
-    let mode = params.ev[EV_BASE].x;
-    return select(1.0, 1e-4, mode > 0.5 && mode < 1.5);
-}
-
-// The fog inside, linear: what the far tunnel fades into, and the clear.
-fn base_fog(colour: vec3<f32>, distance: f32) -> vec3<f32> {
-    let f = 1.0 - exp(-distance / 1400.0);
-    return mix(colour, vec3<f32>(0.012, 0.014, 0.024), f);
-}
-
-// The tunnel's line: how far right it is at depth `z` (`tour::starbase::bend`).
-fn base_bend(z: f32) -> f32 {
-    let row = params.ev[EV_BASE + 1];
-    let u = clamp((z - row.x) / row.y, 0.0, 1.0);
-    return row.z * (u - sin(TAU * u) / TAU);
-}
-
-// The light at `p` facing `n`: in the funnel and the tunnel its strips
-// round the axis and the city's glow through the windows, cyan and magenta
-// by turns along it; in the bay its ceiling's panels, and green once the
-// service is done; the welder's arc wherever it is struck.
-fn base_light(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    var light: vec3<f32>;
-    if (p.z < params.ev[EV_BASE + 2].w) {
-        let r = vec3<f32>(p.x - base_bend(p.z), p.y, 0.0);
-        let toward = -r / max(length(r), 1.0);
-        let strips = 0.12 + 0.4 * max(dot(n, toward), 0.0);
-        let glow = mix(vec3<f32>(0.25, 0.75, 1.0), vec3<f32>(1.0, 0.3, 0.8), 0.5 + 0.5 * sin(p.z * 0.004));
-        light = vec3<f32>(0.75, 0.8, 0.9) * strips + glow * (0.06 + 0.06 * max(-dot(n, toward), 0.0));
-    } else {
-        let green = params.ev[EV_BASE].w;
-        let sky = mix(vec3<f32>(0.85, 0.88, 0.95), vec3<f32>(0.6, 1.0, 0.75), green * 0.4);
-        light = sky * (0.18 + 0.55 * max(n.y, 0.0) + 0.1 * max(-n.y, 0.0));
-    }
-    let arc = params.ev[EV_BASE + 3];
-    if (arc.w > 0.0) {
-        let d = arc.xyz - p;
-        let dist2 = dot(d, d);
-        light += vec3<f32>(0.6, 0.75, 1.0) * arc.w * max(dot(n, d * inverseSqrt(dist2 + 1e-4)), 0.0) * 400.0 / (dist2 + 400.0);
-    }
-    return light;
-}
-
-// A surface of the interior (`base_mesh`) or of a ship in its berths, by
-// part: hull plating in panels, darker ribs and frames, light strips and
-// panels lit by themselves (the tunnel's floor guide pulsing in), hazard
-// stripes, the control rooms' windows; the berthed ships' glows dimmed.
-fn base_surface(local: vec3<f32>, n: vec3<f32>, part: i32, p: vec3<f32>, size: f32) -> vec3<f32> {
-    let t = ev_t();
-    let light = base_light(p, n);
-    // Its own frame in metres, whatever its scale: every pattern in metres.
-    let q = local * size;
-    var albedo = vec3<f32>(0.32, 0.33, 0.35) * skin(q, n, 0.08, 3.0);
-    var glow = vec3<f32>(0.0);
-    if (part == 1) {
-        albedo = vec3<f32>(0.16, 0.165, 0.18) * skin(q, n, 0.15, 5.0);
-    } else if (part == 2) {
-        albedo = vec3<f32>(0.05, 0.05, 0.06);
-    } else if (part == 7) {
-        let w = fract(q * vec3<f32>(0.12, 0.12, 0.12));
-        let pane = step(0.15, w.y) * step(0.15, fract(q.z * 0.08));
-        glow = vec3<f32>(1.0, 0.82, 0.55) * (0.15 + 0.6 * pane);
-        albedo = vec3<f32>(0.02);
-    } else if (part == 11) {
-        albedo = vec3<f32>(0.0);
-        if (q.y < -100.0 && p.z < params.ev[EV_BASE + 2].w) {
-            // The guide along the tunnel's floor: cyan, pulses flowing in.
-            let pulse = pow(1.0 - fract(t * 1.6 - p.z / 45.0 * 0.12), 4.0);
-            glow = vec3<f32>(0.2, 0.8, 1.0) * (0.5 + 1.2 * pulse);
-        } else {
-            glow = vec3<f32>(1.1, 1.15, 1.25);
-        }
-    } else if (part == 12) {
-        let stripe = step(0.5, fract((q.x + q.y + q.z) * 0.25));
-        albedo = mix(vec3<f32>(0.03), vec3<f32>(0.8, 0.6, 0.05), stripe);
-    } else if (part >= 3 && part <= 8) {
-        // A berthed ship's lights, powered down.
-        albedo = vec3<f32>(0.2, 0.21, 0.23);
-        glow = select(vec3<f32>(0.25, 0.4, 0.6), vec3<f32>(0.6, 0.1, 0.05), part == 4) * 0.25;
-    }
-    return albedo * light + glow;
-}
-
-struct Pane {
-    @builtin(position) clip: vec4<f32>,
-    // Where on the pane, in the base's frame.
-    @location(0) at: vec3<f32>,
-    // Its segment's middle (x, z) and the turn of its axis (sin, cos).
-    @location(1) @interpolate(flat) axis: vec4<f32>,
-};
-
-// Where a segment's panes lie in its wall (`base_mesh::PANE_RADIUS`), and
-// its end ribs and mullions (`base_mesh::RIB`, `MULLION`).
-const PANE_OUT: f32 = 5.0;
-const PANE_RIB: f32 = 8.0;
-const PANE_MULLION: f32 = 5.0;
-
-// A pane: twelve to a segment (three bands of four bays), each four facets
-// round its band, a little wider and longer than its opening so the wall
-// hides its edges. The segment `instance / 12` past the first drawn.
-@vertex
-fn vs_pane(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Pane {
-    let row = params.ev[EV_BASE + 1];
-    let segs = params.ev[EV_BASE + 2];
-    let s = segs.y + f32(instance / 12u);
-    let k = instance % 12u;
-    let band = f32(k / 4u);
-    let bay = f32(k % 4u);
-    let zc = row.x + (s + 0.5) * segs.x;
-    let u = clamp((zc - row.x) / row.y, 0.0, 1.0);
-    let xc = row.z * (u - sin(TAU * u) / TAU);
-    let turn = atan(row.z / row.y * (1.0 - cos(TAU * u)));
-    let half = segs.x * 0.5 - PANE_RIB;
-    let bay_length = half * 0.5;
-    let middle = -half + bay_length * (bay + 0.5);
-    let along = bay_length * 0.5 - PANE_MULLION + 1.5;
-    let spread = PI / 8.0 + 0.02;
-    var corners = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0),
-    );
-    let c = corners[vertex % 6u];
-    let facet = f32(vertex / 6u);
-    let a = band * PI * 0.5 - spread + 2.0 * spread * (facet + c.x) / 4.0;
-    let r = row.w + PANE_OUT;
-    let local = vec3<f32>(r * cos(a), r * sin(a), middle + along * (2.0 * c.y - 1.0));
-    let sn = sin(turn);
-    let cs = cos(turn);
-    let at = vec3<f32>(xc + local.x * cs + local.z * sn, local.y, zc - local.x * sn + local.z * cs);
-    let w = from_ev(at - ev_ship());
-    let cam = vec3<f32>(dot(w, params.right.xyz), dot(w, params.up.xyz), dot(w, params.forward.xyz));
-    let depth = clamp(cam.z / (cam.z + 400.0), 0.0, 0.999);
-    var out: Pane;
-    out.clip = vec4<f32>(cam.x / params.frame.y, cam.y / params.frame.y, depth * cam.z, cam.z);
-    out.at = at;
-    out.axis = vec4<f32>(xc, zc, sn, cs);
-    return out;
-}
-
-// The city round the tunnel, baked once (`bake::bake_city`): three layers
-// of `CITY_WIDTH` round by `CITY_HEIGHT` along, near to far, on cylinders
-// `CITY_RADII` metres from the tunnel's axis, tiling both ways. Its colour
-// is stored halved (neon is brighter than white), its cover in alpha.
-@group(2) @binding(4) var city_map: texture_2d_array<f32>;
-@group(2) @binding(5) var city_sampler: sampler;
-const CITY_WIDTH: f32 = 2048.0;
-const CITY_HEIGHT: f32 = 512.0;
-
-fn city_radius(layer: i32) -> f32 {
-    return select(select(2000.0, 700.0, layer == 1), 280.0, layer == 0);
-}
-
-// A layer of the city at texel `x` round and `y` along: the nearest,
-// facades of towers in blocks with streets between, windows lit warm or
-// cool, neon down their faces; further, denser blocks, their windows a
-// glitter, and the traffic's lanes of lights between; the furthest, the far
-// side's towers against a magenta haze. Every cell a whole number of
-// texels, so each layer tiles.
-@fragment
-fn fs_bake_city(in: CraterBake) -> @location(0) vec4<f32> {
-    let layer = i32(in.layer);
-    let x = in.position.xy;
-    // Block sizes in texels (round, along), and how many are built.
-    let block = select(select(vec2<f32>(48.0, 40.0), vec2<f32>(64.0, 48.0), layer == 1), vec2<f32>(128.0, 64.0), layer == 0);
-    let g = x / block;
-    let cell = floor(g);
-    let f = g - cell;
-    let h = hash_cell(vec3<f32>(cell, f32(layer) * 31.0 + 7.0));
-    let street = step(0.08, f.x) * step(f.x, 0.94) * step(0.08, f.y) * step(f.y, 0.92);
-    let presence = select(select(0.55, 0.8, layer == 1), 0.62, layer == 0);
-    let built = step(h, presence) * street;
-    if (layer == 2) {
-        // The far side: haze, and towers dark against it with a few lights
-        // and a red beacon down each.
-        let haze = mix(vec3<f32>(0.03, 0.012, 0.05), vec3<f32>(0.22, 0.04, 0.2), 0.5 + 0.5 * sin(x.y / CITY_HEIGHT * TAU * 2.0 + x.x / CITY_WIDTH * TAU * 3.0));
-        let lights = step(0.97, hash_cell(vec3<f32>(floor(x), 5.0)));
-        let beacon = (1.0 - step(0.6, abs(f.y - 0.5) * block.y)) * step(0.5, fract(h * 7.0));
-        let colour = mix(haze, vec3<f32>(0.012, 0.01, 0.02), built * 0.85)
-            + (vec3<f32>(1.0, 0.7, 0.5) * lights * 0.6 + vec3<f32>(1.0, 0.2, 0.15) * beacon) * built;
-        return vec4<f32>(colour * 0.5, 1.0);
-    }
-    // Windows: rows round, columns along, each lit or not, warm or cool by
-    // block.
-    let period = select(2.0, 4.0, layer == 0);
-    let wg = x / period;
-    let wf = fract(wg);
-    let window = select(1.0, step(0.25, wf.x) * step(wf.x, 0.75) * step(0.25, wf.y) * step(wf.y, 0.75), layer == 0);
-    let lit = step(0.5, hash_cell(vec3<f32>(floor(wg), f32(layer) + 3.0)));
-    let warm = mix(vec3<f32>(1.0, 0.78, 0.5), vec3<f32>(0.55, 0.8, 1.0), step(0.5, fract(h * 13.0)));
-    var colour = vec3<f32>(0.02, 0.02, 0.028) + warm * window * lit * (0.6 + 0.5 * fract(h * 7.0)) * select(0.7, 1.0, layer == 0);
-    // Neon down a face: magenta, cyan or amber.
-    let at = floor((fract(h * 5.3) * 0.7 + 0.15) * block.y);
-    let strip = 1.0 - step(1.5, abs(x.y - (cell.y * block.y + at)));
-    let hue = fract(h * 3.7);
-    let neon = select(select(vec3<f32>(1.0, 0.25, 0.85), vec3<f32>(0.2, 0.9, 1.0), hue > 0.4), vec3<f32>(1.0, 0.6, 0.15), hue > 0.8);
-    colour += neon * strip * 1.6 * step(0.35, fract(h * 9.1));
-    if (layer == 1 && built < 0.5) {
-        // The traffic between the blocks: lanes of lights, white one way,
-        // red the other.
-        let lane = x.x - floor(x.x / 42.0) * 42.0;
-        if (lane < 1.0) {
-            let way = step(0.5, fract(floor(x.x / 42.0) * 0.5));
-            let on = step(x.y - floor(x.y / 12.0) * 12.0, 1.5);
-            let tail = mix(vec3<f32>(1.0, 0.95, 0.8), vec3<f32>(1.0, 0.15, 0.1), way);
-            return vec4<f32>(tail * on * 1.4 * 0.5, on);
-        }
-    }
-    return vec4<f32>(colour * 0.5, built);
-}
-
-// A pane, and the city behind it: the view's ray out of the tunnel to each
-// of the city's three cylinders round its axis in turn, a texel read of the
-// baked city at each, from this base's own place in it, the nearest's blocks
-// in front of the next; the glass's tint and its faint reflection of the
-// strips; the tunnel's fog.
-@fragment
-fn fs_pane(in: Pane) -> @location(0) vec4<f32> {
-    let o = ev_ship();
-    let d = normalize(in.at - o);
-    let a = vec3<f32>(in.axis.z, 0.0, in.axis.w);
-    let e1 = vec3<f32>(in.axis.w, 0.0, -in.axis.z);
-    let c = vec3<f32>(in.axis.x, 0.0, in.axis.y);
-    let oc = o - c;
-    let op = oc - a * dot(oc, a);
-    let dp = d - a * dot(d, a);
-    let qa = max(dot(dp, dp), 1e-5);
-    let qb = dot(op, dp);
-    let seed = params.ev[EV_BASE].z;
-    var colour = vec3<f32>(0.0);
-    var cover = 0.0;
-    for (var k = 0; k < 3; k++) {
-        let r = city_radius(k);
-        let qc = dot(op, op) - r * r;
-        let hit = (-qb + sqrt(max(qb * qb - qa * qc, 0.0))) / qa;
-        let rel = o + d * hit - c;
-        let around = atan2(rel.y, dot(rel, e1)) / TAU;
-        // Metres a texel round this cylinder, the same along it.
-        let texel = TAU * r / CITY_WIDTH;
-        let along = (dot(rel, a) + in.axis.y) / (texel * CITY_HEIGHT);
-        let shift = fract(vec2<f32>(seed * 0.0173, seed * 0.0291) * f32(k + 1));
-        let layer = textureSampleLevel(city_map, city_sampler, vec2<f32>(around, along) + shift, k, 0.0);
-        let haze = 1.0 - exp(-hit / 3500.0);
-        let seen = mix(layer.rgb * 2.0, vec3<f32>(0.08, 0.03, 0.09), haze);
-        colour += (1.0 - cover) * seen * layer.a;
-        cover += (1.0 - cover) * layer.a;
-    }
-    let fresnel = pow(1.0 - abs(dot(d, normalize(vec3<f32>(in.at.x - in.axis.x, in.at.y, 0.0)))), 4.0);
-    colour = colour * 0.85 + vec3<f32>(0.01, 0.014, 0.02) + vec3<f32>(0.3, 0.45, 0.6) * fresnel * 0.2;
-    return vec4<f32>(base_fog(colour, length(in.at - o)), 1.0);
 }

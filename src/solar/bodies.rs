@@ -210,12 +210,8 @@ pub(super) fn surface_passes(
     rings: bool,
     close: bool,
 ) -> Vec<Pipe> {
-    // A starbase has no air, sea or clouds, and plating wants none of the
-    // rock's close-up grain: the mesh serves it close up too (its grid
-    // narrows to the patch in view), one pass where the ground close up is
-    // three. Filling the frame on the way in, those were 30 ms on the Pi.
     if let Some(s) = slot
-        && (!close || kind == Kind::Starbase)
+        && !close
     {
         // From afar, the ground, clouds and added light as a mesh in one
         // pass (two for a world with seas: its added light over it). The
@@ -367,10 +363,7 @@ impl FlatLook {
 }
 
 pub(super) fn night_mode(kind: Kind) -> f32 {
-    if kind == Kind::Starbase {
-        // A station's own lights, coloured (`station_lights` in the frame).
-        3.0
-    } else if kind.has_cities() {
+    if kind.has_cities() {
         1.0
     } else if kind.glows() {
         2.0

@@ -129,6 +129,7 @@ impl Solar {
         });
         let city = {
             let texture = bake_city(gpu, &shader, streamer.noise());
+            write_metals(gpu, &texture);
             let view = texture.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
@@ -139,6 +140,9 @@ impl Solar {
                 address_mode_v: wgpu::AddressMode::Repeat,
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
+                // One mip level a read, not two blended: the world in the
+                // open is mostly its texture reads, 4.7 ms a frame on the Pi.
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
                 ..Default::default()
             });
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -842,40 +846,49 @@ impl Solar {
         });
         pipelines.insert(Pipe::Ships, ("Solar ships".to_string(), ship_pipeline));
         // A starbase tunnel's panes: quads made in the vertex shader round
-        // each segment's window bands (`vs_pane`), the city behind them
-        // traced in `fs_pane`, opaque and writing the depth.
-        let panes = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Solar base panes"),
-            layout: Some(&city_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_pane"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_pane"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: gpu.pipeline_cache(),
-        });
-        pipelines.insert(Pipe::BasePanes, ("Solar base panes".to_string(), panes));
+        // each segment's window bands (`vs_pane`), the world behind them
+        // traced in `fs_pane`, opaque, at the far end of the depth.
+        // And the world in the open round its port: a shell at the far end
+        // of the depth (`vs_shell`), the same fragment shader.
+        let base_world = |label: &str, vs: &str, fs: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&city_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vs),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: gpu.pipeline_cache(),
+            })
+        };
+        for (pipe, label, vs, fs) in [
+            (Pipe::BasePanes, "Solar base panes", "vs_pane", "fs_pane"),
+            (Pipe::BaseShell, "Solar base shell", "vs_shell", "fs_shell"),
+        ] {
+            pipelines.insert(pipe, (label.to_string(), base_world(label, vs, fs)));
+        }
         // Every other model family's meshes, instanced: a pipeline each.
         let instance_attributes =
             wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
@@ -896,10 +909,22 @@ impl Solar {
                 constants: &constants,
                 ..Default::default()
             };
+            // A starbase's families read its maps instead of the rocks', from
+            // entry points of their own.
+            let base = family >= models::BASE;
+            let fs = match family {
+                models::BASE_PLATING => "fs_plating",
+                models::BASE | models::BASE_SURFACE => "fs_base",
+                _ => "fs_model",
+            };
             let label = format!("Solar model {name}");
             let made = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(&label),
-                layout: Some(&model_layout),
+                layout: Some(if base {
+                    &city_pipeline_layout
+                } else {
+                    &model_layout
+                }),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_model"),
@@ -908,7 +933,7 @@ impl Solar {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("fs_model"),
+                    entry_point: Some(fs),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8UnormSrgb,
                         blend: None,

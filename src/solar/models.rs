@@ -33,7 +33,7 @@ use glam::Vec3;
 use super::system::Rng;
 
 /// Bumped whenever a model's shape changes, so stale caches are rebuilt.
-pub const GENERATOR: u32 = 10;
+pub const GENERATOR: u32 = 18;
 /// Variants of each ship design and role.
 pub const VARIANTS: u32 = 3;
 /// Ship designs: as `voyage::FACTIONS`.
@@ -85,8 +85,17 @@ pub struct Instance {
 
 /// The families of models, each with a pipeline of its own (`MODEL` in
 /// `encounter.wesl`): rocks, star gates, hive cubes, ring
-/// stations and debris.
-pub const FAMILIES: [&str; 6] = ["rock", "gate", "hive", "ring", "debris", "base"];
+/// stations, debris and a starbase's two.
+pub const FAMILIES: [&str; 8] = [
+    "rock", "gate", "hive", "ring", "debris", "base", "surface", "plating",
+];
+/// The families a starbase's meshes are drawn as, a shader each small
+/// enough for the Pi (`base_surface`): its structures and every craft in
+/// it; the blocks on its surface and its entrance; and its surface's
+/// armour plating.
+pub const BASE: u32 = 6;
+pub const BASE_SURFACE: u32 = 7;
+pub const BASE_PLATING: u32 = 8;
 
 impl Key {
     /// Its family's number (from 1, as `MODEL`); ships have their own
@@ -99,7 +108,9 @@ impl Key {
             Key::Hive { .. } => 3,
             Key::Ring { .. } => 4,
             Key::Debris { .. } => 5,
-            Key::Base { .. } => 6,
+            Key::Base { piece } if piece == super::starbase::mesh::piece::PLATING => BASE_PLATING,
+            Key::Base { piece } if super::starbase::mesh::outside(piece) => BASE_SURFACE,
+            Key::Base { .. } => BASE,
         }
     }
 }
@@ -139,7 +150,7 @@ pub enum Key {
     Debris {
         variant: u32,
     },
-    /// A piece of a starbase's interior (`base_mesh::piece`).
+    /// A piece of a starbase's interior (`starbase::mesh::piece`).
     Base {
         piece: u32,
     },
@@ -211,7 +222,7 @@ impl Key {
         for variant in 0..DEBRIS {
             keys.push(Key::Debris { variant });
         }
-        for piece in 0..super::base_mesh::piece::COUNT {
+        for piece in 0..super::starbase::mesh::piece::COUNT {
             keys.push(Key::Base { piece });
         }
         keys
@@ -1519,7 +1530,7 @@ pub fn build(key: Key) -> Mesh {
         return hive_mesh(variant, lod);
     }
     if let Key::Base { piece } = key {
-        return super::base_mesh::mesh(piece);
+        return super::starbase::mesh::build(piece);
     }
     let params = Params::new(key);
     let n = key.resolution();
@@ -1792,7 +1803,7 @@ mod tests {
         for key in Key::all()
             .into_iter()
             // The starbase's pieces are in metres, open where they are never
-            // seen, and tested in `base_mesh`.
+            // seen, and tested in `starbase::mesh`.
             .filter(|k| {
                 !matches!(
                     k,

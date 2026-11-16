@@ -122,13 +122,28 @@ impl Solar {
                                 -1.0,
                                 night_mode(moon.kind),
                             ],
-                            surface_passes(
-                                moon.kind,
-                                Some(w),
-                                eclipsed,
-                                false,
-                                length(place) < moon.radius * 1.6,
-                            ),
+                            {
+                                // The world a starbase stands on is never
+                                // drawn as the ground close up: the ship
+                                // comes down on the base, which hides it,
+                                // and the close ground's three passes
+                                // filling the frame were 30 ms on the Pi.
+                                let near = length(place) < moon.radius * 1.6;
+                                let mut passes = surface_passes(
+                                    moon.kind,
+                                    Some(w),
+                                    eclipsed,
+                                    false,
+                                    near && !moon.starbase,
+                                );
+                                // Nor, as it fills the frame on the way
+                                // down, with its night lights' own pass:
+                                // 2 ms of 12.7 there on the Pi.
+                                if moon.starbase && length(place) < moon.radius * 1.25 {
+                                    passes.retain(|p| !matches!(p, Pipe::GlobeGlow(..)));
+                                }
+                                passes
+                            },
                         ),
                         (None, Some(s)) => {
                             let air = air[0] > 0.0;
@@ -343,8 +358,12 @@ impl Solar {
         let covered = event.is_some_and(|e| e.replaces_sky())
             && params.ev[EV_STATE][1] >= 1.0
             && params.warp[2] >= 1.0;
-        let background = if inside {
+        // Looking out through its mouth, the sky beyond it.
+        let sky_shows = base.is_some_and(|b| b.sky);
+        let background = if inside && !(sky_shows && baked) {
             None
+        } else if inside {
+            Some(Pipe::SpaceBaked)
         } else if baked && params.spool[1] > 0.001 && params.warp[0] < 1.0 {
             // The drive starting up, and on into the jump's first seconds
             // until its light is all there is; while it is still aligning,
@@ -411,7 +430,7 @@ impl Solar {
         let lists = if params.ev[EV_EVENT][0] as u32 == voyage::Event::Battle.id() {
             Some(battle_effects(&params.ev))
         } else {
-            base.as_ref().map(interior::effects)
+            base.as_ref().map(starbase::effects)
         };
         if let Some(lists) = lists {
             let mut flat = Vec::new();
@@ -451,17 +470,15 @@ impl Solar {
             } = &mut scratch;
             model_instances(&view, placed);
             if let Some(b) = &view.base {
-                interior::instances(b, placed);
+                starbase::instances(b, placed);
             }
             placed.truncate(MODEL_INSTANCES);
-            // Inside a starbase every mesh is drawn as its interior (family
-            // 6), the ships in its berths too.
-            let family = |key: models::Key| {
-                if view.base.is_some_and(|b| b.inside) {
-                    6
-                } else {
-                    key.family()
-                }
+            // Inside a starbase every craft is drawn as its structures are
+            // (`models::BASE`), the fleets' ships too.
+            let family = |key: models::Key| match key {
+                models::Key::Base { .. } => key.family(),
+                _ if view.base.is_some_and(|b| b.inside) => models::BASE,
+                _ => key.family(),
             };
             // A draw a mesh, the group with the nearest model first and the
             // nearest first within each: the depth test then spares the
@@ -877,36 +894,55 @@ impl Solar {
                     pass.set_scissor_rect(0, 0, SIZE, SIZE);
                 }
             }
-            // A starbase: inside, its meshes (nearest first), the tunnel's
-            // panes with the city behind them, then its lights and sparks;
-            // from outside, its lights alone, in front of the base itself.
+            // A starbase: its meshes (nearest first; from outside, the city
+            // round its mouth, in front of the base itself), the tunnel's
+            // panes with the hollow behind them, then its lights and sparks.
             if let Some(b) = base.as_ref() {
-                if b.inside
-                    && let Some(meshes) = self.models.as_ref().filter(|_| !model_draws.is_empty())
-                {
+                if let Some(meshes) = self.models.as_ref().filter(|_| !model_draws.is_empty()) {
                     pass.set_bind_group(2, &self.craters.1, &[]);
                     pass.set_vertex_buffer(0, meshes.vertices.slice(..));
                     pass.set_vertex_buffer(1, meshes.instances.slice(..));
                     pass.set_index_buffer(meshes.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.set_pipeline(&self.pipe(Pipe::Model(6)).1);
-                    for (_, (first, count, at), instances) in model_draws {
+                    let mut bound = 0;
+                    for (family, (first, count, at), instances) in model_draws {
+                        // The benchmarks leave a family out by its label.
+                        if crate::gpu::skipped(&self.pipe(Pipe::Model(*family)).0) {
+                            continue;
+                        }
+                        if *family != bound {
+                            pass.set_pipeline(&self.pipe(Pipe::Model(*family)).1);
+                            // A starbase's own families read its maps.
+                            let maps = if *family >= models::BASE {
+                                &self.city.1
+                            } else {
+                                &self.craters.1
+                            };
+                            pass.set_bind_group(2, maps, &[]);
+                            bound = *family;
+                        }
                         pass.draw_indexed(*first..*first + *count, *at, instances.clone());
                     }
                     pass.set_index_buffer(self.grid.slice(..), wgpu::IndexFormat::Uint16);
                 }
-                let (_, panes) = interior::segments(b);
+                let (_, panes) = starbase::segments(b);
                 if panes > 0 {
                     let (label, pipeline) = self.pipe(Pipe::BasePanes);
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(2, &self.city.1, &[]);
-                    let quads = panes * interior::PANES;
+                    let quads = panes * starbase::PANES;
                     crate::gpu::counted_draw(
                         &mut pass,
                         label,
                         0,
-                        0..interior::PANE_VERTICES,
+                        0..starbase::PANE_VERTICES,
                         0..quads,
                     );
+                }
+                if starbase::port_shown(b) {
+                    let (label, pipeline) = self.pipe(Pipe::BaseShell);
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(2, &self.city.1, &[]);
+                    crate::gpu::counted_draw(&mut pass, label, 0, 0..18, 0..1);
                 }
                 if !fx_draws.is_empty() {
                     pass.set_vertex_buffer(0, self.effects.slice(..));

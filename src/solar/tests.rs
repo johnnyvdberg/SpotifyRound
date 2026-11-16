@@ -101,6 +101,9 @@ fn moments(tour: &Tour) -> Vec<(String, f64)> {
                     // through its steps, the turn about, the way out and
                     // out of the mouth.
                     let points: &[(&str, f64)] = match stage {
+                        tour::BaseStage::Airlock => {
+                            &[("entrance", 0.2), ("sealed", 0.7), ("opening", 0.9)]
+                        }
                         tour::BaseStage::Tunnel => &[
                             ("funnel", 0.08),
                             ("windows", 0.45),

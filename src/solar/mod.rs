@@ -17,12 +17,11 @@
 //! quad per body, far to near, so a pixel only pays for the bodies over it.
 
 mod bake;
-mod base_mesh;
+
 mod bodies;
 pub mod console;
 mod encounters;
 mod frame;
-mod interior;
 pub mod labels;
 pub mod layout;
 pub mod models;
@@ -31,6 +30,7 @@ mod pipe;
 pub mod rocks;
 pub mod scan;
 mod setup;
+mod starbase;
 pub mod stream;
 pub mod system;
 pub mod tour;
@@ -136,7 +136,7 @@ struct ModelScratch {
 type ModelDraw = (u32, (u32, u32, i32), std::ops::Range<u32>);
 
 /// The most model placings drawn in a frame.
-const MODEL_INSTANCES: usize = 1024;
+const MODEL_INSTANCES: usize = 4096;
 
 /// Rocks or debris drawn round the ship in a stopover (`vs_rock`).
 const ROCKS: u32 = 260;

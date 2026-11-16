@@ -224,36 +224,93 @@ Risks: no early-Z on Vulkan (handled by draw order and panes as separate quads);
 triangles (keep segments coarse, LOD the bay); a texture-binding squeeze (one array texture for the
 city); bake time at system arrival (spread it across frames, as `stream.rs` does).
 
-## 7. Stages for implementation
+## 7. What was built
 
-What was built differs from this plan in places, each for the Pi's sake or for simplicity:
+The design changed on the way; this section is what the code does now, and sections 1 to 6 are the
+plan it started from.
 
-- **The city is baked once at start-up, not per base** (§3.3): `fs_bake_city` paints its three
-  layers into one 2048 × 512 × 3 texture (in a group of its own, as the gas is), every block a
-  whole number of texels so each layer tiles; each base reads it from its own offset. `fs_pane`
-  only traces the three cylinders and reads a texel at each. The city is static: no flicker or
-  moving traffic.
-- **The tunnel, funnel and bay are built from quads** (`base_mesh.rs`), not distance fields: a
-  segment is about 1,500 triangles where surface nets made some 50,000.
-- **The mouth is painted on the base's maps** (its pit, apron and lights) and the funnel inside it
-  is a mesh, drawn once the ship is two kilometres out, where the funnel fills the view.
-- **The ship given priority is seen by its engines** (a moving light going in): from the orbit it
-  would be well under a pixel as a mesh.
-- **Sparks are worked out on the CPU** (some forty a frame), drawn as the battles' glints.
-- Nothing here has been measured on a Pi yet (B8).
+**The visit.** The ship calls in from orbit, comes straight down on the mouth, goes down the stepped
+entrance into the airlock, then along the tunnel to the port, docks, is serviced, undocks, turns
+about and flies back out the way it came.
 
-| | Stage | Done when |
-|---|---|---|
-| B1 ✓ | Body kind, `Phase::Base` stages, `starbase.rs` camera script, `SOLAR_STARBASE`; the way in staged on a docking panel, with a hold when other traffic has priority (one time in five) | The HUD names each stage, the camera follows the spline (flat-coloured placeholders), and the tour continues after it |
-| B2 ✓ | Exterior map kind and the mouth model | Approach screenshots read as a built moon by day and night |
-| B3 ✓ | Tunnel segments, instanced, with fog and draw order | Tunnel at 60 fps on the Pi with flat panes |
-| B4 ✓ | City bake and `fs_pane` parallax, traffic | Screenshot set through the tunnel; `fs_pane` ≤ 80 instructions on shader-db |
-| B5 ✓ | Bay, cradle, clamps, berths; dock and undock scripts | Dock and undock screenshots, clamp shake |
-| B6 ✓ | Arms, sparks, arc light, SERVICE panel | Service screenshots at 5 moments; worst frame ≤ 8 ms on the Pi |
-| B7 ✓ | Console entry, incident rows, without-models fallback | Console test like `tests.rs:1045`; a base is never rolled before the models are ready |
-| B8 | Pi sweep and docs | `solar::tests::frame_time` sweep through a base on seeds 5 and 23; a section in `solar.md` with screenshots |
+- **The base's world is a living one** (`Kind::Terran`), its cities grown into megacities
+  (`Planet::megacities`, `fs_lights`). There is no starbase kind of world any more.
+- **The base is a megastructure** standing thirty kilometres over it (`mesh/megastructure.rs`): a
+  dish sixty across, a rim of lit floors, an underside drawn in to a stem down to the ground,
+  housings and masts on the dish. The dish's face is a map (`surface_texel` in
+  `starbase/world.wesl`, drawn by `fs_plating`): rings of plating in panels, rows of lit windows, a
+  lit bay here and there, bands of light. It is drawn over its world from orbit, and alone through
+  the final approach, when the dish fills the view.
+- **The entrance** is a pit a kilometre across at the middle of the dish, stepped down a kilometre,
+  each step a ring of lit floors and a landing, pylons round its rim (`mesh/entrance.rs`).
+- **The airlock** (`BaseStage::Airlock`, `mesh/lock.rs`) is a windowless chamber at the head of the
+  tunnel. The ship stops in it, the outer door shuts behind and the inner one opens ahead
+  (`tour::starbase::doors`). While both are shut nothing but the chamber is drawn, so what is drawn
+  outside and what is drawn inside never have to be on the frame together, and the change from one
+  to the other is never seen.
+- **The tunnel** runs along the axis of the base's hollow interior. More of its wall is glass than
+  not: three bands of long windows, thin in the wall so they show at the shallow angle the camera
+  sees them from. It has a deck with a roadway, lamp posts and a guide line, and a ring of lamps at
+  every rib (`mesh/tunnel.rs`).
+- **The world inside** is a cylinder 8 km across: hills, rivers, lakes and a sea in a band all the
+  way round, fields and woods, cities along the water and the roads, three strip suns along it, and
+  clouds. Nothing of it is on a grid (`starbase/world.wesl`): land from fractal noise with its relief
+  lit from one side, rivers and highways along contour lines so they wind, districts and fields as
+  irregular cells. Its ground is not geometry: `fs_pane` meets the cylinder with the view's ray,
+  nearer where the ground stands high (so hills hide what is behind them), and short of it the
+  clouds' level, and reads maps baked once at start-up with their mip levels (`bake::bake_city`, a
+  pipeline a layer so each compiles small). Lights run along its highways and its clouds drift.
+- **Its cities** (`starbase/city.rs`, `city.wesl`, `ground.wesl`; [the algorithm](starbase-city-algorithm.md)):
+  all in ground metres on both sides. Towns ranked by size (Zipf), each a Clark kernel, the largest
+  with sub-centres; arterials and highways between them from a gravity rule, as straight pieces in a
+  table Rust builds and the bake reads; rivers along the axis; built or not by density cut against
+  noise; Voronoi districts with a block grid each; lots, a building on each, lognormal in height,
+  its roof painted into the map. The buildings are meshes (`world.rs`) kept while three pixels tall,
+  the tallest first, shrinking into their roofs rather than popping; towers plain beyond 6.5 km.
+- **Traffic.** Ships of the fleets (every design but the cube's), freighters, shuttles and cars fly
+  past the tunnel's windows and on circuits round the port (`starbase/traffic.rs`).
+- **The port** is out in the open of that world: a spine of catwalks on from the tunnel's deck, a
+  second above it, arms either side at every station, and ships moored along the arms, the largest
+  at their ends (`starbase/port.rs`, `mesh/port.rs`). The ship's own dock stands on the lower spine
+  under a gantry.
 
-Tests to add: `solar::tests::starbase` (ignored: screenshots of every stage, like `encounters`),
-a unit test that the base's segments sum to their stated duration and that the next transfer leaves
-from the mouth, and a shader check for the new uniforms (`shader_check.rs` covers this already once
-the structs are registered).
+**Files.** The flight script is `tour/starbase.rs` and its panels' text `tour/starbase/hud.rs`. The
+drawing is `solar/starbase/` (`scene`, `port`, `traffic`, `world`, `lights`, and `mesh/` a
+file a group of pieces). The shaders are `shaders/solar/starbase/` (`common`, `surface`, `pane`,
+`world`).
+
+**Metals.** The structures' plating is three photographs from ambientCG (CC0,
+`assets/textures/CREDITS.md`): plates for walls and hulls, a riveted grid for frames, diamond tread
+for decks. They are near grey, so each is kept as a shade in one colour channel of a sixth layer of
+the base's maps (`bake::write_metals`, `base_metal`): the frame has no texture binding to spare (16
+a stage on the Pi). One read, in place of the procedural panels it replaced, and a little faster
+than them on the Pi. The megastructure and its entrance go without: the read cost their shader its
+four threads.
+
+**Cost on the Pi.** The meshes are three model families, a shader each small enough to keep four
+threads on the V3D (`deploy/v3d-shaderdb`), light worked out at the vertices. The world in the open
+is mostly its texture reads: one mip level a read, the blocks' tile left out there, and its shell
+cut round the ship's own bow, which hides a quarter of the frame while docked (a pixel behind it is
+paid for all the same on Vulkan).
+
+Timed on the Pi 5 on 2026-11-16 (`solar::tests::frame_time`, seed 11, `WGPU_BACKEND=vulkan` as the
+kiosk runs, the kiosk stopped), milliseconds a frame against a target of 10:
+
+| Stage | ms |
+|---|---|
+| In orbit, calling in | 5.6 |
+| Lining up on the megastructure, its world filling the frame | 8.3 to 10.6 |
+| Final approach, the dish filling the frame | 2.3 to 3.5 |
+| Airlock | 3.7 to 5.6 |
+| Tunnel | 6.8 to 7.7, 9.5 as the port comes into view |
+| Berth, service, undock | 8.9 to 9.5 |
+| Outbound | 5.2 to 6.4 |
+
+The 10.6 is two or three seconds, and it is the living world itself drawn over the whole frame, not
+the base; its night lights' own pass is already left out that close (2 ms). The headless test fails
+on the Pi's OpenGL ES driver in the frame's own set-up (`VIEW_FORMATS`), so Vulkan it is.
+
+The service arms are gone: the ship rests in its cradle under the gantry through the service, the
+panel alone saying what is done.
+
+Still to do: a section in `solar.md` with screenshots.

@@ -170,29 +170,69 @@ pub(super) fn bake_storm(
     )
 }
 
-/// Texels round each layer of the starbase's city (`bake_city`), and along
-/// it, as `CITY_WIDTH` and `CITY_HEIGHT` in `encounter.wesl`.
+/// Texels across each of a starbase's maps (`bake_city`), and down it,
+/// as `CITY_WIDTH` and `CITY_HEIGHT` in `starbase/world.wesl`.
 pub(super) const CITY_WIDTH: u32 = 2048;
-pub(super) const CITY_HEIGHT: u32 = 512;
+pub(super) const CITY_HEIGHT: u32 = 1024;
+/// Its layers: the ground inside, the tile of blocks, the clouds inside,
+/// the megastructure's dish, the ground's relief, and the metals
+/// (`write_metals`).
+const CITY_LAYERS: u32 = 6;
 
-/// The city round a starbase's tunnel, seen through its windows, baked once
-/// (`fs_bake_city`): three layers, near to far, each the city on a cylinder
-/// round the tunnel, all the way round and a stretch along, tiling both
-/// ways. The panes read it where their rays meet each cylinder (`fs_pane`),
-/// each base from its own place in it.
+/// A starbase's maps, baked once (`fs_bake_city`, `starbase/world.wesl`):
+/// the ground of the hollow world inside it, all the way round and tiling
+/// along it, and the clouds over that; the city planet's surface round its
+/// mouth; and a tile of blocks laid over both. With every mip level.
+/// `fs_pane` reads the world's where the view's ray meets the cylinder,
+/// each base from its own place along it; `fs_plating` the surface's.
+///
+/// Its cities come from a table worked out once (`starbase::city`), read
+/// from a buffer of the bake's own (group 3: the frame's own groups are
+/// not bound here).
 pub(super) fn bake_city(
     gpu: &Graphics,
     shader: &wgpu::ShaderModule,
     noise: &crate::noise3d::Noise3d,
 ) -> wgpu::Texture {
+    use wgpu::util::DeviceExt;
+    let device = &gpu.device;
+    let table = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Solar city table"),
+        contents: &super::starbase::city::city().table(),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Solar city table"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Solar city table"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: table.as_entire_binding(),
+        }],
+    });
     bake_sized(
         gpu,
         shader,
         noise,
         "Solar city",
         "fs_bake_city",
-        (CITY_WIDTH, CITY_HEIGHT, 3),
+        (CITY_WIDTH, CITY_HEIGHT, CITY_LAYERS),
         wgpu::TextureFormat::Rgba8UnormSrgb,
+        CITY_HEIGHT.ilog2() + 1,
+        Some("CITY_LAYER"),
+        Some((&layout, &group)),
     )
 }
 
@@ -208,10 +248,25 @@ pub(super) fn bake(
     layers: u32,
 ) -> wgpu::Texture {
     let format = wgpu::TextureFormat::Rgba16Float;
-    bake_sized(gpu, shader, noise, label, fs, (size, size, layers), format)
+    bake_sized(
+        gpu,
+        shader,
+        noise,
+        label,
+        fs,
+        (size, size, layers),
+        format,
+        1,
+        None,
+        None,
+    )
 }
 
-/// A map baked once: `layers` layers `width` by `height`, of `format`.
+/// A map baked once: `layers` layers `width` by `height`, of `format`,
+/// with `mips` levels, each drawn by `fs`. Its instance is the layer; or,
+/// given `layered` (the name of an override the shader takes its layer
+/// from), a pipeline is made a layer and the instance is the mip level.
+#[allow(clippy::too_many_arguments)]
 fn bake_sized(
     gpu: &Graphics,
     shader: &wgpu::ShaderModule,
@@ -220,6 +275,9 @@ fn bake_sized(
     fs: &str,
     (width, height, layers): (u32, u32, u32),
     format: wgpu::TextureFormat,
+    mips: u32,
+    layered: Option<&str>,
+    table: Option<(&wgpu::BindGroupLayout, &wgpu::BindGroup)>,
 ) -> wgpu::Texture {
     let device = &gpu.device;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -229,46 +287,61 @@ fn bake_sized(
             height,
             depth_or_array_layers: layers,
         },
-        mip_level_count: 1,
+        mip_level_count: mips,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     // It reads the noise volume alone.
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts: &[None, Some(&noise.layout)],
+        bind_group_layouts: &[None, Some(&noise.layout), None, table.map(|t| t.0)],
         immediate_size: 0,
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_bake_craters"),
-            buffers: &[],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some(fs),
-            targets: &[Some(format.into())],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: gpu.pipeline_cache(),
-    });
+    let pipeline = |layer: u32| {
+        let constants = layered.map(|name| [(name, layer as f64)]);
+        let options = wgpu::PipelineCompilationOptions {
+            constants: constants.as_ref().map_or(&[], |c| &c[..]),
+            ..Default::default()
+        };
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_bake_craters"),
+                buffers: &[],
+                compilation_options: options.clone(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some(fs),
+                targets: &[Some(format.into())],
+                compilation_options: options,
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: gpu.pipeline_cache(),
+        })
+    };
+    let pipelines: Vec<_> = match layered {
+        Some(_) => (0..layers).map(pipeline).collect(),
+        None => vec![pipeline(0)],
+    };
     let mut encoder = device.create_command_encoder(&Default::default());
-    for layer in 0..layers {
+    for (layer, mip) in (0..layers).flat_map(|l| (0..mips).map(move |m| (l, m))) {
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2),
             base_array_layer: layer,
             array_layer_count: Some(1),
+            base_mip_level: mip,
+            mip_level_count: Some(1),
             ..Default::default()
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -287,10 +360,69 @@ fn bake_sized(
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&pipeline);
+        pass.set_pipeline(&pipelines[if layered.is_some() { layer as usize } else { 0 }]);
         pass.set_bind_group(1, &noise.group, &[]);
-        pass.draw(0..3, layer..layer + 1);
+        if let Some((_, group)) = table {
+            pass.set_bind_group(3, group, &[]);
+        }
+        let instance = if layered.is_some() { mip } else { layer };
+        pass.draw(0..3, instance..instance + 1);
     }
     gpu.submit(encoder.finish());
     texture
+}
+
+/// The metals a starbase's structures are built of, written into the last
+/// layer of its maps (`METAL_LAYER` in `starbase/world.wesl`: the frame has
+/// no texture binding to spare for a texture of their own, 16 a stage on
+/// the Pi). Three tiling photographs from ambientCG (CC0,
+/// `assets/textures/CREDITS.md`), each near enough grey to keep as a shade
+/// alone: plates in red, the riveted grid in green, diamond tread in blue,
+/// each tiled to fill the layer, with every mip level.
+pub(super) fn write_metals(gpu: &Graphics, maps: &wgpu::Texture) {
+    const FILES: [&[u8]; 3] = [
+        include_bytes!("../../assets/textures/metal-plates-008.jpg"),
+        include_bytes!("../../assets/textures/metal-plates-004.jpg"),
+        include_bytes!("../../assets/textures/diamond-plate-008c.jpg"),
+    ];
+    let shades = FILES.map(|bytes| {
+        image::load_from_memory(bytes)
+            .expect("a metal's photograph")
+            .to_luma8()
+    });
+    let full = image::RgbaImage::from_fn(CITY_WIDTH, CITY_HEIGHT, |x, y| {
+        let at = |k: usize| {
+            let shade = &shades[k];
+            shade.get_pixel(x % shade.width(), y % shade.height()).0[0]
+        };
+        image::Rgba([at(0), at(1), at(2), 255])
+    });
+    for mip in 0..maps.mip_level_count() {
+        let (width, height) = ((CITY_WIDTH >> mip).max(1), (CITY_HEIGHT >> mip).max(1));
+        let level =
+            image::imageops::resize(&full, width, height, image::imageops::FilterType::Triangle);
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: maps,
+                mip_level: mip,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: CITY_LAYERS - 1,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &level,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
 }

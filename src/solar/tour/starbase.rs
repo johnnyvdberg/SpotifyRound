@@ -17,10 +17,9 @@
 //! Like the rest of the tour, everything is a pure function of the time.
 
 use super::super::system::{KM, Rng, Stop, System, forced_starbase};
-use super::{
-    Manoeuvre, Phase, Tour, add, clock, cross, dot, hermite, length, normalize, scale, smoothstep,
-    sub, thousands,
-};
+use super::{Phase, Tour, add, cross, dot, hermite, length, normalize, scale, smoothstep, sub};
+
+mod hud;
 
 /// The steps of the way in, seconds each: the call to approach control,
 /// the clearance, the hold (only when traffic has priority), lining up on
@@ -31,6 +30,9 @@ pub const HOLD: f64 = 18.0;
 pub const ALIGN: f64 = 12.0;
 pub const FINAL: f64 = 12.0;
 /// The rest of the visit, seconds each.
+/// The airlock: down the entrance to a stop in the lock, the outer door
+/// shut behind and the inner one opened ahead.
+pub const AIRLOCK: f64 = 14.0;
 pub const TUNNEL: f64 = 25.0;
 pub const BERTH: f64 = 15.0;
 pub const SERVICE: f64 = 40.0;
@@ -57,16 +59,29 @@ pub const SEGMENTS: u32 = 38;
 pub const TUNNEL_LENGTH: f64 = SEGMENT * SEGMENTS as f64;
 pub const BORE: f64 = 120.0;
 pub const BEND: f64 = 400.0;
+/// The airlock, at the head of the tunnel: the segments it takes the place
+/// of, and where the ship stops in it, metres in from the mouth.
+pub const LOCK_SEGMENTS: u32 = 2;
+pub const LOCK: f64 = FUNNEL + SEGMENT * LOCK_SEGMENTS as f64 * 0.5;
+/// How high over its world the base's mouth stands, metres: the top of
+/// the megastructure it is in (`starbase::mesh::megastructure`).
+pub const ELEVATION: f64 = 30_000.0;
 /// How fast the ship comes out of the tunnel into the bay, metres a second.
 const BAY_SPEED: f64 = 60.0;
 /// The cradle: this far into the bay past the tunnel's end, and this far
 /// below its line, metres; how far the ship backs out of it.
-pub const CRADLE: f64 = 300.0;
+pub const CRADLE: f64 = 520.0;
 pub const CRADLE_DROP: f64 = 15.0;
 pub const BACK_OUT: f64 = 60.0;
-/// The interior is drawn (and the base's outside not) from this many
-/// metres out from the mouth, where the funnel fills the view.
-const INSIDE_FROM: f64 = 2000.0;
+/// The base's surface round the mouth as a mesh, this far out from it,
+/// metres: armour plating and the blocks on it (`starbase::mesh::city`).
+pub const CITY: f64 = 32_000.0;
+/// On the way in the base's own meshes are all that is drawn (and the
+/// body they stand on not) from this many metres out from the mouth: the
+/// whole final approach, through which that surface fills the view, so the
+/// body under it is never paid for as well. On the way out, until this far.
+const INSIDE_FROM: f64 = CORRIDOR + 2000.0;
+const INSIDE_UNTIL: f64 = 2000.0;
 /// How fast the ship leaves through the mouth, metres a second.
 const EXIT_SPEED: f64 = 400.0;
 
@@ -76,7 +91,9 @@ pub enum BaseStage {
     /// Calling in, cleared (or holding), lining up and flying the corridor
     /// to the mouth: one segment, in steps.
     Approach,
-    /// Down the tunnel, the city through its windows.
+    /// Down the entrance into the airlock, and through it.
+    Airlock,
+    /// Along the tunnel, the world inside through its windows.
     Tunnel,
     /// Into the bay and the cradle, clamped.
     Berth,
@@ -91,8 +108,9 @@ pub enum BaseStage {
 }
 
 impl BaseStage {
-    pub const ALL: [BaseStage; 7] = [
+    pub const ALL: [BaseStage; 8] = [
         BaseStage::Approach,
+        BaseStage::Airlock,
         BaseStage::Tunnel,
         BaseStage::Berth,
         BaseStage::Service,
@@ -111,6 +129,7 @@ impl BaseStage {
     pub fn name(self) -> &'static str {
         match self {
             BaseStage::Approach => "approach",
+            BaseStage::Airlock => "airlock",
             BaseStage::Tunnel => "tunnel",
             BaseStage::Berth => "berth",
             BaseStage::Service => "service",
@@ -275,6 +294,7 @@ impl Base {
             .map(|stage| {
                 let length = match stage {
                     BaseStage::Approach => self.approach(),
+                    BaseStage::Airlock => AIRLOCK,
                     BaseStage::Tunnel => TUNNEL,
                     BaseStage::Berth => BERTH,
                     BaseStage::Service => SERVICE,
@@ -340,6 +360,34 @@ fn ease(p0: f64, v0: f64, p1: f64, v1: f64, length: f64, local: f64) -> f64 {
     h00 * p0 + h10 * v0 * length + h01 * p1 + h11 * v1 * length
 }
 
+/// Seconds into the airlock stage: the ship stopped in the lock, the outer
+/// door shut, and the inner door begun to open and open.
+const LOCK_STOPPED: f64 = 7.0;
+const LOCK_SHUT: f64 = 9.0;
+const LOCK_OPENING: f64 = 10.5;
+
+/// Metres in from the mouth `local` seconds into the airlock stage: down
+/// the entrance, slowing to a stop in the lock.
+pub(super) fn lock_depth(local: f64) -> f64 {
+    ease(0.0, MOUTH_SPEED, LOCK, 0.0, LOCK_STOPPED, local)
+}
+
+/// How far open the airlock's doors are, 0..1, the outer and the inner:
+/// the outer open and the inner shut until the ship is in; shut behind it,
+/// then the inner opened, and so through the visit; both open for the way
+/// out.
+pub fn doors(stage: BaseStage, local: f64) -> [f64; 2] {
+    match stage {
+        BaseStage::Approach | BaseStage::Climb => [1.0, 0.0],
+        BaseStage::Airlock => [
+            1.0 - smoothstep(LOCK_STOPPED - 1.0, LOCK_SHUT, local),
+            smoothstep(LOCK_OPENING, AIRLOCK - 0.5, local),
+        ],
+        BaseStage::Outbound => [1.0, 1.0],
+        _ => [0.0, 1.0],
+    }
+}
+
 /// Metres to the mouth `local` seconds into the final approach: falling
 /// from `CORRIDOR` to nothing, reaching the mouth at `MOUTH_SPEED`.
 fn closing(local: f64) -> f64 {
@@ -394,12 +442,18 @@ pub struct BaseScene {
     pub local: f64,
     pub clock: f64,
     pub inside: bool,
+    /// Whether the sky shows from inside: looking out through the mouth.
+    pub sky: bool,
+    /// The way to the star, in the base's frame.
+    pub sun: [f64; 3],
     pub seed: u64,
     /// The ship given priority, while it is seen going in: where (metres,
     /// in the base's frame) and how brightly its engines show, 0..1.
     pub traffic: Option<[f64; 4]>,
     /// The hull's shudder as the clamps close and let go, 0..1.
     pub shake: f64,
+    /// How far open the airlock's doors are, the outer and the inner.
+    pub doors: [f64; 2],
 }
 
 impl Tour {
@@ -450,7 +504,7 @@ impl Tour {
             out,
             up,
             right: normalize(cross(forward, up)),
-            radius: self.world(stop).radius,
+            radius: self.world(stop).radius + ELEVATION * METRE,
         }
     }
 
@@ -536,10 +590,10 @@ impl Tour {
                     up: frame.up,
                 }
             }
-            BaseStage::Tunnel => tunnel(
-                ease(0.0, MOUTH_SPEED, tunnel_end(), BAY_SPEED, TUNNEL, local),
-                1.0,
-            ),
+            BaseStage::Airlock => tunnel(lock_depth(local), 1.0),
+            BaseStage::Tunnel => {
+                tunnel(ease(LOCK, 0.0, tunnel_end(), BAY_SPEED, TUNNEL, local), 1.0)
+            }
             BaseStage::Berth => {
                 let u = local / BERTH;
                 let z = ease(tunnel_end(), BAY_SPEED, cradle_z, 0.0, BERTH, local);
@@ -594,8 +648,24 @@ impl Tour {
         let pose = self.base_place(stop, stage, local, t);
         let ship = self.to_base(&frame, base.stop, pose.position, t);
         // Inside from where the funnel fills the view, down and back up.
-        let inside =
-            stage.inner() || (ship[2] > -INSIDE_FROM && ship[0].hypot(ship[1]) < FUNNEL_TOP);
+        let reach = if stage == BaseStage::Climb {
+            INSIDE_UNTIL
+        } else {
+            INSIDE_FROM
+        };
+        let inside = stage.inner()
+            || (ship[2] > -reach && ship[0].hypot(ship[1]) < FUNNEL_TOP + 0.2 * ship[2].abs());
+        let heading = {
+            let f = pose.forward;
+            [dot(f, frame.right), dot(f, frame.up), -dot(f, frame.out)]
+        };
+        let centre = self.system.centre(stop, t);
+        let to_star = normalize(scale(centre, -1.0));
+        let sun = [
+            dot(to_star, frame.right),
+            dot(to_star, frame.up),
+            -dot(to_star, frame.out),
+        ];
         let start = self.base_start(stop);
         // The shudder of the clamps closing at the end of the berthing, and
         // letting go as the undocking begins.
@@ -614,18 +684,21 @@ impl Tour {
             up: pose.up,
             scene: BaseScene {
                 ship,
-                heading: {
-                    let f = pose.forward;
-                    [dot(f, frame.right), dot(f, frame.up), -dot(f, frame.out)]
-                },
+                heading,
                 basis: [frame.right, frame.up, scale(frame.out, -1.0)],
                 stage,
                 local,
                 clock: t - start,
                 inside,
+                sky: inside
+                    && heading[2] < 0.3
+                    && ship[2] < FUNNEL + 1500.0
+                    && doors(stage, local)[0] > 0.0,
+                sun,
                 seed: self.system.seed,
                 traffic: self.traffic_at(base, &frame, stage, local, t),
                 shake,
+                doors: doors(stage, local),
             },
         }
     }
@@ -684,355 +757,6 @@ impl Tour {
         };
         let shown = smoothstep(-0.15, 0.0, u) * (1.0 - smoothstep(0.9, 1.0, u));
         Some([at[0], at[1], at[2], shown])
-    }
-
-    /// Metres to the mouth from where the camera is at `t`, outside.
-    fn range_to_mouth(&self, base: &Base, t: f64) -> f64 {
-        let frame = self.base_frame(base);
-        let mouth = add(
-            self.system.centre(base.stop, t),
-            scale(frame.out, frame.radius),
-        );
-        length(sub(self.view(t).position, mouth)) / METRE
-    }
-
-    /// How fast the camera moves at `t`, metres a second.
-    fn speed_at(&self, t: f64) -> f64 {
-        let h = 0.05;
-        length(sub(self.view(t + h).position, self.view(t - h).position)) / (2.0 * h) / METRE
-    }
-
-    /// What approach control says during step `step`, `into` seconds into
-    /// it.
-    fn atc_line(&self, base: &Base, step: Step, into: f64) -> String {
-        let name = &base.name;
-        match (step, base.traffic) {
-            (Step::Contact, _) if into < CONTACT * 0.5 => {
-                format!("“{name} approach, inbound to dock, requesting a bay.”")
-            }
-            (Step::Contact, _) => "“Read you. Stand by for a bay.”".into(),
-            (Step::Clearance, None) => format!(
-                "“Cleared to dock, bay {}. Corridor {}.”",
-                base.bay, base.corridor
-            ),
-            (Step::Clearance, Some(ship)) => format!(
-                "“Bay {} is yours, but hold your orbit: {} has priority.”",
-                base.bay, ship.name
-            ),
-            (Step::Hold, Some(ship)) if into < HOLD * 0.6 => {
-                format!("“{} going in ahead of you: {}.”", ship.name, ship.reason)
-            }
-            (Step::Hold, _) => "“Traffic is in. You are cleared, corridor's yours.”".into(),
-            (Step::Align, _) => format!("“Line up on the corridor {} beacon.”", base.corridor),
-            (Step::Final, _) => format!("“Guidance lights on. Welcome to {name}.”"),
-        }
-    }
-
-    /// The docking panel `local` seconds into the way in.
-    fn approach_panel(&self, base: &Base, local: f64, t: f64) -> Manoeuvre {
-        let total = base.approach();
-        let steps = base.steps();
-        let step = base.step(local);
-        let bay = base.bay;
-        let stages = steps
-            .iter()
-            .map(|&(s, _)| {
-                let (label, value) = match s {
-                    Step::Contact => ("CONTACT", format!("hailing {} approach control", base.name)),
-                    Step::Clearance => match base.traffic {
-                        None => ("CLEARANCE", format!("cleared to dock, bay {bay}")),
-                        Some(_) => ("CLEARANCE", format!("bay {bay}, after priority traffic")),
-                    },
-                    Step::Hold => {
-                        let ship = base.traffic.expect("a hold for traffic");
-                        ("HOLD", format!("{} in first, {}", ship.name, ship.class))
-                    }
-                    Step::Align => (
-                        "ALIGNMENT",
-                        format!("bow on the corridor {} beacon", base.corridor),
-                    ),
-                    Step::Final => (
-                        "FINAL",
-                        format!(
-                            "{} km to the mouth",
-                            thousands(self.range_to_mouth(base, t) / 1000.0)
-                        ),
-                    ),
-                };
-                (label.to_string(), value)
-            })
-            .collect();
-        let tag = match step {
-            Step::Contact => "HAIL",
-            Step::Clearance => "CLEARED",
-            Step::Hold => "HOLD",
-            Step::Align => "ALIGN",
-            Step::Final => "DOCK",
-        };
-        // The range closed, from the orbit's height to the mouth.
-        let start = (Tour::height(self.world(base.stop)) - self.world(base.stop).radius) / METRE;
-        let range = self.range_to_mouth(base, t);
-        Manoeuvre {
-            name: "DOCKING APPROACH".into(),
-            text: format!("{} · bay {bay} · corridor {}", base.name, base.corridor),
-            progress: (local / total) as f32,
-            stages,
-            starts: steps.iter().map(|&(_, s)| s / total).collect(),
-            charge: (1.0 - range / start).clamp(0.0, 1.0) as f32,
-            dock: true,
-            tag: tag.into(),
-            gauge: "RNG".into(),
-            label: "BERTH".into(),
-            hot: (steps.len() - 1) as u32,
-            ..Default::default()
-        }
-    }
-
-    /// The service panel `local` seconds into the service.
-    fn service_panel(&self, base: &Base, local: f64) -> Manoeuvre {
-        let u = local / SERVICE;
-        let mut rng = Rng::new(self.system.seed ^ 0x5e41_11ce);
-        let hull = rng.int(58, 91);
-        let mass = rng.int(140, 620);
-        let (_, drive) = self.drive();
-        let stages = vec![
-            (
-                "HULL PLATING".to_string(),
-                format!("welding the seams, {hull}% to 100%"),
-            ),
-            (
-                "COOLANT".to_string(),
-                "loops flushed and refilled".to_string(),
-            ),
-            (
-                "REACTION MASS".to_string(),
-                format!("{mass} t pumped aboard"),
-            ),
-            (
-                "DRIVE COIL".to_string(),
-                format!("the {drive} recalibrated"),
-            ),
-            (
-                "NAV SYNC".to_string(),
-                "charts and beacons brought up to date".to_string(),
-            ),
-        ];
-        let tag = if u >= 0.8 { "READY" } else { "SERVICE" };
-        Manoeuvre {
-            name: "SERVICE".into(),
-            text: format!("{} · bay {}", base.name, base.bay),
-            progress: u as f32,
-            stages,
-            starts: vec![0.0, 0.2, 0.4, 0.6, 0.8],
-            charge: u as f32,
-            dock: true,
-            tag: tag.into(),
-            gauge: "SVC".into(),
-            label: "BAY".into(),
-            hot: 4,
-            ..Default::default()
-        }
-    }
-
-    /// The panel `local` seconds into stage `stage` at the base at `stop`.
-    pub(super) fn base_manoeuvre(
-        &self,
-        stop: Stop,
-        stage: BaseStage,
-        local: f64,
-        t: f64,
-    ) -> Manoeuvre {
-        let base = self.base_at(stop);
-        let (start, end) = self.base_span(stop, stage);
-        let u = (local / (end - start).max(1e-6)) as f32;
-        let coast = |name: &str, text: String| Manoeuvre {
-            name: name.into(),
-            text,
-            progress: u,
-            ..Default::default()
-        };
-        let (name, bay, corridor) = (&base.name, base.bay, base.corridor);
-        match stage {
-            BaseStage::Approach => self.approach_panel(base, local, t),
-            BaseStage::Tunnel => coast(
-                "TRANSIT TUNNEL",
-                format!(
-                    "Down corridor {corridor} into {name}, the city's lights through the windows either side."
-                ),
-            ),
-            BaseStage::Berth => coast(
-                "BERTHING",
-                format!("Guided into the cradle of bay {bay}, the clamps reaching for the hull."),
-            ),
-            BaseStage::Service => self.service_panel(base, local),
-            BaseStage::Undock => coast(
-                "UNDOCKING",
-                format!(
-                    "Clamps released: backing out of bay {bay} on thrusters and turning about."
-                ),
-            ),
-            BaseStage::Outbound => coast(
-                "OUTBOUND",
-                format!("Back up corridor {corridor} to the mouth, cleared out by {name} control."),
-            ),
-            BaseStage::Climb => coast(
-                "DEPARTURE",
-                format!(
-                    "Out of {name}, climbing back into orbit for {}.",
-                    self.after_base(stop)
-                ),
-            ),
-        }
-    }
-
-    /// Where the tour goes after the base.
-    fn after_base(&self, stop: Stop) -> String {
-        let (_, end) = self.base_span(stop, BaseStage::Climb);
-        self.segments
-            .iter()
-            .find(|s| s.start >= end - 1e-6)
-            .and_then(|s| match s.phase {
-                Phase::Transfer { to, .. } => Some(self.world(to).name.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| format!("the jump to {}", self.next.star.name))
-    }
-
-    /// The HUD `local` seconds into stage `stage` at the base at `stop`.
-    pub(super) fn base_hud(
-        &self,
-        stop: Stop,
-        stage: BaseStage,
-        local: f64,
-        t: f64,
-    ) -> (String, Vec<(String, String)>) {
-        let base = self.base_at(stop);
-        let (_, end) = self.base_span(stop, stage);
-        let left = end - t;
-        let bay = format!("bay {} · corridor {}", base.bay, base.corridor);
-        let speed = || format!("{} m/s", thousands(self.speed_at(t)));
-        let name = ("Starbase".to_string(), base.name.clone());
-        match stage {
-            BaseStage::Approach => {
-                let step = base.step(local);
-                let into = local
-                    - base
-                        .steps()
-                        .into_iter()
-                        .find(|&(s, _)| s == step)
-                        .map_or(0.0, |(_, at)| at);
-                let giant = &self.system.planets[stop.planet].name;
-                let across = self.world(stop).radius * 2.0 * KM;
-                let traffic = match base.traffic {
-                    None => "clear".to_string(),
-                    Some(ship) => match step {
-                        Step::Contact | Step::Clearance => {
-                            format!("{} · {} inbound", ship.name, ship.class)
-                        }
-                        Step::Hold => format!("{} entering ahead · {}", ship.name, ship.reason),
-                        _ => format!("{} docked", ship.name),
-                    },
-                };
-                (
-                    "APPROACH CONTROL".into(),
-                    vec![
-                        name,
-                        (
-                            "".into(),
-                            format!(
-                                "Starbase · {} km across · orbits {giant}",
-                                thousands(across)
-                            ),
-                        ),
-                        (
-                            "Range".into(),
-                            format!(
-                                "{} km to the mouth",
-                                thousands(self.range_to_mouth(base, t) / 1000.0)
-                            ),
-                        ),
-                        ("Berth".into(), bay),
-                        ("Traffic".into(), traffic),
-                        ("ATC".into(), self.atc_line(base, step, into)),
-                    ],
-                )
-            }
-            BaseStage::Tunnel => {
-                let z = ease(0.0, MOUTH_SPEED, tunnel_end(), BAY_SPEED, TUNNEL, local);
-                (
-                    "TRANSIT TUNNEL".into(),
-                    vec![
-                        name,
-                        ("Depth".into(), format!("{} m", thousands(z))),
-                        ("Speed".into(), speed()),
-                        ("Berth".into(), bay),
-                        ("Docking in".into(), clock(left + BERTH)),
-                    ],
-                )
-            }
-            BaseStage::Berth => (
-                "BERTHING".into(),
-                vec![
-                    name,
-                    ("Berth".into(), bay),
-                    ("Speed".into(), speed()),
-                    (
-                        "Clamps".into(),
-                        if left < 1.5 {
-                            "locked".into()
-                        } else {
-                            "open".into()
-                        },
-                    ),
-                ],
-            ),
-            BaseStage::Service => {
-                let done = ((local / SERVICE) * 5.0).floor().min(5.0) as u32;
-                (
-                    "DOCKED".into(),
-                    vec![
-                        name,
-                        ("Berth".into(), bay),
-                        ("Service".into(), format!("{done} of 5 done")),
-                        ("Undock in".into(), clock(left)),
-                    ],
-                )
-            }
-            BaseStage::Undock => (
-                "UNDOCKING".into(),
-                vec![
-                    name,
-                    ("Berth".into(), bay),
-                    ("Cleared by".into(), format!("{} control", base.name)),
-                ],
-            ),
-            BaseStage::Outbound => {
-                let z = ease(
-                    tunnel_end() + CRADLE - BACK_OUT,
-                    0.0,
-                    0.0,
-                    -EXIT_SPEED,
-                    OUTBOUND,
-                    local,
-                );
-                (
-                    "OUTBOUND TUNNEL".into(),
-                    vec![
-                        name,
-                        ("Mouth in".into(), format!("{} m", thousands(z.max(0.0)))),
-                        ("Speed".into(), speed()),
-                    ],
-                )
-            }
-            BaseStage::Climb => (
-                "DEPARTURE".into(),
-                vec![
-                    ("Leaving".into(), base.name.clone()),
-                    ("Next".into(), self.after_base(stop)),
-                    ("Speed".into(), speed()),
-                ],
-            ),
-        }
     }
 }
 

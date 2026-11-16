@@ -60,14 +60,11 @@ pub enum Kind {
     Nitrogen = 18,
     /// Red, dusty and cratered.
     Rusty = 19,
-    /// Not a world but a station the size of a moon: plated in panels,
-    /// ribbed, lit by its districts, a mouth to fly into (`tour::starbase`).
-    Starbase = 20,
 }
 
 impl Kind {
     /// Every kind, in the shader's order.
-    pub const ALL: [Kind; 21] = [
+    pub const ALL: [Kind; 20] = [
         Kind::Terran,
         Kind::Desert,
         Kind::Ocean,
@@ -88,7 +85,6 @@ impl Kind {
         Kind::TwoFaced,
         Kind::Nitrogen,
         Kind::Rusty,
-        Kind::Starbase,
     ];
 
     pub fn name(self) -> &'static str {
@@ -113,7 +109,6 @@ impl Kind {
             Kind::TwoFaced => "two-faced moon",
             Kind::Nitrogen => "nitrogen-ice moon",
             Kind::Rusty => "rusty moon",
-            Kind::Starbase => "starbase",
         }
     }
 
@@ -323,8 +318,9 @@ pub struct Moon {
     pub seed: u64,
     /// As big as a planet, with a planet's kind: visited and mapped in full.
     pub world: bool,
-    /// A starbase the size of a moon, built round it: visited (it is a
-    /// `world` too), flown into and docked at (`tour::starbase`).
+    /// A starbase stands on it, a megastructure over a living world of
+    /// megacities: visited (it is a `world` too), flown into and docked at
+    /// (`tour::starbase`).
     pub starbase: bool,
 }
 
@@ -354,6 +350,8 @@ pub struct Planet {
     /// Warming from tides, kelvin: for moons the size of planets, which
     /// their giant kneads.
     pub heat: f64,
+    /// Its cities grown into megacities: the world a starbase stands on.
+    pub megacities: bool,
 }
 
 /// A place the tour visits: a planet, or one of its moons as big as a planet.
@@ -541,28 +539,6 @@ fn catalogue_name(rng: &mut Rng) -> String {
 /// Palettes, linear: gas giants' bands, and the tints of rocky kinds.
 fn palette(kind: Kind, rng: &mut Rng) -> [[f32; 3]; 4] {
     match kind {
-        // A station's plating: light and dark hull greys, the seams' near
-        // black, and its ribs' paler alloy, faintly blue or warm.
-        Kind::Starbase => *rng.pick(&[
-            [
-                srgb(150, 156, 164),
-                srgb(84, 90, 100),
-                srgb(26, 28, 34),
-                srgb(196, 200, 206),
-            ],
-            [
-                srgb(158, 152, 144),
-                srgb(92, 88, 84),
-                srgb(30, 28, 26),
-                srgb(206, 198, 186),
-            ],
-            [
-                srgb(132, 142, 156),
-                srgb(70, 78, 92),
-                srgb(20, 24, 32),
-                srgb(184, 194, 210),
-            ],
-        ]),
         Kind::GasGiant => *rng.pick(&[
             // Banded beige and rust, like Jupiter.
             [
@@ -1031,6 +1007,7 @@ impl System {
                 palette,
                 seed: rng.next(),
                 heat: 0.0,
+                megacities: false,
             });
             distance *= rng.range(1.5, 1.95);
         }
@@ -1091,8 +1068,10 @@ impl System {
         let moon = &mut self.planets[p].moons[m];
         moon.world = true;
         moon.starbase = true;
-        moon.kind = Kind::Starbase;
-        moon.palette = palette(Kind::Starbase, &mut rng);
+        // A living world, its cities grown into megacities; the base itself
+        // is the megastructure standing over it (`starbase::mesh`).
+        moon.kind = Kind::Terran;
+        moon.palette = palette(Kind::Terran, &mut rng);
         // The size of a moon: 900 to 1,600 km in radius.
         moon.radius = rng.range(900.0, 1600.0) / KM;
         moon.name = rng.pick(STARBASE_NAMES).to_string();
@@ -1168,6 +1147,7 @@ impl System {
             palette: moon.palette,
             seed: moon.seed,
             heat,
+            megacities: moon.starbase,
         }
     }
 
@@ -1272,7 +1252,7 @@ mod tests {
                     .all(|p| planets[..3].iter().filter(|q| *q == p).count() == 1)
             );
         }
-        // Every kind turns up somewhere across the seeds (starbases too).
+        // Every kind turns up somewhere across the seeds.
         assert_eq!(kinds.len(), Kind::ALL.len(), "{kinds:?}");
     }
 
@@ -1324,6 +1304,7 @@ mod tests {
             seed: 0,
             heat: 0.0,
             year: 7200.0,
+            megacities: false,
         };
         // Low Earth orbit, 400 km up: about 7.7 km/s.
         let v = earth.orbital_speed(1.0 + 400.0 / KM);

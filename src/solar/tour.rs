@@ -3803,7 +3803,10 @@ mod starbase_tests {
                 last = rel;
                 t += h;
             }
-            assert!(deepest < radius, "never inside");
+            // Down through the mouth, at the megastructure's top, and well
+            // into it.
+            let mouth = radius + starbase::ELEVATION / (KM * 1000.0);
+            assert!(deepest < mouth - radius * 0.004, "never inside");
             // Back in the orbit it left, and on from there.
             let after = tour.view(end + 0.5);
             assert!(!after.inside);

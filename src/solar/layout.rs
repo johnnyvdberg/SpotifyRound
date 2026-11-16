@@ -38,12 +38,13 @@ pub const EV_STATE: usize = 10;
 pub const EV_HIT: usize = 11;
 /// A battle's ships this frame, two rows each.
 pub const EV_FLEET: usize = 12;
-/// A starbase's interior (`interior.rs`), four rows: whether it is drawn
-/// (0 not, 1 seen from outside, 2 inside), seconds into the visit, the
-/// city's seed and the green of the bay's lights once serviced; the
-/// funnel's depth, the tunnel's length, its bend and its bore; a segment's
-/// length, the first segment with panes drawn, how many, and where the bay
-/// begins; where the arc light is and how bright.
+/// A starbase (`starbase::scene`), four rows: whether it is drawn (0 not,
+/// 1 over the world it stands on, 2 alone, 3 alone with the ship's own bow
+/// in the frame), seconds into the visit, its maps' seed and the green of
+/// the dock's lights once serviced; the entrance's depth, the tunnel's
+/// length, its bend and its bore; a segment's length, the first segment
+/// with panes drawn, how many, and where the port begins; the way to the
+/// star in the base's frame, and how far its depth resolves well.
 pub const EV_BASE: usize = EV_FLEET + 2 * BATTLE_SHIPS;
 /// Every row.
 pub const EV_ROWS: usize = EV_BASE + 4;
