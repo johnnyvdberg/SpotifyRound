@@ -49,6 +49,21 @@ impl Solar {
                     self.visit_start = seconds - start;
                 }
             }
+            console::Order::Base => {
+                let here = self
+                    .tour
+                    .base
+                    .as_ref()
+                    .and_then(|b| self.tour.itinerary.iter().position(|&s| s == b.stop));
+                match here {
+                    Some(k) if !phase.deep() => self.obey(console::Order::Stop(k), seconds),
+                    _ => {
+                        if let Some(ahead) = self.base_ahead() {
+                            self.obey(console::Order::Star(self.visit + ahead.visits), seconds);
+                        }
+                    }
+                }
+            }
             console::Order::Star(target) => {
                 if target <= self.visit || relay(self.base_seed, target) {
                     return;
@@ -303,8 +318,31 @@ impl Solar {
             }
         }
         if self.stars.0 != self.visit {
-            self.stars = (self.visit, self.stars_ahead());
+            self.stars = (self.visit, self.stars_ahead(), self.base_ahead());
         }
+        // A starbase first: this system's, or the nearest star's.
+        let at_base = matches!(phase, Phase::Base(..));
+        let base_row = match self.tour.base.as_ref() {
+            Some(base) if !phase.deep() => {
+                let moon = self.tour.world(base.stop);
+                Some(console::Row {
+                    label: format!("STARBASE {}", moon.name.to_uppercase()),
+                    detail: format!(
+                        "Round {}, dock at bay {}",
+                        self.tour.system.planets[base.stop.planet].name, base.bay
+                    ),
+                    state: if at_base { 1 } else { 0 },
+                    code: console::BASE,
+                })
+            }
+            _ => self.stars.2.as_ref().map(|ahead| console::Row {
+                label: "STARBASE".into(),
+                detail: format!("Nearest at the {} system, {:.1} ly", ahead.star, ahead.ly),
+                state: 0,
+                code: console::BASE,
+            }),
+        };
+        destinations.splice(0..0, base_row);
         let bound = self.tour.destination().seed;
         destinations.extend(self.stars.1.iter().map(|(seed, row)| {
             let mut row = row.clone();
@@ -328,6 +366,30 @@ impl Solar {
             },
         };
         self.console = console;
+    }
+
+    /// The nearest star ahead whose visit docks at a starbase, within the
+    /// next forty.
+    pub(super) fn base_ahead(&self) -> Option<super::BaseAhead> {
+        let mut ly = 0.0;
+        for n in 1..=40u64 {
+            let system = system_for(self.base_seed, self.visit + n);
+            ly += system.distance;
+            if relay(self.base_seed, self.visit + n) {
+                continue;
+            }
+            if system
+                .starbase()
+                .is_some_and(|stop| system.itinerary().contains(&stop))
+            {
+                return Some(super::BaseAhead {
+                    visits: n,
+                    star: system.star.name.clone(),
+                    ly,
+                });
+            }
+        }
+        None
     }
 
     /// The next stars out from this visit's, relays left out: a row each,

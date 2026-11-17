@@ -1460,7 +1460,7 @@ impl Solar {
             tour,
             pending: Vec::new(),
             console: console::Console::default(),
-            stars: (u64::MAX, Vec::new()),
+            stars: (u64::MAX, Vec::new(), None),
             incidents: (u64::MAX, 0, Vec::new()),
             raised: None,
             diverted: None,

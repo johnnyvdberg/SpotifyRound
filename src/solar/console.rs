@@ -49,6 +49,8 @@ pub enum Order {
     Stop(usize),
     /// To the star of this visit.
     Star(u64),
+    /// To a starbase: this system's, or the nearest star's that has one.
+    Base,
     /// Into this encounter (`Event::ALL`), or one at random.
     Encounter(Option<usize>),
     /// This incident (`INCIDENTS`), or one at random.
@@ -60,6 +62,8 @@ pub enum Order {
 /// the dice on the encounters' and incidents' pages.
 pub const STAR_CODE: i32 = 1000;
 pub const RANDOM: i32 = -1;
+/// The starbase row's, on the navigation page.
+pub const BASE: i32 = -2;
 
 impl Order {
     /// The order the UI's page and row code stand for.
@@ -70,6 +74,7 @@ impl Order {
             _ => None,
         };
         match page {
+            0 if code == BASE => Some(Order::Base),
             0 if code >= STAR_CODE => Some(Order::Star(visit + (code - STAR_CODE) as u64)),
             0 if code >= 0 => Some(Order::Stop(code as usize)),
             1 => pick(Event::ALL.len()).map(Order::Encounter),
@@ -364,6 +369,7 @@ mod tests {
     fn orders_come_back_from_the_ui() {
         assert_eq!(Order::from_ui(0, 2, 7), Some(Order::Stop(2)));
         assert_eq!(Order::from_ui(0, STAR_CODE + 3, 7), Some(Order::Star(10)));
+        assert_eq!(Order::from_ui(0, BASE, 7), Some(Order::Base));
         assert_eq!(Order::from_ui(1, RANDOM, 7), Some(Order::Encounter(None)));
         assert_eq!(Order::from_ui(1, 4, 7), Some(Order::Encounter(Some(4))));
         assert_eq!(Order::from_ui(1, 99, 7), None);

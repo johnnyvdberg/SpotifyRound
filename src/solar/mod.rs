@@ -378,10 +378,10 @@ pub(crate) struct Solar {
     tour: Tour,
     /// Orders from the ship's terminal, carried out on the next frame.
     pending: Vec<console::Order>,
-    /// What the terminal shows, and the next stars' rows, for the visit they
-    /// were listed from.
+    /// What the terminal shows, and the next stars' rows and the nearest
+    /// star with a starbase, for the visit they were listed from.
     console: console::Console,
-    stars: (u64, Vec<(u64, console::Row)>),
+    stars: (u64, Vec<(u64, console::Row)>, Option<BaseAhead>),
     /// The incidents this visit has by themselves (`console::schedule`),
     /// for the visit and tour seed they were drawn for; one raised from the
     /// terminal, when (in the scene's seconds) and which; and the visit
@@ -405,6 +405,15 @@ pub(crate) struct Solar {
     /// The last frame's background and draws, for the benchmarks.
     #[cfg(test)]
     drawn: std::cell::RefCell<String>,
+}
+
+/// The nearest star ahead whose visit docks at a starbase: how many visits
+/// on, its name, and how far the ship has to go to reach it.
+#[derive(Clone, Debug)]
+struct BaseAhead {
+    visits: u64,
+    star: String,
+    ly: f64,
 }
 
 fn system_for(base: u64, visit: u64) -> System {

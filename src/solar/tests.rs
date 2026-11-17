@@ -1135,6 +1135,35 @@ pub(crate) fn render_console(
     )
 }
 
+/// The terminal's STARBASE row: always listed, and the ship docks at one,
+/// this system's or the nearest star's that has one.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_terminal_takes_the_ship_to_a_starbase() {
+    let gpu = crate::gpu::headless().expect("a GPU adapter");
+    let mut solar = Solar::with_seed(&gpu, 11);
+    let seconds = 5.0;
+    let _ = solar.catch_up(seconds);
+    solar.update_hud(seconds);
+    assert_eq!(solar.console.destinations[0].code, console::BASE);
+    let mut seconds = seconds;
+    solar.obey(console::Order::Base, seconds);
+    if solar.tour.base.is_none() {
+        // Off to the nearest star with one.
+        let t = seconds - solar.visit_start;
+        assert_eq!(solar.tour.segment(t).0.phase, Phase::Spool);
+        seconds = solar.visit_start + solar.tour.total + 0.5;
+        let _ = solar.catch_up(seconds);
+        solar.update_hud(seconds - solar.visit_start);
+        assert_eq!(solar.console.destinations[0].code, console::BASE);
+        solar.obey(console::Order::Base, seconds);
+    }
+    // In this system, on course for it.
+    let base = solar.tour.base.clone().expect("a starbase");
+    let t = seconds - solar.visit_start;
+    assert_eq!(solar.tour.current(t), Some(base.stop));
+}
+
 /// Orders from the terminal: a world ahead sets the tour on to its
 /// transfer, a star sends the ship to its jump point spooling for it, an
 /// encounter drops it out into that one, and an incident with a change
