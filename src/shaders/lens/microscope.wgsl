@@ -4,14 +4,20 @@
 struct Params {
     // Centre x, y and field-stop radius in pixels; seconds.
     frame: vec4<f32>,
-    // Illumination (0 bright field, 1 dark field), the focal plane (-1..1),
-    // how much of the view shows, the debris' seed.
+    // Illumination (0 bright field, 1 dark field, 2 phase contrast), the
+    // focal plane (-1..1), how much of the view shows, the debris' seed.
     look: vec4<f32>,
-    // The stage's offset (field units), extra defocus while a slide is
-    // changed, and one pixel in field units.
+    // The stage's offset (slide units), extra defocus while a slide or an
+    // objective is changed, and one pixel in field units.
     stage: vec4<f32>,
-    // The light: the bright field's colour, or the dark field's.
+    // The background: the lamp's colour in bright field and phase contrast,
+    // the dark (or, for Rheinberg lighting, coloured) ground in dark field.
     light: vec4<f32>,
+    // The light an edge scatters in dark field; the objective's zoom.
+    glow: vec4<f32>,
+    // The slide's tissue (0 none, 1 onion skin, 2 a blood smear), how many
+    // bacteria swarm, how much debris, and the tissue's stain strength.
+    slide: vec4<f32>,
     // Per organism, two rows: x, y, angle, size (0: none); then kind, depth
     // (-1..1), phase, hue. Drawn in order, far ones first.
     cells: array<vec4<f32>, 32>,
@@ -30,6 +36,9 @@ struct Look {
 
 // `q` is in the organism's own frame, its half-length 1; `t` its clock.
 fn organism(q: vec2<f32>, kind: f32, t: f32, hue: f32) -> Look {
+    if (kind > 5.5) {
+        return organism2(q, kind, t, hue);
+    }
     var o: Look;
     if (kind < 0.5) {
         // Paramecium: a slipper with an oral groove, beating cilia, granular
@@ -103,6 +112,166 @@ fn organism(q: vec2<f32>, kind: f32, t: f32, hue: f32) -> Look {
     return o;
 }
 
+// The newer organisms, kinds 6 to 10.
+fn organism2(q: vec2<f32>, kind: f32, t: f32, hue: f32) -> Look {
+    var o: Look;
+    if (kind < 6.5) {
+        // Euglena: a green spindle squirming as it swims, chloroplasts inside,
+        // a red eyespot at the front and a whipping flagellum ahead of it.
+        let squirm = 1.0 + 0.18 * sin(q.x * 3.0 - t * 2.2);
+        let b = 0.24 * squirm * sqrt(max(1.0 - q.x * q.x, 0.0)) * (1.0 - 0.3 * max(-q.x, 0.0));
+        var d = max(abs(q.y) - b, abs(q.x) - 1.0) * 0.8;
+        // The flagellum: a thin line waving ahead.
+        let fx = q.x - 1.0;
+        if (fx > 0.0 && fx < 0.9) {
+            let wave = 0.12 * fx * sin(fx * 9.0 - t * 18.0);
+            d = min(d, abs(q.y - wave) - 0.012);
+        }
+        let plastids = smoothstep(0.55, 0.7, noise(q * vec2<f32>(9.0, 20.0) + 3.0));
+        let eyespot = 1.0 - smoothstep(0.05, 0.08, length(q - vec2<f32>(0.72, 0.05)));
+        o.d = d;
+        o.detail = 0.6 * plastids + eyespot;
+        o.pigment = mix(vec3<f32>(0.45, 0.75, 0.32), vec3<f32>(0.85, 0.2, 0.12), eyespot);
+    } else if (kind < 7.5) {
+        // Vorticella: a bell on a stalk anchored behind it (toward -x), the
+        // stalk `hue` long, coiling as it snaps short.
+        let bell = vec2<f32>(q.x - 0.25, q.y);
+        var d = max(length(bell * vec2<f32>(1.0, 1.3)) - 0.3, -(q.x - 0.5));
+        let mouth = exp(-pow((q.x - 0.5) / 0.04, 2.0)) * step(abs(q.y), 0.26);
+        let stalk = 0.3 + 1.6 * hue;
+        if (q.x < 0.0 && q.x > -stalk) {
+            let coil = (1.0 - hue) * 0.12 * sin(q.x * 30.0);
+            d = min(d, abs(q.y - coil) - 0.025);
+        }
+        let cilia = 0.5 + 0.5 * sin(q.y * 60.0 + t * 25.0);
+        o.d = d;
+        o.detail = 0.5 * smoothstep(0.5, 0.8, noise(q * 22.0)) + mouth * cilia;
+        o.pigment = vec3<f32>(0.85, 0.86, 0.8);
+    } else if (kind < 8.5) {
+        // Spirogyra: a filament of cells, each wound with a ribbon of
+        // chloroplast in a spiral.
+        o.d = max(abs(q.y) - 0.11, abs(q.x) - 2.0);
+        let walls = exp(-pow((fract(q.x * 2.6 + hue) - 0.5) / 0.04, 2.0));
+        let ribbon = smoothstep(0.55, 0.8, 0.5 + 0.5 * sin(q.x * 14.0 + q.y / 0.11 * 1.6 + hue * 9.0));
+        o.detail = 0.8 * walls + 0.6 * ribbon;
+        o.pigment = mix(vec3<f32>(0.75, 0.88, 0.7), vec3<f32>(0.3, 0.68, 0.22), ribbon);
+    } else if (kind < 9.5) {
+        // Pediastrum: a flat star of cells in rings, the outer ones horned.
+        let r = length(q);
+        let a = atan2(q.y, q.x);
+        let ring = floor(r * 3.2);
+        let count = max(1.0, ring * 6.0);
+        let cell_angle = (fract(a / TAU * count + ring * 0.3) - 0.5) / count * TAU * r;
+        let cell_r = fract(r * 3.2) - 0.5;
+        let cell = length(vec2<f32>(cell_angle * 3.2, cell_r));
+        let horns = select(0.0, 0.08 * abs(sin(a * count * 0.5)), r > 0.85);
+        o.d = r - 1.0 - horns;
+        o.detail = smoothstep(0.32, 0.42, cell) * 0.9;
+        o.pigment = vec3<f32>(0.42, 0.72, 0.3);
+    } else {
+        // A tardigrade: a plump body of segments on four pairs of stubby
+        // clawed legs, lumbering.
+        var d = (length(q * vec2<f32>(1.0, 2.3)) - 1.0) * 0.42;
+        // The head, a rounded snout.
+        d = min(d, length((q - vec2<f32>(0.92, 0.0)) * vec2<f32>(1.0, 1.4)) - 0.2);
+        // Three pairs of legs along the sides, swinging as it walks, and the
+        // last pair pointing back.
+        for (var i = 0; i < 3; i += 1) {
+            let x = -0.45 + f32(i) * 0.42;
+            let swing = 0.07 * sin(t * 3.0 + f32(i) * 2.1);
+            for (var side = -1.0; side < 2.0; side += 2.0) {
+                let foot = vec2<f32>(x + swing * side, 0.62 * side);
+                let hip = vec2<f32>(x, 0.3 * side);
+                let along = clamp(dot(q - hip, foot - hip) / dot(foot - hip, foot - hip), 0.0, 1.0);
+                d = min(d, length(q - mix(hip, foot, along)) - 0.1 + 0.03 * along);
+            }
+        }
+        for (var side = -1.0; side < 2.0; side += 2.0) {
+            let hip = vec2<f32>(-0.8, 0.2 * side);
+            let foot = vec2<f32>(-1.12, 0.36 * side);
+            let along = clamp(dot(q - hip, foot - hip) / dot(foot - hip, foot - hip), 0.0, 1.0);
+            d = min(d, length(q - mix(hip, foot, along)) - 0.09);
+        }
+        let segments = 0.5 + 0.5 * sin(q.x * 11.0);
+        let gut = 1.0 - smoothstep(0.12, 0.22, length(q * vec2<f32>(0.8, 2.6) + vec2<f32>(0.1, 0.0)));
+        o.d = d;
+        o.detail = 0.3 * segments + 0.6 * gut + 0.3 * smoothstep(0.6, 0.8, noise(q * 20.0));
+        o.pigment = mix(vec3<f32>(0.86, 0.72, 0.52), vec3<f32>(0.55, 0.5, 0.3), gut);
+    }
+    return o;
+}
+
+// Stained tissue under the cover slip, filling the field: onion skin (1), its
+// long cells walled and their nuclei stained with iodine, or a blood smear
+// (2), red cells with pale middles and the odd white cell stained purple.
+// Returns how much light it lets through, per channel.
+fn tissue(p: vec2<f32>, w: f32) -> vec3<f32> {
+    let stain = u.slide.w;
+    if (u.slide.x < 1.5) {
+        let warp = p + 0.03 * vec2<f32>(noise(p * 4.0), noise(p * 4.0 + 7.0));
+        let g = warp * vec2<f32>(2.4, 7.0);
+        let row = floor(g.y);
+        let cell_x = g.x + hash21(vec2<f32>(row, 3.0));
+        let f = vec2<f32>(fract(cell_x), fract(g.y));
+        let id = vec2<f32>(floor(cell_x), row);
+        let wall = min(min(f.x, 1.0 - f.x) / 2.4, min(f.y, 1.0 - f.y) / 7.0);
+        let walls = exp(-pow(wall / (0.0035 + w), 2.0));
+        let h = hash22(id);
+        let nucleus_at = vec2<f32>(0.25 + 0.5 * h.x, 0.3 + 0.4 * h.y);
+        let nd = length((f - nucleus_at) * vec2<f32>(1.0 / 2.4, 1.0 / 7.0) * vec2<f32>(1.0, 1.4));
+        let nucleus = 1.0 - smoothstep(0.024 - w, 0.03 + w, nd);
+        let cytoplasm = vec3<f32>(1.0, 0.93, 0.7);
+        var through = mix(vec3<f32>(1.0), cytoplasm, stain);
+        through *= 1.0 - 0.55 * walls * vec3<f32>(0.8, 0.9, 1.0);
+        through *= mix(vec3<f32>(1.0), vec3<f32>(0.62, 0.42, 0.2), nucleus * stain);
+        return through;
+    }
+    let g = p * 13.0;
+    let cell = floor(g);
+    let h = hash22(cell);
+    let kind = hash21(cell + 5.5);
+    let at = cell + 0.38 + 0.24 * h;
+    let d = length(g - at) / 13.0;
+    var through = vec3<f32>(1.0);
+    if (kind < 0.012) {
+        // A white cell: pale cytoplasm round a lobed purple nucleus.
+        let r = 0.034;
+        let inside = 1.0 - smoothstep(r - w, r + w, d);
+        let lobes = 0.022 * (1.0 + 0.3 * sin(atan2(g.y - at.y, g.x - at.x) * 3.0 + h.x * 6.0));
+        let nucleus = 1.0 - smoothstep(lobes - w, lobes + w, d);
+        through *= mix(vec3<f32>(1.0), vec3<f32>(0.88, 0.82, 0.95), inside);
+        through *= mix(vec3<f32>(1.0), vec3<f32>(0.45, 0.25, 0.6), nucleus * stain);
+    } else if (kind < 0.86) {
+        // A red cell: a biconcave disc, its middle thinner and paler.
+        let r = 0.03 + 0.003 * h.y;
+        let inside = 1.0 - smoothstep(r - w, r + w, d);
+        let pallor = exp(-pow(d / (r * 0.4), 2.0));
+        let density = inside * (1.0 - 0.35 * pallor);
+        through *= mix(vec3<f32>(1.0), vec3<f32>(0.9, 0.42, 0.45), density * stain);
+        through *= 1.0 - 0.25 * exp(-pow((d - r) / (0.002 + w), 2.0));
+    } else if (kind < 0.9) {
+        // A platelet.
+        let inside = 1.0 - smoothstep(0.004 - w, 0.006 + w, d);
+        through *= mix(vec3<f32>(1.0), vec3<f32>(0.7, 0.55, 0.8), inside);
+    }
+    return through;
+}
+
+// Bacteria: rods darting about, each in its own cell of the grid.
+fn bacteria(p: vec2<f32>, w: f32) -> f32 {
+    let g = p * 60.0 + u.look.w * 1.7;
+    let cell = floor(g);
+    if (hash21(cell + 1.9) > u.slide.y) {
+        return 0.0;
+    }
+    let h = hash22(cell);
+    let t = u.frame.w;
+    let at = cell + 0.5 + 0.28 * vec2<f32>(sin(t * (1.0 + 2.0 * h.x) + h.y * 20.0), cos(t * (1.2 + 1.5 * h.y) + h.x * 20.0));
+    let v = rotate(g - at, h.x * TAU + t * (h.y - 0.5) * 2.0);
+    let rod = length(vec2<f32>(max(abs(v.x) - 0.12, 0.0), v.y)) - 0.05;
+    return 1.0 - smoothstep(-w * 60.0, w * 60.0, rod);
+}
+
 // The light a dark field scatters off a glassy edge: a rainbow round a
 // diatom, by its hue.
 fn sheen(hue: f32) -> vec3<f32> {
@@ -117,25 +286,42 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
         return encode(OUTSIDE);
     }
     let t = u.frame.w;
-    let p = p0 + u.stage.xy;
-    let dark = u.look.x > 0.5;
+    // The objective's zoom: the slide under it, in slide units.
+    let zoom = u.glow.w;
+    let p = p0 / zoom + u.stage.xy;
+    let px = pixel / zoom;
+    let mode = u.look.x;
+    let dark = mode > 0.5 && mode < 1.5;
+    let phase = mode > 1.5;
     let r0 = dot(p0, p0);
 
-    // The lamp: even light, a little warmer and dimmer toward the stop.
-    var colour = select(u.light.rgb * (1.0 - 0.18 * r0), u.light.rgb * 0.0025, dark);
+    // The lamp: even light, a little dimmer toward the stop; in dark field,
+    // the ground.
+    var colour = select(u.light.rgb * (1.0 - 0.18 * r0), u.light.rgb, dark);
 
-    // Debris and bacteria, jiggling in Brownian motion, each at its own depth.
+    // Stained tissue fills the field, at the focal plane's middle.
+    if (u.slide.x > 0.5) {
+        let w = px + 0.01 * abs(u.look.y) + u.stage.z;
+        colour *= tissue(p, w);
+    }
+
+    // Debris, jiggling in Brownian motion, each speck at its own depth.
     let g = p * 34.0 + u.look.w;
     let cell = floor(g);
     let h = hash22(cell);
-    if (hash21(cell + 2.3) < select(0.28, 0.12, dark)) {
+    if (hash21(cell + 2.3) < u.slide.z * select(1.0, 0.45, dark)) {
         let jiggle = 0.06 * vec2<f32>(sin(t * 1.3 + h.x * 40.0), cos(t * 1.1 + h.y * 30.0));
         let d = length(g - (cell + 0.3 + 0.4 * h + jiggle)) / 34.0;
         let size = 0.0015 + 0.004 * hash21(cell + 5.1);
-        let w = pixel + 0.01 * abs(hash21(cell + 8.0) * 2.0 - 1.0 - u.look.y) + u.stage.z;
+        let w = px + 0.01 * abs(hash21(cell + 8.0) * 2.0 - 1.0 - u.look.y) + u.stage.z;
         let speck = 1.0 - smoothstep(size - w, size + w, d);
-        let sharp = clamp(2.0 * pixel / w, 0.15, 1.0);
-        colour = select(colour * (1.0 - 0.45 * speck * sharp), colour + u.light.rgb * 0.08 * speck * sharp, dark);
+        let sharp = clamp(2.0 * px / w, 0.15, 1.0);
+        colour = select(colour * (1.0 - 0.45 * speck * sharp), colour + u.glow.rgb * 0.08 * speck * sharp, dark);
+    }
+    if (u.slide.y > 0.0) {
+        let w = px + 0.006 * abs(0.3 - u.look.y) + u.stage.z;
+        let rods = bacteria(p, w);
+        colour = select(colour * (1.0 - 0.35 * rods), colour + u.glow.rgb * 0.05 * rods, dark);
     }
 
     for (var i = 0; i < 16; i += 1) {
@@ -150,19 +336,27 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
         let b = u.cells[2 * i + 1];
         let o = organism(q, b.x, t + b.z * 10.0, b.w);
         // Out of the focal plane an outline spreads and its structure fades.
-        let w = 1.2 * pixel + 0.016 * abs(b.y - u.look.y) + u.stage.z;
+        let w = 1.2 * px + 0.016 * abs(b.y - u.look.y) + u.stage.z;
         let d = o.d * a.w;
         let inside = 1.0 - smoothstep(-w, w, d);
         let rim = exp(-pow(d / max(w, 0.0025), 2.0));
-        let sharp = clamp(3.0 * pixel / w, 0.1, 1.0);
+        let sharp = clamp(3.0 * px / w, 0.1, 1.0);
         let detail = o.detail * sharp * inside;
+        let halo = exp(-pow((d - 3.0 * max(w, 0.0025)) / max(w, 0.0025), 2.0));
         if (dark) {
-            let glow = select(vec3<f32>(1.0), sheen(b.w + q.x * 0.15), b.x > 0.5 && b.x < 2.5);
-            colour += u.light.rgb * glow * o.pigment * (rim * 0.9 * sharp + inside * 0.03 + detail * 0.22);
+            let glass = b.x > 0.5 && b.x < 2.5;
+            let glow = select(vec3<f32>(1.0), sheen(b.w + q.x * 0.15), glass && u.glow.r > u.glow.b);
+            colour += u.glow.rgb * glow * o.pigment * (rim * 0.9 * sharp + inside * 0.03 + detail * 0.22);
+        } else if (phase) {
+            // Phase contrast: what slows the light shows dark, with a bright
+            // halo round it, whatever its colour.
+            let grey = dot(o.pigment, vec3<f32>(0.3, 0.5, 0.2));
+            colour *= mix(1.0, 0.3 + 0.2 * grey - 0.2 * detail, inside * 0.95);
+            colour *= 1.0 - 0.45 * rim * sharp;
+            colour += u.light.rgb * 0.8 * halo * sharp;
         } else {
             // Absorbed by the pigment, darkest at the outline, with the bright
             // halo a refracting edge throws just outside it.
-            let halo = exp(-pow((d - 3.0 * max(w, 0.0025)) / max(w, 0.0025), 2.0));
             colour *= mix(vec3<f32>(1.0), o.pigment * (1.0 - 0.35 * detail), inside * 0.85);
             colour *= 1.0 - 0.6 * rim * sharp;
             colour += u.light.rgb * 0.06 * halo * sharp;

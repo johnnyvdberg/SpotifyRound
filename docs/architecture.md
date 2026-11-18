@@ -71,7 +71,8 @@ ui/
 ├── theme.slint        design tokens
 ├── state.slint        Player / Devices / Library / App / Idle globals
 ├── components/        icons, buttons, artwork, rim ring, rows, toast…
-└── screens/           now playing, device picker, playlists, queue, login, idle
+├── images/scenes/     the screensaver picker's round windows, baked from each scene by `visuals::tests::picker_thumbnails`
+└── screens/           now playing, device picker, playlists, queue, login, idle, screensaver picker
 assets/earth/          Blue Marble day, night and clouds (4K), relief and water maps (2K)
 build.rs               Slint + WESL build steps; the WGSL artifacts go to OUT_DIR
 ```

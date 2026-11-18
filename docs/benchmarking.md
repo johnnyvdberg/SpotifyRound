@@ -104,6 +104,8 @@ scene as fast as it goes and logs the frame rate; `DIVE3D_STATS=1` logs the dive
 | `dive3d::tests::previews` | One frame of every sea to `DIVE3D_PREVIEW_DIR`; also what shader-db compiles from. |
 | `dive3d::helm::survey::survey` | A log of the helm's voyages (`HELM_LOG_DIR`), for checking clearances. |
 | `globe::tests::previews` | Globe frames to `GLOBE_PREVIEW_DIR`. |
+| `observatory::tests::previews`, `microscope::tests::previews` | Every target and every slide (at both objectives), a cloudy night and each kind of passer, to `LENS_PREVIEW_DIR`. Sources of `docs/observatory.jpg` and `docs/microscope.jpg`. |
+| `visuals::tests::picker_thumbnails` | The screensaver picker's round windows, a frame of each scene in its bezel, into `ui/images/scenes/`. Run it again when a scene's look changes. |
 | `solar::tests::screenshots` | Every key moment of seeds `SOLAR_SHOTS_SEEDS` (default 0,1,2,5) with a contact sheet and the HUD in `hud.txt`; `SOLAR_SHOTS=low` filters by name. |
 | `solar::tests::{warps, spools, drop_outs, relay_crossing}` | Each drive jumping, starting up and dropping out; a jump through a relay. Source of `docs/solar-warps.jpg`. |
 | `solar::tests::{encounters, battles, fleets, hive_cubes, asteroid_fields, fluxes}` | Each encounter between the stars, a row each. Sources of the `docs/solar-*.jpg` sheets. |

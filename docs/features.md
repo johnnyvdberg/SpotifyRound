@@ -57,11 +57,14 @@ along the terminator and a scattering atmosphere. The **Nautilus** is the view f
 on a Jules Verne voyage, drawn as a 3D scene: seventeen seas from sunlit kelp shallows, a coral reef
 and a seagrass meadow to a blue hole, a lava cave, a drowned city, a glass-sponge reef, the abyss
 and the polar ice (see [docs/nautilus.md](nautilus.md)). The **Observatory** is the view through a
-telescope's eyepiece over a night: the Moon's terminator, Jupiter and its moons, Saturn, Mars, the
-Orion Nebula, two galaxies, the Ring Nebula, two clusters and a double star, slewing from one to
-the next through air that makes the image dance (see [docs/observatory.md](observatory.md)). The
-**Microscope** shows slides of pond life in bright and dark field, paramecia, diatoms, volvox and
-amoebae moving under a focus that drifts through the drop (see [docs/microscope.md](microscope.md)).
+telescope's eyepiece over a night: eighteen targets from the Moon's terminator and the planets to
+nebulae, galaxies, a comet, clusters and double stars, slewing from one to the next through air
+that makes the image dance, on a night that may be steady or poor, clear or cloudy, with
+satellites, meteors and aircraft crossing the field (see [docs/observatory.md](observatory.md)).
+The **Microscope** shows fourteen slides, of pond life and of stained tissue, in bright field, dark
+field, Rheinberg lighting and phase contrast: paramecia, Euglena, diatoms, volvox, amoebae,
+Vorticella, Spirogyra, a tardigrade and more, under a focus that drifts through the drop and an
+objective that turns to a stronger one partway through (see [docs/microscope.md](microscope.md)).
 
 Swipe down on the player to summon the visualiser, swipe left or right on the dive to travel on to
 the next sea or back (on the telescope to the next target, on the microscope to the next slide),

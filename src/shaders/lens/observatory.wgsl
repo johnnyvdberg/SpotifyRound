@@ -14,12 +14,23 @@ struct Params {
     // The slew's streak (half-vector, field units), the field stars' density
     // (0..1), and one pixel in field units.
     slew: vec4<f32>,
+    // Per kind. A galaxy's: bulge colour and dust lane, disc colour and bulge
+    // radius.
     colour_a: vec4<f32>,
     colour_b: vec4<f32>,
     // Per kind: size, tilt, ring tilt or inclination, detail.
     shape: vec4<f32>,
-    // Per kind: the moon's sun, or a galaxy's companion.
+    // Per kind: the Moon's or a planet's sun (none: no phase) and where
+    // Jupiter's Red Spot is, or a galaxy's companion.
     extra: vec4<f32>,
+    // Something crossing the field (in screen field units, apart from where
+    // the telescope points): where it is and its velocity a second; its kind
+    // (0 none, 1 satellite, 2 meteor, 3 aircraft), brightness, and seconds
+    // since it appeared.
+    passer: vec4<f32>,
+    passer_look: vec4<f32>,
+    // The night: how much cloud, its drift, and the light it catches.
+    weather: vec4<f32>,
     // The target's own bright stars: x, y, brightness, colour (0 blue, 1 gold).
     stars: array<vec4<f32>, 12>,
 };
@@ -57,7 +68,10 @@ fn star_field(p: vec2<f32>, scale: f32, seed: f32, keep: f32, size: f32) -> vec3
     return star_colour(hash21(cell + 3.3)) * brightness * point(p - at, size);
 }
 
-// The Moon near its terminator: maria, craters lit low from the side.
+// The Moon near its terminator. Craters are laid out on the sphere (so they
+// foreshorten toward the limb), in five sizes, many small and few large, each
+// worn to its own depth; their walls tilt the light and their rims cast
+// shadows, long near the terminator. The maria flooded most of them.
 fn moon(p: vec2<f32>, edge: f32) -> vec3<f32> {
     let q = p / u.shape.x;
     let d2 = dot(q, q);
@@ -65,42 +79,83 @@ fn moon(p: vec2<f32>, edge: f32) -> vec3<f32> {
         return SKY;
     }
     let z = sqrt(1.0 - d2);
-    var n = vec3<f32>(q, z);
-    let maria = smoothstep(0.45, 0.58, fbm(q * 2.2 + 5.0));
-    var albedo = mix(0.32, 0.1, maria) * (0.85 + 0.3 * noise(q * 40.0));
-    // Two sizes of crater, one per cell, each a bowl inside a raised rim.
-    for (var k = 0; k < 2; k += 1) {
-        let scale = select(9.0, 26.0, k == 1);
-        let g = q * scale;
+    let up = vec3<f32>(q, z);
+    // Where on the globe, and its east and north there.
+    let lon = atan2(q.x, z);
+    let lat = asin(clamp(q.y, -1.0, 1.0));
+    let east = vec3<f32>(cos(lon), 0.0, -sin(lon));
+    let north = vec3<f32>(-sin(lat) * sin(lon), cos(lat), -sin(lat) * cos(lon));
+    let uv = vec2<f32>(lon * cos(lat), lat);
+    // The sun over this spot: its bearing along the ground and its height.
+    let sun = u.extra.xyz;
+    let ground = vec2<f32>(dot(sun, east), dot(sun, north));
+    let bearing = ground / max(length(ground), 1e-4);
+    let height = dot(sun, up) / max(length(ground), 1e-3);
+
+    let maria = smoothstep(0.42, 0.6, fbm(uv * 2.2 + 5.0));
+    var albedo = mix(0.3, 0.11, maria) * (0.82 + 0.36 * fbm(uv * 30.0));
+    var slope = vec2<f32>(0.0);
+    var lit = 1.0;
+    for (var k = 0; k < 5; k += 1) {
+        let scale = 4.0 * pow(2.2, f32(k));
+        let g = uv * scale + f32(k) * 17.3;
         let cell = floor(g);
-        let centre = cell + 0.3 + 0.4 * hash22(cell + f32(k) * 31.0);
-        // Not every cell has a crater, and few are large.
-        let roll = hash21(cell + 4.0 + f32(k));
-        let radius = select(0.0, 0.06 + 0.24 * roll * roll, hash21(cell + 9.0 + f32(k)) < 0.55);
-        let v = g - centre;
-        let r = length(v);
-        let x = r / radius;
-        var slope = 0.0;
-        if (radius <= 0.0) {
+        let keep = (0.45 + 0.08 * f32(k)) * (1.0 - (0.9 - 0.15 * f32(k)) * maria);
+        if (hash21(cell + 9.7) > keep) {
             continue;
         }
-        if (x < 1.0) {
-            slope = 2.0 * x;
-        } else {
-            slope = -4.0 * (x - 1.0) * exp(-pow((x - 1.0) / 0.35, 2.0)) / 0.35;
+        let roll = hash21(cell + 4.1);
+        // Kept, with its rim's outer slope, inside its cell, so nothing is
+        // cut off at the cell's edge.
+        let radius = 0.1 + 0.2 * roll * roll;
+        let centre = cell + 0.5 + (0.49 - 1.6 * radius) * (2.0 * hash22(cell) - 1.0);
+        let v = (g - centre) / radius;
+        let x = length(v);
+        if (x > 1.6) {
+            continue;
         }
-        // Maria flooded the smaller craters.
-        let depth = select(0.35, 0.22 * (1.0 - 0.7 * maria), k == 1);
-        n += vec3<f32>(v / max(r, 1e-4) * slope * depth, 0.0);
-        albedo *= 1.0 + 0.25 * exp(-pow((x - 1.0) / 0.25, 2.0));
+        // A few craters are fresh, deep and sharp; most are old, worn shallow.
+        let fresh = pow(hash21(cell + 2.2), 2.5);
+        let depth = 0.12 + 0.3 * fresh;
+        let rim = 0.25 * depth;
+        let dir = v / max(x, 1e-4);
+        if (x < 1.0) {
+            // A bowl, with a central peak in the large ones.
+            var s = 2.0 * depth * x;
+            if (k == 0 && x < 0.22) {
+                s -= 0.5 * depth;
+            }
+            slope += dir * s;
+            // Shadow from the rim between this point and the sun. Heights
+            // here are from the rim's crest.
+            let a = dot(v, bearing);
+            let b = v.x * bearing.y - v.y * bearing.x;
+            let to_rim = sqrt(max(1.0 - b * b, 0.0)) - a;
+            let below = (depth + rim) * (1.0 - x * x);
+            lit = min(lit, smoothstep(-0.03, 0.03, to_rim * height - below));
+        } else {
+            let outside = exp(-pow((x - 1.0) / 0.25, 2.0)) * (1.0 - smoothstep(1.35, 1.6, x));
+            slope -= dir * rim * 2.0 * (x - 1.0) / 0.0625 * outside;
+            // The rim's shadow thrown on the ground behind it.
+            let a = dot(v, bearing);
+            let b = v.x * bearing.y - v.y * bearing.x;
+            if (a < 0.0 && abs(b) < 1.0) {
+                let to_rim = -a - sqrt(1.0 - b * b);
+                lit = min(lit, smoothstep(-0.01, 0.02, to_rim * height - rim));
+            }
+            // Fresh craters lie in a bright blanket of ejecta.
+            albedo *= 1.0 + 0.45 * fresh * fresh * outside;
+        }
     }
-    let light = max(dot(normalize(n), u.extra.xyz), 0.0);
+    let n = normalize(up - east * slope.x - north * slope.y);
+    let light = max(dot(n, sun), 0.0) * lit;
     let earthshine = 0.004;
     let shown = 1.0 - smoothstep(1.0 - edge, 1.0, sqrt(d2));
     return mix(SKY, vec3<f32>(1.0, 0.97, 0.92) * albedo * (light * 3.2 + earthshine), shown);
 }
 
-// A planet: Jupiter's belts (variant 0), Saturn and its rings (1), or Mars (2).
+// A planet: Jupiter's belts (variant 0), Saturn and its rings (1), Mars (2),
+// or a disc with hardly a feature, as Venus (3) and Uranus (4) show.
 fn planet(p: vec2<f32>, edge: f32) -> vec3<f32> {
     let q = rotate(p, u.shape.y) / u.shape.x;
     let d2 = dot(q, q);
@@ -137,17 +192,24 @@ fn planet(p: vec2<f32>, edge: f32) -> vec3<f32> {
             surface = mix(u.colour_a.rgb, u.colour_b.rgb, 0.5 + 0.5 * bands);
             // Jupiter's Great Red Spot.
             if (u.look.y < 0.5) {
-                let spot = length((q - vec2<f32>(0.35, -0.38)) * vec2<f32>(1.0, 1.9));
+                let spot = length((q - vec2<f32>(u.extra.w, -0.38)) * vec2<f32>(1.0, 1.9));
                 surface = mix(surface, vec3<f32>(0.62, 0.28, 0.16), (1.0 - smoothstep(0.08, 0.12, spot)) * 0.7);
             }
-        } else {
+        } else if (u.look.y < 2.5) {
             let dark = smoothstep(0.45, 0.65, fbm(q * 2.6 + 3.0));
             surface = mix(u.colour_a.rgb, u.colour_b.rgb, dark);
             surface = mix(surface, vec3<f32>(0.95, 0.93, 0.9), smoothstep(0.82, 0.86, lat));
+        } else {
+            surface = mix(u.colour_a.rgb, u.colour_b.rgb, noise(q * 2.0 + t * 0.002) * 0.4);
         }
-        // Limb darkening, and the edge softened by the focus.
+        // Limb darkening, the phase where the planet has one, and the edge
+        // softened by the focus.
         let lit = surface * (0.35 + 0.65 * pow(z, 0.45));
-        let shown = 1.0 - smoothstep(1.0 - edge / u.shape.x, 1.0, sqrt(d2));
+        var shown = 1.0 - smoothstep(1.0 - edge / u.shape.x, 1.0, sqrt(d2));
+        // The night side is as dark as the sky behind it.
+        if (dot(u.extra.xyz, u.extra.xyz) > 0.0) {
+            shown *= smoothstep(-0.04, 0.1, dot(vec3<f32>(q, z), u.extra.xyz));
+        }
         colour = mix(colour, lit, shown);
     }
     // The rings are brighter than the globe; where the near side crosses it,
@@ -177,24 +239,49 @@ fn diffuse(p: vec2<f32>) -> vec3<f32> {
         let arms = 0.5 + 0.5 * cos(2.0 * (atan2(e.y, e.x) - log(max(r, 0.02)) * 2.6));
         let disc = exp(-r / 0.22) * mix(1.0, 0.35 + arms, u.extra.w);
         let lanes = 1.0 - 0.55 * smoothstep(0.5, 0.65, fbm(e * 7.0)) * smoothstep(0.08, 0.3, r);
-        let bulge = exp(-r / 0.035);
+        let bulge = exp(-length(vec2<f32>(q.x, q.y / max(u.shape.z, 0.6))) / u.colour_b.w);
         var light = u.colour_a.rgb * bulge * 2.2 + u.colour_b.rgb * disc * lanes;
+        // An edge-on galaxy's dust lane, just off its middle, across the bulge.
+        let lane = exp(-pow((q.y - 0.012) / 0.02, 2.0)) * (1.0 - smoothstep(0.4, 1.0, abs(q.x)));
+        light *= 1.0 - u.colour_a.w * lane;
         // A companion, as the Whirlpool's.
         let c = length(p - u.extra.xy) / u.shape.x;
         light += u.colour_a.rgb * exp(-c / 0.03) * u.extra.z;
         return SKY + light * u.shape.w;
     }
+    if (u.look.y < 2.5) {
+        let e = vec2<f32>(q.x, q.y / u.shape.z);
+        let r = length(e);
+        let ring = exp(-pow((r - 0.62) / 0.2, 2.0)) * (0.8 + 0.4 * noise(e * 9.0));
+        let fill = 0.35 * (1.0 - smoothstep(0.3, 0.7, r));
+        let colour = mix(u.colour_b.rgb, u.colour_a.rgb, smoothstep(0.4, 0.8, r));
+        return SKY + colour * (ring + fill) * u.shape.w;
+    }
+    if (u.look.y < 3.5) {
+        // A comet: its coma, a broad dust tail curving away and a straight,
+        // narrow ion tail, both streaming from the sun (toward -x).
+        let coma = exp(-length(q) / 0.035);
+        let back = max(-q.x, 0.0);
+        let behind = smoothstep(0.0, 0.08, back) * exp(-back * 1.1);
+        let dust_y = q.y - 0.18 * back * back;
+        let dust = exp(-abs(dust_y) / (0.02 + back * 0.16)) * behind;
+        let ion = exp(-abs(q.y + 0.01 * sin(back * 9.0 - u.frame.w * 0.3)) / (0.006 + back * 0.025)) * behind;
+        let rays = 0.75 + 0.25 * noise(vec2<f32>(back * 6.0 - u.frame.w * 0.05, q.y * 60.0));
+        return SKY + (u.colour_a.rgb * (coma * 1.4 + dust * 0.45) + u.colour_b.rgb * ion * 0.5 * rays) * u.shape.w;
+    }
+    // A supernova remnant: a cage of red filaments round a blue-white glow.
     let e = vec2<f32>(q.x, q.y / u.shape.z);
     let r = length(e);
-    let ring = exp(-pow((r - 0.62) / 0.2, 2.0)) * (0.8 + 0.4 * noise(e * 9.0));
-    let fill = 0.35 * (1.0 - smoothstep(0.3, 0.7, r));
-    let colour = mix(u.colour_b.rgb, u.colour_a.rgb, smoothstep(0.4, 0.8, r));
-    return SKY + colour * (ring + fill) * u.shape.w;
+    let shell = 1.0 - smoothstep(0.75, 1.0, r + 0.15 * noise(e * 3.0));
+    let filaments = pow(1.0 - abs(2.0 * fbm(e * 5.0 + 2.0) - 1.0), 6.0);
+    let glow = exp(-r * r / 0.18);
+    return SKY + (u.colour_a.rgb * filaments * shell * 1.3 + u.colour_b.rgb * glow * 0.45) * u.shape.w;
 }
 
 // A cluster's unresolved glow and its crowd of faint stars: an open cluster
-// in reflection nebulosity (variant 0), a globular (1), or a double star (2),
-// whose stars are all in `stars`.
+// in reflection nebulosity (variant 0), a globular (1), a double star (2),
+// whose stars are all in `stars`, or a pair of rich open clusters (3), centred
+// at `extra.xy` and `extra.zw`.
 fn cluster(p: vec2<f32>, size: f32) -> vec3<f32> {
     let q = p / u.shape.x;
     let r2 = dot(q, q);
@@ -207,7 +294,43 @@ fn cluster(p: vec2<f32>, size: f32) -> vec3<f32> {
         let glow = u.colour_a.rgb * exp(-r2 / 0.02) * u.shape.w;
         return SKY + glow + crowd * 0.8;
     }
-    return SKY;
+    if (u.look.y < 2.5) {
+        return SKY;
+    }
+    let a = p - u.extra.xy;
+    let b = p - u.extra.zw;
+    let keep = 0.75 * (exp(-dot(a, a) / 0.05) + exp(-dot(b, b) / 0.05));
+    return SKY + star_field(p, 46.0, u.look.w + 17.0, keep, size) * 6.0;
+}
+
+// Whatever crosses the field while the telescope looks: a satellite gliding
+// through in sunlight, a meteor's streak, or an aircraft's lights, its strobe
+// flashing. In screen field units.
+fn passer(p0: vec2<f32>, size: f32) -> vec3<f32> {
+    let kind = u.passer_look.x;
+    let d = p0 - u.passer.xy;
+    let v = u.passer.zw;
+    if (kind < 1.5) {
+        let flare = 1.0 + 0.6 * sin(u.passer_look.z * 0.7);
+        return vec3<f32>(1.0, 0.97, 0.92) * u.passer_look.y * flare * exp(-dot(d, d) / (size * size));
+    }
+    if (kind < 2.5) {
+        // The streak behind the head, along its path.
+        let along = -dot(d, normalize(v));
+        let across = length(d + normalize(v) * along);
+        let trail = length(v) * 0.25;
+        let body = exp(-pow(across / (size * 0.8), 2.0)) * (1.0 - smoothstep(0.0, trail, along)) * step(-size * 2.0, along);
+        let fade = 1.0 - smoothstep(0.3, 0.9, u.passer_look.z);
+        return vec3<f32>(0.75, 1.0, 0.85) * body * u.passer_look.y * fade;
+    }
+    // Nav lights at the wing tips, red to port and green to starboard, and a
+    // white strobe flashing between them, all a little out of focus.
+    let wing = normalize(vec2<f32>(-v.y, v.x)) * 0.09;
+    let blur = size * 4.0 + 0.008;
+    let red = exp(-dot(d - wing, d - wing) / (blur * blur));
+    let green = exp(-dot(d + wing, d + wing) / (blur * blur));
+    let strobe = exp(-dot(d, d) / (blur * blur)) * step(0.85, fract(u.passer_look.z * 0.9));
+    return (vec3<f32>(1.0, 0.15, 0.1) * red + vec3<f32>(0.1, 1.0, 0.3) * green + vec3<f32>(1.0) * strobe * 2.0) * u.passer_look.y;
 }
 
 @fragment
@@ -261,6 +384,15 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
             let glow = 0.05 * exp(-length(d) / (SEEING_DISC * 9.0));
             colour += star_colour(s.w) * s.z * twinkle * (point(d, disc) + ring + glow);
         }
+    }
+    if (u.passer_look.x > 0.5) {
+        colour += passer(p0, size);
+    }
+    // Cloud drifting over: it dims the sky and catches what light there is,
+    // most round the Moon.
+    if (u.weather.x > 0.0) {
+        let cloud = smoothstep(0.35, 0.8, fbm(p0 * 1.2 + u.weather.yz)) * u.weather.x;
+        colour = mix(colour, vec3<f32>(0.62, 0.64, 0.7) * u.weather.w, cloud * 0.9);
     }
     // The view fades through a slew, and darkens a little toward the stop.
     let r = length(p0);
