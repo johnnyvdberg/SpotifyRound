@@ -10,8 +10,11 @@ mod globe;
 mod gpu;
 #[cfg(test)]
 mod gpu_cost;
+mod lens;
+mod microscope;
 mod motion;
 mod noise3d;
+mod observatory;
 mod ring;
 mod service;
 #[cfg(test)]

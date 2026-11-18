@@ -88,9 +88,10 @@ Desktop numbers are only good relative to another run on the same machine.
 | `dive3d::tests::coverage` | How many pixels each part of the frame shades. |
 | `solar::tests::frame_time` | Solar: streaming the first planet, then every key moment of seed `SWEEP_SEED` (default 5). With `SWEEP_STEP=<s>` it sweeps the whole visit instead (`SWEEP_FROM`, `SWEEP_TO`, `SWEEP_DRIVE`), printing each frame's phase and draws. |
 | `solar::tests::jump_costs` | Each draw of a jump, encounter by encounter (`SOLAR_ENCOUNTERS`), with each part left out in turn. |
+| `lens::tests::frame_time` | The observatory and the microscope, a frame every two seconds through several targets and slides. |
 | `solar::stream::tests::gallery` | One world of each kind painted alone, with the frames and time each map pass took. |
 
-`SPOTIFY_ROUND_SCENE=globe|nautilus|solar` with `SPOTIFY_ROUND_FULL_SPEED=1` runs the app on one
+`SPOTIFY_ROUND_SCENE=globe|nautilus|solar|observatory|microscope` with `SPOTIFY_ROUND_FULL_SPEED=1` runs the app on one
 scene as fast as it goes and logs the frame rate; `DIVE3D_STATS=1` logs the dive's draw counts.
 
 ## Screenshots and reference sheets

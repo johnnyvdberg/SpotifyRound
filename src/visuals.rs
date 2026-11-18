@@ -20,6 +20,8 @@ use slint::wgpu_30::wgpu;
 use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
+use crate::microscope::Microscope;
+use crate::observatory::Observatory;
 use crate::solar::console::Console;
 use crate::solar::labels::BodyLabel;
 use crate::solar::{Hud, Solar};
@@ -109,10 +111,20 @@ pub enum Scene {
     Nautilus,
     /// A grand tour of invented star systems, with hyperjumps between them.
     Solar,
+    /// A night at the telescope, through its eyepiece.
+    Observatory,
+    /// Slides of pond life under a microscope.
+    Microscope,
 }
 
 impl Scene {
-    pub const ALL: [Scene; 3] = [Scene::Globe, Scene::Nautilus, Scene::Solar];
+    pub const ALL: [Scene; 5] = [
+        Scene::Globe,
+        Scene::Nautilus,
+        Scene::Solar,
+        Scene::Observatory,
+        Scene::Microscope,
+    ];
 
     pub fn index(self) -> usize {
         self as usize
@@ -125,6 +137,8 @@ impl Scene {
             Scene::Globe => crate::globe::SIZE as f32,
             Scene::Nautilus => crate::dive3d::SIZE as f32,
             Scene::Solar => crate::solar::SIZE as f32,
+            Scene::Observatory => crate::observatory::SIZE as f32,
+            Scene::Microscope => crate::microscope::SIZE as f32,
         }
     }
 
@@ -133,13 +147,16 @@ impl Scene {
             Scene::Globe => Box::new(Globe::new(gpu)?),
             Scene::Nautilus => Box::new(Nautilus::new(gpu)?),
             Scene::Solar => Box::new(Solar::new(gpu)?),
+            Scene::Observatory => Box::new(Observatory::new(gpu)?),
+            Scene::Microscope => Box::new(Microscope::new(gpu)?),
         };
         // Its pipelines compiled: keep them for the next start.
         gpu.save_pipeline_cache();
         Ok(scene)
     }
 
-    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus` or `solar`), which
+    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus`, `solar`,
+    /// `observatory` or `microscope`), which
     /// then shows from the start and stays: a fixed load for measuring one
     /// scene, together with `SPOTIFY_ROUND_FULL_SPEED`.
     pub fn forced() -> Option<Self> {
@@ -153,6 +170,8 @@ impl Scene {
                 "globe" => Some(Scene::Globe),
                 "nautilus" => Some(Scene::Nautilus),
                 "solar" => Some(Scene::Solar),
+                "observatory" => Some(Scene::Observatory),
+                "microscope" => Some(Scene::Microscope),
                 other => {
                     tracing::warn!(scene = other, "SPOTIFY_ROUND_SCENE names no scene");
                     None
@@ -750,6 +769,8 @@ mod tests {
             assert_eq!(Scene::random(0b10), Scene::Nautilus);
             assert_eq!(Scene::random(0b01), Scene::Globe);
             assert_eq!(Scene::random(0b100), Scene::Solar);
+            assert_eq!(Scene::random(0b1000), Scene::Observatory);
+            assert_eq!(Scene::random(0b10000), Scene::Microscope);
         }
     }
 }

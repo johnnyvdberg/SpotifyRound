@@ -85,7 +85,8 @@ component SceneTile inherits Rectangle {
 }
 
 // The screensaver chooser a swipe down on the player opens: the Earth turning,
-// the Nautilus' voyage, the solar tour, or any at random. A tap outside closes it.
+// the Nautilus' voyage, the solar tour, the telescope, the microscope, or any
+// at random. A tap outside closes it.
 export component ScenePicker inherits Rectangle {
     width: 1080px;
     height: 1080px;
@@ -126,7 +127,7 @@ export component ScenePicker inherits Rectangle {
     }
 
     SceneTile {
-        x: 540px - 20px - self.width;
+        x: 540px - self.width * 1.5 - 20px;
         y: 250px;
         label: "Earth";
         detail: "The planet turning";
@@ -140,7 +141,7 @@ export component ScenePicker inherits Rectangle {
     }
 
     SceneTile {
-        x: 540px + 20px;
+        x: 540px - self.width / 2;
         y: 250px;
         label: "Nautilus";
         detail: "A voyage under the sea";
@@ -154,8 +155,8 @@ export component ScenePicker inherits Rectangle {
     }
 
     SceneTile {
-        x: (parent.width - self.width) / 2;
-        y: 570px;
+        x: 540px + self.width / 2 + 20px;
+        y: 250px;
         label: "Solar tour";
         detail: "A grand tour of the stars";
         deep: #0a0820;
@@ -167,9 +168,37 @@ export component ScenePicker inherits Rectangle {
         }
     }
 
+    SceneTile {
+        x: 540px - 20px - self.width;
+        y: 570px;
+        label: "Observatory";
+        detail: "A night at the telescope";
+        deep: #04050c;
+        glass: @radial-gradient(circle, #f2f0ea 0%, #8a8f9e 3%, #1c2236 12%, #0a0d1a 40%, #04050c 52%, #04050c00 68%);
+        rim: #e2bd72;
+        picked => {
+            App.choosing = false;
+            App.show-visualizer(3);
+        }
+    }
+
+    SceneTile {
+        x: 540px + 20px;
+        y: 570px;
+        label: "Microscope";
+        detail: "Pond life on a slide";
+        deep: #1b1a12;
+        glass: @radial-gradient(circle, #f4eedb 0%, #ddd5b8 30%, #a39b7c 48%, #1b1a12 54%, #1b1a1200 68%);
+        rim: #8fc98a;
+        picked => {
+            App.choosing = false;
+            App.show-visualizer(4);
+        }
+    }
+
     PillButton {
         x: (parent.width - self.width) / 2;
-        y: 880px;
+        y: 890px;
         label: "Surprise me";
         primary: false;
         clicked => {
