@@ -88,9 +88,10 @@ Desktop numbers are only good relative to another run on the same machine.
 | `dive3d::tests::coverage` | How many pixels each part of the frame shades. |
 | `solar::tests::frame_time` | Solar: streaming the first planet, then every key moment of seed `SWEEP_SEED` (default 5). With `SWEEP_STEP=<s>` it sweeps the whole visit instead (`SWEEP_FROM`, `SWEEP_TO`, `SWEEP_DRIVE`), printing each frame's phase and draws. |
 | `solar::tests::jump_costs` | Each draw of a jump, encounter by encounter (`SOLAR_ENCOUNTERS`), with each part left out in turn. |
+| `lens::tests::frame_time` | The observatory and the microscope, a frame every two seconds through several targets and slides. |
 | `solar::stream::tests::gallery` | One world of each kind painted alone, with the frames and time each map pass took. |
 
-`SPOTIFY_ROUND_SCENE=globe|nautilus|solar` with `SPOTIFY_ROUND_FULL_SPEED=1` runs the app on one
+`SPOTIFY_ROUND_SCENE=globe|nautilus|solar|observatory|microscope` with `SPOTIFY_ROUND_FULL_SPEED=1` runs the app on one
 scene as fast as it goes and logs the frame rate; `DIVE3D_STATS=1` logs the dive's draw counts.
 
 ## Screenshots and reference sheets
@@ -103,6 +104,8 @@ scene as fast as it goes and logs the frame rate; `DIVE3D_STATS=1` logs the dive
 | `dive3d::tests::previews` | One frame of every sea to `DIVE3D_PREVIEW_DIR`; also what shader-db compiles from. |
 | `dive3d::helm::survey::survey` | A log of the helm's voyages (`HELM_LOG_DIR`), for checking clearances. |
 | `globe::tests::previews` | Globe frames to `GLOBE_PREVIEW_DIR`. |
+| `observatory::tests::previews`, `microscope::tests::previews` | Every target and every slide (at both objectives), a cloudy night and each kind of passer, to `LENS_PREVIEW_DIR`. Sources of `docs/observatory.jpg` and `docs/microscope.jpg`. |
+| `visuals::tests::picker_thumbnails` | The screensaver picker's round windows, a frame of each scene in its bezel, into `ui/images/scenes/`. Run it again when a scene's look changes. |
 | `solar::tests::screenshots` | Every key moment of seeds `SOLAR_SHOTS_SEEDS` (default 0,1,2,5) with a contact sheet and the HUD in `hud.txt`; `SOLAR_SHOTS=low` filters by name. |
 | `solar::tests::{warps, spools, drop_outs, relay_crossing}` | Each drive jumping, starting up and dropping out; a jump through a relay. Source of `docs/solar-warps.jpg`. |
 | `solar::tests::{encounters, battles, fleets, hive_cubes, asteroid_fields, fluxes}` | Each encounter between the stars, a row each. Sources of the `docs/solar-*.jpg` sheets. |

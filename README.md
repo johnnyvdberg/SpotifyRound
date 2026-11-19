@@ -25,8 +25,9 @@ Spotify **Premium** account.
   Spotify Connect device.
 - **Playlists** and **queue** screens, navigated by swiping; tap to play.
 - **Idle visualisers** when nothing plays: a rotating [Earth](docs/globe.md), the
-  [Nautilus](docs/nautilus.md)' undersea voyage and a [tour of invented star systems](docs/solar.md),
-  with a now-playing card over each.
+  [Nautilus](docs/nautilus.md)' undersea voyage, a [tour of invented star systems](docs/solar.md),
+  a night at the [telescope](docs/observatory.md) and pond life under a
+  [microscope](docs/microscope.md), with a now-playing card over each.
 - **Demo mode** (`--mock`) that needs no Spotify account, for developing on a laptop.
 - **Login from a phone** by QR code (PKCE OAuth), or from the command line.
 
@@ -37,7 +38,7 @@ The full list, with the details of each screen, is in [docs/features.md](docs/fe
 | Page | What it covers |
 | --- | --- |
 | [docs/features.md](docs/features.md) | Every feature and how the player behaves |
-| [docs/globe.md](docs/globe.md) · [docs/nautilus.md](docs/nautilus.md) · [docs/solar.md](docs/solar.md) | The three idle scenes |
+| [docs/globe.md](docs/globe.md) · [docs/nautilus.md](docs/nautilus.md) · [docs/solar.md](docs/solar.md) · [docs/observatory.md](docs/observatory.md) · [docs/microscope.md](docs/microscope.md) | The five idle scenes |
 | [docs/architecture.md](docs/architecture.md) | Source layout, threading, the shared wgpu device, rendering choices for the Pi |
 | [docs/benchmarking.md](docs/benchmarking.md) | Measuring GPU cost, the shader-db check, screenshot and benchmark tests |
 
@@ -445,7 +446,7 @@ Handy environment variables:
 | `SLINT_FULLSCREEN` | `1` to start full screen (the app already does, unless run with `--windowed`) |
 | `SLINT_SCALE_FACTOR` | Render the 1080 px design at another physical size |
 | `SPOTIFY_ROUND_LOG` | `tracing` filter, e.g. `spotify_round=debug` |
-| `SPOTIFY_ROUND_SCENE` | `globe`, `nautilus` or `solar`: show that idle scene from the start |
+| `SPOTIFY_ROUND_SCENE` | `globe`, `nautilus`, `solar`, `observatory` or `microscope`: show that idle scene from the start |
 | `SPOTIFY_ROUND_FULL_SPEED` | Render as fast as possible and log the frame rate |
 | `WGPU_BACKEND` | `vulkan` or `gl` |
 

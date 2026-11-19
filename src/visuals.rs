@@ -20,6 +20,8 @@ use slint::wgpu_30::wgpu;
 use crate::dive3d::Nautilus;
 use crate::globe::Globe;
 use crate::gpu::Graphics;
+use crate::microscope::Microscope;
+use crate::observatory::Observatory;
 use crate::solar::console::Console;
 use crate::solar::labels::BodyLabel;
 use crate::solar::{Hud, Solar};
@@ -109,10 +111,20 @@ pub enum Scene {
     Nautilus,
     /// A grand tour of invented star systems, with hyperjumps between them.
     Solar,
+    /// A night at the telescope, through its eyepiece.
+    Observatory,
+    /// Slides of pond life under a microscope.
+    Microscope,
 }
 
 impl Scene {
-    pub const ALL: [Scene; 3] = [Scene::Globe, Scene::Nautilus, Scene::Solar];
+    pub const ALL: [Scene; 5] = [
+        Scene::Globe,
+        Scene::Nautilus,
+        Scene::Solar,
+        Scene::Observatory,
+        Scene::Microscope,
+    ];
 
     pub fn index(self) -> usize {
         self as usize
@@ -125,6 +137,8 @@ impl Scene {
             Scene::Globe => crate::globe::SIZE as f32,
             Scene::Nautilus => crate::dive3d::SIZE as f32,
             Scene::Solar => crate::solar::SIZE as f32,
+            Scene::Observatory => crate::observatory::SIZE as f32,
+            Scene::Microscope => crate::microscope::SIZE as f32,
         }
     }
 
@@ -133,13 +147,16 @@ impl Scene {
             Scene::Globe => Box::new(Globe::new(gpu)?),
             Scene::Nautilus => Box::new(Nautilus::new(gpu)?),
             Scene::Solar => Box::new(Solar::new(gpu)?),
+            Scene::Observatory => Box::new(Observatory::new(gpu)?),
+            Scene::Microscope => Box::new(Microscope::new(gpu)?),
         };
         // Its pipelines compiled: keep them for the next start.
         gpu.save_pipeline_cache();
         Ok(scene)
     }
 
-    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus` or `solar`), which
+    /// The scene named by `SPOTIFY_ROUND_SCENE` (`globe`, `nautilus`, `solar`,
+    /// `observatory` or `microscope`), which
     /// then shows from the start and stays: a fixed load for measuring one
     /// scene, together with `SPOTIFY_ROUND_FULL_SPEED`.
     pub fn forced() -> Option<Self> {
@@ -153,6 +170,8 @@ impl Scene {
                 "globe" => Some(Scene::Globe),
                 "nautilus" => Some(Scene::Nautilus),
                 "solar" => Some(Scene::Solar),
+                "observatory" => Some(Scene::Observatory),
+                "microscope" => Some(Scene::Microscope),
                 other => {
                     tracing::warn!(scene = other, "SPOTIFY_ROUND_SCENE names no scene");
                     None
@@ -739,6 +758,131 @@ mod tests {
         assert!(d_rep + d_skip <= 1, "the display's own beat does not");
     }
 
+    /// The round windows the screensaver picker shows, baked from a frame of
+    /// each scene into `ui/images/scenes`: a crop of the frame, cut round,
+    /// darkened toward its rim and lit by a soft reflection on the glass, set
+    /// in a bezel of the scene's colour lit from the top left. Baked rather
+    /// than drawn by Slint, whose renderers do not all clip a gradient to a
+    /// rounded rectangle.
+    #[test]
+    #[ignore = "rewrites ui/images/scenes; needs a working GPU adapter"]
+    fn picker_thumbnails() {
+        use image::{RgbaImage, imageops};
+        const SIDE: u32 = 220;
+        // The glass's radius inside the bezel, in pixels.
+        const GLASS: f32 = 104.0;
+        let frame =
+            |pixels: Vec<u8>, size: u32| RgbaImage::from_raw(size, size, pixels).expect("a frame");
+        // Each scene: its name, its bezel's colour, a frame, the share of the
+        // frame round its centre to show, and that centre.
+        type Shot = (&'static str, [u8; 3], RgbaImage, f32, [f32; 2]);
+        let shots: [Shot; 5] = [
+            (
+                "earth",
+                [0x7c, 0xc4, 0xff],
+                frame(crate::globe::render_once(0.0).unwrap(), crate::globe::SIZE),
+                1.0,
+                [0.5, 0.5],
+            ),
+            (
+                "nautilus",
+                [0xc9, 0xa3, 0x5a],
+                frame(
+                    crate::dive3d::render_once(70.0, 7_321).unwrap(),
+                    crate::dive3d::SIZE,
+                ),
+                0.75,
+                [0.5, 0.5],
+            ),
+            (
+                "solar",
+                [0xa9, 0x9c, 0xff],
+                frame(
+                    crate::solar::tests::render_once(11, "-high-orbit").0,
+                    crate::solar::SIZE,
+                ),
+                0.8,
+                [0.5, 0.5],
+            ),
+            (
+                "observatory",
+                [0xe2, 0xbd, 0x72],
+                frame(
+                    crate::observatory::Observatory::render_target("Saturn", 5),
+                    crate::observatory::SIZE,
+                ),
+                0.42,
+                [0.5, 0.5],
+            ),
+            (
+                "microscope",
+                [0x8f, 0xc9, 0x8a],
+                frame(
+                    crate::microscope::Microscope::render_slide("Diatoms, Rheinberg", 30.0, 40),
+                    crate::microscope::SIZE,
+                ),
+                0.9,
+                [0.5, 0.5],
+            ),
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/images/scenes");
+        std::fs::create_dir_all(&dir).expect("the thumbnails' folder");
+        for (name, rim, image, share, centre) in shots {
+            let size = image.width() as f32;
+            let crop = (size * share) as u32;
+            let x = ((size * centre[0]) as u32).saturating_sub(crop / 2);
+            let y = ((size * centre[1]) as u32).saturating_sub(crop / 2);
+            let cut = imageops::crop_imm(&image, x, y, crop, crop).to_image();
+            let glass_side = (GLASS * 2.0) as u32;
+            let glass =
+                imageops::resize(&cut, glass_side, glass_side, imageops::FilterType::Lanczos3);
+            let inset = (SIDE - glass_side) / 2;
+            let mut thumb = RgbaImage::new(SIDE, SIDE);
+            imageops::overlay(&mut thumb, &glass, inset as i64, inset as i64);
+            let half = SIDE as f32 * 0.5;
+            for (px, py, pixel) in thumb.enumerate_pixels_mut() {
+                let ox = px as f32 + 0.5 - half;
+                let oy = py as f32 + 0.5 - half;
+                let at = (ox * ox + oy * oy).sqrt();
+                let dx = ox / GLASS;
+                let dy = oy / GLASS;
+                let r = at / GLASS;
+                if r > 1.0 {
+                    // The bezel: brighter where it faces the light at the
+                    // top left, a dark groove where the glass sits, and its
+                    // outer edge anti-aliased.
+                    let facing = 0.5 - 0.5 * (ox + oy) / (at * std::f32::consts::SQRT_2);
+                    let groove = (-(at - GLASS - 0.5).powi(2) / 1.2).exp();
+                    let lip = (-(at - half + 1.8).powi(2) / 1.0).exp();
+                    let shade = (0.45 + 0.9 * facing) * (1.0 - 0.85 * groove) + 0.25 * lip * facing;
+                    for c in 0..3 {
+                        let v = rim[c] as f32 / 255.0 * shade;
+                        pixel[c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    }
+                    pixel[3] = ((half - at + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    continue;
+                }
+                // Darker toward the rim, as through a thick lens.
+                let shade = 1.0 - 0.45 * crate::lens::smooth(0.6, 1.0, r);
+                // A soft reflection high on the left, and a faint one low on
+                // the right, as on curved glass.
+                let glint = |cx: f32, cy: f32, spread: f32, strength: f32| {
+                    let (gx, gy) = ((dx - cx) / spread, (dy - cy) / (spread * 0.6));
+                    strength * (-(gx * gx + gy * gy)).exp()
+                };
+                let shine = glint(-0.38, -0.5, 0.42, 0.16) + glint(0.45, 0.55, 0.3, 0.05);
+                for c in 0..3 {
+                    let v = pixel[c] as f32 / 255.0 * shade;
+                    pixel[c] = ((v + shine * (1.0 - v)) * 255.0).round() as u8;
+                }
+                pixel[3] = 255;
+            }
+            thumb
+                .save(dir.join(format!("{name}.png")))
+                .expect("a thumbnail");
+        }
+    }
+
     #[test]
     fn an_empty_mask_still_offers_a_scene() {
         assert_eq!(Scene::random(0), Scene::ALL[0]);
@@ -750,6 +894,8 @@ mod tests {
             assert_eq!(Scene::random(0b10), Scene::Nautilus);
             assert_eq!(Scene::random(0b01), Scene::Globe);
             assert_eq!(Scene::random(0b100), Scene::Solar);
+            assert_eq!(Scene::random(0b1000), Scene::Observatory);
+            assert_eq!(Scene::random(0b10000), Scene::Microscope);
         }
     }
 }

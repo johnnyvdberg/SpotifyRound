@@ -1,7 +1,8 @@
 # Features
 
 The README has the short list; this is the long one. The idle scenes have pages of their own:
-[the Earth](globe.md), [the Nautilus](nautilus.md) and [the Solar tour](solar.md). How it all fits
+[the Earth](globe.md), [the Nautilus](nautilus.md), [the Solar tour](solar.md),
+[the Observatory](observatory.md) and [the Microscope](microscope.md). How it all fits
 together is in [architecture.md](architecture.md).
 
 <p align="center">
@@ -55,15 +56,26 @@ Marble with Black Marble city lights, drifting clouds and their shadows, sun gli
 along the terminator and a scattering atmosphere. The **Nautilus** is the view from its salon window
 on a Jules Verne voyage, drawn as a 3D scene: seventeen seas from sunlit kelp shallows, a coral reef
 and a seagrass meadow to a blue hole, a lava cave, a drowned city, a glass-sponge reef, the abyss
-and the polar ice (see [docs/nautilus.md](nautilus.md)).
+and the polar ice (see [docs/nautilus.md](nautilus.md)). The **Observatory** is the view through a
+telescope's eyepiece over a night: eighteen targets from the Moon's terminator and the planets to
+nebulae, galaxies, a comet, clusters and double stars, slewing from one to the next through air
+that makes the image dance, on a night that may be steady or poor, clear or cloudy, with
+satellites, meteors and aircraft crossing the field (see [docs/observatory.md](observatory.md)).
+The **Microscope** shows fourteen slides, of pond life and of stained tissue, in bright field, dark
+field, Rheinberg lighting and phase contrast: paramecia, Euglena, diatoms, volvox, amoebae,
+Vorticella, Spirogyra, a tardigrade and more, under a focus that drifts through the drop and an
+objective that turns to a stronger one partway through (see [docs/microscope.md](microscope.md)).
 
 Swipe down on the player to summon the visualiser, swipe left or right on the dive to travel on to
-the next sea or back, and tap anywhere to fade back.
+the next sea or back (on the telescope to the next target, on the microscope to the next slide),
+and tap anywhere to fade back.
 
 <p align="center">
   <img src="05-idle.png" width="320" alt="The Earth">
   <img src="09-dive3d.png" width="320" alt="The Nautilus">
   <img src="solar-flyby.jpg" width="320" alt="The Solar tour">
+  <img src="observatory.jpg" width="320" alt="The Observatory">
+  <img src="microscope.jpg" width="320" alt="The Microscope">
 </p>
 
 ## Behaviour in detail

@@ -10,6 +10,9 @@ src/
 ├── motion.rs          Animato: accent tween, reveal, pulse
 ├── visuals.rs         idle scene registry and the render thread; picks a scene at random
 ├── globe.rs           idle scene: the Earth, a wgpu fragment shader over the day, night, cloud and relief maps, lit through a model of the air
+├── lens.rs            what the two eyepiece scenes share: one full-screen shader over one uniform block, the frame ring, a seeded die
+├── observatory.rs     idle scene: a night at the telescope, through its eyepiece
+├── microscope.rs      idle scene: slides of pond life under a microscope
 ├── noise3d.rs         a 64³ volume of smooth noise and its gradient, which the planet and solar shaders sample
 ├── shader_lab.rs      tests that compile WGSL experiments and dump the shaders for shader-db
 ├── shader_check.rs    tests: every shader validated with naga, every uniform struct checked against it
@@ -38,8 +41,10 @@ src/
 │   ├── common.wesl    shared smoothing, distance and noise functions
 │   ├── noise3d.wesl   sampling the 64³ noise volume
 │   ├── scene.wesl     the dive: water, seabed, models, glass and sprites
-│   └── solar/         the tour: frame.wesl (background, glare, warp, bodies), encounter.wesl
+│   ├── solar/         the tour: frame.wesl (background, glare, warp, bodies), encounter.wesl
 │                      (the stopovers), generate.wesl (the map generator), noise.wesl
+│   └── lens/          plain WGSL, included by the eyepiece scenes: prelude.wgsl (shared),
+│                      observatory.wgsl, microscope.wgsl
 ├── dive3d/            idle scene: the Nautilus' voyage, rasterised in 3D
 │   ├── mod.rs         renderer: passes, pipelines, lighting; draws the sea full-panel
 │   ├── helm.rs        how the boat moves: a 20 m hull's track, height, pitch, roll and clearances
@@ -66,7 +71,8 @@ ui/
 ├── theme.slint        design tokens
 ├── state.slint        Player / Devices / Library / App / Idle globals
 ├── components/        icons, buttons, artwork, rim ring, rows, toast…
-└── screens/           now playing, device picker, playlists, queue, login, idle
+├── images/scenes/     the screensaver picker's round windows, baked from each scene by `visuals::tests::picker_thumbnails`
+└── screens/           now playing, device picker, playlists, queue, login, idle, screensaver picker
 assets/earth/          Blue Marble day, night and clouds (4K), relief and water maps (2K)
 build.rs               Slint + WESL build steps; the WGSL artifacts go to OUT_DIR
 ```

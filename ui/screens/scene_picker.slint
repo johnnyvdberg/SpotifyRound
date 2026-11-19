@@ -3,15 +3,14 @@ import { App } from "../state.slint";
 import { PillButton } from "../components/pill_button.slint";
 import { TapArea } from "../components/tap_area.slint";
 
-// One scene to pick: a round window onto it, and its name under it.
+// One scene to pick: a round window onto it, framed in a bezel of its own
+// metal, and its name under it. The picture, bezel and all, is a frame of the
+// scene baked by `visuals::tests::picker_thumbnails`.
 component SceneTile inherits Rectangle {
     in property <string> label;
     in property <string> detail;
-    // The window's glass, lit from its middle: `deep` at its rim, and `glass`
-    // over it, which must fade out inside the circle (a radial gradient's
-    // 100% is the box's corner, so the rim is at about 70%).
-    in property <color> deep;
-    in property <brush> glass;
+    in property <image> picture;
+    // The scene's own colour, for the glow behind the window.
     in property <color> rim;
     callback picked();
 
@@ -19,45 +18,30 @@ component SceneTile inherits Rectangle {
     height: 300px;
     background: transparent;
 
-    // A soft glow behind the window, in the scene's own light.
+    // A soft glow behind the window, in the scene's own light, brighter
+    // under the finger.
     Rectangle {
-        x: -16px;
-        y: -16px;
-        width: 252px;
-        height: 252px;
-        border-radius: 126px;
-        background: @radial-gradient(circle, root.rim.with-alpha(0.35) 0%, root.rim.with-alpha(0.0) 66%);
-        opacity: touch.pressed ? 1 : 0.6;
+        x: -24px;
+        y: -24px;
+        width: 268px;
+        height: 268px;
+        border-radius: 134px;
+        background: @radial-gradient(circle, root.rim.with-alpha(0.4) 0%, root.rim.with-alpha(0.12) 45%, root.rim.with-alpha(0.0) 68%);
+        opacity: touch.pressed ? 1 : 0.55;
         animate opacity { duration: 160ms; }
     }
 
-    Rectangle {
+    Image {
         width: 220px;
         height: 220px;
         y: 0;
-        border-radius: 110px;
-        background: root.deep;
-    }
-
-    Rectangle {
-        width: 220px;
-        height: 220px;
-        y: 0;
-        background: root.glass;
-    }
-
-    Rectangle {
-        width: 220px;
-        height: 220px;
-        y: 0;
-        border-radius: 110px;
-        background: transparent;
-        border-width: 6px;
-        border-color: root.rim;
+        source: root.picture;
+        opacity: touch.pressed ? 0.82 : 1;
+        animate opacity { duration: 120ms; }
     }
 
     Text {
-        y: 232px;
+        y: 234px;
         width: parent.width;
         height: 36px;
         text: root.label;
@@ -69,7 +53,7 @@ component SceneTile inherits Rectangle {
     }
 
     Text {
-        y: 266px;
+        y: 268px;
         width: parent.width;
         height: 24px;
         text: root.detail;
@@ -85,7 +69,8 @@ component SceneTile inherits Rectangle {
 }
 
 // The screensaver chooser a swipe down on the player opens: the Earth turning,
-// the Nautilus' voyage, the solar tour, or any at random. A tap outside closes it.
+// the Nautilus' voyage, the solar tour, the telescope, the microscope, or any
+// at random. A tap outside closes it.
 export component ScenePicker inherits Rectangle {
     width: 1080px;
     height: 1080px;
@@ -95,7 +80,7 @@ export component ScenePicker inherits Rectangle {
     Rectangle {
         width: 100%;
         height: 100%;
-        background: #000000f0;
+        background: @radial-gradient(circle, #0d1018f4 0%, #000000f6 60%);
     }
 
     TapArea {
@@ -126,12 +111,11 @@ export component ScenePicker inherits Rectangle {
     }
 
     SceneTile {
-        x: 540px - 20px - self.width;
+        x: 540px - self.width * 1.5 - 20px;
         y: 250px;
         label: "Earth";
+        picture: @image-url("../images/scenes/earth.png");
         detail: "The planet turning";
-        deep: #0b2b52;
-        glass: @radial-gradient(circle, #3f8fd0 0%, #1d5c97 32%, #0b2b52 52%, #0b2b5200 68%);
         rim: #7cc4ff;
         picked => {
             App.choosing = false;
@@ -140,12 +124,11 @@ export component ScenePicker inherits Rectangle {
     }
 
     SceneTile {
-        x: 540px + 20px;
+        x: 540px - self.width / 2;
         y: 250px;
         label: "Nautilus";
+        picture: @image-url("../images/scenes/nautilus.png");
         detail: "A voyage under the sea";
-        deep: #072630;
-        glass: @radial-gradient(circle, #2b7f86 0%, #134b57 32%, #072630 52%, #07263000 68%);
         rim: #c9a35a;
         picked => {
             App.choosing = false;
@@ -154,12 +137,11 @@ export component ScenePicker inherits Rectangle {
     }
 
     SceneTile {
-        x: (parent.width - self.width) / 2;
-        y: 570px;
+        x: 540px + self.width / 2 + 20px;
+        y: 250px;
         label: "Solar tour";
+        picture: @image-url("../images/scenes/solar.png");
         detail: "A grand tour of the stars";
-        deep: #0a0820;
-        glass: @radial-gradient(circle, #5a4ab0 0%, #2a2166 32%, #0a0820 52%, #0a082000 68%);
         rim: #a99cff;
         picked => {
             App.choosing = false;
@@ -167,9 +149,35 @@ export component ScenePicker inherits Rectangle {
         }
     }
 
+    SceneTile {
+        x: 540px - 20px - self.width;
+        y: 570px;
+        label: "Observatory";
+        picture: @image-url("../images/scenes/observatory.png");
+        detail: "A night at the telescope";
+        rim: #e2bd72;
+        picked => {
+            App.choosing = false;
+            App.show-visualizer(3);
+        }
+    }
+
+    SceneTile {
+        x: 540px + 20px;
+        y: 570px;
+        label: "Microscope";
+        picture: @image-url("../images/scenes/microscope.png");
+        detail: "Pond life on a slide";
+        rim: #8fc98a;
+        picked => {
+            App.choosing = false;
+            App.show-visualizer(4);
+        }
+    }
+
     PillButton {
         x: (parent.width - self.width) / 2;
-        y: 880px;
+        y: 890px;
         label: "Surprise me";
         primary: false;
         clicked => {

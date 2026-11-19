@@ -80,6 +80,16 @@ mod tests {
     }
 
     #[test]
+    fn the_observatory_shader_is_valid() {
+        validate("observatory", crate::observatory::SHADER);
+    }
+
+    #[test]
+    fn the_microscope_shader_is_valid() {
+        validate("microscope", crate::microscope::SHADER);
+    }
+
+    #[test]
     fn the_progress_ring_shader_is_valid() {
         validate("ring", crate::ring::SHADER);
     }
@@ -126,6 +136,16 @@ mod tests {
                 "globe Uniforms",
                 struct_size(&crate::globe::shader_source(), "Uniforms"),
                 size_of::<crate::globe::Uniforms>(),
+            ),
+            (
+                "observatory Params",
+                struct_size(crate::observatory::SHADER, "Params"),
+                size_of::<crate::observatory::Params>(),
+            ),
+            (
+                "microscope Params",
+                struct_size(crate::microscope::SHADER, "Params"),
+                size_of::<crate::microscope::Params>(),
             ),
             (
                 "ring Uniforms",
